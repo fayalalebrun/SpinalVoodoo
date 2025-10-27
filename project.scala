@@ -1,0 +1,6 @@
+//> using scala "2.13.14"
+//> using dep "com.github.spinalhdl::spinalhdl-core:1.13.0"
+//> using dep "com.github.spinalhdl::spinalhdl-lib:1.13.0"
+//> using plugin "com.github.spinalhdl::spinalhdl-idsl-plugin:1.13.0"
+//> using test.dep "org.scalatest::scalatest:3.2.18"
+//> using options "-deprecation" "-feature" "-unchecked"

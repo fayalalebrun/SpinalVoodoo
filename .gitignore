@@ -1,0 +1,24 @@
+# Devenv
+.devenv*
+devenv.local.nix
+
+# direnv
+.direnv
+
+# pre-commit
+.pre-commit-config.yaml
+
+# Emacs
+*~
+\#*\#
+.\#*
+*.elc
+
+# Scala build tools
+.bsp/
+.metals/
+.scala-build/
+target/
+
+# SpinalHDL simulation
+simWorkspace/

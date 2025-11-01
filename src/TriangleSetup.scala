@@ -3,15 +3,9 @@ package voodoo
 import spinal.core._
 import spinal.lib._
 
-case class TriangleSetup(fmt: QFormat) extends Component {
-  case class Output() extends Bundle {
-    val coeffs = Vec.fill(3)(Coefficients(fmt))
-    val xrange = vertex2d(fmt)
-    val yrange = vertex2d(fmt)
-  }
-
-  val i = slave(Stream(triangle(fmt)))
-  val o = master(Stream(Output()))
+case class TriangleSetup(c: Config) extends Component {
+  val i = slave(Stream(triangle(c.vertexFormat)))
+  val o = master(Stream(TriangleSetup.Output(c.vertexFormat)))
 
   o << i.map { tri =>
     val out = cloneOf(o.payload)
@@ -40,6 +34,19 @@ case class TriangleSetup(fmt: QFormat) extends Component {
       coeff
     })
 
+    out.edgeStart := Vec(out.coeffs.zipWithIndex.map { case (coeff, i) =>
+      (coeff.a * out.xrange(0) + coeff.b * out.yrange(0) + coeff.c).truncated
+    })
+
     out
+  }
+}
+
+object TriangleSetup {
+  case class Output(vertexFmt: QFormat) extends Bundle {
+    val coeffs = Vec.fill(3)(Coefficients(vertexFmt))
+    val xrange = vertex2d(vertexFmt)
+    val yrange = vertex2d(vertexFmt)
+    val edgeStart = Vec.fill(3)(AFix(vertexFmt))
   }
 }

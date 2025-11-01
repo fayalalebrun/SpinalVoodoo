@@ -22,6 +22,9 @@
     pkgs.ghdl
     pkgs.yosys
     pkgs.yosys-ghdl
+    pkgs.symbiyosys
+    pkgs.yices
+    pkgs.z3
     pkgs.verilator
     pkgs.surfer
     pkgs.metals

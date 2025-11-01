@@ -3,4 +3,5 @@
 //> using dep "com.github.spinalhdl::spinalhdl-lib:1.13.0"
 //> using plugin "com.github.spinalhdl::spinalhdl-idsl-plugin:1.13.0"
 //> using test.dep "org.scalatest::scalatest:3.2.18"
+//> using test.dep "com.github.spinalhdl::spinalhdl-tester:1.13.0"
 //> using options "-deprecation" "-feature" "-unchecked"

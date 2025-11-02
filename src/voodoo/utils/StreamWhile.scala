@@ -1,9 +1,31 @@
-package voodoo
+package voodoo.utils
 
 import spinal.core._
 import spinal.core.formal._
 import spinal.lib._
 
+/** StreamWhile: Generates a stream of outputs from a single trigger, running while a condition
+  * holds
+  *
+  * This component converts a single trigger event into a stream of outputs, with state carried
+  * between iterations. Useful for iterative algorithms that need to run until a completion
+  * condition.
+  *
+  * @param trigger
+  *   Input stream that starts the iteration
+  * @param stateType
+  *   Type of state carried between iterations
+  * @param outputType
+  *   Type of output stream elements
+  * @param maxIterations
+  *   Maximum number of iterations (prevents infinite loops)
+  * @param init
+  *   Function to initialize state from trigger payload
+  * @param step
+  *   Function called each iteration: (counter, state, output) => (nextState, isLast)
+  * @return
+  *   Stream of outputs, running until step returns isLast=true or maxIterations reached
+  */
 object StreamWhile {
   def apply[TIn <: Data, TState <: Data, TOut <: Data](
       trigger: Stream[TIn],

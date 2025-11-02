@@ -9,7 +9,9 @@ case class Config(
     vDepthFormat: QFormat,
     texCoordsFormat: QFormat,
     wFormat: QFormat,
-    maxFbDims: (Int, Int)
+    maxFbDims: (Int, Int),
+    fbPixelStride: Int,
+    addressWidth: BitCount
 )
 
 object Config {
@@ -20,7 +22,9 @@ object Config {
     vDepthFormat = SQ(12, 12),
     texCoordsFormat = SQ(14, 18),
     wFormat = SQ(2, 30),
-    maxFbDims = (800, 600)
+    maxFbDims = (800, 600),
+    fbPixelStride = 1024,
+    addressWidth = 26 bits
   )
 
   sealed trait Revision;

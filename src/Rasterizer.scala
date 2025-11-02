@@ -2,6 +2,7 @@ package voodoo
 
 import spinal.core._
 import spinal.lib._
+import voodoo.utils.StreamWhile
 
 case class Rasterizer(c: Config) extends Component {
   val i = slave Stream (Rasterizer.Input(c))
@@ -143,7 +144,7 @@ object Rasterizer {
 
   case class Output(c: Config) extends Bundle {
     val grads = GradientBundle(AFix(_), c)
-    val coords = Vec.fill(2)(SInt(c.vertexFormat.width - c.vertexFormat.fraction bits))
+    val coords = Vec.fill(2)(SInt(c.vertexFormat.nonFraction bits))
   }
 
   case class OutputWithFlag(c: Config) extends Bundle {

@@ -3,6 +3,7 @@ package voodoo
 import spinal.core._
 import spinal.core.sim._
 import spinal.lib._
+import voodoo.utils.StreamWhile
 import org.scalatest.funsuite.AnyFunSuite
 
 class StreamWhileTest extends AnyFunSuite {

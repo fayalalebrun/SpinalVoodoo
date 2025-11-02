@@ -4,6 +4,7 @@ import spinal.core._
 import spinal.core.formal._
 import spinal.lib._
 import spinal.lib.formal._
+import voodoo.utils.StreamWhile
 
 class StreamWhileFormalDut extends Component {
   val start = Stream(UInt(8 bits))

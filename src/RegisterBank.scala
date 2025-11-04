@@ -5,7 +5,7 @@ import spinal.lib._
 import spinal.lib.bus.bmb._
 import spinal.lib.bus.regif._
 import spinal.lib.bus.misc.SizeMapping
-import voodoo.utils.BmbBusInterface
+import voodoo.utils.{BmbBusInterface, RegisterCategory}
 
 /** Voodoo Graphics Register Bank
   *
@@ -50,12 +50,18 @@ case class RegisterBank(config: Config) extends Component {
 
     // Pipeline sync pulse - asserted when Sync=Yes register written
     val syncPulse = out Bool ()
+
+    // Pipeline busy signal - used to stall Sync=Yes register writes
+    val pipelineBusy = in Bool ()
   }
 
   // Create BMB bus interface for RegIf - shared across all Areas
   implicit val moduleName: spinal.lib.bus.regif.ClassName =
     spinal.lib.bus.regif.ClassName("RegisterBank")
   val busif = BmbBusInterface(io.bus, SizeMapping(0x000, 1 KiB), "VDO")
+
+  // Connect pipeline busy signal for Sync=Yes register FIFO drain blocking
+  busif.setPipelineBusy(io.pipelineBusy)
 
   // Track sync pulse - OR of all Sync=Yes register writes
   val syncRequired = Reg(Bool()) init (False)
@@ -66,7 +72,7 @@ case class RegisterBank(config: Config) extends Component {
   // Status Register (0x000)
   // ========================================================================
   val status = new Area {
-    val reg = busif.newRegAt(0x000, "status", Secure.NS())
+    val reg = busif.newRegAt(0x000, "status")
     val pciFifoFree = reg.field(UInt(6 bits), AccessType.RO, 0x3f, "PCI FIFO freespace")
     pciFifoFree := io.statusInputs.pciFifoFree
 
@@ -99,177 +105,153 @@ case class RegisterBank(config: Config) extends Component {
   // Triangle Geometry (0x008-0x07C)
   // ========================================================================
   val triangleGeometry = new Area {
+    // Triangle geometry registers are FIFO=Yes, Sync=No
     // Vertex Registers (0x008-0x01C)
     val vertexAx = busif
-      .newRegAt(0x008, "vertexAx", Secure.NS())
+      .newRegAtWithCategory(0x008, "vertexAx", RegisterCategory.fifoNoSync)
       .field(SInt(16 bits), AccessType.WO, 0, "Vertex A X coordinate")
       .asOutput()
     val vertexAy = busif
-      .newRegAt(0x00c, "vertexAy", Secure.NS())
+      .newRegAtWithCategory(0x00c, "vertexAy", RegisterCategory.fifoNoSync)
       .field(SInt(16 bits), AccessType.WO, 0, "Vertex A Y coordinate")
       .asOutput()
     val vertexBx = busif
-      .newRegAt(0x010, "vertexBx", Secure.NS())
+      .newRegAtWithCategory(0x010, "vertexBx", RegisterCategory.fifoNoSync)
       .field(SInt(16 bits), AccessType.WO, 0, "Vertex B X coordinate")
       .asOutput()
     val vertexBy = busif
-      .newRegAt(0x014, "vertexBy", Secure.NS())
+      .newRegAtWithCategory(0x014, "vertexBy", RegisterCategory.fifoNoSync)
       .field(SInt(16 bits), AccessType.WO, 0, "Vertex B Y coordinate")
       .asOutput()
     val vertexCx = busif
-      .newRegAt(0x018, "vertexCx", Secure.NS())
+      .newRegAtWithCategory(0x018, "vertexCx", RegisterCategory.fifoNoSync)
       .field(SInt(16 bits), AccessType.WO, 0, "Vertex C X coordinate")
       .asOutput()
     val vertexCy = busif
-      .newRegAt(0x01c, "vertexCy", Secure.NS())
+      .newRegAtWithCategory(0x01c, "vertexCy", RegisterCategory.fifoNoSync)
       .field(SInt(16 bits), AccessType.WO, 0, "Vertex C Y coordinate")
       .asOutput()
 
     // Start Value Registers (0x020-0x03C)
     val startR = busif
-      .newRegAt(0x020, "startR", Secure.NS())
+      .newRegAt(0x020, "startR")
       .field(SInt(24 bits), AccessType.WO, 0, "Starting red value (12.12 fixed)")
       .asOutput()
     val startG = busif
-      .newRegAt(0x024, "startG", Secure.NS())
+      .newRegAt(0x024, "startG")
       .field(SInt(24 bits), AccessType.WO, 0, "Starting green value (12.12 fixed)")
       .asOutput()
     val startB = busif
-      .newRegAt(0x028, "startB", Secure.NS())
+      .newRegAt(0x028, "startB")
       .field(SInt(24 bits), AccessType.WO, 0, "Starting blue value (12.12 fixed)")
       .asOutput()
     val startZ = busif
-      .newRegAt(0x02c, "startZ", Secure.NS())
+      .newRegAt(0x02c, "startZ")
       .field(SInt(32 bits), AccessType.WO, 0, "Starting Z depth (20.12 fixed)")
       .asOutput()
     val startA = busif
-      .newRegAt(0x030, "startA", Secure.NS())
+      .newRegAt(0x030, "startA")
       .field(SInt(24 bits), AccessType.WO, 0, "Starting alpha value (12.12 fixed)")
       .asOutput()
     val startS = busif
-      .newRegAt(0x034, "startS", Secure.NS())
+      .newRegAt(0x034, "startS")
       .field(SInt(32 bits), AccessType.WO, 0, "Starting S texture coord (14.18 fixed)")
       .asOutput()
     val startT = busif
-      .newRegAt(0x038, "startT", Secure.NS())
+      .newRegAt(0x038, "startT")
       .field(SInt(32 bits), AccessType.WO, 0, "Starting T texture coord (14.18 fixed)")
       .asOutput()
     val startW = busif
-      .newRegAt(0x03c, "startW", Secure.NS())
+      .newRegAt(0x03c, "startW")
       .field(SInt(32 bits), AccessType.WO, 0, "Starting W value (2.30 fixed)")
       .asOutput()
 
     // X Gradient Registers (0x040-0x05C)
     val dRdX = busif
-      .newRegAt(0x040, "dRdX", Secure.NS())
+      .newRegAt(0x040, "dRdX")
       .field(SInt(24 bits), AccessType.WO, 0, "Red gradient dR/dX (12.12 fixed)")
       .asOutput()
     val dGdX = busif
-      .newRegAt(0x044, "dGdX", Secure.NS())
+      .newRegAt(0x044, "dGdX")
       .field(SInt(24 bits), AccessType.WO, 0, "Green gradient dG/dX (12.12 fixed)")
       .asOutput()
     val dBdX = busif
-      .newRegAt(0x048, "dBdX", Secure.NS())
+      .newRegAt(0x048, "dBdX")
       .field(SInt(24 bits), AccessType.WO, 0, "Blue gradient dB/dX (12.12 fixed)")
       .asOutput()
     val dZdX = busif
-      .newRegAt(0x04c, "dZdX", Secure.NS())
+      .newRegAt(0x04c, "dZdX")
       .field(SInt(32 bits), AccessType.WO, 0, "Z gradient dZ/dX (20.12 fixed)")
       .asOutput()
     val dAdX = busif
-      .newRegAt(0x050, "dAdX", Secure.NS())
+      .newRegAt(0x050, "dAdX")
       .field(SInt(24 bits), AccessType.WO, 0, "Alpha gradient dA/dX (12.12 fixed)")
       .asOutput()
     val dSdX = busif
-      .newRegAt(0x054, "dSdX", Secure.NS())
+      .newRegAt(0x054, "dSdX")
       .field(SInt(32 bits), AccessType.WO, 0, "S texture gradient dS/dX (14.18 fixed)")
       .asOutput()
     val dTdX = busif
-      .newRegAt(0x058, "dTdX", Secure.NS())
+      .newRegAt(0x058, "dTdX")
       .field(SInt(32 bits), AccessType.WO, 0, "T texture gradient dT/dX (14.18 fixed)")
       .asOutput()
     val dWdX = busif
-      .newRegAt(0x05c, "dWdX", Secure.NS())
+      .newRegAt(0x05c, "dWdX")
       .field(SInt(32 bits), AccessType.WO, 0, "W gradient dW/dX (2.30 fixed)")
       .asOutput()
 
     // Y Gradient Registers (0x060-0x07C)
     val dRdY = busif
-      .newRegAt(0x060, "dRdY", Secure.NS())
+      .newRegAt(0x060, "dRdY")
       .field(SInt(24 bits), AccessType.WO, 0, "Red gradient dR/dY (12.12 fixed)")
       .asOutput()
     val dGdY = busif
-      .newRegAt(0x064, "dGdY", Secure.NS())
+      .newRegAt(0x064, "dGdY")
       .field(SInt(24 bits), AccessType.WO, 0, "Green gradient dG/dY (12.12 fixed)")
       .asOutput()
     val dBdY = busif
-      .newRegAt(0x068, "dBdY", Secure.NS())
+      .newRegAt(0x068, "dBdY")
       .field(SInt(24 bits), AccessType.WO, 0, "Blue gradient dB/dY (12.12 fixed)")
       .asOutput()
     val dZdY = busif
-      .newRegAt(0x06c, "dZdY", Secure.NS())
+      .newRegAt(0x06c, "dZdY")
       .field(SInt(32 bits), AccessType.WO, 0, "Z gradient dZ/dY (20.12 fixed)")
       .asOutput()
     val dAdY = busif
-      .newRegAt(0x070, "dAdY", Secure.NS())
+      .newRegAt(0x070, "dAdY")
       .field(SInt(24 bits), AccessType.WO, 0, "Alpha gradient dA/dY (12.12 fixed)")
       .asOutput()
     val dSdY = busif
-      .newRegAt(0x074, "dSdY", Secure.NS())
+      .newRegAt(0x074, "dSdY")
       .field(SInt(32 bits), AccessType.WO, 0, "S texture gradient dS/dY (14.18 fixed)")
       .asOutput()
     val dTdY = busif
-      .newRegAt(0x078, "dTdY", Secure.NS())
+      .newRegAt(0x078, "dTdY")
       .field(SInt(32 bits), AccessType.WO, 0, "T texture gradient dT/dY (14.18 fixed)")
       .asOutput()
     val dWdY = busif
-      .newRegAt(0x07c, "dWdY", Secure.NS())
+      .newRegAt(0x07c, "dWdY")
       .field(SInt(32 bits), AccessType.WO, 0, "W gradient dW/dY (2.30 fixed)")
       .asOutput()
   }
 
   // ========================================================================
   // Command Area (0x080-0x100)
-  // Command registers with Stream backpressure support
+  // Command registers with Stream outputs - FIFO queueing and backpressure handled by BusIf
   // ========================================================================
   val commands = new Area {
-    // Helper to create a command Stream from a W1P register with backpressure
-    def createCommandStream(address: BigInt, name: String): Stream[NoData] = {
-      val reg = busif.newRegAt(address, name, Secure.NS())
-      val pulse = reg.field(Bool(), AccessType.W1P, 0, s"$name pulse")
-
-      val stream = master(Stream(NoData()))
-
-      // Detect write attempt to this address using askWrite (avoids combinatorial loop)
-      // askWrite is the initial write request before handshake/halting logic
-      val writeAttempt = busif.askWrite && busif.writeAddress() === address
-
-      // Hold valid high until stream fires (valid && ready)
-      val pending = RegInit(False)
-      when(pulse && !stream.ready) {
-        // Only set pending if stream is not ready (i.e., can't fire this cycle)
-        pending := True
-      }.elsewhen(stream.fire) {
-        pending := False
-      }
-
-      stream.valid := pulse || pending
-
-      // Apply backpressure to bus when stream is not ready
-      // Use askWrite (not doWrite) to avoid combinatorial loop
-      when(!stream.ready && (writeAttempt || pending)) {
-        busif.writeHalt()
-      }
-
-      stream
-    }
-
-    val triangleCmd = createCommandStream(0x080, "triangleCMD")
-    val fastfillCmd = createCommandStream(0x084, "fastfillCMD")
-    val nopCmd = createCommandStream(0x088, "nopCMD")
-    val swapbufferCmd = createCommandStream(0x08c, "swapbufferCMD")
-    val userIntrCmd = createCommandStream(0x0fc, "userIntrCMD")
-    val ftriangleCmd = createCommandStream(0x100, "ftriangleCMD")
+    val triangleCmd = master(busif.newCommandReg(0x080, "triangleCMD", RegisterCategory.fifoNoSync))
+    val fastfillCmd = master(
+      busif.newCommandReg(0x084, "fastfillCMD", RegisterCategory.fifoWithSync)
+    )
+    val nopCmd = master(busif.newCommandReg(0x088, "nopCMD", RegisterCategory.fifoWithSync))
+    val swapbufferCmd = master(
+      busif.newCommandReg(0x08c, "swapbufferCMD", RegisterCategory.fifoWithSync)
+    )
+    val userIntrCmd = master(busif.newCommandReg(0x0fc, "userIntrCMD", RegisterCategory.fifoNoSync))
+    val ftriangleCmd = master(
+      busif.newCommandReg(0x100, "ftriangleCMD", RegisterCategory.fifoNoSync)
+    )
   }
 
   // ========================================================================
@@ -277,39 +259,38 @@ case class RegisterBank(config: Config) extends Component {
   // Rendering modes, clipping, and color constants
   // ========================================================================
   val renderConfig = new Area {
-    // Rendering Mode Registers (0x0C0-0x0D0) - Sync=Yes
+    // Rendering Mode Registers (0x0C0-0x0C8) - Sync=No, FIFO=Yes
     val fbzColorPath = busif
-      .newRegAt(0x0c0, "fbzColorPath", Secure.NS())
+      .newRegAtWithCategory(0x0c0, "fbzColorPath", RegisterCategory.fifoNoSync)
       .field(Bits(32 bits), AccessType.RW, 0, "Color combine path control")
       .asOutput()
-    when(busif.doWrite && busif.writeAddress() === 0x0c0) { syncRequired := True }
 
     val fogMode = busif
-      .newRegAt(0x0c4, "fogMode", Secure.NS())
+      .newRegAtWithCategory(0x0c4, "fogMode", RegisterCategory.fifoNoSync)
       .field(Bits(32 bits), AccessType.RW, 0, "Fog mode control")
       .asOutput()
-    when(busif.doWrite && busif.writeAddress() === 0x0c4) { syncRequired := True }
 
     val alphaMode = busif
-      .newRegAt(0x0c8, "alphaMode", Secure.NS())
+      .newRegAtWithCategory(0x0c8, "alphaMode", RegisterCategory.fifoNoSync)
       .field(Bits(32 bits), AccessType.RW, 0, "Alpha test and blend control")
       .asOutput()
-    when(busif.doWrite && busif.writeAddress() === 0x0c8) { syncRequired := True }
 
+    // Rendering Mode Registers (0x0CC-0x0D0) - Sync=Yes, FIFO=Yes
     val fbzMode = busif
-      .newRegAt(0x0cc, "fbzMode", Secure.NS())
+      .newRegAtWithCategory(0x0cc, "fbzMode", RegisterCategory.fifoWithSync)
       .field(Bits(32 bits), AccessType.RW, 0, "Framebuffer and Z-buffer mode")
       .asOutput()
     when(busif.doWrite && busif.writeAddress() === 0x0cc) { syncRequired := True }
 
     val lfbMode = busif
-      .newRegAt(0x0d0, "lfbMode", Secure.NS())
+      .newRegAtWithCategory(0x0d0, "lfbMode", RegisterCategory.fifoWithSync)
       .field(Bits(32 bits), AccessType.RW, 0, "Linear framebuffer mode")
       .asOutput()
     when(busif.doWrite && busif.writeAddress() === 0x0d0) { syncRequired := True }
 
-    // Clipping Registers (0x0D4-0x0D8) - Sync=Yes
-    val clipLeftRight = busif.newRegAt(0x0d4, "clipLeftRight", Secure.NS())
+    // Clipping Registers (0x0D4-0x0D8) - Sync=Yes, FIFO=Yes
+    val clipLeftRight =
+      busif.newRegAtWithCategory(0x0d4, "clipLeftRight", RegisterCategory.fifoWithSync)
     val clipLeftX =
       clipLeftRight.field(UInt(10 bits), AccessType.RW, 0, "Left clip boundary").asOutput()
     val clipRightX = clipLeftRight
@@ -317,7 +298,8 @@ case class RegisterBank(config: Config) extends Component {
       .asOutput()
     when(busif.doWrite && busif.writeAddress() === 0x0d4) { syncRequired := True }
 
-    val clipLowYHighY = busif.newRegAt(0x0d8, "clipLowYHighY", Secure.NS())
+    val clipLowYHighY =
+      busif.newRegAtWithCategory(0x0d8, "clipLowYHighY", RegisterCategory.fifoWithSync)
     val clipLowY =
       clipLowYHighY.field(UInt(10 bits), AccessType.RW, 0, "Top clip boundary").asOutput()
     val clipHighY = clipLowYHighY
@@ -325,34 +307,34 @@ case class RegisterBank(config: Config) extends Component {
       .asOutput()
     when(busif.doWrite && busif.writeAddress() === 0x0d8) { syncRequired := True }
 
-    // Color and Constant Registers (0x0E4-0x0F8)
+    // Color and Constant Registers (0x0E4-0x0F8) - Sync=No, FIFO=Yes
     val fogColor = busif
-      .newRegAt(0x0e4, "fogColor", Secure.NS())
+      .newRegAtWithCategory(0x0e4, "fogColor", RegisterCategory.fifoNoSync)
       .field(Bits(32 bits), AccessType.WO, 0, "RGBA fog color")
       .asOutput()
 
     val zaColor = busif
-      .newRegAt(0x0e8, "zaColor", Secure.NS())
+      .newRegAt(0x0e8, "zaColor")
       .field(Bits(32 bits), AccessType.WO, 0, "Z/alpha constant for fills")
       .asOutput()
 
     val chromaKey = busif
-      .newRegAt(0x0ec, "chromaKey", Secure.NS())
+      .newRegAt(0x0ec, "chromaKey")
       .field(Bits(32 bits), AccessType.WO, 0, "Chroma key color")
       .asOutput()
 
     val color0 = busif
-      .newRegAt(0x0f0, "color0", Secure.NS())
+      .newRegAt(0x0f0, "color0")
       .field(Bits(32 bits), AccessType.RW, 0, "Constant color 0")
       .asOutput()
 
     val color1 = busif
-      .newRegAt(0x0f4, "color1", Secure.NS())
+      .newRegAt(0x0f4, "color1")
       .field(Bits(32 bits), AccessType.RW, 0, "Constant color 1")
       .asOutput()
 
     val stipple = busif
-      .newRegAt(0x0f8, "stipple", Secure.NS())
+      .newRegAt(0x0f8, "stipple")
       .field(Bits(32 bits), AccessType.RW, 0, "Stipple pattern")
       .asOutput()
   }
@@ -363,27 +345,27 @@ case class RegisterBank(config: Config) extends Component {
   // ========================================================================
   val statistics = new Area {
     val statsPixelsIn = busif
-      .newRegAt(0x110, "statsPixelsIn", Secure.NS())
+      .newRegAt(0x110, "statsPixelsIn")
       .field(UInt(24 bits), AccessType.RO, 0, "Pixels entering pipeline")
     statsPixelsIn := io.statisticsIn.pixelsIn
 
     val statsChromaFail = busif
-      .newRegAt(0x114, "statsChromaFail", Secure.NS())
+      .newRegAt(0x114, "statsChromaFail")
       .field(UInt(24 bits), AccessType.RO, 0, "Pixels failed chroma key test")
     statsChromaFail := io.statisticsIn.chromaFail
 
     val statsZFuncFail = busif
-      .newRegAt(0x118, "statsZFuncFail", Secure.NS())
+      .newRegAt(0x118, "statsZFuncFail")
       .field(UInt(24 bits), AccessType.RO, 0, "Pixels failed Z test")
     statsZFuncFail := io.statisticsIn.zFuncFail
 
     val statsAFuncFail = busif
-      .newRegAt(0x11c, "statsAFuncFail", Secure.NS())
+      .newRegAt(0x11c, "statsAFuncFail")
       .field(UInt(24 bits), AccessType.RO, 0, "Pixels failed alpha test")
     statsAFuncFail := io.statisticsIn.aFuncFail
 
     val statsPixelsOut = busif
-      .newRegAt(0x120, "statsPixelsOut", Secure.NS())
+      .newRegAt(0x120, "statsPixelsOut")
       .field(UInt(24 bits), AccessType.RO, 0, "Pixels written to framebuffer")
     statsPixelsOut := io.statisticsIn.pixelsOut
   }
@@ -394,7 +376,7 @@ case class RegisterBank(config: Config) extends Component {
   // ========================================================================
   val fogTable = new Area {
     val fogTable = (0 until 32).flatMap { i =>
-      val reg = busif.newRegAt(0x160 + i * 4, s"fogTable${i * 2}", Secure.NS())
+      val reg = busif.newRegAt(0x160 + i * 4, s"fogTable${i * 2}")
       val entry0_dfog =
         reg.field(Bits(8 bits), AccessType.WO, 0, s"Fog entry ${i * 2} delta").asOutput()
       val entry0_fog =
@@ -412,20 +394,22 @@ case class RegisterBank(config: Config) extends Component {
   // Display timing and hardware configuration registers
   // ========================================================================
   val init = new Area {
+    // All init registers bypass FIFO (FIFO=No)
     // fbiInit4 (0x200) - PCI read timing
-    val fbiInit4Reg = busif.newRegAt(0x200, "fbiInit4", Secure.NS())
+    val fbiInit4Reg = busif.newRegAtWithCategory(0x200, "fbiInit4", RegisterCategory.bypassFifo)
     val fbiInit4_pciReadWaitStates = fbiInit4Reg
       .field(Bool(), AccessType.RW, 0, "PCI read wait states: 0=1 wait state, 1=2 wait states")
       .asOutput()
 
     // backPorch (0x208) - Display back porch timing
     val backPorch = busif
-      .newRegAt(0x208, "backPorch", Secure.NS())
+      .newRegAtWithCategory(0x208, "backPorch", RegisterCategory.bypassFifo)
       .field(Bits(32 bits), AccessType.WO, 0, "Display back porch timing")
       .asOutput()
 
     // videoDimensions (0x20C) - Display resolution
-    val videoDimensionsReg = busif.newRegAt(0x20c, "videoDimensions", Secure.NS())
+    val videoDimensionsReg =
+      busif.newRegAtWithCategory(0x20c, "videoDimensions", RegisterCategory.bypassFifo)
     val hDisp = videoDimensionsReg
       .field(UInt(12 bits), AccessType.WO, 0, "Horizontal display width - 1")
       .asOutput()
@@ -434,7 +418,7 @@ case class RegisterBank(config: Config) extends Component {
       .asOutput()
 
     // fbiInit0 (0x210) - VGA passthrough and graphics reset
-    val fbiInit0Reg = busif.newRegAt(0x210, "fbiInit0", Secure.NS())
+    val fbiInit0Reg = busif.newRegAtWithCategory(0x210, "fbiInit0", RegisterCategory.bypassFifo)
     val fbiInit0_vgaPassthrough = fbiInit0Reg
       .field(Bool(), AccessType.RW, 0, "VGA passthrough: 0=VGA blocked, 1=VGA passed")
       .asOutput()
@@ -442,7 +426,7 @@ case class RegisterBank(config: Config) extends Component {
       fbiInit0Reg.fieldAt(1, Bool(), AccessType.RW, 0, "Graphics reset").asOutput()
 
     // fbiInit1 (0x214) - PCI timing and SLI enable
-    val fbiInit1Reg = busif.newRegAt(0x214, "fbiInit1", Secure.NS())
+    val fbiInit1Reg = busif.newRegAt(0x214, "fbiInit1")
     val fbiInit1_pciWriteWaitStates = fbiInit1Reg
       .fieldAt(1, Bool(), AccessType.RW, 0, "PCI write wait states: 0=fast, 1=slow")
       .asOutput()
@@ -454,7 +438,7 @@ case class RegisterBank(config: Config) extends Component {
       fbiInit1Reg.fieldAt(23, Bool(), AccessType.RW, 0, "SLI enable [V2+]").asOutput()
 
     // fbiInit2 (0x218) - Buffer config and swap algorithm
-    val fbiInit2Reg = busif.newRegAt(0x218, "fbiInit2", Secure.NS())
+    val fbiInit2Reg = busif.newRegAt(0x218, "fbiInit2")
     val fbiInit2_swapAlgorithm = fbiInit2Reg
       .fieldAt(
         9,
@@ -469,18 +453,18 @@ case class RegisterBank(config: Config) extends Component {
       .asOutput()
 
     // fbiInit3 (0x21C) - Register remapping
-    val fbiInit3Reg = busif.newRegAt(0x21c, "fbiInit3", Secure.NS())
+    val fbiInit3Reg = busif.newRegAt(0x21c, "fbiInit3")
     val fbiInit3_remapEnable =
       fbiInit3Reg.field(Bool(), AccessType.RW, 0, "Enable register address remapping").asOutput()
 
     // hSync (0x220) - Horizontal sync timing
-    val hSyncReg = busif.newRegAt(0x220, "hSync", Secure.NS())
+    val hSyncReg = busif.newRegAt(0x220, "hSync")
     val hSyncOn = hSyncReg.field(UInt(8 bits), AccessType.WO, 0, "Horizontal sync start").asOutput()
     val hSyncOff =
       hSyncReg.fieldAt(16, UInt(10 bits), AccessType.WO, 0, "Horizontal sync end").asOutput()
 
     // vSync (0x224) - Vertical sync timing
-    val vSyncReg = busif.newRegAt(0x224, "vSync", Secure.NS())
+    val vSyncReg = busif.newRegAt(0x224, "vSync")
     val vSyncOn =
       vSyncReg.field(UInt(16 bits), AccessType.WO, 0, "Vertical sync start (lines)").asOutput()
     val vSyncOff =
@@ -488,24 +472,24 @@ case class RegisterBank(config: Config) extends Component {
 
     // maxRgbDelta (0x230) - Max RGB difference for video filtering
     val maxRgbDelta = busif
-      .newRegAt(0x230, "maxRgbDelta", Secure.NS())
+      .newRegAt(0x230, "maxRgbDelta")
       .field(Bits(32 bits), AccessType.WO, 0, "Max RGB difference for video filtering")
       .asOutput()
 
     // fbiInit5 (0x244) - Multi-chip config
-    val fbiInit5Reg = busif.newRegAt(0x244, "fbiInit5", Secure.NS())
+    val fbiInit5Reg = busif.newRegAt(0x244, "fbiInit5")
     val fbiInit5_multiCvg = fbiInit5Reg
       .fieldAt(14, Bool(), AccessType.RW, 0, "Multi-chip coverage (SLI for V2)")
       .asOutput()
 
     // fbiInit6 (0x248) - Extended init
-    val fbiInit6Reg = busif.newRegAt(0x248, "fbiInit6", Secure.NS())
+    val fbiInit6Reg = busif.newRegAt(0x248, "fbiInit6")
     val fbiInit6_blockWidthExtend = fbiInit6Reg
       .fieldAt(30, Bool(), AccessType.RW, 0, "Extends block width calculation")
       .asOutput()
 
     // fbiInit7 (0x24C) - Command FIFO enable [V2+]
-    val fbiInit7Reg = busif.newRegAt(0x24c, "fbiInit7", Secure.NS())
+    val fbiInit7Reg = busif.newRegAt(0x24c, "fbiInit7")
     val fbiInit7_cmdFifoEnable =
       fbiInit7Reg.fieldAt(8, Bool(), AccessType.RW, 0, "Enable command FIFO mode [V2+]").asOutput()
   }

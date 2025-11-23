@@ -4,6 +4,9 @@ import spinal.core._
 import spinal.core.sim._
 import spinal.lib._
 import org.scalatest.funsuite.AnyFunSuite
+import java.awt.image.BufferedImage
+import javax.imageio.ImageIO
+import java.io.File
 
 class RasterizerTest extends AnyFunSuite {
 
@@ -105,6 +108,110 @@ class RasterizerTest extends AnyFunSuite {
     outputs.toSeq
   }
 
+  // Helper to render triangle output to an image file
+  def renderTriangleToImage(
+      pixels: Seq[(Int, Int)],
+      xmin: Int,
+      xmax: Int,
+      ymin: Int,
+      ymax: Int,
+      filename: String,
+      scale: Int = 10
+  ): Unit = {
+    val width = (xmax - xmin + 1) * scale
+    val height = (ymax - ymin + 1) * scale
+    val image = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB)
+
+    // Fill background with white
+    val g = image.getGraphics()
+    g.setColor(java.awt.Color.WHITE)
+    g.fillRect(0, 0, width, height)
+
+    // Draw grid lines (light gray)
+    g.setColor(new java.awt.Color(230, 230, 230))
+    for (x <- xmin to xmax) {
+      val pixelX = (x - xmin) * scale
+      g.drawLine(pixelX, 0, pixelX, height)
+    }
+    for (y <- ymin to ymax) {
+      val pixelY = (y - ymin) * scale
+      g.drawLine(0, pixelY, width, pixelY)
+    }
+
+    // Draw rasterized pixels (blue)
+    g.setColor(new java.awt.Color(100, 149, 237)) // Cornflower blue
+    pixels.foreach { case (x, y) =>
+      val pixelX = (x - xmin) * scale
+      val pixelY = (y - ymin) * scale
+      g.fillRect(pixelX + 1, pixelY + 1, scale - 1, scale - 1)
+    }
+
+    g.dispose()
+
+    // Save to file
+    val file = new File(filename)
+    ImageIO.write(image, "png", file)
+    println(s"Rendered triangle image to: ${file.getAbsolutePath}")
+  }
+
+  // Data structure for triangle test cases
+  case class TriangleTestCase(
+      name: String,
+      edges: Seq[EdgeEquation],
+      xmin: Double,
+      xmax: Double,
+      ymin: Double,
+      ymax: Double,
+      imageName: String,
+      imageScale: Int = 10,
+      maxCycles: Int = 200
+  )
+
+  // General helper to test a triangle with given parameters
+  // Performs common assertions and returns outputs for test-specific checks
+  def testTriangle(tc: TriangleTestCase): Seq[(Int, Int)] = {
+    val config = Config.voodoo1()
+    var capturedOutputs: Seq[(Int, Int)] = Seq.empty
+
+    val compiled =
+      SimConfig.withIVerilog.withWave.workspaceName(tc.imageName).compile(Rasterizer(config))
+    compiled.doSim(tc.imageName) { (dut: Rasterizer) =>
+      setupDut(dut)
+
+      setTriangle(dut, tc.xmin, tc.xmax, tc.ymin, tc.ymax, tc.edges)
+      setDefaultGradients(dut)
+
+      val outputs = sendAndCollect(dut, cycles = tc.maxCycles)
+
+      println(s"${tc.name} rasterized ${outputs.length} pixels:")
+      outputs.foreach { case (x, y) => println(f"  ($x%d, $y%d)") }
+
+      // Render triangle to image in the test's workspace directory
+      val testPath = currentTestPath()
+      renderTriangleToImage(
+        outputs,
+        xmin = tc.xmin.toInt,
+        xmax = tc.xmax.toInt,
+        ymin = tc.ymin.toInt,
+        ymax = tc.ymax.toInt,
+        filename = s"$testPath/image.png",
+        scale = tc.imageScale
+      )
+
+      // Common assertions that apply to all triangles
+      outputs.foreach { case (x, y) =>
+        assert(x >= tc.xmin.toInt && x <= tc.xmax.toInt, s"x=$x out of bounds")
+        assert(y >= tc.ymin.toInt && y <= tc.ymax.toInt, s"y=$y out of bounds")
+      }
+
+      assert(outputs.nonEmpty, "Should rasterize at least one pixel")
+
+      capturedOutputs = outputs
+    }
+
+    capturedOutputs
+  }
+
   test("Rasterizer outputs all pixels in bounding box that are inside triangle") {
     val config = Config.voodoo1()
 
@@ -128,6 +235,17 @@ class RasterizerTest extends AnyFunSuite {
 
       println(s"Rasterized ${outputs.length} pixels:")
       outputs.foreach { case (x, y) => println(f"  ($x%d, $y%d)") }
+
+      // Render triangle to image in test's workspace directory
+      val testPath = currentTestPath()
+      renderTriangleToImage(
+        outputs,
+        xmin = 0,
+        xmax = 4,
+        ymin = 0,
+        ymax = 4,
+        filename = s"$testPath/image.png"
+      )
 
       // Expected pixels inside triangle (0,0), (4,0), (0,4):
       // Row 0: (0,0), (1,0), (2,0), (3,0), (4,0)
@@ -268,227 +386,254 @@ class RasterizerTest extends AnyFunSuite {
     }
   }
 
-  test("Obtuse triangle") {
-    val config = Config.voodoo1()
-
-    SimConfig.withIVerilog.withWave.compile(Rasterizer(config)).doSim { dut =>
-      setupDut(dut)
-
-      // Obtuse triangle: (0,0), (8,0), (1,4)
-      // This creates an obtuse angle at vertex (0,0)
-      // Edge 0->1: y = 0 (horizontal)
-      // Edge 1->2: 4x + 7y - 32 = 0
-      // Edge 2->0: 4x - y = 0
-
-      val edges = Seq(
-        EdgeEquation(a = 0.0, b = 1.0, c = 0.0, startValue = 0.0), // y = 0
-        EdgeEquation(a = 4.0, b = 7.0, c = -32.0, startValue = -32.0), // 4x + 7y = 32
-        EdgeEquation(a = 4.0, b = -1.0, c = 0.0, startValue = 0.0) // 4x = y
+  test("Obtuse triangle with wide base") {
+    // Obtuse triangle: (0,0), (8,0), (1,4)
+    // This creates an obtuse angle at vertex (0,0)
+    testTriangle(
+      TriangleTestCase(
+        name = "Obtuse triangle with wide base",
+        edges = Seq(
+          EdgeEquation(a = 0.0, b = 1.0, c = 0.0, startValue = 0.0), // y = 0
+          EdgeEquation(a = 4.0, b = 7.0, c = -32.0, startValue = -32.0), // 4x + 7y = 32
+          EdgeEquation(a = 4.0, b = -1.0, c = 0.0, startValue = 0.0) // 4x = y
+        ),
+        xmin = 0.0,
+        xmax = 8.0,
+        ymin = 0.0,
+        ymax = 4.0,
+        imageName = "obtuse_triangle",
+        imageScale = 20,
+        maxCycles = 150
       )
-
-      setTriangle(dut, xmin = 0.0, xmax = 8.0, ymin = 0.0, ymax = 4.0, edges)
-      setDefaultGradients(dut)
-
-      val outputs = sendAndCollect(dut, cycles = 150)
-
-      println(s"Obtuse triangle rasterized ${outputs.length} pixels:")
-      outputs.foreach { case (x, y) => println(f"  ($x%d, $y%d)") }
-
-      // Check all outputs are within bounds
-      outputs.foreach { case (x, y) =>
-        assert(x >= 0 && x <= 8, s"x=$x out of bounds")
-        assert(y >= 0 && y <= 4, s"y=$y out of bounds")
-      }
-
-      assert(outputs.nonEmpty, "Should rasterize some pixels")
-    }
+    )
   }
 
-  test("Acute triangle") {
-    val config = Config.voodoo1()
-
-    SimConfig.withIVerilog.withWave.compile(Rasterizer(config)).doSim { dut =>
-      setupDut(dut)
-
-      // Acute triangle (equilateral-ish): (2,0), (6,0), (4,3)
-      // All angles less than 90 degrees
-      // Edge 0->1: y = 0
-      // Edge 1->2: 3x + 2y - 18 = 0
-      // Edge 2->0: 3x - 2y - 6 = 0
-
-      val edges = Seq(
-        EdgeEquation(a = 0.0, b = 1.0, c = 0.0, startValue = 0.0), // y = 0
-        EdgeEquation(a = 3.0, b = 2.0, c = -18.0, startValue = -12.0), // 3x + 2y = 18
-        EdgeEquation(a = 3.0, b = -2.0, c = -6.0, startValue = 0.0) // 3x - 2y = 6
+  test("Acute triangle (equilateral-ish)") {
+    // Acute triangle (equilateral-ish): (2,0), (6,0), (4,3)
+    // All angles less than 90 degrees
+    testTriangle(
+      TriangleTestCase(
+        name = "Acute triangle (equilateral-ish)",
+        edges = Seq(
+          EdgeEquation(a = 0.0, b = 1.0, c = 0.0, startValue = 0.0), // y = 0
+          EdgeEquation(a = 3.0, b = 2.0, c = -18.0, startValue = -12.0), // 3x + 2y = 18
+          EdgeEquation(a = 3.0, b = -2.0, c = -6.0, startValue = 0.0) // 3x - 2y = 6
+        ),
+        xmin = 2.0,
+        xmax = 6.0,
+        ymin = 0.0,
+        ymax = 3.0,
+        imageName = "acute_triangle",
+        imageScale = 25,
+        maxCycles = 100
       )
-
-      setTriangle(dut, xmin = 2.0, xmax = 6.0, ymin = 0.0, ymax = 3.0, edges)
-      setDefaultGradients(dut)
-
-      val outputs = sendAndCollect(dut, cycles = 100)
-
-      println(s"Acute triangle rasterized ${outputs.length} pixels:")
-      outputs.foreach { case (x, y) => println(f"  ($x%d, $y%d)") }
-
-      outputs.foreach { case (x, y) =>
-        assert(x >= 2 && x <= 6, s"x=$x out of bounds")
-        assert(y >= 0 && y <= 3, s"y=$y out of bounds")
-      }
-
-      assert(outputs.nonEmpty, "Should rasterize some pixels")
-    }
+    )
   }
 
-  test("Very thin triangle (extreme angle)") {
-    val config = Config.voodoo1()
-
-    SimConfig.withIVerilog.withWave.compile(Rasterizer(config)).doSim { dut =>
-      setupDut(dut)
-
-      // Very thin triangle: (0,0), (20,0), (10,1)
-      // Creates two very acute angles near the base
-      // Edge 0->1: y = 0
-      // Edge 1->2: x + 10y - 20 = 0
-      // Edge 2->0: x - 10y = 0
-
-      val edges = Seq(
-        EdgeEquation(a = 0.0, b = 1.0, c = 0.0, startValue = 0.0), // y = 0
-        EdgeEquation(a = 1.0, b = 10.0, c = -20.0, startValue = -20.0), // x + 10y = 20
-        EdgeEquation(a = 1.0, b = -10.0, c = 0.0, startValue = 0.0) // x = 10y
+  test("Very thin triangle (extreme aspect ratio)") {
+    // Very thin triangle: (0,0), (20,0), (10,1)
+    // Creates two very acute angles near the base
+    testTriangle(
+      TriangleTestCase(
+        name = "Very thin triangle (extreme aspect ratio)",
+        edges = Seq(
+          EdgeEquation(a = 0.0, b = 1.0, c = 0.0, startValue = 0.0), // y = 0
+          EdgeEquation(a = 1.0, b = 10.0, c = -20.0, startValue = -20.0), // x + 10y = 20
+          EdgeEquation(a = 1.0, b = -10.0, c = 0.0, startValue = 0.0) // x = 10y
+        ),
+        xmin = 0.0,
+        xmax = 20.0,
+        ymin = 0.0,
+        ymax = 1.0,
+        imageName = "thin_triangle",
+        imageScale = 15,
+        maxCycles = 200
       )
-
-      setTriangle(dut, xmin = 0.0, xmax = 20.0, ymin = 0.0, ymax = 1.0, edges)
-      setDefaultGradients(dut)
-
-      val outputs = sendAndCollect(dut, cycles = 200)
-
-      println(s"Thin triangle rasterized ${outputs.length} pixels:")
-      outputs.foreach { case (x, y) => println(f"  ($x%d, $y%d)") }
-
-      outputs.foreach { case (x, y) =>
-        assert(x >= 0 && x <= 20, s"x=$x out of bounds")
-        assert(y >= 0 && y <= 1, s"y=$y out of bounds")
-      }
-
-      assert(outputs.nonEmpty, "Should rasterize some pixels even for thin triangle")
-    }
+    )
   }
 
-  test("Very tall and narrow triangle (extreme angle)") {
-    val config = Config.voodoo1()
-
-    SimConfig.withIVerilog.withWave.compile(Rasterizer(config)).doSim { dut =>
-      setupDut(dut)
-
-      // Very tall, narrow triangle: (10,0), (11,0), (10.5,10)
-      // Creates a very sharp angle at the top
-      // Edge 0->1: y = 0
-      // Edge 1->2: 20x + y - 220 = 0 => simplified: y = -20x + 220
-      // Edge 2->0: 20x - y - 200 = 0 => simplified: y = 20x - 200
-      // Scale down coefficients to fit in SQ(12,4) range (-128 to +127.9375)
-
-      val edges = Seq(
-        EdgeEquation(a = 0.0, b = 1.0, c = 0.0, startValue = 0.0), // y = 0
-        EdgeEquation(a = 20.0, b = 1.0, c = -120.0, startValue = -20.0), // 20x + y = 120
-        EdgeEquation(a = 20.0, b = -1.0, c = -100.0, startValue = 0.0) // 20x - y = 100
+  test("Very tall and narrow triangle (sharp apex)") {
+    // Very tall, narrow triangle: (10,0), (11,0), (10.5,10)
+    // Creates a very sharp angle at the top
+    testTriangle(
+      TriangleTestCase(
+        name = "Very tall and narrow triangle (sharp apex)",
+        edges = Seq(
+          EdgeEquation(a = 0.0, b = 1.0, c = 0.0, startValue = 0.0), // y = 0
+          EdgeEquation(a = 20.0, b = 1.0, c = -120.0, startValue = -20.0), // 20x + y = 120
+          EdgeEquation(a = 20.0, b = -1.0, c = -100.0, startValue = 0.0) // 20x - y = 100
+        ),
+        xmin = 10.0,
+        xmax = 11.0,
+        ymin = 0.0,
+        ymax = 10.0,
+        imageName = "tall_narrow_triangle",
+        imageScale = 15,
+        maxCycles = 200
       )
-
-      setTriangle(dut, xmin = 10.0, xmax = 11.0, ymin = 0.0, ymax = 10.0, edges)
-      setDefaultGradients(dut)
-
-      val outputs = sendAndCollect(dut, cycles = 200)
-
-      println(s"Tall narrow triangle rasterized ${outputs.length} pixels:")
-      outputs.foreach { case (x, y) => println(f"  ($x%d, $y%d)") }
-
-      outputs.foreach { case (x, y) =>
-        assert(x >= 10 && x <= 11, s"x=$x out of bounds")
-        assert(y >= 0 && y <= 10, s"y=$y out of bounds")
-      }
-
-      assert(outputs.nonEmpty, "Should rasterize some pixels even for very tall triangle")
-    }
+    )
   }
 
   test("Triangle with negative coordinates") {
-    val config = Config.voodoo1()
-
-    SimConfig.withIVerilog.withWave.compile(Rasterizer(config)).doSim { dut =>
-      setupDut(dut)
-
-      // Triangle in negative space: (-4,-2), (0,-2), (-2,1)
-      // Edge 0->1: y + 2 = 0
-      // Edge 1->2: 3x - 2y - 4 = 0
-      // Edge 2->0: 3x + 2y + 16 = 0
-
-      val edges = Seq(
-        EdgeEquation(a = 0.0, b = 1.0, c = 2.0, startValue = 0.0), // y = -2
-        EdgeEquation(a = 3.0, b = -2.0, c = -4.0, startValue = 0.0), // 3x - 2y = 4
-        EdgeEquation(a = 3.0, b = 2.0, c = 16.0, startValue = -4.0) // 3x + 2y = -16
+    // Triangle in negative space: (-4,-2), (0,-2), (-2,1)
+    testTriangle(
+      TriangleTestCase(
+        name = "Negative coordinate triangle",
+        edges = Seq(
+          EdgeEquation(a = 0.0, b = 1.0, c = 2.0, startValue = 0.0), // y = -2
+          EdgeEquation(a = 3.0, b = -2.0, c = -4.0, startValue = 0.0), // 3x - 2y = 4
+          EdgeEquation(a = 3.0, b = 2.0, c = 16.0, startValue = -4.0) // 3x + 2y = -16
+        ),
+        xmin = -4.0,
+        xmax = 0.0,
+        ymin = -2.0,
+        ymax = 1.0,
+        imageName = "negative_triangle",
+        imageScale = 20,
+        maxCycles = 100
       )
-
-      setTriangle(dut, xmin = -4.0, xmax = 0.0, ymin = -2.0, ymax = 1.0, edges)
-      setDefaultGradients(dut)
-
-      val outputs = sendAndCollect(dut, cycles = 100)
-
-      println(s"Negative coordinate triangle rasterized ${outputs.length} pixels:")
-      outputs.foreach { case (x, y) => println(f"  ($x%d, $y%d)") }
-
-      outputs.foreach { case (x, y) =>
-        assert(x >= -4 && x <= 0, s"x=$x out of bounds")
-        assert(y >= -2 && y <= 1, s"y=$y out of bounds")
-      }
-
-      assert(outputs.nonEmpty, "Should rasterize some pixels")
-    }
+    )
   }
 
-  test("Upside-down triangle") {
-    val config = Config.voodoo1()
-
-    SimConfig.withIVerilog.withWave.compile(Rasterizer(config)).doSim { dut =>
-      setupDut(dut)
-
-      // Triangle with flat top: (0,4), (4,4), (2,0)
-      // Edge 0->1: y - 4 = 0
-      // Edge 1->2: 2x + y - 12 = 0
-      // Edge 2->0: 2x - y - 4 = 0
-
-      val edges = Seq(
-        EdgeEquation(a = 0.0, b = 1.0, c = -4.0, startValue = -4.0), // y = 4
-        EdgeEquation(a = 2.0, b = 1.0, c = -12.0, startValue = -4.0), // 2x + y = 12
-        EdgeEquation(a = 2.0, b = -1.0, c = -4.0, startValue = -4.0) // 2x - y = 4
+  test("Upside-down triangle (flat top, point down)") {
+    // Triangle with flat top: (0,4), (4,4), (2,0)
+    // Edge orientations flipped so all are positive inside the triangle
+    testTriangle(
+      TriangleTestCase(
+        name = "Upside-down triangle (flat top, point down)",
+        edges = Seq(
+          EdgeEquation(a = 0.0, b = -1.0, c = 4.0, startValue = 4.0), // -y + 4 = 0 (flipped)
+          EdgeEquation(a = -2.0, b = 1.0, c = 4.0, startValue = 4.0), // -2x + y + 4 = 0 (flipped)
+          EdgeEquation(a = 2.0, b = 1.0, c = -4.0, startValue = -4.0) // 2x + y - 4 = 0
+        ),
+        xmin = 0.0,
+        xmax = 4.0,
+        ymin = 0.0,
+        ymax = 4.0,
+        imageName = "upside_down_triangle",
+        imageScale = 20,
+        maxCycles = 100
       )
+    )
+  }
 
-      setTriangle(dut, xmin = 0.0, xmax = 4.0, ymin = 0.0, ymax = 4.0, edges)
-      setDefaultGradients(dut)
+  test("Real trace triangle: tiny clockwise") {
+    // Real triangle from trace: (264.69, 148.94), (263.63, 151.38), (267.38, 154.25)
+    testTriangle(
+      TriangleTestCase(
+        name = "Real trace triangle: tiny clockwise",
+        edges = Seq(
+          EdgeEquation(a = 2.44, b = 1.06, c = -803.72, startValue = -5.12),
+          EdgeEquation(a = 2.87, b = -3.75, c = -188.94, startValue = 10.87),
+          EdgeEquation(a = -5.31, b = 2.69, c = 1004.86, startValue = 6.45)
+        ),
+        xmin = 263.0,
+        xmax = 268.0,
+        ymin = 148.0,
+        ymax = 155.0,
+        imageName = "trace_triangle_1",
+        imageScale = 40,
+        maxCycles = 100
+      )
+    )
+  }
 
-      val outputs = sendAndCollect(dut, cycles = 100)
+  test("Real trace triangle: large clockwise sliver") {
+    // Real triangle from trace: (315.31, 123.5), (282.44, 149.5), (315.25, 326.56)
+    testTriangle(
+      TriangleTestCase(
+        name = "Real trace triangle: large clockwise sliver",
+        edges = Seq(
+          EdgeEquation(a = 26.0, b = 32.87, c = -12257.51, startValue = -882.50),
+          EdgeEquation(a = 177.06, b = -32.81, c = -45103.73, startValue = 791.56),
+          EdgeEquation(a = -203.06, b = -0.06, c = 64034.26, startValue = 6763.96)
+        ),
+        xmin = 282.0,
+        xmax = 316.0,
+        ymin = 123.0,
+        ymax = 327.0,
+        imageName = "trace_triangle_2",
+        imageScale = 2,
+        maxCycles = 10000
+      )
+    )
+  }
 
-      println(s"Upside-down triangle rasterized ${outputs.length} pixels:")
-      outputs.foreach { case (x, y) => println(f"  ($x%d, $y%d)") }
+  test("Real trace triangle: medium counter-clockwise") {
+    // Real triangle from trace: (226.31, 216.0), (261.25, 221.38), (228.88, 233.75)
+    testTriangle(
+      TriangleTestCase(
+        name = "Real trace triangle: medium counter-clockwise",
+        edges = Seq(
+          EdgeEquation(a = -5.38, b = 34.94, c = -6329.49, startValue = 1.67),
+          EdgeEquation(a = -12.37, b = -32.37, c = 10397.73, startValue = 610.19),
+          EdgeEquation(a = 17.75, b = -2.57, c = -3461.88, startValue = -5.50)
+        ),
+        xmin = 226.0,
+        xmax = 262.0,
+        ymin = 216.0,
+        ymax = 234.0,
+        imageName = "trace_triangle_3",
+        imageScale = 8,
+        maxCycles = 800
+      )
+    )
+  }
 
-      outputs.foreach { case (x, y) =>
-        assert(x >= 0 && x <= 4, s"x=$x out of bounds")
-        assert(y >= 0 && y <= 4, s"y=$y out of bounds")
-      }
+  test("Real trace triangle: very tiny counter-clockwise") {
+    // Real triangle from trace: (263.63, 151.38), (267.38, 154.25), (266.38, 156.56)
+    testTriangle(
+      TriangleTestCase(
+        name = "Real trace triangle: very tiny counter-clockwise",
+        edges = Seq(
+          EdgeEquation(a = -2.87, b = 3.75, c = 188.94, startValue = 0.38),
+          EdgeEquation(a = -2.31, b = -1.0, c = 771.90, startValue = 13.37),
+          EdgeEquation(a = 5.18, b = -2.75, c = -949.31, startValue = -2.22)
+        ),
+        xmin = 263.0,
+        xmax = 268.0,
+        ymin = 151.0,
+        ymax = 157.0,
+        imageName = "trace_triangle_4",
+        imageScale = 40,
+        maxCycles = 100
+      )
+    )
+  }
 
-      assert(outputs.nonEmpty, "Should rasterize some pixels")
-    }
+  test("Real trace triangle: small wide clockwise") {
+    // Real triangle from trace: (217.63, 161.56), (184.25, 169.25), (217.00, 173.00)
+    // signBit=true (clockwise), size ~33x11 pixels
+    testTriangle(
+      TriangleTestCase(
+        name = "Real trace triangle: small wide clockwise",
+        edges = Seq(
+          EdgeEquation(a = 3.75, b = -32.75, c = 4852.00, startValue = 251.85),
+          EdgeEquation(a = -11.44, b = -0.63, c = 2591.47, startValue = 381.87),
+          EdgeEquation(a = 7.69, b = 33.38, c = -7066.45, startValue = -256.69)
+        ),
+        xmin = 184.0,
+        xmax = 218.0,
+        ymin = 161.0,
+        ymax = 174.0,
+        imageName = "trace_triangle_5",
+        imageScale = 10,
+        maxCycles = 500
+      )
+    )
   }
 
   test("Nearly degenerate triangle (almost a line)") {
+    // Almost collinear points: (0,0), (10,0), (5,0.5)
+    // This is nearly degenerate - might produce few or no pixels depending on rounding
     val config = Config.voodoo1()
+    var capturedOutputs: Seq[(Int, Int)] = Seq.empty
 
-    SimConfig.withIVerilog.withWave.compile(Rasterizer(config)).doSim { dut =>
+    val compiled = SimConfig.withIVerilog.withWave
+      .workspaceName("degenerate_triangle")
+      .compile(Rasterizer(config))
+    compiled.doSim("degenerate_triangle") { (dut: Rasterizer) =>
       setupDut(dut)
-
-      // Almost collinear points: (0,0), (10,0), (5,0.5)
-      // This is nearly degenerate but should still rasterize a few pixels
-      // Edge 0->1: y = 0
-      // Edge 1->2: x + 10y - 10 = 0
-      // Edge 2->0: x - 10y = 0
 
       val edges = Seq(
         EdgeEquation(a = 0.0, b = 1.0, c = 0.0, startValue = 0.0), // y = 0
@@ -504,13 +649,27 @@ class RasterizerTest extends AnyFunSuite {
       println(s"Nearly degenerate triangle rasterized ${outputs.length} pixels:")
       outputs.foreach { case (x, y) => println(f"  ($x%d, $y%d)") }
 
+      // Render triangle to image in the test's workspace directory
+      val testPath = currentTestPath()
+      renderTriangleToImage(
+        outputs,
+        xmin = 0,
+        xmax = 10,
+        ymin = 0,
+        ymax = 1,
+        filename = s"$testPath/image.png",
+        scale = 20
+      )
+
       outputs.foreach { case (x, y) =>
         assert(x >= 0 && x <= 10, s"x=$x out of bounds")
         assert(y >= 0 && y <= 1, s"y=$y out of bounds (note: 0.5 rounds to 0)")
       }
 
       // Even nearly degenerate triangles might produce some pixels
-      // depending on rounding behavior
+      // depending on rounding behavior - don't assert nonEmpty
+
+      capturedOutputs = outputs
     }
   }
 }

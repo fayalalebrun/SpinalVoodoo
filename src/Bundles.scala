@@ -1,10 +1,13 @@
 import spinal.core._
 
 package voodoo {
-  case class Coefficients(format: QFormat) extends Bundle {
-    val a = AFix(format)
-    val b = AFix(format)
-    val c = AFix(format)
+  case class Coefficients(config: Config) extends Bundle {
+    // Edge coefficients need much wider range than vertices
+    // Width is calculated from vertex format to handle cross products
+    private val fmt = config.coefficientFormat
+    val a = AFix(fmt)
+    val b = AFix(fmt)
+    val c = AFix(fmt)
   }
 
   case class Color[T <: Data](rt: HardType[T], gt: HardType[T], bt: HardType[T]) extends Bundle {
@@ -21,5 +24,11 @@ package object voodoo {
 
   def vertex2d(fmt: QFormat) = Vec.fill(2)(AFix(fmt))
   def triangle(fmt: QFormat) = Vec.fill(3)(vertex2d(fmt))
+
+  case class TriangleWithSign(fmt: QFormat) extends Bundle {
+    val tri = triangle(fmt)
+    val signBit = Bool() // Bit 31 from triangleCMD: 0=CCW (positive area), 1=CW (negative area)
+  }
+
   def rgb565() = Color(UInt(5 bits), UInt(6 bits), UInt(5 bits))
 }

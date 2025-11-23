@@ -17,11 +17,11 @@ case class Config(
 object Config {
   def voodoo1() = Config(
     Voodoo1(),
-    vertexFormat = SQ(12, 4),
-    vColorFormat = SQ(12, 12),
-    vDepthFormat = SQ(12, 12),
-    texCoordsFormat = SQ(14, 18),
-    wFormat = SQ(2, 30),
+    vertexFormat = SQ(16, 4), // Datasheet: 12.4 format = 12 integer + 4 frac = SQ(16, 4)
+    vColorFormat = SQ(24, 12), // Datasheet: 12.12 format = 12 integer + 12 frac = SQ(24, 12)
+    vDepthFormat = SQ(32, 12), // Datasheet: 20.12 format = 20 integer + 12 frac = SQ(32, 12)
+    texCoordsFormat = SQ(32, 18), // Datasheet: 14.18 format = 14 integer + 18 frac = SQ(32, 18)
+    wFormat = SQ(32, 30), // Datasheet: 2.30 format = 2 integer + 30 frac = SQ(32, 30)
     maxFbDims = (800, 600),
     fbPixelStride = 1024,
     addressWidth = 26 bits

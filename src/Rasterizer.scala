@@ -81,7 +81,7 @@ case class Rasterizer(c: Config) extends Component {
 
         // Update edges and gradients: add b/dy
         next.edge.zip(state.edge).zip(state.input.tri.coeffs).foreach { case ((nxt, cur), coeff) =>
-          nxt := (cur + coeff.b).fixTo(c.vertexFormat)
+          nxt := (cur + coeff.b).fixTo(c.coefficientFormat)
         }
         next.grads.all.zip(state.grads.all).zip(state.input.grads.all).zipWithIndex.foreach {
           case (((nxt, cur), grad), idx) =>
@@ -97,7 +97,7 @@ case class Rasterizer(c: Config) extends Component {
         // Update edges and gradients: add/subtract a/dx based on direction
         next.edge.zip(state.edge).zip(state.input.tri.coeffs).foreach { case ((nxt, cur), coeff) =>
           val da = state.goingRight ? coeff.a | (-coeff.a)
-          nxt := (cur + da).fixTo(c.vertexFormat)
+          nxt := (cur + da).fixTo(c.coefficientFormat)
         }
         next.grads.all.zip(state.grads.all).zip(state.input.grads.all).zipWithIndex.foreach {
           case (((nxt, cur), grad), idx) =>
@@ -139,7 +139,7 @@ object Rasterizer {
 
   case class Input(c: Config) extends Bundle {
     val grads = GradientBundle(InputGradient(_), c)
-    val tri = TriangleSetup.Output(c.vertexFormat)
+    val tri = TriangleSetup.Output(c)
   }
 
   case class Output(c: Config) extends Bundle {
@@ -155,7 +155,7 @@ object Rasterizer {
   case class State(c: Config) extends Bundle {
     val coords = vertex2d(c.vertexFormat) // Internal fixed-point coordinates
     val grads = GradientBundle(AFix(_), c)
-    val edge = Vec.fill(3)(AFix(c.vertexFormat))
+    val edge = Vec.fill(3)(AFix(c.coefficientFormat))
     val goingRight = Bool() // Direction flag for serpentine scanning
     val input = Input(c) // Keep input for iteration
   }

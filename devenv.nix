@@ -5,6 +5,22 @@
     LD_LIBRARY_PATH = lib.makeLibraryPath [
       pkgs.boost
       pkgs.glibc.dev
+      # X11 and graphics libraries for JavaFX
+      pkgs.xorg.libX11
+      pkgs.xorg.libXext
+      pkgs.xorg.libXtst
+      pkgs.xorg.libXi
+      pkgs.xorg.libXrender
+      pkgs.xorg.libXxf86vm
+      pkgs.libGL
+      pkgs.freetype
+      pkgs.fontconfig
+      pkgs.gtk3
+      pkgs.cairo
+      pkgs.pango
+      pkgs.gdk-pixbuf
+      pkgs.atk
+      pkgs.glib
     ];
     CPATH = lib.makeIncludePath [
       pkgs.boost

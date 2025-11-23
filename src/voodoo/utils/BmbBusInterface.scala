@@ -1,6 +1,7 @@
 package voodoo.utils
 
 import spinal.core._
+import spinal.core.sim._
 import spinal.lib._
 import spinal.lib.bus.bmb._
 import spinal.lib.bus.regif._
@@ -90,8 +91,8 @@ case class BmbBusInterface(
 
   // Create signals that will be assigned in addPrePopTask
   private val shouldQueue = Bool()
-  private val fifoBypass = Bool()
-  private val syncRequired = Bool()
+  val fifoBypass = Bool().setName("busif_fifoBypass")
+  val syncRequired = Bool().setName("busif_syncRequired")
 
   // Queued write transaction for FIFO
   private val queuedWriteTx = Stream(QueuedWrite())
@@ -103,13 +104,46 @@ case class BmbBusInterface(
 
   // Build address decode logic after all registers are created
   Component.current.addPrePopTask(() => {
-    // Get write category to determine routing
-    val writeCategory = getRegWriteMetadata()
+    // Debug: print registered categories
+    println(s"[BmbBusInterface] Registered categories: ${registerCategories.size} entries")
+    registerCategories.foreach { case (addr, cat) =>
+      println(f"  0x$addr%03x: fifoBypass=${cat.fifoBypass}, syncRequired=${cat.syncRequired}")
+    }
 
-    // Assign routing signals
-    fifoBypass := writeCategory.fifoBypass
-    syncRequired := writeCategory.syncRequired
-    shouldQueue := doWriteImmediate && !writeCategory.fifoBypass
+    // Debug: print bypass cases
+    val bypassCases = registerCategories.collect {
+      case (addr, cat) if cat.fifoBypass => addr
+    }.toSeq
+    val syncCases = registerCategories.collect {
+      case (addr, cat) if cat.syncRequired => addr
+    }.toSeq
+    println(
+      s"[BmbBusInterface] Bypass addresses: ${bypassCases.map(a => f"0x$a%03x").mkString(", ")}"
+    )
+    println(s"[BmbBusInterface] Sync addresses: ${syncCases.map(a => f"0x$a%03x").mkString(", ")}")
+
+    // Generate routing logic for IMMEDIATE writes (decode bus.cmd.address)
+    // IMPORTANT: Must decode bus.cmd.address, not effectiveWriteAddress!
+    // Use switch/default pattern for cleaner synthesis
+    fifoBypass := False // Default: most registers go through FIFO
+    switch(bus.cmd.address) {
+      for (addr <- bypassCases) {
+        is(U(addr, busAddrWidth bits)) {
+          fifoBypass := True
+        }
+      }
+    }
+
+    syncRequired := False // Default: most registers are Sync=No
+    switch(bus.cmd.address) {
+      for (addr <- syncCases) {
+        is(U(addr, busAddrWidth bits)) {
+          syncRequired := True
+        }
+      }
+    }
+
+    shouldQueue := doWriteImmediate && !fifoBypass
   })
 
   // Direct writes (FIFO=No) - register updates immediately
@@ -119,24 +153,32 @@ case class BmbBusInterface(
   private val pciFifo = StreamFifo(QueuedWrite(), depth = 64)
   pciFifo.io.push << queuedWriteTx
 
+  // Expose FIFO empty status for simulation debugging
+  // Accessible in tests via dut.busif.fifoEmpty
+  val fifoEmpty = Reg(Bool()) init (True) setName ("busif_fifoEmpty")
+  fifoEmpty.simPublic()
+  fifoEmpty := !pciFifo.io.pop.valid
+
+  // Expose FIFO availability (free slots) for status register
+  // Full 7-bit value (0-64) - saturation done in RegisterBank
+  val pciFifoFree = UInt(7 bits)
+  pciFifoFree := pciFifo.io.availability
+
   // Drain blocking logic
   private val canDrain = Bool()
   canDrain := True
 
+  // Register pipelineBusy to break combinatorial loop
+  // (pipelineBusy depends on triangle valid, which depends on drain, which depends on pipelineBusy)
+  val pipelineBusyReg = RegNext(pipelineBusySignal) init (False)
+
   // Block drain if Sync=Yes register and pipeline is busy
-  when(pciFifo.io.pop.syncRequired && pipelineBusySignal) {
+  when(pciFifo.io.pop.syncRequired && pipelineBusyReg) {
     canDrain := False
   }
 
-  // Block drain if command register and its stream is not ready
-  // Generate this logic after all command registers have been registered
-  Component.current.addPrePopTask(() => {
-    for ((addr, stream) <- commandStreams) {
-      when(pciFifo.io.pop.address === U(addr) && !stream.ready) {
-        canDrain := False
-      }
-    }
-  })
+  // Note: Command stream backpressure is handled by the command register's pending logic,
+  // not by blocking drain. Each command register holds valid high until the stream fires.
 
   private val drainedWrite = pciFifo.io.pop.haltWhen(!canDrain)
 
@@ -162,9 +204,9 @@ case class BmbBusInterface(
   bus.rsp.data := bus_rdata
 
   // Response is valid when we have a read/write completion
-  // For writes: respond immediately on doWrite
+  // For writes: respond when write is accepted (either direct write or enqueued in FIFO)
   // For reads: respond with reg_rdata on doRead
-  bus.rsp.valid := RegNext(doWrite || doRead) init (False)
+  bus.rsp.valid := RegNext(doWriteImmediate || doRead) init (False)
   bus.rsp.last := True
   bus.rsp.opcode := Bmb.Rsp.Opcode.SUCCESS
   bus.rsp.source := RegNext(bus.cmd.source)
@@ -191,6 +233,20 @@ case class BmbBusInterface(
 
   def readHalt(): Unit = bus.cmd.ready := False
   def writeHalt(): Unit = bus.cmd.ready := False
+
+  /** Check if current write operation requires sync (Sync=Yes register)
+    *
+    * For direct writes: uses decoded syncRequired signal For replayed writes: uses syncRequired
+    * from FIFO payload
+    *
+    * @return
+    *   True if current write requires pipeline sync
+    */
+  def isWriteSyncRequired(): Bool = {
+    val replayedSync = doWriteReplayed && drainedWrite.syncRequired
+    val directSync = doWriteDirect && syncRequired
+    replayedSync || directSync
+  }
 
   /** Create a register with category metadata
     *
@@ -230,10 +286,10 @@ case class BmbBusInterface(
     pipelineBusySignal := busy
   }
 
-  /** Create a W1P command register that produces a Stream
+  /** Create a command register that produces a Stream
     *
     * Automatically handles FIFO queueing and drain blocking based on stream backpressure. The
-    * stream will not accept writes until ready, preventing FIFO drain.
+    * stream pulses when the register is written. Returns RegInst so additional fields can be added.
     *
     * @param addr
     *   Register address
@@ -244,38 +300,40 @@ case class BmbBusInterface(
     * @param sec
     *   Security settings
     * @return
-    *   Stream[NoData] that pulses when command register is written
+    *   Tuple of (RegInst, Stream[NoData]) - register instance and stream that pulses on write
     */
   def newCommandReg(
       addr: BigInt,
       name: String,
       category: RegisterCategory,
       sec: Secure = null
-  ): Stream[NoData] = {
+  ): (RegInst, Stream[NoData]) = {
     // Store category metadata
     registerCategories(addr) = category
 
-    // Create W1P register
+    // Create register - caller will define fields
     val reg = newRegAt(addr, name, sec)
-    val pulse = reg.field(Bool(), AccessType.W1P, 0, s"$name pulse")
+
+    // Use hitDoWrite signal from RegInst to detect writes
+    val writeDetect = reg.hitDoWrite
 
     // Create output stream
     val stream = Stream(NoData())
 
     // Hold valid until stream fires (backpressure handling)
     val pending = Reg(Bool()) init (False)
-    when(pulse && !stream.ready) {
+    when(writeDetect && !stream.ready) {
       pending := True
     }.elsewhen(stream.fire) {
       pending := False
     }
 
-    stream.valid := pulse || pending
+    stream.valid := writeDetect || pending
 
     // Register this stream for automatic FIFO drain blocking
     commandStreams(addr) = stream
 
-    stream
+    (reg, stream)
   }
 
   /** Get current register write metadata signals
@@ -283,10 +341,12 @@ case class BmbBusInterface(
     * Returns Bundle with current write categorization. Call this to get hardware signals that
     * indicate FIFO bypass and sync requirements for the current write transaction.
     *
+    * @param address
+    *   Address to decode (defaults to bus.cmd.address for immediate writes)
     * @return
     *   Bundle with fifoBypass and syncRequired signals
     */
-  def getRegWriteMetadata(): RegisterWriteMetadata = {
+  def getRegWriteMetadata(address: UInt = bus.cmd.address): RegisterWriteMetadata = {
     val metadata = new RegisterWriteMetadata
 
     // Generate address decode logic for each registered category
@@ -298,9 +358,17 @@ case class BmbBusInterface(
       case (addr, cat) if cat.syncRequired => addr
     }.toSeq
 
-    // Hardware logic: decode current write address to determine category
-    metadata.fifoBypass := fifoBypassCases.map(addr => writeAddress() === U(addr)).orR
-    metadata.syncRequired := syncRequiredCases.map(addr => writeAddress() === U(addr)).orR
+    // Hardware logic: decode provided address to determine category
+    // Create Vec of Bool comparisons, then reduce with OR
+    metadata.fifoBypass := {
+      if (fifoBypassCases.isEmpty) False
+      else fifoBypassCases.map(addr => address === U(addr)).reduce(_ || _)
+    }
+
+    metadata.syncRequired := {
+      if (syncRequiredCases.isEmpty) False
+      else syncRequiredCases.map(addr => address === U(addr)).reduce(_ || _)
+    }
 
     metadata
   }

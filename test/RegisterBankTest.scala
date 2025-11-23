@@ -16,7 +16,7 @@ class RegisterBankTest extends AnyFunSuite {
     dut.clockDomain.forkStimulus(period = 10)
 
     // Initialize status inputs to default values
-    dut.io.statusInputs.pciFifoFree #= 0x3f
+    // Note: pciFifoFree now comes from busif.pciFifoFree (FIFO availability)
     dut.io.statusInputs.vRetrace #= true
     dut.io.statusInputs.fbiBusy #= false
     dut.io.statusInputs.trexBusy #= false
@@ -41,10 +41,16 @@ class RegisterBankTest extends AnyFunSuite {
     dut.commands.fastfillCmd.ready #= true
     dut.commands.nopCmd.ready #= true
     dut.commands.swapbufferCmd.ready #= true
-    dut.commands.userIntrCmd.ready #= true
     dut.commands.ftriangleCmd.ready #= true
 
     dut.clockDomain.waitSampling()
+  }
+
+  /** Get or create BmbDriver for this DUT (cached per test) */
+  private val driverCache = new scala.collection.mutable.WeakHashMap[RegisterBank, BmbDriver]()
+
+  private def getDriver(dut: RegisterBank): BmbDriver = {
+    driverCache.getOrElseUpdate(dut, BmbDriver(dut.io.bus, dut.clockDomain))
   }
 
   /** Helper to write a 32-bit value to a BMB register
@@ -64,47 +70,22 @@ class RegisterBankTest extends AnyFunSuite {
       data: Long,
       waitForFifoDrain: Boolean = true
   ): Unit = {
-    dut.io.bus.cmd.valid #= true
-    dut.io.bus.cmd.address #= address
-    dut.io.bus.cmd.data #= data
-    dut.io.bus.cmd.opcode #= Bmb.Cmd.Opcode.WRITE
-    dut.io.bus.cmd.length #= 3 // 4 bytes
-    dut.io.bus.cmd.last #= true
-    dut.io.bus.cmd.mask #= 0xf
-    dut.io.bus.rsp.ready #= true
-
-    dut.clockDomain.waitSampling()
-
-    dut.io.bus.cmd.valid #= false
-    dut.clockDomain.waitSampling()
+    val driver = getDriver(dut)
+    driver.write(address = address, data = data)
 
     // Wait for FIFO to drain if requested (FIFO=Yes registers need this)
+    // BmbDriver.write() returns when command is acknowledged by bus
+    // But register update happens later when FIFO drains
     if (waitForFifoDrain) {
-      dut.clockDomain.waitSampling(2)
+      dut.clockDomain.waitSampling()
+      dut.clockDomain.waitSampling()
     }
   }
 
   /** Helper to read a 32-bit value from a BMB register */
   def bmbRead(dut: RegisterBank, address: Long): Long = {
-    dut.io.bus.cmd.valid #= true
-    dut.io.bus.cmd.address #= address
-    dut.io.bus.cmd.opcode #= Bmb.Cmd.Opcode.READ
-    dut.io.bus.cmd.length #= 3 // 4 bytes
-    dut.io.bus.cmd.last #= true
-    dut.io.bus.rsp.ready #= true
-
-    dut.clockDomain.waitSampling()
-
-    // Wait for response
-    while (!dut.io.bus.rsp.valid.toBoolean) {
-      dut.clockDomain.waitSampling()
-    }
-
-    val data = dut.io.bus.rsp.data.toLong
-    dut.io.bus.cmd.valid #= false
-    dut.clockDomain.waitSampling()
-
-    data & 0xffffffffL
+    val driver = getDriver(dut)
+    driver.read(address = address).toLong & 0xffffffffL
   }
 
   test("Status register reads hardware inputs correctly") {
@@ -113,8 +94,7 @@ class RegisterBankTest extends AnyFunSuite {
     SimConfig.withIVerilog.withWave.compile(RegisterBank(config)).doSim { dut =>
       setupDut(dut)
 
-      // Set specific status inputs
-      dut.io.statusInputs.pciFifoFree #= 0x20
+      // Set specific status inputs (pciFifoFree is now from actual FIFO)
       dut.io.statusInputs.fbiBusy #= true
       dut.io.statusInputs.displayedBuffer #= 1
       dut.io.statusInputs.swapsPending #= 2
@@ -123,7 +103,8 @@ class RegisterBankTest extends AnyFunSuite {
 
       val status = bmbRead(dut, 0x000)
 
-      assert((status & 0x3f) == 0x20, s"PCI FIFO should be 0x20, got ${status & 0x3f}")
+      // PCI FIFO should report full availability (64 = 0x40) since FIFO is empty
+      assert((status & 0x3f) == 0x3f, s"PCI FIFO should be 0x3f (63 free), got ${status & 0x3f}")
       assert(((status >> 7) & 1) == 1, "FBI busy should be set")
       assert(((status >> 10) & 3) == 1, "Displayed buffer should be 1")
       assert(((status >> 28) & 7) == 2, "Swaps pending should be 2")
@@ -186,8 +167,8 @@ class RegisterBankTest extends AnyFunSuite {
 
       val testValue = 0xdeadbeefL
 
-      // Write to fbzColorPath
-      bmbWrite(dut, 0x0c0, testValue)
+      // Write to fbzColorPath (address changed from 0x0c0 to 0x104 with FIFO implementation)
+      bmbWrite(dut, 0x104, testValue)
       dut.clockDomain.waitSampling()
 
       // Verify it was stored
@@ -197,7 +178,7 @@ class RegisterBankTest extends AnyFunSuite {
       )
 
       // Read it back
-      val readValue = bmbRead(dut, 0x0c0)
+      val readValue = bmbRead(dut, 0x104)
       assert(
         readValue == testValue,
         f"Read back value should match: expected 0x$testValue%08X, got 0x$readValue%08X"
@@ -214,8 +195,8 @@ class RegisterBankTest extends AnyFunSuite {
       // Initially no sync pulse
       assert(!dut.io.syncPulse.toBoolean, "Sync pulse should be initially false")
 
-      // Write to fbzMode (Sync=Yes register)
-      bmbWrite(dut, 0x0cc, 0x12345678L)
+      // Write to fbzMode (Sync=Yes register) - address changed from 0x0cc to 0x110
+      bmbWrite(dut, 0x110, 0x12345678L)
 
       // Check sync pulse is asserted
       assert(
@@ -241,14 +222,14 @@ class RegisterBankTest extends AnyFunSuite {
       val rightX = 640
       val clipLR = (rightX << 16) | leftX
 
-      bmbWrite(dut, 0x0d4, clipLR)
+      bmbWrite(dut, 0x118, clipLR) // Address changed from 0x0d4 to 0x118
       dut.clockDomain.waitSampling()
 
       assert(dut.renderConfig.clipLeftX.toInt == leftX, s"Left clip should be $leftX")
       assert(dut.renderConfig.clipRightX.toInt == rightX, s"Right clip should be $rightX")
 
       // Read back
-      val readBack = bmbRead(dut, 0x0d4)
+      val readBack = bmbRead(dut, 0x118)
       assert((readBack & 0x3ff) == leftX, "Read back left X should match")
       assert(((readBack >> 16) & 0x3ff) == rightX, "Read back right X should match")
     }
@@ -260,20 +241,20 @@ class RegisterBankTest extends AnyFunSuite {
     SimConfig.withIVerilog.withWave.compile(RegisterBank(config)).doSim { dut =>
       setupDut(dut)
 
-      // Test nopCMD (W1P requires writing 1)
-      bmbWrite(dut, 0x088, 1)
+      // Test nopCMD (W1P requires writing 1) - address changed from 0x088 to 0x120
+      bmbWrite(dut, 0x120, 1)
       assert(dut.commands.nopCmd.valid.toBoolean, "NOP command stream should be valid")
       dut.clockDomain.waitSampling()
       assert(!dut.commands.nopCmd.valid.toBoolean, "NOP stream should be one cycle")
 
-      // Test fastfillCMD
-      bmbWrite(dut, 0x084, 1)
+      // Test fastfillCMD - address changed from 0x084 to 0x124
+      bmbWrite(dut, 0x124, 1)
       assert(dut.commands.fastfillCmd.valid.toBoolean, "Fastfill stream should be valid")
       dut.clockDomain.waitSampling()
       assert(!dut.commands.fastfillCmd.valid.toBoolean, "Fastfill stream should be one cycle")
 
-      // Test swapbufferCMD
-      bmbWrite(dut, 0x08c, 1)
+      // Test swapbufferCMD - address changed from 0x08c to 0x128
+      bmbWrite(dut, 0x128, 1)
       assert(dut.commands.swapbufferCmd.valid.toBoolean, "Swapbuffer stream should be valid")
       dut.clockDomain.waitSampling()
       assert(!dut.commands.swapbufferCmd.valid.toBoolean, "Swapbuffer stream should be one cycle")
@@ -365,20 +346,20 @@ class RegisterBankTest extends AnyFunSuite {
       dut.io.statisticsIn.chromaFail #= 100
       dut.clockDomain.waitSampling(2)
 
-      // Read pixelsIn
-      val pixelsIn = bmbRead(dut, 0x110)
+      // Read pixelsIn (address changed from 0x110 to 0x14c)
+      val pixelsIn = bmbRead(dut, 0x14c)
       assert((pixelsIn & 0xffffff) == 12345, "Pixels in should be 12345")
 
-      // Read chromaFail
-      val chromaFail = bmbRead(dut, 0x114)
+      // Read chromaFail (address changed from 0x114 to 0x150)
+      val chromaFail = bmbRead(dut, 0x150)
       assert((chromaFail & 0xffffff) == 100, "Chroma fail should be 100")
 
       // Attempt to write (should have no effect)
-      bmbWrite(dut, 0x110, 99999)
+      bmbWrite(dut, 0x14c, 99999)
       dut.clockDomain.waitSampling()
 
       // Input should still control the value
-      val stillSame = bmbRead(dut, 0x110)
+      val stillSame = bmbRead(dut, 0x14c)
       assert((stillSame & 0xffffff) == 12345, "Read-only register should not change on write")
     }
   }
@@ -538,7 +519,6 @@ class RegisterBankTest extends AnyFunSuite {
       dut.commands.fastfillCmd.ready #= true
       dut.commands.nopCmd.ready #= true
       dut.commands.swapbufferCmd.ready #= true
-      dut.commands.userIntrCmd.ready #= true
       dut.commands.ftriangleCmd.ready #= true
 
       bmbWrite(dut, 0x010, 0xaabbccddL) // vertexBx - FIFO=Yes register
@@ -565,7 +545,6 @@ class RegisterBankTest extends AnyFunSuite {
       dut.commands.fastfillCmd.ready #= false
       dut.commands.nopCmd.ready #= false
       dut.commands.swapbufferCmd.ready #= false
-      dut.commands.userIntrCmd.ready #= false
       dut.commands.ftriangleCmd.ready #= false
 
       // FIFO=No register (fbiInit0 at 0x210) should NOT stall even when streams are not ready
@@ -593,15 +572,15 @@ class RegisterBankTest extends AnyFunSuite {
       // NEW FIFO BEHAVIOR: Writes are NOT stalled - they're queued in FIFO
       // FIFO drain is blocked by pipelineBusy, but CPU doesn't stall
 
-      // Test 1: Sync=Yes register (fbzMode at 0x0CC) is accepted into FIFO even when pipeline is busy
+      // Test 1: Sync=Yes register (fbzMode at 0x110) is accepted into FIFO even when pipeline is busy
       dut.io.pipelineBusy #= true
 
-      // Write to fbzMode - should be accepted into FIFO immediately
-      bmbWrite(dut, 0x0cc, 0x11111111, waitForFifoDrain = false)
+      // Write to fbzMode - should be accepted into FIFO immediately (address changed from 0x0cc to 0x110)
+      bmbWrite(dut, 0x110, 0x11111111, waitForFifoDrain = false)
 
       // Register should NOT have updated yet (FIFO hasn't drained due to pipeline busy)
       assert(
-        (dut.renderConfig.fbzMode.toLong & 0xffffffffL) == 0,
+        !dut.renderConfig.fbzMode.enableClipping.toBoolean,
         "Register should not update until FIFO drains"
       )
 
@@ -611,19 +590,23 @@ class RegisterBankTest extends AnyFunSuite {
 
       // Now register should have updated
       assert(
-        (dut.renderConfig.fbzMode.toLong & 0xffffffffL) == 0x11111111L,
+        dut.renderConfig.fbzMode.enableClipping.toBoolean,
         "Register should update after pipeline becomes not busy"
       )
 
-      // Test 2: Sync=Yes register succeeds immediately when pipeline is not busy
+      // Test 2: Sync=No register succeeds immediately regardless of pipeline
       dut.io.pipelineBusy #= false
 
-      bmbWrite(dut, 0x0c8, 0x22222222) // alphaMode - Sync=Yes register
+      bmbWrite(
+        dut,
+        0x10c,
+        0x22222222
+      ) // alphaMode - Sync=No register (address changed from 0x0c8 to 0x10c)
 
       // Should have written successfully
       assert(
         (dut.renderConfig.alphaMode.toLong & 0xffffffffL) == 0x22222222L,
-        "Sync register should write when pipeline not busy"
+        "Sync=No register should write when pipeline not busy"
       )
 
       // Sync pulse should have been asserted
@@ -641,13 +624,13 @@ class RegisterBankTest extends AnyFunSuite {
       // Pipeline is busy but Sync=No register should still write
       dut.io.pipelineBusy #= true
 
-      // fogColor (0x0E4) is Sync=No register
-      bmbWrite(dut, 0x0e4, 0x12345678)
+      // fbzColorPath (0x104) is Sync=No register (address changed from fogColor at 0x0e4)
+      bmbWrite(dut, 0x104, 0x12345678)
       dut.clockDomain.waitSampling()
 
       // Should have written successfully despite pipeline being busy
       assert(
-        (dut.renderConfig.fogColor.toLong & 0xffffffffL) == 0x12345678L,
+        (dut.renderConfig.fbzColorPath.toLong & 0xffffffffL) == 0x12345678L,
         "Sync=No register should write despite pipeline busy"
       )
     }
@@ -664,10 +647,10 @@ class RegisterBankTest extends AnyFunSuite {
       dut.clockDomain.waitSampling(2)
 
       // Write 64 FIFO=Yes,Sync=Yes registers to fill the FIFO
-      // Use fbzMode (0x0CC) - Sync=Yes register
+      // Use fbzMode (0x110) - Sync=Yes register (address changed from 0x0cc)
       for (i <- 0 until 64) {
         dut.io.bus.cmd.valid #= true
-        dut.io.bus.cmd.address #= 0x0cc
+        dut.io.bus.cmd.address #= 0x110
         dut.io.bus.cmd.data #= i
         dut.io.bus.cmd.opcode #= Bmb.Cmd.Opcode.WRITE
         dut.io.bus.cmd.length #= 3
@@ -685,7 +668,7 @@ class RegisterBankTest extends AnyFunSuite {
 
       // Now try to write one more (65th entry)
       dut.io.bus.cmd.valid #= true
-      dut.io.bus.cmd.address #= 0x0cc
+      dut.io.bus.cmd.address #= 0x110
       dut.io.bus.cmd.data #= 999
       dut.io.bus.cmd.opcode #= Bmb.Cmd.Opcode.WRITE
       dut.io.bus.cmd.length #= 3

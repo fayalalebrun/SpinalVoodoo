@@ -365,7 +365,8 @@ class TriangleSetupTest extends AnyFunSuite {
   ): Unit = {
     // Create a custom config with larger vertex format: SQ(20,4)
     // This gives us range -32768 to 32767.9375, enough for trace coordinates
-    val customCfg = cfg.copy(vertexFormat = SQ(20, 4))
+    // Also need larger coefficient format: product of two SQ(20,4) = SQ(40,8)
+    val customCfg = cfg.copy(vertexFormat = SQ(20, 4), coefficientFormat = SQ(40, 8))
 
     SimConfig.withIVerilog.withWave.compile(new TriangleSetup(customCfg)).doSim { dut =>
       dut.clockDomain.forkStimulus(period = 10)

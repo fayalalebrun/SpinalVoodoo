@@ -192,16 +192,19 @@ class BmbBusInterfaceTest extends AnyFunSuite {
 
       val driver = BmbDriver(dut.io.bus, dut.clockDomain)
 
-      // Write 64 commands - all should complete without stalling
-      for (i <- 0 until 64) {
+      // With 1-entry buffer per command stream, total capacity is 65:
+      // - 64 in PCI FIFO
+      // - 1 in command stream buffer (first cmd drains into it immediately)
+      // Write 65 commands - all should complete without stalling
+      for (i <- 0 until 65) {
         driver.write(address = 0x010, data = i)
       }
 
-      // Now FIFO is full - check that cmd.ready is false
+      // Now FIFO + buffer are full - check that cmd.ready is false
       dut.clockDomain.waitSampling()
       dut.io.bus.cmd.valid #= true
       dut.io.bus.cmd.address #= 0x010
-      dut.io.bus.cmd.data #= 64
+      dut.io.bus.cmd.data #= 65
       dut.io.bus.cmd.opcode #= Bmb.Cmd.Opcode.WRITE
       dut.io.bus.cmd.length #= 3
       dut.io.bus.cmd.last #= true
@@ -209,8 +212,8 @@ class BmbBusInterfaceTest extends AnyFunSuite {
 
       dut.clockDomain.waitSampling()
 
-      // FIFO is full, so cmd.ready should be false
-      assert(!dut.io.bus.cmd.ready.toBoolean, "Bus should stall when FIFO is full")
+      // FIFO + buffer are full, so cmd.ready should be false
+      assert(!dut.io.bus.cmd.ready.toBoolean, "Bus should stall when FIFO + buffer are full")
 
       dut.io.bus.cmd.valid #= false
       dut.clockDomain.waitSampling(5)
@@ -226,7 +229,8 @@ class BmbBusInterfaceTest extends AnyFunSuite {
       dut.io.pipelineBusy #= false
       dut.clockDomain.waitSampling()
 
-      // Write 10 commands using manual protocol (BmbDriver has issues with blocked stream)
+      // Write 10 commands using manual protocol
+      // BMB protocol: assert valid, wait for fire (valid && ready), then de-assert
       for (i <- 0 until 10) {
         dut.io.bus.cmd.valid #= true
         dut.io.bus.cmd.address #= 0x010
@@ -236,17 +240,17 @@ class BmbBusInterfaceTest extends AnyFunSuite {
         dut.io.bus.cmd.last #= true
         dut.io.bus.cmd.mask #= 0xf
 
-        // Wait for response
-        var gotResponse = false
-        for (_ <- 0 until 10 if !gotResponse) {
+        // Wait for cmd.ready (transaction fires on this edge)
+        while (!dut.io.bus.cmd.ready.toBoolean) {
           dut.clockDomain.waitSampling()
-          if (dut.io.bus.rsp.valid.toBoolean) {
-            gotResponse = true
-          }
         }
+        dut.clockDomain.waitSampling() // Fire happens here
+        dut.io.bus.cmd.valid #= false // De-assert immediately after fire
 
-        dut.io.bus.cmd.valid #= false
-        dut.clockDomain.waitSampling(2)
+        // Wait for response
+        while (!dut.io.bus.rsp.valid.toBoolean) {
+          dut.clockDomain.waitSampling()
+        }
       }
 
       // Commands are queued but not drained
@@ -255,24 +259,12 @@ class BmbBusInterfaceTest extends AnyFunSuite {
 
       // Monitor command stream and count how many drain
       var drainCount = 0
-      var cyclesSinceLastDrain = 0
-      for (i <- 0 until 50) {
+      for (_ <- 0 until 50) {
         dut.clockDomain.waitSampling()
-        val valid = dut.io.cmdStream.valid.toBoolean
-        val ready = dut.io.cmdStream.ready.toBoolean
-        if (valid && ready) {
+        if (dut.io.cmdStream.valid.toBoolean && dut.io.cmdStream.ready.toBoolean) {
           drainCount += 1
-          cyclesSinceLastDrain = 0
-          if (drainCount <= 12) println(s"Cycle $i: Command $drainCount drained")
-        } else {
-          cyclesSinceLastDrain += 1
-        }
-        // Stop if no drains for 10 cycles (FIFO empty)
-        if (cyclesSinceLastDrain > 10 && drainCount > 0) {
-          println(s"No drains for 10 cycles, stopping at cycle $i")
         }
       }
-      println(s"Total drained: $drainCount out of 10 expected")
 
       // Verify all commands drained
       assert(drainCount == 10, s"All 10 commands should have drained, got $drainCount")

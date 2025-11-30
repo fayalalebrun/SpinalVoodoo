@@ -5,6 +5,7 @@ import spinal.core._
 case class Config(
     revision: Config.Revision,
     vertexFormat: QFormat,
+    coefficientFormat: QFormat,
     vColorFormat: QFormat,
     vDepthFormat: QFormat,
     texCoordsFormat: QFormat,
@@ -18,6 +19,8 @@ object Config {
   def voodoo1() = Config(
     Voodoo1(),
     vertexFormat = SQ(16, 4), // Datasheet: 12.4 format = 12 integer + 4 frac = SQ(16, 4)
+    coefficientFormat =
+      SQ(34, 8), // Edge coefficients: c = v0.x*v1.y - v1.x*v0.y needs 2x vertex product range
     vColorFormat = SQ(24, 12), // Datasheet: 12.12 format = 12 integer + 12 frac = SQ(24, 12)
     vDepthFormat = SQ(32, 12), // Datasheet: 20.12 format = 20 integer + 12 frac = SQ(32, 12)
     texCoordsFormat = SQ(32, 18), // Datasheet: 14.18 format = 14 integer + 18 frac = SQ(32, 18)

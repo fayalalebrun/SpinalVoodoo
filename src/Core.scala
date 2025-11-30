@@ -134,14 +134,16 @@ case class Core(c: Config) extends Component {
 
   // Connect triangle command to triangle setup
   // Build triangle from vertex registers (integer path)
+  // Note: Register values are already in 12.4 fixed-point format, so we interpret
+  // the raw bits directly rather than converting (which would multiply by 16)
   val triangleIntPath = regBank.commands.triangleCmd.translateWith {
     val out = TriangleWithSign(c.vertexFormat)
-    out.tri(0)(0) := AFix(regBank.triangleGeometry.vertexAx).fixTo(c.vertexFormat)
-    out.tri(0)(1) := AFix(regBank.triangleGeometry.vertexAy).fixTo(c.vertexFormat)
-    out.tri(1)(0) := AFix(regBank.triangleGeometry.vertexBx).fixTo(c.vertexFormat)
-    out.tri(1)(1) := AFix(regBank.triangleGeometry.vertexBy).fixTo(c.vertexFormat)
-    out.tri(2)(0) := AFix(regBank.triangleGeometry.vertexCx).fixTo(c.vertexFormat)
-    out.tri(2)(1) := AFix(regBank.triangleGeometry.vertexCy).fixTo(c.vertexFormat)
+    out.tri(0)(0).raw := regBank.triangleGeometry.vertexAx.asBits
+    out.tri(0)(1).raw := regBank.triangleGeometry.vertexAy.asBits
+    out.tri(1)(0).raw := regBank.triangleGeometry.vertexBx.asBits
+    out.tri(1)(1).raw := regBank.triangleGeometry.vertexBy.asBits
+    out.tri(2)(0).raw := regBank.triangleGeometry.vertexCx.asBits
+    out.tri(2)(1).raw := regBank.triangleGeometry.vertexCy.asBits
     out.signBit := regBank.commands.triangleSignBit
     out
   }
@@ -165,36 +167,38 @@ case class Core(c: Config) extends Component {
     out.tri := in
 
     // Connect gradients from register bank
-    // Use AFix factory and fixTo to convert from SInt to AFix with proper format
+    // Register values are already in the target fixed-point format, so we interpret
+    // the raw bits directly rather than converting (which would shift values incorrectly)
+
     // Red gradient (12.12 fixed point)
-    out.grads.redGrad.start := AFix(regBank.triangleGeometry.startR).fixTo(c.vColorFormat)
-    out.grads.redGrad.d(0) := AFix(regBank.triangleGeometry.dRdX).fixTo(c.vColorFormat)
-    out.grads.redGrad.d(1) := AFix(regBank.triangleGeometry.dRdY).fixTo(c.vColorFormat)
+    out.grads.redGrad.start.raw := regBank.triangleGeometry.startR.asBits
+    out.grads.redGrad.d(0).raw := regBank.triangleGeometry.dRdX.asBits
+    out.grads.redGrad.d(1).raw := regBank.triangleGeometry.dRdY.asBits
 
     // Green gradient (12.12 fixed point)
-    out.grads.greenGrad.start := AFix(regBank.triangleGeometry.startG).fixTo(c.vColorFormat)
-    out.grads.greenGrad.d(0) := AFix(regBank.triangleGeometry.dGdX).fixTo(c.vColorFormat)
-    out.grads.greenGrad.d(1) := AFix(regBank.triangleGeometry.dGdY).fixTo(c.vColorFormat)
+    out.grads.greenGrad.start.raw := regBank.triangleGeometry.startG.asBits
+    out.grads.greenGrad.d(0).raw := regBank.triangleGeometry.dGdX.asBits
+    out.grads.greenGrad.d(1).raw := regBank.triangleGeometry.dGdY.asBits
 
     // Blue gradient (12.12 fixed point)
-    out.grads.blueGrad.start := AFix(regBank.triangleGeometry.startB).fixTo(c.vColorFormat)
-    out.grads.blueGrad.d(0) := AFix(regBank.triangleGeometry.dBdX).fixTo(c.vColorFormat)
-    out.grads.blueGrad.d(1) := AFix(regBank.triangleGeometry.dBdY).fixTo(c.vColorFormat)
+    out.grads.blueGrad.start.raw := regBank.triangleGeometry.startB.asBits
+    out.grads.blueGrad.d(0).raw := regBank.triangleGeometry.dBdX.asBits
+    out.grads.blueGrad.d(1).raw := regBank.triangleGeometry.dBdY.asBits
 
     // Depth gradient (20.12 fixed point)
-    out.grads.depthGrad.start := AFix(regBank.triangleGeometry.startZ).fixTo(c.vDepthFormat)
-    out.grads.depthGrad.d(0) := AFix(regBank.triangleGeometry.dZdX).fixTo(c.vDepthFormat)
-    out.grads.depthGrad.d(1) := AFix(regBank.triangleGeometry.dZdY).fixTo(c.vDepthFormat)
+    out.grads.depthGrad.start.raw := regBank.triangleGeometry.startZ.asBits
+    out.grads.depthGrad.d(0).raw := regBank.triangleGeometry.dZdX.asBits
+    out.grads.depthGrad.d(1).raw := regBank.triangleGeometry.dZdY.asBits
 
     // Alpha gradient (12.12 fixed point)
-    out.grads.alphaGrad.start := AFix(regBank.triangleGeometry.startA).fixTo(c.vColorFormat)
-    out.grads.alphaGrad.d(0) := AFix(regBank.triangleGeometry.dAdX).fixTo(c.vColorFormat)
-    out.grads.alphaGrad.d(1) := AFix(regBank.triangleGeometry.dAdY).fixTo(c.vColorFormat)
+    out.grads.alphaGrad.start.raw := regBank.triangleGeometry.startA.asBits
+    out.grads.alphaGrad.d(0).raw := regBank.triangleGeometry.dAdX.asBits
+    out.grads.alphaGrad.d(1).raw := regBank.triangleGeometry.dAdY.asBits
 
     // W gradient (2.30 fixed point)
-    out.grads.wGrad.start := AFix(regBank.triangleGeometry.startW).fixTo(c.wFormat)
-    out.grads.wGrad.d(0) := AFix(regBank.triangleGeometry.dWdX).fixTo(c.wFormat)
-    out.grads.wGrad.d(1) := AFix(regBank.triangleGeometry.dWdY).fixTo(c.wFormat)
+    out.grads.wGrad.start.raw := regBank.triangleGeometry.startW.asBits
+    out.grads.wGrad.d(0).raw := regBank.triangleGeometry.dWdX.asBits
+    out.grads.wGrad.d(1).raw := regBank.triangleGeometry.dWdY.asBits
   }
 
   // Connect rasterizer to write stage

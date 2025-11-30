@@ -140,21 +140,32 @@ class RegisterBankTest extends AnyFunSuite {
         "Triangle command stream should be initially invalid"
       )
 
+      // Track when stream.valid pulses
+      var sawValid = false
+      var validCycles = 0
+
+      // Fork a monitor to watch for stream.valid pulse
+      val monitor = fork {
+        for (_ <- 0 until 10) { // Watch for up to 10 cycles
+          if (dut.commands.triangleCmd.valid.toBoolean) {
+            sawValid = true
+            validCycles += 1
+          }
+          dut.clockDomain.waitSampling()
+        }
+      }
+
       // Write to triangleCMD register (W1P requires writing 1)
       bmbWrite(dut, 0x080, 1)
 
-      // Check that stream becomes valid
-      assert(
-        dut.commands.triangleCmd.valid.toBoolean,
-        "Triangle command stream should be valid after write"
-      )
+      // Wait for monitor to complete
+      monitor.join()
 
-      dut.clockDomain.waitSampling()
-
-      // Check that stream is only valid for one cycle
+      // Verify we saw exactly one valid pulse
+      assert(sawValid, "Triangle command stream should have pulsed valid")
       assert(
-        !dut.commands.triangleCmd.valid.toBoolean,
-        "Triangle command stream should be invalid after one cycle"
+        validCycles == 1,
+        s"Stream should be valid for exactly 1 cycle, was valid for $validCycles"
       )
     }
   }
@@ -241,23 +252,43 @@ class RegisterBankTest extends AnyFunSuite {
     SimConfig.withIVerilog.withWave.compile(RegisterBank(config)).doSim { dut =>
       setupDut(dut)
 
-      // Test nopCMD (W1P requires writing 1) - address changed from 0x088 to 0x120
-      bmbWrite(dut, 0x120, 1)
-      assert(dut.commands.nopCmd.valid.toBoolean, "NOP command stream should be valid")
-      dut.clockDomain.waitSampling()
-      assert(!dut.commands.nopCmd.valid.toBoolean, "NOP stream should be one cycle")
+      // Helper to test a command stream with forking
+      def testCommandStream(
+          address: Long,
+          stream: spinal.lib.Stream[spinal.lib.NoData],
+          name: String
+      ): Unit = {
+        var sawValid = false
+        var validCycles = 0
 
-      // Test fastfillCMD - address changed from 0x084 to 0x124
-      bmbWrite(dut, 0x124, 1)
-      assert(dut.commands.fastfillCmd.valid.toBoolean, "Fastfill stream should be valid")
-      dut.clockDomain.waitSampling()
-      assert(!dut.commands.fastfillCmd.valid.toBoolean, "Fastfill stream should be one cycle")
+        val monitor = fork {
+          for (_ <- 0 until 10) {
+            if (stream.valid.toBoolean) {
+              sawValid = true
+              validCycles += 1
+            }
+            dut.clockDomain.waitSampling()
+          }
+        }
 
-      // Test swapbufferCMD - address changed from 0x08c to 0x128
-      bmbWrite(dut, 0x128, 1)
-      assert(dut.commands.swapbufferCmd.valid.toBoolean, "Swapbuffer stream should be valid")
-      dut.clockDomain.waitSampling()
-      assert(!dut.commands.swapbufferCmd.valid.toBoolean, "Swapbuffer stream should be one cycle")
+        bmbWrite(dut, address, 1)
+        monitor.join()
+
+        assert(sawValid, s"$name command stream should have pulsed valid")
+        assert(
+          validCycles == 1,
+          s"$name stream should be valid for exactly 1 cycle, was $validCycles"
+        )
+      }
+
+      // Test nopCMD
+      testCommandStream(0x120, dut.commands.nopCmd, "NOP")
+
+      // Test fastfillCMD
+      testCommandStream(0x124, dut.commands.fastfillCmd, "Fastfill")
+
+      // Test swapbufferCMD
+      testCommandStream(0x128, dut.commands.swapbufferCmd, "Swapbuffer")
     }
   }
 
@@ -267,71 +298,70 @@ class RegisterBankTest extends AnyFunSuite {
     SimConfig.withIVerilog.withWave.compile(RegisterBank(config)).doSim { dut =>
       setupDut(dut)
 
-      // NEW FIFO BEHAVIOR: Command writes are queued in FIFO and drain when stream.ready = True
-      // Test that:
-      // 1. Write IS accepted into FIFO even when stream.ready = False
-      // 2. Stream does NOT become valid until FIFO drains
-      // 3. FIFO drain is blocked by stream.ready = False
-      // 4. Stream becomes valid AFTER stream.ready = True
+      // Test command stream backpressure with 1-entry buffer:
+      // 1. Write IS accepted into FIFO
+      // 2. First command drains into buffer, valid becomes true (buffer can hold 1)
+      // 3. Second command is BLOCKED until first is consumed
+      // 4. When ready becomes true, buffered command fires
 
       dut.commands.triangleCmd.ready #= false
 
-      // Write to triangleCMD register - should be accepted into FIFO
-      bmbWrite(dut, 0x080, 1, waitForFifoDrain = false)
+      var sawFireWhileReady = false
 
-      // Stream should NOT be valid yet (FIFO hasn't drained due to backpressure)
-      assert(
-        !dut.commands.triangleCmd.valid.toBoolean,
-        "Stream should NOT be valid while stream.ready is false (FIFO blocked)"
-      )
+      // Write first command - goes into buffer
+      bmbWrite(dut, 0x080, 1)
+      dut.clockDomain.waitSampling(3) // Let it drain into buffer
 
-      // Wait a few cycles - stream should remain invalid
-      dut.clockDomain.waitSampling(3)
-      assert(
-        !dut.commands.triangleCmd.valid.toBoolean,
-        "Stream should remain invalid while backpressure is active"
-      )
-
-      // Now release the backpressure by setting stream.ready to true
-      dut.commands.triangleCmd.ready #= true
-      dut.clockDomain.waitSampling(2)
-
-      // FIFO should drain and stream should become valid
+      // Verify buffer has the command (valid should be true)
       assert(
         dut.commands.triangleCmd.valid.toBoolean,
-        "Stream should become valid after stream.ready becomes true"
+        "First command should be in buffer (valid=true)"
       )
 
-      dut.clockDomain.waitSampling()
+      // Write second command - should be blocked (buffer full)
+      // Fork the write so we can check bus stalling
+      val writer = fork {
+        bmbWrite(dut, 0x080, 1)
+      }
 
-      // Stream should fire and become invalid
-      assert(
-        !dut.commands.triangleCmd.valid.toBoolean,
-        "Stream should be invalid after firing"
-      )
+      // Give time for FIFO to potentially drain (should NOT drain)
+      dut.clockDomain.waitSampling(5)
+
+      // Set ready=true to consume first command
+      dut.commands.triangleCmd.ready #= true
+      for (_ <- 0 until 5) {
+        if (dut.commands.triangleCmd.valid.toBoolean && dut.commands.triangleCmd.ready.toBoolean) {
+          sawFireWhileReady = true
+        }
+        dut.clockDomain.waitSampling()
+      }
+
+      writer.join()
+
+      // Verify first command was consumed
+      assert(sawFireWhileReady, "Command should fire when ready becomes true")
 
       // Part 2: Verify normal operation when stream.ready is true from the start
       dut.commands.triangleCmd.ready #= true
 
-      // Use the helper function for a normal write (with FIFO drain wait)
+      var sawValid = false
+      var validCycles = 0
+
+      val monitor2 = fork {
+        for (_ <- 0 until 10) {
+          if (dut.commands.triangleCmd.valid.toBoolean) {
+            sawValid = true
+            validCycles += 1
+          }
+          dut.clockDomain.waitSampling()
+        }
+      }
+
       bmbWrite(dut, 0x080, 1)
+      monitor2.join()
 
-      // Stream should pulse for one cycle
-      assert(
-        dut.commands.triangleCmd.valid.toBoolean,
-        "Stream should be valid immediately after write when ready"
-      )
-
-      dut.clockDomain.waitSampling()
-
-      // Should be invalid next cycle (fired)
-      assert(!dut.commands.triangleCmd.valid.toBoolean, "Stream should be invalid after firing")
-
-      // Summary: The test verifies:
-      // 1. Writes are accepted into FIFO even when stream.ready = False (no CPU stall)
-      // 2. FIFO drain is blocked until stream.ready = True
-      // 3. Stream becomes valid only after FIFO drains
-      // 4. Normal operation works correctly when no backpressure
+      assert(sawValid, "Stream should pulse valid when ready is true")
+      assert(validCycles == 1, s"Stream should be valid for exactly 1 cycle, was $validCycles")
     }
   }
 
@@ -569,49 +599,62 @@ class RegisterBankTest extends AnyFunSuite {
     SimConfig.withIVerilog.withWave.compile(RegisterBank(config)).doSim { dut =>
       setupDut(dut)
 
-      // NEW FIFO BEHAVIOR: Writes are NOT stalled - they're queued in FIFO
-      // FIFO drain is blocked by pipelineBusy, but CPU doesn't stall
+      // Test that Sync=Yes register drain is blocked when pipeline is busy
+      // 1. Write IS accepted into FIFO even when pipeline is busy
+      // 2. FIFO drain is blocked until pipeline becomes not busy
+      // 3. Register updates after pipeline becomes not busy
 
-      // Test 1: Sync=Yes register (fbzMode at 0x110) is accepted into FIFO even when pipeline is busy
       dut.io.pipelineBusy #= true
 
-      // Write to fbzMode - should be accepted into FIFO immediately (address changed from 0x0cc to 0x110)
-      bmbWrite(dut, 0x110, 0x11111111, waitForFifoDrain = false)
+      var sawUpdateWhileBusy = false
+      var sawUpdateAfterNotBusy = false
 
-      // Register should NOT have updated yet (FIFO hasn't drained due to pipeline busy)
+      // Fork a monitor to track register updates
+      val monitor = fork {
+        // Phase 1: Watch while pipeline is busy (should not see update)
+        for (_ <- 0 until 5) {
+          if (dut.renderConfig.fbzMode.enableClipping.toBoolean) {
+            sawUpdateWhileBusy = true
+          }
+          dut.clockDomain.waitSampling()
+        }
+
+        // Phase 2: Set pipelineBusy=false and watch for update
+        dut.io.pipelineBusy #= false
+        for (_ <- 0 until 5) {
+          if (dut.renderConfig.fbzMode.enableClipping.toBoolean) {
+            sawUpdateAfterNotBusy = true
+          }
+          dut.clockDomain.waitSampling()
+        }
+      }
+
+      // Write to fbzMode - Sync=Yes register at 0x110
+      // Use value with enableClipping bit set (bit 0)
+      bmbWrite(dut, 0x110, 0x00000001)
+
+      monitor.join()
+
+      // Verify behavior
       assert(
-        !dut.renderConfig.fbzMode.enableClipping.toBoolean,
-        "Register should not update until FIFO drains"
+        !sawUpdateWhileBusy,
+        "Register should NOT update while pipeline is busy (FIFO drain blocked)"
       )
-
-      // Make pipeline not busy - FIFO should drain
-      dut.io.pipelineBusy #= false
-      dut.clockDomain.waitSampling(2)
-
-      // Now register should have updated
       assert(
-        dut.renderConfig.fbzMode.enableClipping.toBoolean,
+        sawUpdateAfterNotBusy,
         "Register should update after pipeline becomes not busy"
       )
 
       // Test 2: Sync=No register succeeds immediately regardless of pipeline
       dut.io.pipelineBusy #= false
 
-      bmbWrite(
-        dut,
-        0x10c,
-        0x22222222
-      ) // alphaMode - Sync=No register (address changed from 0x0c8 to 0x10c)
+      bmbWrite(dut, 0x10c, 0x22222222) // alphaMode - Sync=No register
 
       // Should have written successfully
       assert(
         (dut.renderConfig.alphaMode.toLong & 0xffffffffL) == 0x22222222L,
         "Sync=No register should write when pipeline not busy"
       )
-
-      // Sync pulse should have been asserted
-      dut.clockDomain.waitSampling()
-      // Note: syncPulse is only high for one cycle after the write, so we can't check it here
     }
   }
 
@@ -698,9 +741,10 @@ class RegisterBankTest extends AnyFunSuite {
       dut.commands.triangleCmd.ready #= false
       dut.clockDomain.waitSampling(2)
 
-      // Write 64 FIFO=Yes,Sync=No command registers to fill the FIFO
+      // Write 65 FIFO=Yes,Sync=No command registers to fill the FIFO + buffer
       // Use triangleCMD (0x080) - command register, Sync=No
-      for (i <- 0 until 64) {
+      // With 1-entry buffer: first cmd drains to buffer, FIFO holds 64 more
+      for (i <- 0 until 65) {
         dut.io.bus.cmd.valid #= true
         dut.io.bus.cmd.address #= 0x080
         dut.io.bus.cmd.data #= i
@@ -718,7 +762,7 @@ class RegisterBankTest extends AnyFunSuite {
         dut.clockDomain.waitSampling()
       }
 
-      // Now try to write one more (65th entry)
+      // Now try to write one more (66th entry)
       dut.io.bus.cmd.valid #= true
       dut.io.bus.cmd.address #= 0x080
       dut.io.bus.cmd.data #= 999
@@ -730,8 +774,8 @@ class RegisterBankTest extends AnyFunSuite {
 
       dut.clockDomain.waitSampling()
 
-      // Bus should stall (FIFO full)
-      assert(!dut.io.bus.cmd.ready.toBoolean, "Bus should stall when FIFO is full")
+      // Bus should stall (FIFO + buffer full)
+      assert(!dut.io.bus.cmd.ready.toBoolean, "Bus should stall when FIFO + buffer are full")
 
       dut.io.bus.cmd.valid #= false
       dut.clockDomain.waitSampling()

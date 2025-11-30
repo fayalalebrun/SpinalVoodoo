@@ -47,8 +47,9 @@ case class BmbBusInterface(
     val syncRequired = Bool()
   }
 
-  // Track command register streams for automatic drain blocking
-  private val commandStreams = mutable.Map[BigInt, Stream[NoData]]()
+  // Track command register stream ready signals for automatic drain blocking
+  // Maps address -> pulseStream.ready (from s2mPipe, safe because output valid is registered)
+  private val commandStreamReady = mutable.Map[BigInt, Bool]()
 
   // Pipeline busy signal (set by user via setPipelineBusy)
   // Use default assignment (can be overridden by :=)
@@ -144,6 +145,21 @@ case class BmbBusInterface(
     }
 
     shouldQueue := doWriteImmediate && !fifoBypass
+
+    // Generate command stream blocking logic
+    // Block FIFO drain when target is a command register and its s2mPipe buffer can't accept
+    println(
+      s"[BmbBusInterface] Command stream addresses: ${commandStreamReady.keys.map(a => f"0x$a%03x").mkString(", ")}"
+    )
+    if (commandStreamReady.nonEmpty) {
+      switch(pciFifo.io.pop.address) {
+        for ((addr, ready) <- commandStreamReady) {
+          is(U(addr, busAddrWidth bits)) {
+            commandStreamBlocked := !ready // s2mPipe's output valid is registered, no comb loop
+          }
+        }
+      }
+    }
   })
 
   // Direct writes (FIFO=No) - register updates immediately
@@ -177,8 +193,15 @@ case class BmbBusInterface(
     canDrain := False
   }
 
-  // Note: Command stream backpressure is handled by the command register's pending logic,
-  // not by blocking drain. Each command register holds valid high until the stream fires.
+  // Command stream drain blocking - added in addPrePopTask after commandStreamReady is populated
+  private val commandStreamBlocked = Bool()
+  commandStreamBlocked := False
+
+  // Block drain if command stream's s2mPipe buffer can't accept
+  // Safe because s2mPipe's output valid is registered, breaking the comb loop
+  when(commandStreamBlocked) {
+    canDrain := False
+  }
 
   private val drainedWrite = pciFifo.io.pop.haltWhen(!canDrain)
 
@@ -314,26 +337,22 @@ case class BmbBusInterface(
     // Create register - caller will define fields
     val reg = newRegAt(addr, name, sec)
 
-    // Use hitDoWrite signal from RegInst to detect writes
-    val writeDetect = reg.hitDoWrite
+    // Create pulse stream that fires when register is written
+    val pulseStream = Stream(NoData())
+    pulseStream.valid := reg.hitDoWrite
 
-    // Create output stream
-    val stream = Stream(NoData())
+    // Use s2mPipe() to register the ready path - this breaks the combinatorial loop
+    // s2mPipe creates a 1-entry buffer that decouples upstream from downstream backpressure
+    // Its internal rValid register breaks the loop: bufferedStream.valid is registered,
+    // so arbiter's ready doesn't combinatorially depend on drain decision
+    val bufferedStream = pulseStream.s2mPipe()
 
-    // Hold valid until stream fires (backpressure handling)
-    val pending = Reg(Bool()) init (False)
-    when(writeDetect && !stream.ready) {
-      pending := True
-    }.elsewhen(stream.fire) {
-      pending := False
-    }
+    // For blocking: check pulseStream.ready directly
+    // s2mPipe computes: pulseStream.ready = !rValid || bufferedStream.ready
+    // This is safe because bufferedStream.valid (= rValid) is registered
+    commandStreamReady(addr) = pulseStream.ready
 
-    stream.valid := writeDetect || pending
-
-    // Register this stream for automatic FIFO drain blocking
-    commandStreams(addr) = stream
-
-    (reg, stream)
+    (reg, bufferedStream)
   }
 
   /** Get current register write metadata signals

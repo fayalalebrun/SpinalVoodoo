@@ -131,15 +131,33 @@ object VoodooTracePlayer {
     SimConfig.withVerilator.withWave.compile(Core(voodooConfig)).doSim { dut =>
       setupDut(dut)
 
-      // Monitor triangle commands
-      StreamMonitor(dut.regBank.commands.triangleCmd, dut.clockDomain) { _ =>
-        val vax = dut.regBank.triangleGeometry.vertexAx.toInt
-        val vay = dut.regBank.triangleGeometry.vertexAy.toInt
-        val vbx = dut.regBank.triangleGeometry.vertexBx.toInt
-        val vby = dut.regBank.triangleGeometry.vertexBy.toInt
-        val vcx = dut.regBank.triangleGeometry.vertexCx.toInt
-        val vcy = dut.regBank.triangleGeometry.vertexCy.toInt
-        println(f"TRIANGLE: A=($vax%5d,$vay%5d) B=($vbx%5d,$vby%5d) C=($vcx%5d,$vcy%5d)")
+      // Monitor TriangleSetup output - shows computed edge equations
+      StreamMonitor(dut.triangleSetup.o, dut.clockDomain) { _ =>
+        // Extract edge equations (a, b, c coefficients)
+        val edge0a = dut.triangleSetup.o.coeffs(0).a.toDouble
+        val edge0b = dut.triangleSetup.o.coeffs(0).b.toDouble
+        val edge0c = dut.triangleSetup.o.coeffs(0).c.toDouble
+
+        val edge1a = dut.triangleSetup.o.coeffs(1).a.toDouble
+        val edge1b = dut.triangleSetup.o.coeffs(1).b.toDouble
+        val edge1c = dut.triangleSetup.o.coeffs(1).c.toDouble
+
+        val edge2a = dut.triangleSetup.o.coeffs(2).a.toDouble
+        val edge2b = dut.triangleSetup.o.coeffs(2).b.toDouble
+        val edge2c = dut.triangleSetup.o.coeffs(2).c.toDouble
+
+        // Extract bounding box
+        val xmin = dut.triangleSetup.o.xrange(0).toDouble
+        val xmax = dut.triangleSetup.o.xrange(1).toDouble
+        val ymin = dut.triangleSetup.o.yrange(0).toDouble
+        val ymax = dut.triangleSetup.o.yrange(1).toDouble
+
+        println(s"\n===== TRIANGLE SETUP OUTPUT =====")
+        println(f"Bounding box: x=[$xmin%.2f, $xmax%.2f] y=[$ymin%.2f, $ymax%.2f]")
+        println(f"Edge 0: ${edge0a}%9.2f*x + ${edge0b}%9.2f*y + ${edge0c}%11.2f = 0")
+        println(f"Edge 1: ${edge1a}%9.2f*x + ${edge1b}%9.2f*y + ${edge1c}%11.2f = 0")
+        println(f"Edge 2: ${edge2a}%9.2f*x + ${edge2b}%9.2f*y + ${edge2c}%11.2f = 0")
+        println(s"=================================\n")
       }
 
       val fbSize = parser.header.fbSizeMb * 1024 * 1024
@@ -155,6 +173,12 @@ object VoodooTracePlayer {
       var currentCycle = 0L
       var lastTimestamp = 0L
       var entryCount = 0
+
+      // Track triangle geometry for logging
+      var vax, vay, vbx, vby, vcx, vcy = 0L
+      var startR, startG, startB, startZ = 0L
+      var dRdX, dGdX, dBdX, dZdX = 0L
+      var dRdY, dGdY, dBdY, dZdY = 0L
 
       println("\nFirst 10 entries:")
       for (entry <- entries) {
@@ -185,6 +209,56 @@ object VoodooTracePlayer {
             // Repeat the command 'count' times if coalesced
             // Mask address to 12 bits for register bus
             val regAddr = entry.addr & 0xfff
+
+            // Track triangle geometry values
+            regAddr match {
+              case 0x008 => vax = entry.data
+              case 0x00c => vay = entry.data
+              case 0x010 => vbx = entry.data
+              case 0x014 => vby = entry.data
+              case 0x018 => vcx = entry.data
+              case 0x01c => vcy = entry.data
+              case 0x020 => startR = entry.data
+              case 0x024 => startG = entry.data
+              case 0x028 => startB = entry.data
+              case 0x02c => startZ = entry.data
+              case 0x040 => dRdX = entry.data
+              case 0x044 => dGdX = entry.data
+              case 0x048 => dBdX = entry.data
+              case 0x04c => dZdX = entry.data
+              case 0x060 => dRdY = entry.data
+              case 0x064 => dGdY = entry.data
+              case 0x068 => dBdY = entry.data
+              case 0x06c => dZdY = entry.data
+              case 0x080 =>
+                // Triangle command - print all geometry
+                println(s"\n========== TRIANGLE COMMAND ==========")
+                println(f"Vertices (fixed S15.4):")
+                println(
+                  f"  A: (0x${vax}%08x, 0x${vay}%08x) = (${vax / 16.0}%.2f, ${vay / 16.0}%.2f)"
+                )
+                println(
+                  f"  B: (0x${vbx}%08x, 0x${vby}%08x) = (${vbx / 16.0}%.2f, ${vby / 16.0}%.2f)"
+                )
+                println(
+                  f"  C: (0x${vcx}%08x, 0x${vcy}%08x) = (${vcx / 16.0}%.2f, ${vcy / 16.0}%.2f)"
+                )
+                println(f"Start values:")
+                println(
+                  f"  R=0x${startR}%08x G=0x${startG}%08x B=0x${startB}%08x Z=0x${startZ}%08x"
+                )
+                println(f"X Gradients:")
+                println(
+                  f"  dR/dX=0x${dRdX}%08x dG/dX=0x${dGdX}%08x dB/dX=0x${dBdX}%08x dZ/dX=0x${dZdX}%08x"
+                )
+                println(f"Y Gradients:")
+                println(
+                  f"  dR/dY=0x${dRdY}%08x dG/dY=0x${dGdY}%08x dB/dY=0x${dBdY}%08x dZ/dY=0x${dZdY}%08x"
+                )
+                println(s"======================================\n")
+              case _ =>
+            }
+
             println(
               f"WRITE_REG_L: addr=0x${regAddr}%03x data=0x${entry.data}%08x count=${entry.count}"
             )
@@ -263,9 +337,9 @@ object VoodooTracePlayer {
           val origB5 = originalData & 0x1f
 
           val addr = dut.io.fbWrite.cmd.fragment.address.toLong
-          println(
-            f"[FBWrite] 0x${addr}%08x: RGB565=0x${currentTriangleColor}%04x (R=$r5%2d G=$g6%2d B=$b5%2d) [was 0x${originalData}%04x (R=$origR5%2d G=$origG6%2d B=$origB5%2d)]"
-          )
+          // println(
+          //   f"[FBWrite] 0x${addr}%08x: RGB565=0x${currentTriangleColor}%04x (R=$r5%2d G=$g6%2d B=$b5%2d) [was 0x${originalData}%04x (R=$origR5%2d G=$origG6%2d B=$origB5%2d)]"
+          // )
         }
       }
     }
@@ -367,17 +441,17 @@ object VoodooTracePlayer {
     }
 
     // Monitor rasterizer output (pixels)
-    StreamMonitor(dut.rasterizer.o, dut.clockDomain) { pixel =>
-      val x = pixel.coords(0).toInt
-      val y = pixel.coords(1).toInt
-      val r = pixel.grads.redGrad.toDouble
-      val g = pixel.grads.greenGrad.toDouble
-      val b = pixel.grads.blueGrad.toDouble
-      val z = pixel.grads.depthGrad.toDouble
-      println(
-        f"[Rasterizer.Output] Pixel at ($x%3d, $y%3d): R=$r%6.2f G=$g%6.2f B=$b%6.2f Z=$z%8.2f"
-      )
-    }
+    // StreamMonitor(dut.rasterizer.o, dut.clockDomain) { pixel =>
+    //   val x = pixel.coords(0).toInt
+    //   val y = pixel.coords(1).toInt
+    //   val r = pixel.grads.redGrad.toDouble
+    //   val g = pixel.grads.greenGrad.toDouble
+    //   val b = pixel.grads.blueGrad.toDouble
+    //   val z = pixel.grads.depthGrad.toDouble
+    //   println(
+    //     f"[Rasterizer.Output] Pixel at ($x%3d, $y%3d): R=$r%6.2f G=$g%6.2f B=$b%6.2f Z=$z%8.2f"
+    //   )
+    // }
 
     dut.clockDomain.waitSampling()
   }

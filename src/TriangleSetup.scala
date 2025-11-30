@@ -44,13 +44,16 @@ case class TriangleSetup(c: Config) extends Component {
       val b_neg = -b_raw
       val c_neg = -c_raw
 
-      val a = Mux(signBit, a_neg, a_raw)
-      val b = Mux(signBit, b_neg, b_raw)
-      val c = Mux(signBit, c_neg, c_raw)
+      val a_coeff = Mux(signBit, a_neg, a_raw)
+      val b_coeff = Mux(signBit, b_neg, b_raw)
+      val c_coeff = Mux(signBit, c_neg, c_raw)
 
-      coeffsVec(idx).a := a.truncated
-      coeffsVec(idx).b := b.truncated
-      coeffsVec(idx).c := c.truncated
+      // Use fixTo() to properly convert formats with correct fractional bit scaling
+      // a,b are SQ(16,4) -> SQ(32,8) needs left shift by 4
+      // c is already SQ(32,8) -> SQ(32,8) just needs truncation
+      coeffsVec(idx).a := a_coeff.fixTo(c.coefficientFormat)
+      coeffsVec(idx).b := b_coeff.fixTo(c.coefficientFormat)
+      coeffsVec(idx).c := c_coeff.fixTo(c.coefficientFormat)
     }
     out.coeffs := coeffsVec
 

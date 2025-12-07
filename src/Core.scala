@@ -44,6 +44,7 @@ case class Core(c: Config) extends Component {
   val regBank = RegisterBank(c)
   val triangleSetup = TriangleSetup(c)
   val rasterizer = Rasterizer(c)
+  val colorCombine = ColorCombine(c)
   val write = Write(c)
 
   // Make triangle command streams accessible for simulation monitoring
@@ -55,8 +56,8 @@ case class Core(c: Config) extends Component {
   regBank.io.statusInputs <> io.statusInputs
   regBank.io.statisticsIn <> io.statisticsIn
 
-  // Pipeline busy signal: rasterizer or write stage has valid data
-  regBank.io.pipelineBusy := triangleSetup.o.valid || rasterizer.o.valid || write.i.fromPipeline.valid
+  // Pipeline busy signal: any stage has valid data
+  regBank.io.pipelineBusy := triangleSetup.o.valid || rasterizer.o.valid || colorCombine.io.input.valid || write.i.fromPipeline.valid
 
   // TODO: Wire unused command streams to always ready
   regBank.commands.fastfillCmd.ready := True
@@ -201,34 +202,105 @@ case class Core(c: Config) extends Component {
     out.grads.wGrad.d(1).raw := regBank.triangleGeometry.dWdY.asBits
   }
 
-  // Connect rasterizer to write stage
-  write.i.fromPipeline.translateFrom(rasterizer.o) { (out, in) =>
+  // ========================================================================
+  // Color Combine Unit
+  // ========================================================================
+  // Decode fbzColorPath register bits into ColorCombine configuration enums
+  val fbzColorPath = regBank.renderConfig.fbzColorPath
+
+  // Helper to decode enum from bits
+  def decodeColorCombineConfig(): ColorCombine.Config = {
+    val cfg = ColorCombine.Config()
+
+    // RGB channel controls (from fbzColorPath)
+    cfg.rgbSel.assignFromBits(fbzColorPath(1 downto 0))
+    cfg.localSelect.assignFromBits(fbzColorPath(4 downto 4))
+    cfg.localSelectOverride := fbzColorPath(7)
+    cfg.zeroOther := fbzColorPath(8)
+    cfg.subClocal := fbzColorPath(9)
+    cfg.mselect.assignFromBits(fbzColorPath(12 downto 10))
+    cfg.reverseBlend := fbzColorPath(13)
+    cfg.add.assignFromBits(fbzColorPath(15 downto 14))
+    cfg.invertOutput := fbzColorPath(16)
+
+    // Alpha channel controls (from fbzColorPath)
+    cfg.alphaSel.assignFromBits(fbzColorPath(3 downto 2))
+    cfg.alphaLocalSelect.assignFromBits(fbzColorPath(6 downto 5))
+    cfg.alphaZeroOther := fbzColorPath(17)
+    cfg.alphaSubClocal := fbzColorPath(18)
+    cfg.alphaMselect.assignFromBits(fbzColorPath(21 downto 19))
+    cfg.alphaReverseBlend := fbzColorPath(22)
+    cfg.alphaAdd.assignFromBits(fbzColorPath(24 downto 23))
+    cfg.alphaInvertOutput := fbzColorPath(25)
+
+    cfg.textureEnable := fbzColorPath(27)
+
+    cfg
+  }
+
+  // Connect rasterizer to color combine unit
+  colorCombine.io.input.translateFrom(rasterizer.o) { (out, in) =>
     out.coords := in.coords
 
-    // Convert interpolated color values to RGB565
-    val fbWord = cloneOf(out.toFb)
-
-    // Convert color from 12.12 to 8-bit integer
-    // Use sat() to saturate to 8-bit range (0-255) at integer exponent (0)
+    // Convert interpolated color values from 12.12 fixed-point to 9-bit signed
+    // Use sat() to saturate to 8-bit range at integer exponent, then extend to 9-bit signed
     val red8 = in.grads.redGrad.sat(satMax = 255, satMin = 0, exp = 0 exp).asUInt
     val green8 = in.grads.greenGrad.sat(satMax = 255, satMin = 0, exp = 0 exp).asUInt
     val blue8 = in.grads.blueGrad.sat(satMax = 255, satMin = 0, exp = 0 exp).asUInt
+    val alpha8 = in.grads.alphaGrad.sat(satMax = 255, satMin = 0, exp = 0 exp).asUInt
+
+    // Zero-extend to 9-bit signed (values are always positive 0-255)
+    out.iterated.r := (False ## red8).asSInt
+    out.iterated.g := (False ## green8).asSInt
+    out.iterated.b := (False ## blue8).asSInt
+    out.iteratedAlpha := (False ## alpha8).asSInt
+
+    // Upper 8 bits of Z for alpha local select option
+    val z8 = in.grads.depthGrad.sat(satMax = 255, satMin = 0, exp = 12 exp).asUInt
+    out.iteratedZ := (False ## z8).asSInt
+
+    // Pass through depth for later stages
+    out.depth := in.grads.depthGrad
+
+    // Texture is stubbed as zero until TREX is implemented
+    out.texture.r := 0
+    out.texture.g := 0
+    out.texture.b := 0
+    out.textureAlpha := 0
+
+    // Constant colors from registers (packed as ARGB in 32-bit register)
+    val color0Bits = regBank.renderConfig.color0
+    val color1Bits = regBank.renderConfig.color1
+    out.color0.r := color0Bits(23 downto 16).asUInt
+    out.color0.g := color0Bits(15 downto 8).asUInt
+    out.color0.b := color0Bits(7 downto 0).asUInt
+    out.color1.r := color1Bits(23 downto 16).asUInt
+    out.color1.g := color1Bits(15 downto 8).asUInt
+    out.color1.b := color1Bits(7 downto 0).asUInt
+
+    // Decode configuration from fbzColorPath register
+    out.config := decodeColorCombineConfig()
+  }
+
+  // Connect color combine unit to write stage
+  write.i.fromPipeline.translateFrom(colorCombine.io.output) { (out, in) =>
+    out.coords := in.coords
+
+    val fbWord = cloneOf(out.toFb)
 
     // Convert 8-bit RGB to 5-6-5 format (take MSBs)
-    fbWord.color.r := red8(7 downto 3)
-    fbWord.color.g := green8(7 downto 2)
-    fbWord.color.b := blue8(7 downto 3)
+    fbWord.color.r := in.color.r(7 downto 3)
+    fbWord.color.g := in.color.g(7 downto 2)
+    fbWord.color.b := in.color.b(7 downto 3)
 
     // fbzMode bit 18: 0=depth buffering, 1=destination alpha planes
     val useAlpha = regBank.renderConfig.fbzMode.enableAlphaPlanes
 
-    // Depth: convert 20.12 to 16-bit integer
-    val depth16 =
-      in.grads.depthGrad.sat(satMax = 0xffff, satMin = 0, exp = 0 exp).asUInt.resize(16 bits)
+    // Depth: convert from AFix to 16-bit integer
+    val depth16 = in.depth.sat(satMax = 0xffff, satMin = 0, exp = 0 exp).asUInt.resize(16 bits)
 
-    // Alpha: convert 12.12 to 16-bit integer
-    val alpha16 =
-      in.grads.alphaGrad.sat(satMax = 0xffff, satMin = 0, exp = 0 exp).asUInt.resize(16 bits)
+    // Alpha: extend 8-bit to 16-bit
+    val alpha16 = in.alpha.resize(16 bits)
 
     // Select based on fbzMode bit 18
     fbWord.depthAlpha := (useAlpha ? alpha16 | depth16).asBits

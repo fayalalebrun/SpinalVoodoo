@@ -25,7 +25,7 @@ class StreamWhileTest extends AnyFunSuite {
             val isLast = value === 1 // Last output when current value is 1 (next would be 0)
             (nextValue, isLast)
           }
-        )
+        ).output
       })
       .doSim { dut =>
         dut.clockDomain.forkStimulus(period = 10)
@@ -76,7 +76,7 @@ class StreamWhileTest extends AnyFunSuite {
             val isLast = value === 1 // Last output when current value is 1 (next would be 0)
             (nextValue, isLast)
           }
-        )
+        ).output
       })
       .doSim { dut =>
         dut.clockDomain.forkStimulus(period = 10)
@@ -124,7 +124,7 @@ class StreamWhileTest extends AnyFunSuite {
             val isLast = value === 1 // Last output when current value is 1 (next would be 0)
             (nextValue, isLast)
           }
-        )
+        ).output
       })
       .doSim { dut =>
         dut.clockDomain.forkStimulus(period = 10)

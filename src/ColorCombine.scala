@@ -66,18 +66,18 @@ object ColorCombine {
   /** Input to Color Combine Unit */
   case class Input(c: voodoo.Config) extends Bundle {
     val coords = Vec.fill(2)(SInt(c.vertexFormat.nonFraction bits))
-    val iterated = Color(SInt(9 bits), SInt(9 bits), SInt(9 bits))
-    val iteratedAlpha = SInt(9 bits)
-    val iteratedZ = SInt(9 bits) // Upper bits of Z for alpha local select
+    val iterated = Color.u8() // Iterated (Gouraud) colors, 0-255
+    val iteratedAlpha = UInt(8 bits) // Iterated alpha, 0-255
+    val iteratedZ = UInt(8 bits) // Upper bits of Z for alpha local select
     val depth = AFix(c.vDepthFormat)
 
-    // Texture colors (stubbed as zero for now)
-    val texture = Color(SInt(9 bits), SInt(9 bits), SInt(9 bits))
-    val textureAlpha = SInt(9 bits)
+    // Texture colors from TMU chain
+    val texture = Color.u8()
+    val textureAlpha = UInt(8 bits)
 
     // Constant colors from registers
-    val color0 = Color(UInt(8 bits), UInt(8 bits), UInt(8 bits))
-    val color1 = Color(UInt(8 bits), UInt(8 bits), UInt(8 bits))
+    val color0 = Color.u8()
+    val color1 = Color.u8()
 
     // Configuration (decoded enums)
     val config = ColorCombine.Config()
@@ -194,21 +194,29 @@ case class ColorCombine(c: voodoo.Config) extends Component {
     self(COORDS) := payload.coords
     self(DEPTH) := payload.depth
     self(CONFIG) := payload.config
-    self(TEXTURE_ALPHA) := payload.textureAlpha
-    self(TEXTURE_RGB) := payload.texture
+
+    // Helper to convert UInt(8) to SInt(9) by zero-extending
+    def u8ToS9(v: UInt): SInt = (False ## v).asSInt
+    def u8ColorToS9(dst: Color[SInt], src: Color[UInt]): Unit = {
+      (dst.channels, src.channels).zipped.foreach { (d, s) =>
+        d := u8ToS9(s)
+      }
+    }
+
+    // Convert texture inputs to internal 9-bit signed format
+    self(TEXTURE_ALPHA) := u8ToS9(payload.textureAlpha)
+    u8ColorToS9(self(TEXTURE_RGB), payload.texture)
 
     // Select c_other based on rgb_sel
     switch(payload.config.rgbSel) {
       is(RgbSel.ITERATED) {
-        self(C_OTHER) := payload.iterated
+        u8ColorToS9(self(C_OTHER), payload.iterated)
       }
       is(RgbSel.TEXTURE) {
-        self(C_OTHER) := payload.texture
+        u8ColorToS9(self(C_OTHER), payload.texture)
       }
       is(RgbSel.COLOR1) {
-        (self(C_OTHER).channels, payload.color1.channels).zipped.foreach { (dst, src) =>
-          dst := (False ## src).asSInt
-        }
+        u8ColorToS9(self(C_OTHER), payload.color1)
       }
       is(RgbSel.LFB) {
         self(C_OTHER).foreach(_ := 0)
@@ -216,22 +224,15 @@ case class ColorCombine(c: voodoo.Config) extends Component {
     }
 
     // Select c_local based on localselect (with override from texture alpha)
-    // Helper to convert UInt(8) color to SInt(9) by zero-extending
-    def u8ToS9(dst: Color[SInt], src: Color[UInt]): Unit = {
-      (dst.channels, src.channels).zipped.foreach { (d, s) =>
-        d := (False ## s).asSInt
-      }
-    }
-
     when(payload.config.localSelectOverride && payload.textureAlpha(7)) {
-      u8ToS9(self(C_LOCAL), payload.color0)
+      u8ColorToS9(self(C_LOCAL), payload.color0)
     }.otherwise {
       switch(payload.config.localSelect) {
         is(LocalSel.ITERATED) {
-          self(C_LOCAL) := payload.iterated
+          u8ColorToS9(self(C_LOCAL), payload.iterated)
         }
         is(LocalSel.COLOR0) {
-          u8ToS9(self(C_LOCAL), payload.color0)
+          u8ColorToS9(self(C_LOCAL), payload.color0)
         }
       }
     }
@@ -239,13 +240,13 @@ case class ColorCombine(c: voodoo.Config) extends Component {
     // Select a_other based on alpha_sel
     switch(payload.config.alphaSel) {
       is(AlphaSel.ITERATED) {
-        self(A_OTHER) := payload.iteratedAlpha
+        self(A_OTHER) := u8ToS9(payload.iteratedAlpha)
       }
       is(AlphaSel.TEXTURE) {
-        self(A_OTHER) := payload.textureAlpha
+        self(A_OTHER) := u8ToS9(payload.textureAlpha)
       }
       is(AlphaSel.COLOR1) {
-        self(A_OTHER) := (False ## payload.color1.r).asSInt
+        self(A_OTHER) := u8ToS9(payload.color1.r)
       }
       is(AlphaSel.LFB) {
         self(A_OTHER) := 0
@@ -255,13 +256,13 @@ case class ColorCombine(c: voodoo.Config) extends Component {
     // Select a_local based on alphaLocalSelect
     switch(payload.config.alphaLocalSelect) {
       is(AlphaLocalSel.ITERATED) {
-        self(A_LOCAL) := payload.iteratedAlpha
+        self(A_LOCAL) := u8ToS9(payload.iteratedAlpha)
       }
       is(AlphaLocalSel.COLOR0) {
-        self(A_LOCAL) := (False ## payload.color0.r).asSInt
+        self(A_LOCAL) := u8ToS9(payload.color0.r)
       }
       is(AlphaLocalSel.ITERATED_Z) {
-        self(A_LOCAL) := payload.iteratedZ
+        self(A_LOCAL) := u8ToS9(payload.iteratedZ)
       }
     }
   }

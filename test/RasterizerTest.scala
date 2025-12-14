@@ -48,17 +48,17 @@ class RasterizerTest extends AnyFunSuite {
 
   // Helper to set a box (all pixels inside)
   def setBox(dut: Rasterizer, xmin: Double, xmax: Double, ymin: Double, ymax: Double): Unit = {
-    dut.i.tri.xrange(0) #= xmin
-    dut.i.tri.xrange(1) #= xmax
-    dut.i.tri.yrange(0) #= ymin
-    dut.i.tri.yrange(1) #= ymax
+    dut.i.xrange(0) #= xmin
+    dut.i.xrange(1) #= xmax
+    dut.i.yrange(0) #= ymin
+    dut.i.yrange(1) #= ymax
 
     // All edge functions always positive (entire box is inside)
     for (i <- 0 until 3) {
-      dut.i.tri.coeffs(i).a #= 0.0
-      dut.i.tri.coeffs(i).b #= 0.0
-      dut.i.tri.coeffs(i).c #= 1.0
-      dut.i.tri.edgeStart(i) #= 1.0
+      dut.i.coeffs(i).a #= 0.0
+      dut.i.coeffs(i).b #= 0.0
+      dut.i.coeffs(i).c #= 1.0
+      dut.i.edgeStart(i) #= 1.0
     }
   }
 
@@ -77,16 +77,16 @@ class RasterizerTest extends AnyFunSuite {
   ): Unit = {
     require(edges.length == 3, "Must provide exactly 3 edge equations")
 
-    dut.i.tri.xrange(0) #= xmin
-    dut.i.tri.xrange(1) #= xmax
-    dut.i.tri.yrange(0) #= ymin
-    dut.i.tri.yrange(1) #= ymax
+    dut.i.xrange(0) #= xmin
+    dut.i.xrange(1) #= xmax
+    dut.i.yrange(0) #= ymin
+    dut.i.yrange(1) #= ymax
 
     for (i <- 0 until 3) {
-      dut.i.tri.coeffs(i).a #= edges(i).a
-      dut.i.tri.coeffs(i).b #= edges(i).b
-      dut.i.tri.coeffs(i).c #= edges(i).c
-      dut.i.tri.edgeStart(i) #= edges(i).startValue
+      dut.i.coeffs(i).a #= edges(i).a
+      dut.i.coeffs(i).b #= edges(i).b
+      dut.i.coeffs(i).c #= edges(i).c
+      dut.i.edgeStart(i) #= edges(i).startValue
     }
   }
 

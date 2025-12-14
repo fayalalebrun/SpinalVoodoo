@@ -21,16 +21,18 @@ class TriangleSetupTest extends AnyFunSuite {
       dut.clockDomain.waitSampling()
 
       dut.i.valid #= true
-      dut.i.signBit #= signBit
+      dut.i.triWithSign.signBit #= signBit
       vertices.zipWithIndex.foreach { case ((x, y), i) =>
         // SQ(12, 4) = 12 bits total, 4 fractional bits
         // Scale factor is 2^4 = 16
         val scale = 16
         val xFixed = (x * scale).toInt
         val yFixed = (y * scale).toInt
-        dut.i.tri(i)(0) #= xFixed
-        dut.i.tri(i)(1) #= yFixed
+        dut.i.triWithSign.tri(i)(0) #= xFixed
+        dut.i.triWithSign.tri(i)(1) #= yFixed
       }
+      // Set default gradients (zero gradients for basic triangle tests)
+      setZeroGradients(dut)
       sleep(0) // Let signals settle
 
       dut.clockDomain.waitSampling()
@@ -38,6 +40,15 @@ class TriangleSetupTest extends AnyFunSuite {
       check(dut)
 
       dut.i.valid #= false
+    }
+  }
+
+  // Helper to set zero gradients for tests
+  def setZeroGradients(dut: TriangleSetup): Unit = {
+    for (i <- 0 until 10) { // 10 gradients in GradientBundle
+      dut.i.grads.all(i).start #= 0.0
+      dut.i.grads.all(i).d(0) #= 0.0
+      dut.i.grads.all(i).d(1) #= 0.0
     }
   }
 
@@ -128,11 +139,12 @@ class TriangleSetupTest extends AnyFunSuite {
       val scale = 16
 
       dut.i.valid #= true
-      dut.i.signBit #= false // CCW
+      dut.i.triWithSign.signBit #= false // CCW
       vertices.zipWithIndex.foreach { case ((x, y), i) =>
-        dut.i.tri(i)(0) #= (x * scale).toInt
-        dut.i.tri(i)(1) #= (y * scale).toInt
+        dut.i.triWithSign.tri(i)(0) #= (x * scale).toInt
+        dut.i.triWithSign.tri(i)(1) #= (y * scale).toInt
       }
+      setZeroGradients(dut)
       sleep(0)
 
       dut.clockDomain.waitSampling()
@@ -173,11 +185,12 @@ class TriangleSetupTest extends AnyFunSuite {
       val scale = 16
 
       dut.i.valid #= true
-      dut.i.signBit #= true // CW
+      dut.i.triWithSign.signBit #= true // CW
       vertices.zipWithIndex.foreach { case ((x, y), i) =>
-        dut.i.tri(i)(0) #= (x * scale).toInt
-        dut.i.tri(i)(1) #= (y * scale).toInt
+        dut.i.triWithSign.tri(i)(0) #= (x * scale).toInt
+        dut.i.triWithSign.tri(i)(1) #= (y * scale).toInt
       }
+      setZeroGradients(dut)
       sleep(0)
 
       dut.clockDomain.waitSampling()
@@ -221,11 +234,12 @@ class TriangleSetupTest extends AnyFunSuite {
       val scale = 16
 
       dut.i.valid #= true
-      dut.i.signBit #= false // CCW
+      dut.i.triWithSign.signBit #= false // CCW
       vertices.zipWithIndex.foreach { case ((x, y), i) =>
-        dut.i.tri(i)(0) #= (x * scale).toInt
-        dut.i.tri(i)(1) #= (y * scale).toInt
+        dut.i.triWithSign.tri(i)(0) #= (x * scale).toInt
+        dut.i.triWithSign.tri(i)(1) #= (y * scale).toInt
       }
+      setZeroGradients(dut)
       sleep(0)
 
       dut.clockDomain.waitSampling()
@@ -376,15 +390,21 @@ class TriangleSetupTest extends AnyFunSuite {
       dut.clockDomain.waitSampling()
 
       dut.i.valid #= true
-      dut.i.signBit #= signBit
+      dut.i.triWithSign.signBit #= signBit
       vertices.zipWithIndex.foreach { case ((x, y), i) =>
         // SQ(20, 4) = 20 bits total, 4 fractional bits
         // Scale factor is 2^4 = 16
         val scale = 16
         val xFixed = (x * scale).toInt
         val yFixed = (y * scale).toInt
-        dut.i.tri(i)(0) #= xFixed
-        dut.i.tri(i)(1) #= yFixed
+        dut.i.triWithSign.tri(i)(0) #= xFixed
+        dut.i.triWithSign.tri(i)(1) #= yFixed
+      }
+      // Set zero gradients for large triangle tests
+      for (i <- 0 until 10) {
+        dut.i.grads.all(i).start #= 0.0
+        dut.i.grads.all(i).d(0) #= 0.0
+        dut.i.grads.all(i).d(1) #= 0.0
       }
       sleep(0) // Let signals settle
 

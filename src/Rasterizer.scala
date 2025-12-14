@@ -5,7 +5,7 @@ import spinal.lib._
 import voodoo.utils.StreamWhile
 
 case class Rasterizer(c: Config) extends Component {
-  val i = slave Stream (Rasterizer.Input(c))
+  val i = slave Stream (TriangleSetup.Output(c))
   val o = master Stream (Rasterizer.Output(c))
 
   val streamWhileResult = StreamWhile(
@@ -13,19 +13,19 @@ case class Rasterizer(c: Config) extends Component {
     stateType = HardType(Rasterizer.State(c)),
     outputType = HardType(Rasterizer.OutputWithFlag(c)),
     maxIterations = c.maxFbDims._1 * c.maxFbDims._2,
-    init = (input: Rasterizer.Input) => {
+    init = (input: TriangleSetup.Output) => {
       val state = cloneOf(Rasterizer.State(c))
       state.input := input
 
       // Initialize coordinates to top-left of bounding box
-      state.coords(0) := input.tri.xrange(0)
-      state.coords(1) := input.tri.yrange(0)
+      state.coords(0) := input.xrange(0)
+      state.coords(1) := input.yrange(0)
 
       // Start going right
       state.goingRight := True
 
       // Initialize edge function values
-      state.edge := input.tri.edgeStart
+      state.edge := input.edgeStart
 
       // Initialize gradient values
       state.grads.all.zip(input.grads.all).foreach { case (out, in) =>
@@ -45,13 +45,14 @@ case class Rasterizer(c: Config) extends Component {
       output.data.coords(0) := state.coords(0).floor(0).asSInt
       output.data.coords(1) := state.coords(1).floor(0).asSInt
       output.data.grads := state.grads
+      output.data.config := state.input.config // Pass through per-triangle config
       output.insideTriangle := insideTriangle
 
       // Compute next state
       val next = cloneOf(state)
 
-      val xmin = state.input.tri.xrange(0)
-      val xmax = state.input.tri.xrange(1)
+      val xmin = state.input.xrange(0)
+      val xmax = state.input.xrange(1)
       // At edge when current position is at the boundary for our direction
       val atEdge = (state.goingRight && (state.coords(0) >= xmax)) ||
         (!state.goingRight && (state.coords(0) <= xmin))
@@ -63,14 +64,18 @@ case class Rasterizer(c: Config) extends Component {
       val negOne = AFix.SQ(7 bits, 4 bits)
       negOne := -1.0
 
-      // Gradient formats in order: red, green, blue, depth, alpha, w
+      // Gradient formats in order: red, green, blue, depth, alpha, w, s0, t0, s1, t1
       val gradFormats = Seq(
         c.vColorFormat,
         c.vColorFormat,
         c.vColorFormat,
         c.vDepthFormat,
         c.vColorFormat,
-        c.wFormat
+        c.wFormat,
+        c.texCoordsFormat,
+        c.texCoordsFormat,
+        c.texCoordsFormat,
+        c.texCoordsFormat
       )
 
       when(atEdge) {
@@ -80,7 +85,7 @@ case class Rasterizer(c: Config) extends Component {
         next.goingRight := !state.goingRight
 
         // Update edges and gradients: add b/dy
-        next.edge.zip(state.edge).zip(state.input.tri.coeffs).foreach { case ((nxt, cur), coeff) =>
+        next.edge.zip(state.edge).zip(state.input.coeffs).foreach { case ((nxt, cur), coeff) =>
           nxt := (cur + coeff.b).fixTo(c.coefficientFormat)
         }
         next.grads.all.zip(state.grads.all).zip(state.input.grads.all).zipWithIndex.foreach {
@@ -95,7 +100,7 @@ case class Rasterizer(c: Config) extends Component {
         next.goingRight := state.goingRight
 
         // Update edges and gradients: add/subtract a/dx based on direction
-        next.edge.zip(state.edge).zip(state.input.tri.coeffs).foreach { case ((nxt, cur), coeff) =>
+        next.edge.zip(state.edge).zip(state.input.coeffs).foreach { case ((nxt, cur), coeff) =>
           val da = state.goingRight ? coeff.a | (-coeff.a)
           nxt := (cur + da).fixTo(c.coefficientFormat)
         }
@@ -109,7 +114,7 @@ case class Rasterizer(c: Config) extends Component {
       next.input := state.input
 
       // Check if this is the last pixel: either next Y is out of bounds, or at max iterations
-      val nextOutOfBounds = next.coords(1) > state.input.tri.yrange(1)
+      val nextOutOfBounds = next.coords(1) > state.input.yrange(1)
       val isLast = nextOutOfBounds
 
       (next, isLast)
@@ -137,18 +142,24 @@ object Rasterizer {
     val depthGrad = mk(c.vDepthFormat)
     val alphaGrad = mk(c.vColorFormat)
     val wGrad = mk(c.wFormat)
+    // TMU0 texture coordinates (14.18 format)
+    val s0Grad = mk(c.texCoordsFormat)
+    val t0Grad = mk(c.texCoordsFormat)
+    // TMU1 texture coordinates (14.18 format)
+    val s1Grad = mk(c.texCoordsFormat)
+    val t1Grad = mk(c.texCoordsFormat)
 
-    def all: Seq[T] = Seq(redGrad, greenGrad, blueGrad, depthGrad, alphaGrad, wGrad)
+    def all: Seq[T] =
+      Seq(redGrad, greenGrad, blueGrad, depthGrad, alphaGrad, wGrad, s0Grad, t0Grad, s1Grad, t1Grad)
   }
 
-  case class Input(c: Config) extends Bundle {
-    val grads = GradientBundle(InputGradient(_), c)
-    val tri = TriangleSetup.Output(c)
-  }
+  /** Input is directly the TriangleSetup output (which includes gradients) */
+  type Input = TriangleSetup.Output
 
   case class Output(c: Config) extends Bundle {
     val grads = GradientBundle(AFix(_), c)
     val coords = Vec.fill(2)(SInt(c.vertexFormat.nonFraction bits))
+    val config = TriangleSetup.PerTriangleConfig() // Per-triangle render configuration
   }
 
   case class OutputWithFlag(c: Config) extends Bundle {
@@ -161,6 +172,6 @@ object Rasterizer {
     val grads = GradientBundle(AFix(_), c)
     val edge = Vec.fill(3)(AFix(c.coefficientFormat))
     val goingRight = Bool() // Direction flag for serpentine scanning
-    val input = Input(c) // Keep input for iteration
+    val input = TriangleSetup.Output(c) // Keep input for iteration
   }
 }

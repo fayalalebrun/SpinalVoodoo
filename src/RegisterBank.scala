@@ -370,6 +370,42 @@ case class RegisterBank(config: Config) extends Component {
   }
 
   // ========================================================================
+  // TMU1 Texture Coordinates (for second texture unit)
+  // These are placed at 0x250-0x26C to avoid conflicts with other register areas
+  // ========================================================================
+  val tmu1Coords = new Area {
+    // TMU1 Start Values
+    val startS1 = busif
+      .newRegAt(0x250, "startS1")
+      .field(SInt(32 bits), AccessType.WO, 0, "TMU1 Starting S texture coord (14.18 fixed)")
+      .asOutput()
+    val startT1 = busif
+      .newRegAt(0x254, "startT1")
+      .field(SInt(32 bits), AccessType.WO, 0, "TMU1 Starting T texture coord (14.18 fixed)")
+      .asOutput()
+
+    // TMU1 X Gradients
+    val dS1dX = busif
+      .newRegAt(0x258, "dS1dX")
+      .field(SInt(32 bits), AccessType.WO, 0, "TMU1 S texture gradient dS/dX (14.18 fixed)")
+      .asOutput()
+    val dT1dX = busif
+      .newRegAt(0x25c, "dT1dX")
+      .field(SInt(32 bits), AccessType.WO, 0, "TMU1 T texture gradient dT/dX (14.18 fixed)")
+      .asOutput()
+
+    // TMU1 Y Gradients
+    val dS1dY = busif
+      .newRegAt(0x260, "dS1dY")
+      .field(SInt(32 bits), AccessType.WO, 0, "TMU1 S texture gradient dS/dY (14.18 fixed)")
+      .asOutput()
+    val dT1dY = busif
+      .newRegAt(0x264, "dT1dY")
+      .field(SInt(32 bits), AccessType.WO, 0, "TMU1 T texture gradient dT/dY (14.18 fixed)")
+      .asOutput()
+  }
+
+  // ========================================================================
   // Command Area (0x080-0x100)
   // Command registers with Stream outputs - FIFO queueing and backpressure handled by BusIf
   // ========================================================================
@@ -721,6 +757,56 @@ case class RegisterBank(config: Config) extends Component {
     val fbiInit7Reg = busif.newRegAt(0x24c, "fbiInit7")
     val fbiInit7_cmdFifoEnable =
       fbiInit7Reg.fieldAt(8, Bool(), AccessType.RW, 0, "Enable command FIFO mode [V2+]").asOutput()
+  }
+
+  // ========================================================================
+  // TMU Configuration Registers (0x300-0x320 for TMU0, 0x340-0x360 for TMU1)
+  // These control texture format, filtering, and base addresses
+  // ========================================================================
+  val tmu0Config = new Area {
+    // textureMode (0x300) - Texture format, filtering, clamp, combine modes
+    val textureModeReg =
+      busif.newRegAtWithCategory(0x300, "textureMode0", RegisterCategory.fifoNoSync)
+    val textureMode =
+      textureModeReg.field(Bits(32 bits), AccessType.WO, 0, "TMU0 texture mode").asOutput()
+
+    // tLOD (0x304) - LOD configuration (not used initially)
+    val tLODReg = busif.newRegAtWithCategory(0x304, "tLOD0", RegisterCategory.fifoNoSync)
+    val tLOD = tLODReg.field(Bits(32 bits), AccessType.WO, 0, "TMU0 LOD configuration").asOutput()
+
+    // tDetail (0x308) - Detail texture parameters (not used initially)
+    val tDetailReg = busif.newRegAtWithCategory(0x308, "tDetail0", RegisterCategory.fifoNoSync)
+    val tDetail =
+      tDetailReg.field(Bits(32 bits), AccessType.WO, 0, "TMU0 detail texture params").asOutput()
+
+    // texBaseAddr (0x30C) - Texture base address
+    val texBaseAddrReg =
+      busif.newRegAtWithCategory(0x30c, "texBaseAddr0", RegisterCategory.fifoNoSync)
+    val texBaseAddr =
+      texBaseAddrReg.field(UInt(24 bits), AccessType.WO, 0, "TMU0 texture base address").asOutput()
+  }
+
+  val tmu1Config = new Area {
+    // textureMode (0x340) - Texture format, filtering, clamp, combine modes
+    val textureModeReg =
+      busif.newRegAtWithCategory(0x340, "textureMode1", RegisterCategory.fifoNoSync)
+    val textureMode =
+      textureModeReg.field(Bits(32 bits), AccessType.WO, 0, "TMU1 texture mode").asOutput()
+
+    // tLOD (0x344) - LOD configuration (not used initially)
+    val tLODReg = busif.newRegAtWithCategory(0x344, "tLOD1", RegisterCategory.fifoNoSync)
+    val tLOD = tLODReg.field(Bits(32 bits), AccessType.WO, 0, "TMU1 LOD configuration").asOutput()
+
+    // tDetail (0x348) - Detail texture parameters (not used initially)
+    val tDetailReg = busif.newRegAtWithCategory(0x348, "tDetail1", RegisterCategory.fifoNoSync)
+    val tDetail =
+      tDetailReg.field(Bits(32 bits), AccessType.WO, 0, "TMU1 detail texture params").asOutput()
+
+    // texBaseAddr (0x34C) - Texture base address
+    val texBaseAddrReg =
+      busif.newRegAtWithCategory(0x34c, "texBaseAddr1", RegisterCategory.fifoNoSync)
+    val texBaseAddr =
+      texBaseAddrReg.field(UInt(24 bits), AccessType.WO, 0, "TMU1 texture base address").asOutput()
   }
 }
 

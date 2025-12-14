@@ -348,8 +348,8 @@ object VoodooTracePlayer {
 
     // Monitor triangles passing through pipeline (after arbiter)
     StreamMonitor(dut.triangleSetup.i, dut.clockDomain) { payload =>
-      val tri = payload.tri
-      val sign = payload.signBit.toBoolean
+      val tri = payload.triWithSign.tri
+      val sign = payload.triWithSign.signBit.toBoolean
 
       // Generate random RGB565 color for this triangle
       val r5 = scala.util.Random.nextInt(32) // 5 bits (0-31)

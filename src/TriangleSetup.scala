@@ -4,12 +4,12 @@ import spinal.core._
 import spinal.lib._
 
 case class TriangleSetup(c: Config) extends Component {
-  val i = slave(Stream(TriangleWithSign(c.vertexFormat)))
+  val i = slave(Stream(TriangleSetup.Input(c)))
   val o = master(Stream(TriangleSetup.Output(c)))
 
   o << i.map { input =>
-    val tri = input.tri
-    val signBit = input.signBit
+    val tri = input.triWithSign.tri
+    val signBit = input.triWithSign.signBit
     val out = cloneOf(o.payload)
 
     // Compute bounding box from raw vertex coordinates
@@ -77,15 +77,49 @@ case class TriangleSetup(c: Config) extends Component {
     }
     out.edgeStart := edgeStartVec
 
+    // Pass through gradients and config captured at command time
+    out.grads := input.grads
+    out.config := input.config
+
     out
   }
 }
 
 object TriangleSetup {
+
+  /** Per-triangle configuration captured at command time. These are registers with FIFO=Yes,
+    * Sync=No in the datasheet, meaning they must be captured when the triangle command is issued to
+    * avoid synchronization hazards.
+    */
+  case class PerTriangleConfig() extends Bundle {
+    // FBI registers
+    val fbzColorPath = Bits(28 bits) // Color path control (FBI + TREX)
+    val fogMode = Bits(6 bits) // Fog mode control (FBI)
+    val alphaMode = Bits(32 bits) // Alpha mode control (FBI)
+
+    // TMU0 registers
+    val tmu0TextureMode = Bits(32 bits)
+    val tmu0TexBaseAddr = UInt(24 bits)
+
+    // TMU1 registers
+    val tmu1TextureMode = Bits(32 bits)
+    val tmu1TexBaseAddr = UInt(24 bits)
+  }
+
+  /** Input bundle - triangle with gradients and render config captured at command time */
+  case class Input(c: Config) extends Bundle {
+    val triWithSign = TriangleWithSign(c.vertexFormat)
+    val grads = Rasterizer.GradientBundle(Rasterizer.InputGradient(_), c)
+    val config = PerTriangleConfig()
+  }
+
+  /** Output bundle - includes computed edge setup, pass-through gradients and config */
   case class Output(c: Config) extends Bundle {
     val coeffs = Vec.fill(3)(Coefficients(c))
     val xrange = vertex2d(c.vertexFormat)
     val yrange = vertex2d(c.vertexFormat)
     val edgeStart = Vec.fill(3)(AFix(c.coefficientFormat))
+    val grads = Rasterizer.GradientBundle(Rasterizer.InputGradient(_), c)
+    val config = PerTriangleConfig()
   }
 }

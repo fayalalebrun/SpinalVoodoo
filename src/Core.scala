@@ -211,12 +211,12 @@ case class Core(c: Config) extends Component {
     cfg.alphaMode := regBank.renderConfig.alphaMode
 
     // TMU0 registers
-    cfg.tmu0TextureMode := regBank.tmu0Config.textureMode
     cfg.tmu0TexBaseAddr := regBank.tmu0Config.texBaseAddr
+    // TODO: Capture tmu0TextureMode, tmu0TLOD, tmu0TDetail when LOD/filtering is implemented
 
     // TMU1 registers
-    cfg.tmu1TextureMode := regBank.tmu1Config.textureMode
     cfg.tmu1TexBaseAddr := regBank.tmu1Config.texBaseAddr
+    // TODO: Capture tmu1TextureMode, tmu1TLOD, tmu1TDetail when LOD/filtering is implemented
 
     cfg
   }
@@ -317,16 +317,14 @@ case class Core(c: Config) extends Component {
   // Connect fork path 1 to TMU0
   tmu0.io.input.translateFrom(rasterFork._1) { (out, in) =>
     out.coords := in.coords
-    out.s := in.grads.s0Grad // TMU0's S coordinate
-    out.t := in.grads.t0Grad // TMU0's T coordinate
-    out.w := in.grads.wGrad // Shared W
+    out.s := in.grads.s0Grad // TMU0's S/W coordinate
+    out.t := in.grads.t0Grad // TMU0's T/W coordinate
+    out.w := in.grads.wGrad // Shared 1/W
     out.cOther.r := 0 // No upstream texture for TMU0
     out.cOther.g := 0
     out.cOther.b := 0
     out.aOther := 0
-    out.grads := in.grads // Pass through (but won't be used from TMU output)
     // TMU0 config from captured per-triangle state
-    out.config.textureMode := in.config.tmu0TextureMode
     out.config.texBaseAddr := in.config.tmu0TexBaseAddr
   }
 
@@ -344,14 +342,12 @@ case class Core(c: Config) extends Component {
     val tmu0Out = payload._1
     val rasterOut = payload._2
     out.coords := tmu0Out.coords
-    out.s := rasterOut.grads.s1Grad // TMU1's S coordinate from original rasterizer output
-    out.t := rasterOut.grads.t1Grad // TMU1's T coordinate from original rasterizer output
-    out.w := rasterOut.grads.wGrad // Shared W
+    out.s := rasterOut.grads.s1Grad // TMU1's S/W coordinate from original rasterizer output
+    out.t := rasterOut.grads.t1Grad // TMU1's T/W coordinate from original rasterizer output
+    out.w := rasterOut.grads.wGrad // Shared 1/W
     out.cOther := tmu0Out.texture // TMU0's texture output becomes TMU1's c_other
     out.aOther := tmu0Out.textureAlpha
-    out.grads := rasterOut.grads // Pass through original gradients
     // TMU1 config from captured per-triangle state
-    out.config.textureMode := rasterOut.config.tmu1TextureMode
     out.config.texBaseAddr := rasterOut.config.tmu1TexBaseAddr
   }
 

@@ -19,22 +19,7 @@ class TmuTest extends AnyFunSuite {
 
   // Helper to set default config (now part of input stream)
   def setDefaultConfig(dut: Tmu): Unit = {
-    dut.io.input.payload.config.textureMode #= 0
     dut.io.input.payload.config.texBaseAddr #= 0
-  }
-
-  // Helper to set default gradient values (all zeros)
-  def setDefaultGrads(dut: Tmu): Unit = {
-    dut.io.input.payload.grads.redGrad #= 0.0
-    dut.io.input.payload.grads.greenGrad #= 0.0
-    dut.io.input.payload.grads.blueGrad #= 0.0
-    dut.io.input.payload.grads.depthGrad #= 0.0
-    dut.io.input.payload.grads.alphaGrad #= 0.0
-    dut.io.input.payload.grads.wGrad #= 1.0
-    dut.io.input.payload.grads.s0Grad #= 0.0
-    dut.io.input.payload.grads.t0Grad #= 0.0
-    dut.io.input.payload.grads.s1Grad #= 0.0
-    dut.io.input.payload.grads.t1Grad #= 0.0
   }
 
   // Helper to set default input values
@@ -43,19 +28,16 @@ class TmuTest extends AnyFunSuite {
     dut.io.input.payload.coords(0) #= 100
     dut.io.input.payload.coords(1) #= 200
 
-    // Texture coordinates (0,0)
+    // Texture coordinates (0,0) - these are S/W and T/W
     dut.io.input.payload.s #= 0.0
     dut.io.input.payload.t #= 0.0
-    dut.io.input.payload.w #= 1.0
+    dut.io.input.payload.w #= 1.0 // 1/W = 1.0 means W = 1.0
 
     // No upstream texture (for TMU0)
     dut.io.input.payload.cOther.r #= 0
     dut.io.input.payload.cOther.g #= 0
     dut.io.input.payload.cOther.b #= 0
     dut.io.input.payload.aOther #= 0
-
-    // Set default gradients
-    setDefaultGrads(dut)
 
     // Set default config
     setDefaultConfig(dut)
@@ -365,55 +347,7 @@ class TmuTest extends AnyFunSuite {
     }
   }
 
-  test("TMU gradients pass through") {
-    SimConfig.withIVerilog.withWave.compile(Tmu(config)).doSim { dut =>
-      setupDut(dut)
-      setDefaultInput(dut)
-
-      // Set specific gradient values
-      dut.io.input.payload.grads.redGrad #= 128.0
-      dut.io.input.payload.grads.greenGrad #= 64.0
-      dut.io.input.payload.grads.blueGrad #= 32.0
-
-      dut.io.input.valid #= true
-
-      var cycles = 0
-      while (!dut.io.output.valid.toBoolean && cycles < maxPipelineLatency) {
-        if (dut.io.texRead.cmd.valid.toBoolean) {
-          dut.io.texRead.cmd.ready #= true
-          dut.io.texRead.rsp.valid #= true
-          dut.io.texRead.rsp.fragment.data #= 0xffff
-          dut.io.texRead.rsp.last #= true
-        } else {
-          dut.io.texRead.cmd.ready #= false
-          dut.io.texRead.rsp.valid #= false
-        }
-        dut.clockDomain.waitSampling()
-        cycles += 1
-      }
-
-      assert(dut.io.output.valid.toBoolean, s"Expected output to be valid (waited $cycles cycles)")
-
-      // Check gradients pass through (with some tolerance for fixed-point conversion)
-      val outR = dut.io.output.payload.grads.redGrad.toDouble
-      val outG = dut.io.output.payload.grads.greenGrad.toDouble
-      val outB = dut.io.output.payload.grads.blueGrad.toDouble
-
-      println(s"Gradients: R=$outR, G=$outG, B=$outB")
-
-      val tolerance = 0.1
-      assert(
-        scala.math.abs(outR - 128.0) < tolerance,
-        s"Red gradient should pass through (got $outR)"
-      )
-      assert(
-        scala.math.abs(outG - 64.0) < tolerance,
-        s"Green gradient should pass through (got $outG)"
-      )
-      assert(
-        scala.math.abs(outB - 32.0) < tolerance,
-        s"Blue gradient should pass through (got $outB)"
-      )
-    }
-  }
+  // Note: Gradients no longer pass through TMU - they flow through the queue in Core.scala
+  // The TMU only outputs texture color and coordinates. Gradient synchronization is handled
+  // by the Fork/Queue/Join pattern in Core, not by passing grads through TMU.
 }

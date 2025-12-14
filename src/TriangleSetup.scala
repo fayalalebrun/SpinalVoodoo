@@ -98,12 +98,12 @@ object TriangleSetup {
     val alphaMode = Bits(32 bits) // Alpha mode control (FBI)
 
     // TMU0 registers
-    val tmu0TextureMode = Bits(32 bits)
     val tmu0TexBaseAddr = UInt(24 bits)
+    // TODO: Add tmu0TextureMode, tmu0TLOD, tmu0TDetail when LOD/filtering is implemented
 
     // TMU1 registers
-    val tmu1TextureMode = Bits(32 bits)
     val tmu1TexBaseAddr = UInt(24 bits)
+    // TODO: Add tmu1TextureMode, tmu1TLOD, tmu1TDetail when LOD/filtering is implemented
   }
 
   /** Input bundle - triangle with gradients and render config captured at command time */

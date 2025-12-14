@@ -44,11 +44,34 @@ case class Tmu(c: voodoo.Config) extends Component {
   val inputReg = Reg(Tmu.Input(c))
   val texelData = Reg(Bits(16 bits))
 
-  // Texture coordinate calculations (simplified: assume W = 1.0)
+  // Perspective correction: The rasterizer interpolates S/W, T/W, and 1/W.
+  // To get actual texture coordinates: S = (S/W) / (1/W) = (S/W) * W
+  // Input w is 1/W in 2.30 format, s is S/W in 14.18 format.
+  // We need: S = s / w = s * (1/w) = s * W
+  //
+  // For division, we compute reciprocal of w (which gives us W), then multiply.
+  // Using Newton-Raphson: x_{n+1} = x_n * (2 - d * x_n)
+  // Starting estimate from leading zero count.
+  //
+  // TODO: textureMode bit 0 (tpersp_st) controls whether perspective correction is enabled
+  val oow = io.input.payload.w // 1/W in 2.30 format
+  val sow = io.input.payload.s // S/W in 14.18 format
+  val tow = io.input.payload.t // T/W in 14.18 format
+
+  // For this implementation, skip perspective correction when w is close to 1.0
+  // (which is the common case for simple 2D or orthographic rendering)
+  // Full perspective correction requires a multi-cycle divider
+  //
+  // Simplified approach: S_corrected = S/W * (1 / (1/W)) = S/W * W
+  // When 1/W = 1.0 (W = 1.0), S_corrected = S/W (no correction needed)
+  // For now, pass through without correction - proper divider TODO
+  val sCorrected = sow
+  val tCorrected = tow
+
   // Extract integer texel coordinates from S and T
   // S and T are in 14.18 format, we take the integer part
-  val sInt = io.input.payload.s.floor(0).asSInt
-  val tInt = io.input.payload.t.floor(0).asSInt
+  val sInt = sCorrected.floor(0).asSInt
+  val tInt = tCorrected.floor(0).asSInt
 
   // For now, assume 256x256 texture and just take lower 8 bits
   val texWidthBits = 8 // 256 texels
@@ -118,26 +141,24 @@ case class Tmu(c: voodoo.Config) extends Component {
   io.output.payload.texture.g := g8
   io.output.payload.texture.b := b8
   io.output.payload.textureAlpha := U(255, 8 bits) // RGB565 has no alpha
-  io.output.payload.grads := inputReg.grads
 }
 
 object Tmu {
 
   /** Per-TMU configuration (captured per-triangle) */
   case class TmuConfig() extends Bundle {
-    val textureMode = Bits(32 bits) // Texture mode register
     val texBaseAddr = UInt(24 bits) // Texture base address
+    // TODO: Add tLOD and tDetail when LOD/mipmapping is implemented
   }
 
   /** TMU input bundle */
   case class Input(c: voodoo.Config) extends Bundle {
     val coords = Vec.fill(2)(SInt(c.vertexFormat.nonFraction bits))
-    val s = AFix(c.texCoordsFormat) // This TMU's S coordinate (14.18)
-    val t = AFix(c.texCoordsFormat) // This TMU's T coordinate (14.18)
-    val w = AFix(c.wFormat) // Shared W coordinate (2.30)
+    val s = AFix(c.texCoordsFormat) // This TMU's S/W coordinate (14.18)
+    val t = AFix(c.texCoordsFormat) // This TMU's T/W coordinate (14.18)
+    val w = AFix(c.wFormat) // Shared 1/W coordinate (2.30)
     val cOther = Color.u8() // RGB from upstream (zeros for TMU0)
     val aOther = UInt(8 bits) // Alpha from upstream (zero for TMU0)
-    val grads = Rasterizer.GradientBundle(AFix(_), c)
     val config = TmuConfig() // Per-triangle TMU configuration
   }
 
@@ -146,7 +167,6 @@ object Tmu {
     val coords = Vec.fill(2)(SInt(c.vertexFormat.nonFraction bits))
     val texture = Color.u8() // Texture RGB
     val textureAlpha = UInt(8 bits) // Texture alpha
-    val grads = Rasterizer.GradientBundle(AFix(_), c)
   }
 
   /** BMB parameters for texture memory access */

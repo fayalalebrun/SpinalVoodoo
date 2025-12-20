@@ -38,7 +38,7 @@
     pkgs.ghdl
     pkgs.yosys
     pkgs.yosys-ghdl
-    pkgs.symbiyosys
+    pkgs.sby
     pkgs.yices
     pkgs.z3
     pkgs.verilator

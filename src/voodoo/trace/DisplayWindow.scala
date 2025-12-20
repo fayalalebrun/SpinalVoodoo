@@ -69,6 +69,9 @@ class DisplayWindow(
   // Flag to trigger redraw (start false, first pixel update will trigger)
   private var needsRedraw = false
 
+  // Flag to track if window has been closed
+  @volatile private var windowClosed = false
+
   case class PixelUpdate(addr: Long, value: Byte)
 
   /** Initialize JavaFX window (called from JavaFX application thread) */
@@ -197,8 +200,8 @@ class DisplayWindow(
     stage.setTitle(s"Voodoo Trace Player - ${width}x${height} (scroll to zoom, drag to pan)")
     stage.setScene(scene)
     stage.setOnCloseRequest(_ => {
+      windowClosed = true
       Platform.exit()
-      System.exit(0)
     })
     stage.show()
 
@@ -319,6 +322,9 @@ class DisplayWindow(
     // Wait for window to initialize
     Thread.sleep(1000)
   }
+
+  /** Check if window has been closed */
+  def isClosed: Boolean = windowClosed
 
   /** Clear the framebuffer */
   def clear(): Unit = {

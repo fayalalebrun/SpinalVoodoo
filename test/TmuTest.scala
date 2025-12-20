@@ -19,7 +19,11 @@ class TmuTest extends AnyFunSuite {
 
   // Helper to set default config (now part of input stream)
   def setDefaultConfig(dut: Tmu): Unit = {
+    // Default textureMode: RGB565 format (8), no clamping, no perspective
+    dut.io.input.payload.config.textureMode #= (Tmu.TextureFormat.RGB565 << 8)
     dut.io.input.payload.config.texBaseAddr #= 0
+    // Default tLOD: lodmin=0, lodmax=8, lodbias=0, aspect=1:1
+    dut.io.input.payload.config.tLOD #= 0x00200 // lodmax=8 (bits 11:6 = 0b100000)
   }
 
   // Helper to set default input values
@@ -38,6 +42,12 @@ class TmuTest extends AnyFunSuite {
     dut.io.input.payload.cOther.g #= 0
     dut.io.input.payload.cOther.b #= 0
     dut.io.input.payload.aOther #= 0
+
+    // Default gradients (1 texel per pixel - LOD 0)
+    dut.io.input.payload.dSdX #= 1.0
+    dut.io.input.payload.dTdX #= 0.0
+    dut.io.input.payload.dSdY #= 0.0
+    dut.io.input.payload.dTdY #= 1.0
 
     // Set default config
     setDefaultConfig(dut)

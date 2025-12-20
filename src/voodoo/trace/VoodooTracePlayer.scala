@@ -90,9 +90,23 @@ object VoodooTracePlayer {
     // Get entries to replay
     val entries = config.frameNum match {
       case Some(frameNum) =>
+        // Print available frames for debugging
+        parser.frameIndex match {
+          case Some(frames) =>
+            println(s"[DEBUG] Index loaded with ${frames.length} frames")
+            println(
+              s"[DEBUG] Frame numbers available: ${frames.map(_.frameNum).take(10).mkString(", ")}${
+                  if (frames.length > 10) "..." else ""
+                }"
+            )
+          case None =>
+            println(s"[DEBUG] No frame index loaded!")
+        }
         parser.readFrameEntries(frameNum) match {
-          case Some(iter) => iter
-          case None       =>
+          case Some(iter) =>
+            println(s"[DEBUG] Loading frame $frameNum")
+            iter
+          case None =>
             System.err.println(s"ERROR: Frame $frameNum not found in index")
             System.exit(1)
             Iterator.empty
@@ -108,8 +122,10 @@ object VoodooTracePlayer {
     val debugTracker = new DebugTracker(stride = stride)
     val display = DisplayWindow(width, height, stride, Some(debugTracker))
 
-    // Run simulation
-    SimConfig.withVerilator.withWave.compile(Core(voodooConfig)).doSim { dut =>
+    // Run simulation - use doSimUntilVoid to allow clean termination via simSuccess()
+    SimConfig.withVerilator.withWave.compile(Core(voodooConfig)).doSimUntilVoid { dut =>
+      println("[DEBUG] Simulation started, setting up DUT...")
+
       // Tracked gradient values for creating triangles
       var startR, startG, startB, startZ, startA, startW = 0L
       var dRdX, dGdX, dBdX, dZdX, dAdX, dWdX = 0L
@@ -183,109 +199,159 @@ object VoodooTracePlayer {
       val framebuffer = FramebufferModel(fbSize, Some(display))
       framebuffer.addPort(dut.io.fbWrite, 0, dut.clockDomain)
 
+      // Create texture memory model (4MB for each TMU, typical Voodoo config)
+      val texMemSize = 4 * 1024 * 1024L
+      val textureMemory = TextureMemoryModel(texMemSize)
+      textureMemory.addReadPort(dut.io.texRead0, 0, dut.clockDomain)
+      textureMemory.addReadPort(dut.io.texRead1, 0, dut.clockDomain)
+      println("[DEBUG] Texture memory model created (4MB)")
+
       val bmbDriver = new BmbDriver(dut.io.regBus, dut.clockDomain)
+      println("[DEBUG] BMB driver created")
 
       // Set framebuffer base address
       dut.io.fbBaseAddr #= 0
+      println("[DEBUG] Framebuffer base address set, ready to replay")
 
-      // Main replay loop
-      var currentCycle = 0L
-      var lastTimestamp = 0L
-      var entryCount = 0
+      // Flag to track if replay is complete
+      @volatile var replayComplete = false
 
-      // Track triangle geometry for logging (vertices only - gradients tracked above)
-      var vax, vay, vbx, vby, vcx, vcy = 0L
+      // Fork the trace replay loop - this may block on bus writes, but that's OK
+      // The main thread will monitor the window and can terminate the simulation
+      fork {
+        // Main replay loop
+        var currentCycle = 0L
+        var lastTimestamp = 0L
+        var entryCount = 0
 
-      for (entry <- entries) {
-        entryCount += 1
-        // Handle timing if in accurate mode
-        config.timingMode match {
-          case TimingMode.Accurate =>
-            val targetCycle = entry.timestamp
-            while (currentCycle < targetCycle) {
-              dut.clockDomain.waitSampling()
-              currentCycle += 1
-            }
-          case TimingMode.FreeRun =>
-          // Just execute commands as fast as possible
+        // Track triangle geometry for logging (vertices only - gradients tracked above)
+        var vax, vay, vbx, vby, vcx, vcy = 0L
+
+        println("[DEBUG] Starting trace replay loop (forked)...")
+
+        for (entry <- entries) {
+          entryCount += 1
+          if (entryCount % 10000 == 0)
+            println(s"[DEBUG] Processing entry $entryCount...")
+          // Handle timing if in accurate mode
+          config.timingMode match {
+            case TimingMode.Accurate =>
+              val targetCycle = entry.timestamp
+              while (currentCycle < targetCycle) {
+                dut.clockDomain.waitSampling()
+                currentCycle += 1
+              }
+            case TimingMode.FreeRun =>
+            // Just execute commands as fast as possible
+          }
+
+          // Process command based on type
+          entry.cmdType match {
+            case TraceCommandType.WRITE_REG_L =>
+              // Skip if address is outside register space (LFB/texture writes mislabeled as register)
+              // Registers are in range 0x000-0x3FF (10-bit address space)
+              // Addresses >= 0x100000 are LFB/aux writes that should be ignored
+              if ((entry.addr & 0xfff000) != 0) {
+                // This is a mislabeled LFB write, skip it
+              } else {
+                // Repeat the command 'count' times if coalesced
+                // Mask address to 12 bits for register bus
+                val regAddr = entry.addr & 0xfff
+
+                // Track triangle geometry values and gradients
+                regAddr match {
+                  case 0x008 => vax = entry.data
+                  case 0x00c => vay = entry.data
+                  case 0x010 => vbx = entry.data
+                  case 0x014 => vby = entry.data
+                  case 0x018 => vcx = entry.data
+                  case 0x01c => vcy = entry.data
+                  // Start values (R, G, B, Z, A, W)
+                  case 0x020 => startR = entry.data
+                  case 0x024 => startG = entry.data
+                  case 0x028 => startB = entry.data
+                  case 0x02c => startZ = entry.data
+                  case 0x030 => startA = entry.data
+                  case 0x034 => startW = entry.data
+                  // X gradients (dR/dX, dG/dX, dB/dX, dZ/dX, dA/dX, dW/dX)
+                  case 0x040 => dRdX = entry.data
+                  case 0x044 => dGdX = entry.data
+                  case 0x048 => dBdX = entry.data
+                  case 0x04c => dZdX = entry.data
+                  case 0x050 => dAdX = entry.data
+                  case 0x054 => dWdX = entry.data
+                  // Y gradients (dR/dY, dG/dY, dB/dY, dZ/dY, dA/dY, dW/dY)
+                  case 0x060 => dRdY = entry.data
+                  case 0x064 => dGdY = entry.data
+                  case 0x068 => dBdY = entry.data
+                  case 0x06c => dZdY = entry.data
+                  case 0x070 => dAdY = entry.data
+                  case 0x074 => dWdY = entry.data
+                  case _     =>
+                }
+
+                for (_ <- 0 until entry.count) {
+                  bmbDriver.write(BigInt(entry.data), BigInt(regAddr))
+                }
+              } // end if valid register address
+
+            case TraceCommandType.WRITE_REG_W =>
+              // Skip if address is outside register space (mislabeled LFB writes)
+              if ((entry.addr & 0xfff000) == 0) {
+                // Mask address to 12 bits for register bus
+                val regAddr = entry.addr & 0xfff
+                val data16 = entry.data & 0xffff
+                for (_ <- 0 until entry.count) {
+                  bmbDriver.write(BigInt(data16), BigInt(regAddr))
+                }
+              }
+
+            case TraceCommandType.VSYNC =>
+            // Frame sync - no action needed
+
+            case TraceCommandType.SWAP =>
+            // Buffer swap - no action needed
+
+            case _ =>
+            // Ignore other command types (FB/TEX writes, reads)
+          }
+
+          lastTimestamp = entry.timestamp
         }
 
-        // Process command based on type
-        entry.cmdType match {
-          case TraceCommandType.WRITE_REG_L =>
-            // Repeat the command 'count' times if coalesced
-            // Mask address to 12 bits for register bus
-            val regAddr = entry.addr & 0xfff
-
-            // Track triangle geometry values and gradients
-            regAddr match {
-              case 0x008 => vax = entry.data
-              case 0x00c => vay = entry.data
-              case 0x010 => vbx = entry.data
-              case 0x014 => vby = entry.data
-              case 0x018 => vcx = entry.data
-              case 0x01c => vcy = entry.data
-              // Start values (R, G, B, Z, A, W)
-              case 0x020 => startR = entry.data
-              case 0x024 => startG = entry.data
-              case 0x028 => startB = entry.data
-              case 0x02c => startZ = entry.data
-              case 0x030 => startA = entry.data
-              case 0x034 => startW = entry.data
-              // X gradients (dR/dX, dG/dX, dB/dX, dZ/dX, dA/dX, dW/dX)
-              case 0x040 => dRdX = entry.data
-              case 0x044 => dGdX = entry.data
-              case 0x048 => dBdX = entry.data
-              case 0x04c => dZdX = entry.data
-              case 0x050 => dAdX = entry.data
-              case 0x054 => dWdX = entry.data
-              // Y gradients (dR/dY, dG/dY, dB/dY, dZ/dY, dA/dY, dW/dY)
-              case 0x060 => dRdY = entry.data
-              case 0x064 => dGdY = entry.data
-              case 0x068 => dBdY = entry.data
-              case 0x06c => dZdY = entry.data
-              case 0x070 => dAdY = entry.data
-              case 0x074 => dWdY = entry.data
-              case _     =>
-            }
-
-            for (_ <- 0 until entry.count) {
-              bmbDriver.write(BigInt(entry.data), BigInt(regAddr))
-            }
-
-          case TraceCommandType.WRITE_REG_W =>
-            // Mask address to 12 bits for register bus
-            val regAddr = entry.addr & 0xfff
-            val data16 = entry.data & 0xffff
-            for (_ <- 0 until entry.count) {
-              bmbDriver.write(BigInt(data16), BigInt(regAddr))
-            }
-
-          case TraceCommandType.VSYNC =>
-          // Frame sync - no action needed
-
-          case TraceCommandType.SWAP =>
-          // Buffer swap - no action needed
-
-          case _ =>
-          // Ignore other command types (FB/TEX writes, reads)
+        println("[DEBUG] Trace replay complete, letting simulation run for 10000 cycles...")
+        for (i <- 0 until 10000) {
+          dut.clockDomain.waitSampling()
+          if (i % 2000 == 0) println(s"[DEBUG] Cycle $i / 10000")
         }
-
-        lastTimestamp = entry.timestamp
+        println("[DEBUG] Replay thread finished")
+        replayComplete = true
       }
 
-      // Let simulation run for a bit longer to finish rendering
-      for (_ <- 0 until 10000) {
-        dut.clockDomain.waitSampling()
+      // Main thread: monitor window close and terminate simulation
+      // This thread stays responsive because it only does short waitSampling calls
+      println("[DEBUG] Main thread monitoring window...")
+      while (!display.isClosed && !replayComplete) {
+        dut.clockDomain.waitSampling(100) // Short wait to stay responsive
       }
 
-      // Keep simulation alive while display is open
-      while (true) {
-        Thread.sleep(100)
+      if (display.isClosed) {
+        println("[DEBUG] Window closed, terminating simulation...")
+        simSuccess()
+      } else {
+        // Replay complete, wait for window to close
+        println("[DEBUG] Replay complete, waiting for window close...")
+        while (!display.isClosed) {
+          dut.clockDomain.waitSampling(100)
+        }
+        println("[DEBUG] Window closed after replay, terminating...")
+        simSuccess()
       }
     }
 
+    println("[DEBUG] Simulation block exited")
     parser.close()
+    println("Trace player finished.")
   }
 
   private def setupDut(
@@ -404,6 +470,134 @@ object VoodooTracePlayer {
         debugTracker.rasterizerFinished()
       }
       prevRunning = running
+    }
+
+    // Stream stall monitoring - detect when streams are stalled for too long
+    val stallThreshold = 500
+    val streamStallCounters = scala.collection.mutable.Map[String, Long]()
+    val streamStallWarned = scala.collection.mutable.Set[String]()
+
+    // Define the pipeline stream path (input to output)
+    val streamPath = Seq(
+      "triangleSetup.i",
+      "triangleSetup.o",
+      "rasterizer.o",
+      "tmu0.io.input",
+      "tmu0.io.output",
+      "tmu1.io.input",
+      "tmu1.io.output",
+      "colorCombine.io.input",
+      "colorCombine.io.output",
+      "write.i.fromPipeline",
+      "write.o.fbWrite.cmd"
+    )
+
+    // Print the stream path at startup
+    println("[STALL MONITOR] Pipeline stream path:")
+    streamPath.zipWithIndex.foreach { case (name, idx) =>
+      val arrow = if (idx < streamPath.length - 1) " ->" else ""
+      println(f"  [$idx%2d] $name$arrow")
+    }
+
+    // Helper to check a stream's stall status
+    def checkStreamStall(name: String, valid: Boolean, ready: Boolean): Unit = {
+      val isStall = valid && !ready
+      if (isStall) {
+        val count = streamStallCounters.getOrElse(name, 0L) + 1
+        streamStallCounters(name) = count
+        if (count >= stallThreshold && !streamStallWarned.contains(name)) {
+          println(
+            s"[STALL WARNING] $name stalled for $count cycles (valid=$valid, ready=$ready) at time ${simTime()}"
+          )
+          streamStallWarned += name
+        }
+      } else {
+        // Reset counter when not stalled
+        if (streamStallCounters.getOrElse(name, 0L) > 0) {
+          streamStallCounters(name) = 0
+          streamStallWarned -= name
+        }
+      }
+    }
+
+    // Monitor all pipeline streams for stalls
+    dut.clockDomain.onSamplings {
+      // Pipeline input: triangleSetup.i
+      checkStreamStall(
+        "triangleSetup.i",
+        dut.triangleSetup.i.valid.toBoolean,
+        dut.triangleSetup.i.ready.toBoolean
+      )
+
+      // TriangleSetup output / Rasterizer input
+      checkStreamStall(
+        "triangleSetup.o",
+        dut.triangleSetup.o.valid.toBoolean,
+        dut.triangleSetup.o.ready.toBoolean
+      )
+
+      // Rasterizer output
+      checkStreamStall(
+        "rasterizer.o",
+        dut.rasterizer.o.valid.toBoolean,
+        dut.rasterizer.o.ready.toBoolean
+      )
+
+      // TMU0 input
+      checkStreamStall(
+        "tmu0.io.input",
+        dut.tmu0.io.input.valid.toBoolean,
+        dut.tmu0.io.input.ready.toBoolean
+      )
+
+      // TMU0 output
+      checkStreamStall(
+        "tmu0.io.output",
+        dut.tmu0.io.output.valid.toBoolean,
+        dut.tmu0.io.output.ready.toBoolean
+      )
+
+      // TMU1 input
+      checkStreamStall(
+        "tmu1.io.input",
+        dut.tmu1.io.input.valid.toBoolean,
+        dut.tmu1.io.input.ready.toBoolean
+      )
+
+      // TMU1 output
+      checkStreamStall(
+        "tmu1.io.output",
+        dut.tmu1.io.output.valid.toBoolean,
+        dut.tmu1.io.output.ready.toBoolean
+      )
+
+      // ColorCombine input
+      checkStreamStall(
+        "colorCombine.io.input",
+        dut.colorCombine.io.input.valid.toBoolean,
+        dut.colorCombine.io.input.ready.toBoolean
+      )
+
+      // ColorCombine output
+      checkStreamStall(
+        "colorCombine.io.output",
+        dut.colorCombine.io.output.valid.toBoolean,
+        dut.colorCombine.io.output.ready.toBoolean
+      )
+
+      // Write stage input
+      checkStreamStall(
+        "write.i.fromPipeline",
+        dut.write.i.fromPipeline.valid.toBoolean,
+        dut.write.i.fromPipeline.ready.toBoolean
+      )
+
+      // Framebuffer write output (BMB cmd)
+      checkStreamStall(
+        "write.o.fbWrite.cmd",
+        dut.write.o.fbWrite.cmd.valid.toBoolean,
+        dut.write.o.fbWrite.cmd.ready.toBoolean
+      )
     }
 
     dut.clockDomain.waitSampling()

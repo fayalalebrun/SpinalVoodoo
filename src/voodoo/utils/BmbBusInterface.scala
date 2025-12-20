@@ -125,12 +125,20 @@ case class BmbBusInterface(
 
     // Generate routing logic for IMMEDIATE writes (decode bus.cmd.address)
     // IMPORTANT: Must decode bus.cmd.address, not effectiveWriteAddress!
-    // Use switch/default pattern for cleaner synthesis
-    fifoBypass := False // Default: most registers go through FIFO
+    // Default to bypass (immediate write) - only queue addresses explicitly registered with fifoBypass=false
+    // This prevents unregistered/invalid addresses from filling the FIFO and stalling the bus
+    val fifoQueueCases = registerCategories.collect {
+      case (addr, cat) if !cat.fifoBypass => addr
+    }.toSeq
+    println(
+      s"[BmbBusInterface] FIFO queue addresses: ${fifoQueueCases.map(a => f"0x$a%03x").mkString(", ")}"
+    )
+
+    fifoBypass := True // Default: unregistered addresses bypass FIFO (immediate/ignored)
     switch(bus.cmd.address) {
-      for (addr <- bypassCases) {
+      for (addr <- fifoQueueCases) {
         is(U(addr, busAddrWidth bits)) {
-          fifoBypass := True
+          fifoBypass := False // Only explicitly registered FIFO=Yes addresses go through FIFO
         }
       }
     }

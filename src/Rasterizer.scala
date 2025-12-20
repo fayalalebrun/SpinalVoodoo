@@ -159,7 +159,7 @@ object Rasterizer {
   case class Output(c: Config) extends Bundle {
     val grads = GradientBundle(AFix(_), c)
     val coords = Vec.fill(2)(SInt(c.vertexFormat.nonFraction bits))
-    val config = TriangleSetup.PerTriangleConfig() // Per-triangle render configuration
+    val config = TriangleSetup.PerTriangleConfig(c) // Per-triangle render configuration
   }
 
   case class OutputWithFlag(c: Config) extends Bundle {

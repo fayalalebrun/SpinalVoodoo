@@ -203,20 +203,33 @@ case class Core(c: Config) extends Component {
   // Helper function to capture per-triangle render configuration from registers at command time
   // These are registers with FIFO=Yes, Sync=No in the datasheet
   def capturePerTriangleConfig(): TriangleSetup.PerTriangleConfig = {
-    val cfg = TriangleSetup.PerTriangleConfig()
+    val cfg = TriangleSetup.PerTriangleConfig(c)
 
-    // FBI registers
-    cfg.fbzColorPath := regBank.renderConfig.fbzColorPath
-    cfg.fogMode := regBank.renderConfig.fogMode
+    // FBI registers - extract relevant bits from 32-bit registers
+    cfg.fbzColorPath := regBank.renderConfig.fbzColorPath.resized
+    cfg.fogMode := regBank.renderConfig.fogMode.resized
     cfg.alphaMode := regBank.renderConfig.alphaMode
 
     // TMU0 registers
+    cfg.tmu0TextureMode := regBank.tmu0Config.textureMode
     cfg.tmu0TexBaseAddr := regBank.tmu0Config.texBaseAddr
-    // TODO: Capture tmu0TextureMode, tmu0TLOD, tmu0TDetail when LOD/filtering is implemented
+    cfg.tmu0TLOD := regBank.tmu0Config.tLOD.resized
+    // TMU0 texture coordinate gradients (dX and dY for S and T)
+    // Using .raw because AFix isn't a BaseType and can't be used directly with BusIf register fields
+    cfg.tmu0dSdX.raw := regBank.triangleGeometry.dSdX.asBits
+    cfg.tmu0dTdX.raw := regBank.triangleGeometry.dTdX.asBits
+    cfg.tmu0dSdY.raw := regBank.triangleGeometry.dSdY.asBits
+    cfg.tmu0dTdY.raw := regBank.triangleGeometry.dTdY.asBits
 
     // TMU1 registers
+    cfg.tmu1TextureMode := regBank.tmu1Config.textureMode
     cfg.tmu1TexBaseAddr := regBank.tmu1Config.texBaseAddr
-    // TODO: Capture tmu1TextureMode, tmu1TLOD, tmu1TDetail when LOD/filtering is implemented
+    cfg.tmu1TLOD := regBank.tmu1Config.tLOD.resized
+    // TMU1 texture coordinate gradients (dX and dY for S and T)
+    cfg.tmu1dSdX.raw := regBank.tmu1Coords.dS1dX.asBits
+    cfg.tmu1dTdX.raw := regBank.tmu1Coords.dT1dX.asBits
+    cfg.tmu1dSdY.raw := regBank.tmu1Coords.dS1dY.asBits
+    cfg.tmu1dTdY.raw := regBank.tmu1Coords.dT1dY.asBits
 
     cfg
   }
@@ -253,6 +266,15 @@ case class Core(c: Config) extends Component {
   rasterizer.i.simPublic()
   rasterizer.o.simPublic()
   write.o.fbWrite.simPublic()
+
+  // Make TMU and ColorCombine streams accessible for stall monitoring
+  tmu0.io.input.simPublic()
+  tmu0.io.output.simPublic()
+  tmu1.io.input.simPublic()
+  tmu1.io.output.simPublic()
+  colorCombine.io.input.simPublic()
+  colorCombine.io.output.simPublic()
+  write.i.fromPipeline.simPublic()
 
   // Connect triangle setup directly to rasterizer
   // Gradients are now captured at command time and flow through TriangleSetup
@@ -317,15 +339,22 @@ case class Core(c: Config) extends Component {
   // Connect fork path 1 to TMU0
   tmu0.io.input.translateFrom(rasterFork._1) { (out, in) =>
     out.coords := in.coords
-    out.s := in.grads.s0Grad // TMU0's S/W coordinate
-    out.t := in.grads.t0Grad // TMU0's T/W coordinate
-    out.w := in.grads.wGrad // Shared 1/W
+    out.s := in.grads.s0Grad // TMU0's S/W coordinate (interpolated value from rasterizer)
+    out.t := in.grads.t0Grad // TMU0's T/W coordinate (interpolated value from rasterizer)
+    out.w := in.grads.wGrad // Shared 1/W (interpolated value from rasterizer)
     out.cOther.r := 0 // No upstream texture for TMU0
     out.cOther.g := 0
     out.cOther.b := 0
     out.aOther := 0
     // TMU0 config from captured per-triangle state
+    out.config.textureMode := in.config.tmu0TextureMode
     out.config.texBaseAddr := in.config.tmu0TexBaseAddr
+    out.config.tLOD := in.config.tmu0TLOD
+    // Texture coordinate gradients for LOD calculation (from config, captured at command time)
+    out.dSdX := in.config.tmu0dSdX
+    out.dTdX := in.config.tmu0dTdX
+    out.dSdY := in.config.tmu0dSdY
+    out.dTdY := in.config.tmu0dTdY
   }
 
   // Join TMU0 output with queued gradients
@@ -342,13 +371,20 @@ case class Core(c: Config) extends Component {
     val tmu0Out = payload._1
     val rasterOut = payload._2
     out.coords := tmu0Out.coords
-    out.s := rasterOut.grads.s1Grad // TMU1's S/W coordinate from original rasterizer output
-    out.t := rasterOut.grads.t1Grad // TMU1's T/W coordinate from original rasterizer output
-    out.w := rasterOut.grads.wGrad // Shared 1/W
+    out.s := rasterOut.grads.s1Grad // TMU1's S/W coordinate from original rasterizer output (interpolated value)
+    out.t := rasterOut.grads.t1Grad // TMU1's T/W coordinate from original rasterizer output (interpolated value)
+    out.w := rasterOut.grads.wGrad // Shared 1/W (interpolated value)
     out.cOther := tmu0Out.texture // TMU0's texture output becomes TMU1's c_other
     out.aOther := tmu0Out.textureAlpha
     // TMU1 config from captured per-triangle state
+    out.config.textureMode := rasterOut.config.tmu1TextureMode
     out.config.texBaseAddr := rasterOut.config.tmu1TexBaseAddr
+    out.config.tLOD := rasterOut.config.tmu1TLOD
+    // Texture coordinate gradients for LOD calculation (from config, captured at command time)
+    out.dSdX := rasterOut.config.tmu1dSdX
+    out.dTdX := rasterOut.config.tmu1dTdX
+    out.dSdY := rasterOut.config.tmu1dSdY
+    out.dTdY := rasterOut.config.tmu1dTdY
   }
 
   // Join TMU1 output with queued data (contains TMU0 output + original raster data)
@@ -363,14 +399,26 @@ case class Core(c: Config) extends Component {
     out.coords := tmu1Out.coords
 
     // Convert interpolated color values from 12.12 fixed-point to 8-bit unsigned
-    // Use gradients from original rasterizer output (properly synchronized)
-    out.iterated.r := rasterOut.grads.redGrad.sat(satMax = 255, satMin = 0, exp = 0 exp).asUInt
-    out.iterated.g := rasterOut.grads.greenGrad.sat(satMax = 255, satMin = 0, exp = 0 exp).asUInt
-    out.iterated.b := rasterOut.grads.blueGrad.sat(satMax = 255, satMin = 0, exp = 0 exp).asUInt
-    out.iteratedAlpha := rasterOut.grads.alphaGrad.sat(satMax = 255, satMin = 0, exp = 0 exp).asUInt
+    // Use interpolated values from rasterizer output (properly synchronized)
+    // sat() saturates to [0,255] with exp=0, giving 8 integer bits + 12 fractional bits
+    // Take the upper 8 bits (integer part) by right-shifting by 12 (the fractional bits)
+    val redSat = rasterOut.grads.redGrad.sat(satMax = 255, satMin = 0, exp = 0 exp)
+    val greenSat = rasterOut.grads.greenGrad.sat(satMax = 255, satMin = 0, exp = 0 exp)
+    val blueSat = rasterOut.grads.blueGrad.sat(satMax = 255, satMin = 0, exp = 0 exp)
+    val alphaSat = rasterOut.grads.alphaGrad.sat(satMax = 255, satMin = 0, exp = 0 exp)
 
-    // Upper 8 bits of Z for alpha local select option
-    out.iteratedZ := rasterOut.grads.depthGrad.sat(satMax = 255, satMin = 0, exp = 12 exp).asUInt
+    // Extract integer part (upper 8 bits) from saturated values
+    // Color format after sat is UQ(8,12) - 8 integer bits, 12 fractional bits = 20 total bits
+    out.iterated.r := (redSat.asBits >> 12).asUInt.resize(8 bits)
+    out.iterated.g := (greenSat.asBits >> 12).asUInt.resize(8 bits)
+    out.iterated.b := (blueSat.asBits >> 12).asUInt.resize(8 bits)
+    out.iteratedAlpha := (alphaSat.asBits >> 12).asUInt.resize(8 bits)
+
+    // Upper 8 bits of Z for alpha local select option (Z is 20.12)
+    // Saturate to [0,255] at exp=12 (so bits [19:12] become [7:0])
+    // Then extract the integer part
+    val depthSat = rasterOut.grads.depthGrad.sat(satMax = 255, satMin = 0, exp = 12 exp)
+    out.iteratedZ := (depthSat.asBits >> 12).asUInt.resize(8 bits)
 
     // Pass through depth for later stages
     out.depth := rasterOut.grads.depthGrad

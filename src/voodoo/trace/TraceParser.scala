@@ -209,10 +209,10 @@ class TraceParser(traceFile: File, indexFile: Option[File] = None) {
     val entrySize = 24
 
     frameIndex.flatMap { frames =>
-      if (frameNum >= 0 && frameNum < frames.length) {
-        val frame = frames(frameNum)
-
-        Some(new Iterator[TraceEntry] {
+      // Find the frame by its frameNum field, not by array index
+      // (frames in the CSV are 1-indexed and may have gaps)
+      frames.find(_.frameNum == frameNum).map { frame =>
+        new Iterator[TraceEntry] {
           private var currentOffset = frame.startOffset
           private val endOffset = frame.endOffset
 
@@ -233,9 +233,7 @@ class TraceParser(traceFile: File, indexFile: Option[File] = None) {
             currentOffset += entrySize
             result
           }
-        })
-      } else {
-        None
+        }
       }
     }
   }

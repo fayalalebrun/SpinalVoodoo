@@ -152,19 +152,30 @@ class TraceParser(traceFile: File, indexFile: Option[File] = None) {
       // Skip header line
       val dataLines = lines.drop(1)
 
+      // Helper to parse unsigned long values that may exceed Long.MAX_VALUE
+      def parseUnsignedLong(s: String): Long = {
+        try {
+          java.lang.Long.parseUnsignedLong(s.trim)
+        } catch {
+          case _: NumberFormatException =>
+            // Fall back to BigInt for very large values, then truncate
+            BigInt(s.trim).toLong
+        }
+      }
+
       dataLines.map { line =>
         val fields = line.split(",")
         FrameIndexEntry(
           frameNum = fields(0).toLong,
-          startCycle = fields(1).toLong,
-          endCycle = fields(2).toLong,
+          startCycle = parseUnsignedLong(fields(1)),
+          endCycle = parseUnsignedLong(fields(2)),
           startOffset = fields(3).toLong,
           endOffset = fields(4).toLong,
           numCommands = fields(5).toLong,
           numTriangles = fields(6).toLong,
           hDisp = fields(7).toInt,
           vDisp = fields(8).toInt,
-          duration = fields(9).toLong
+          duration = parseUnsignedLong(fields(9))
         )
       }.toArray
     } finally {

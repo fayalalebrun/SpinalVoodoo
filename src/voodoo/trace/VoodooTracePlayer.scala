@@ -87,8 +87,8 @@ object VoodooTracePlayer {
 
     val parser = new TraceParser(config.traceFile, indexFile)
 
-    // Get entries to replay
-    val entries = config.frameNum match {
+    // Get entries to replay - collect into array for trace viewer
+    val entriesArray = (config.frameNum match {
       case Some(frameNum) =>
         // Print available frames for debugging
         parser.frameIndex match {
@@ -113,7 +113,9 @@ object VoodooTracePlayer {
         }
       case None =>
         parser.readAllEntries()
-    }
+    }).toArray
+
+    println(s"[DEBUG] Loaded ${entriesArray.length} trace entries")
 
     // Create display window and debug tracker
     val (width, height) = config.resolution
@@ -121,6 +123,14 @@ object VoodooTracePlayer {
     val stride = voodooConfig.fbPixelStride
     val debugTracker = new DebugTracker(stride = stride)
     val display = DisplayWindow(width, height, stride, Some(debugTracker))
+
+    // Populate trace viewer
+    println(s"[DEBUG] Populating trace viewer with ${entriesArray.length} entries...")
+    for ((entry, idx) <- entriesArray.zipWithIndex) {
+      display.addTraceEntry(idx, entry.cmdType, entry.addr, entry.data, entry.count)
+    }
+    display.finalizeTraceLoading()
+    println("[DEBUG] Trace viewer populated")
 
     // Run simulation - use doSimUntilVoid to allow clean termination via simSuccess()
     SimConfig.withVerilator.withWave.compile(Core(voodooConfig)).doSimUntilVoid { dut =>
@@ -134,6 +144,7 @@ object VoodooTracePlayer {
       setupDut(
         dut,
         debugTracker,
+        display,
         () =>
           TriangleGradients(
             startR = startR.toDouble,
@@ -178,16 +189,27 @@ object VoodooTracePlayer {
         val ymin = dut.triangleSetup.o.yrange(0).toDouble
         val ymax = dut.triangleSetup.o.yrange(1).toDouble
 
+        val coefficients = Array(
+          (edge0a, edge0b, edge0c),
+          (edge1a, edge1b, edge1c),
+          (edge2a, edge2b, edge2c)
+        )
+        val bbox = (xmin.toInt, ymin.toInt, xmax.toInt, ymax.toInt)
+
         // Update debug tracker with coefficients and bounding box
         debugTracker.updateTriangleSetup(
-          coefficients = Array(
-            (edge0a, edge0b, edge0c),
-            (edge1a, edge1b, edge1c),
-            (edge2a, edge2b, edge2c)
-          ),
-          boundingBox = (xmin.toInt, ymin.toInt, xmax.toInt, ymax.toInt)
+          coefficients = coefficients,
+          boundingBox = bbox
         )
 
+        // Update rasterizer overlay with edge equations and vertices (if tracking enabled)
+        if (display.overlayTrackingEnabled) {
+          val currentTriId = debugTracker.getStats._1 // Triangle count as ID
+          val vertices =
+            debugTracker.getTriangle(currentTriId).map(_.vertices).getOrElse(Array.empty)
+          display.rasterizerOverlay.startTriangle(currentTriId, coefficients, bbox, vertices)
+          display.updateOverlayTriangleList()
+        }
       }
 
       // Monitor rasterizer input - triangle enters rasterizer
@@ -205,6 +227,68 @@ object VoodooTracePlayer {
       textureMemory.addReadPort(dut.io.texRead0, 0, dut.clockDomain)
       textureMemory.addReadPort(dut.io.texRead1, 0, dut.clockDomain)
       println("[DEBUG] Texture memory model created (4MB)")
+
+      // Load initial state for the specified frame (or frame 0)
+      val stateFrameNum = config.frameNum.getOrElse(0)
+      val traceDir = StateParser.getTraceDir(config.traceFile)
+      StateParser.findStateFile(traceDir, stateFrameNum) match {
+        case Some(stateFile) =>
+          println(s"[DEBUG] Loading state for frame $stateFrameNum from ${stateFile.getName}")
+          val stateParser = new StateParser(stateFile)
+          val state = stateParser.loadState()
+          stateParser.close()
+
+          // Load framebuffer data with format conversion from 86Box
+          println(s"[DEBUG] Loading framebuffer: ${state.framebuffer.length} bytes")
+          println(
+            s"[DEBUG] FB layout: ${state.header.hDisp}x${state.header.vDisp}, " +
+              s"rowWidth=${state.header.rowWidth}, drawOffset=${state.header.drawOffset}, " +
+              s"auxOffset=${state.header.auxOffset}"
+          )
+
+          // Use conversion if we have valid layout info, otherwise fall back to raw load
+          if (state.header.rowWidth > 0 && state.header.hDisp > 0 && state.header.vDisp > 0) {
+            framebuffer.loadFrom86BoxFormat(
+              fbMem = state.framebuffer,
+              drawOffset = state.header.drawOffset,
+              auxOffset = state.header.auxOffset,
+              rowWidth = state.header.rowWidth,
+              hDisp = state.header.hDisp.toInt,
+              vDisp = state.header.vDisp.toInt,
+              targetStride = stride
+            )
+          } else {
+            println(s"[DEBUG] No layout info, skipping framebuffer load")
+          }
+
+          // Load texture memory for TMU 0
+          println(s"[DEBUG] Loading TMU0 texture: ${state.texture0.length} bytes")
+          textureMemory.loadData(0, state.texture0)
+
+          // Load texture memory for TMU 1 if present
+          state.texture1.foreach { tex1 =>
+            println(s"[DEBUG] Loading TMU1 texture: ${tex1.length} bytes")
+            // TMU1 uses a separate memory space - for now just load to same model
+            // In a real implementation, you might have separate texture memories
+            textureMemory.loadData(0, tex1)
+          }
+
+          // Load registers into display
+          for (reg <- state.registers) {
+            display.updateRegister(reg.addr, reg.value)
+          }
+          display.refreshRegisterTable()
+
+          // Log loaded registers
+          println(
+            s"[DEBUG] State loaded: ${state.registers.length} registers, " +
+              f"${state.header.fbSize}%d bytes FB, ${state.header.texSize}%d bytes TEX, " +
+              s"${state.header.numTmus} TMUs"
+          )
+
+        case None =>
+          println(s"[DEBUG] No state file found for frame $stateFrameNum in $traceDir")
+      }
 
       val bmbDriver = new BmbDriver(dut.io.regBus, dut.clockDomain)
       println("[DEBUG] BMB driver created")
@@ -229,10 +313,36 @@ object VoodooTracePlayer {
 
         println("[DEBUG] Starting trace replay loop (forked)...")
 
-        for (entry <- entries) {
+        // Counter for register table refresh
+        var lastRegisterRefresh = 0
+
+        for ((entry, entryIndex) <- entriesArray.zipWithIndex) {
+          // Check pause flag and wait while paused (unless step requested)
+          while (display.isPaused && !display.stepRequested && !display.isClosed) {
+            dut.clockDomain.waitSampling(10)
+          }
+
+          // Track if this was a step (for force update)
+          val wasStep = display.stepRequested
+
+          // Clear step request after processing
+          if (display.stepRequested) {
+            display.stepRequested = false
+          }
+
+          // Update trace position in viewer (force update on step for immediate feedback)
+          display.updateTracePosition(entryIndex, forceUpdate = wasStep || display.isPaused)
+
           entryCount += 1
           if (entryCount % 10000 == 0)
             println(s"[DEBUG] Processing entry $entryCount...")
+
+          // Periodically refresh register table (every 1000 entries, or on step)
+          if (wasStep || entryCount - lastRegisterRefresh >= 1000) {
+            display.refreshRegisterTable()
+            lastRegisterRefresh = entryCount
+          }
+
           // Handle timing if in accurate mode
           config.timingMode match {
             case TimingMode.Accurate =>
@@ -293,6 +403,8 @@ object VoodooTracePlayer {
                 for (_ <- 0 until entry.count) {
                   bmbDriver.write(BigInt(entry.data), BigInt(regAddr))
                 }
+                // Track register state for display
+                display.updateRegister(regAddr, entry.data)
               } // end if valid register address
 
             case TraceCommandType.WRITE_REG_W =>
@@ -304,6 +416,8 @@ object VoodooTracePlayer {
                 for (_ <- 0 until entry.count) {
                   bmbDriver.write(BigInt(data16), BigInt(regAddr))
                 }
+                // Track register state for display
+                display.updateRegister(regAddr, data16)
               }
 
             case TraceCommandType.VSYNC =>
@@ -357,6 +471,7 @@ object VoodooTracePlayer {
   private def setupDut(
       dut: Core,
       debugTracker: DebugTracker,
+      display: DisplayWindow,
       captureGradients: () => TriangleGradients
   ): Unit = {
     dut.clockDomain.forkStimulus(10)
@@ -460,6 +575,49 @@ object VoodooTracePlayer {
         alpha = a,
         timestamp = simTime()
       )
+
+      // Convert iterated color values to 8-bit RGB for display
+      // Colors are in S18.14 format, so extract integer part (divide by 2^14)
+      // and clamp to 0-255
+      val rInt = Math.max(0, Math.min(255, (r / 16384.0).toInt))
+      val gInt = Math.max(0, Math.min(255, (g / 16384.0).toInt))
+      val bInt = Math.max(0, Math.min(255, (b / 16384.0).toInt))
+      display.rasterizerFramebuffer.writePixel(x, y, rInt, gInt, bInt)
+
+      // Add pixel hit to rasterizer overlay (if tracking enabled)
+      if (display.overlayTrackingEnabled) {
+        display.rasterizerOverlay.addPixelHit(x, y)
+      }
+    }
+
+    // Monitor TMU0 output - texture color after first TMU
+    StreamMonitor(dut.tmu0.io.output, dut.clockDomain) { payload =>
+      val x = payload.coords(0).toInt
+      val y = payload.coords(1).toInt
+      val r = payload.texture.r.toInt
+      val g = payload.texture.g.toInt
+      val b = payload.texture.b.toInt
+      display.tmu0Framebuffer.writePixel(x, y, r, g, b)
+    }
+
+    // Monitor TMU1 output - texture color after second TMU
+    StreamMonitor(dut.tmu1.io.output, dut.clockDomain) { payload =>
+      val x = payload.coords(0).toInt
+      val y = payload.coords(1).toInt
+      val r = payload.texture.r.toInt
+      val g = payload.texture.g.toInt
+      val b = payload.texture.b.toInt
+      display.tmu1Framebuffer.writePixel(x, y, r, g, b)
+    }
+
+    // Monitor ColorCombine output - final color before write stage
+    StreamMonitor(dut.colorCombine.io.output, dut.clockDomain) { payload =>
+      val x = payload.coords(0).toInt
+      val y = payload.coords(1).toInt
+      val r = payload.color.r.toInt
+      val g = payload.color.g.toInt
+      val b = payload.color.b.toInt
+      display.colorCombineFramebuffer.writePixel(x, y, r, g, b)
     }
 
     // Monitor rasterizer running signal for triangle completion

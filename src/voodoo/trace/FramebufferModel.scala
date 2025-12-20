@@ -84,6 +84,108 @@ class FramebufferModel(size: Long, display: Option[DisplayWindow] = None) {
     display.foreach(_.updatePixel(address, value))
   }
 
+  /** Load framebuffer data from a byte array (raw, no conversion)
+    *
+    * @param address
+    *   Starting byte address
+    * @param data
+    *   Byte array to load
+    */
+  def loadData(address: Long, data: Array[Byte]): Unit = {
+    for (i <- data.indices) {
+      memoryAgent.setByte(address + i, data(i))
+    }
+    // Update display with all loaded pixels
+    display.foreach { disp =>
+      // RGB565 format - 2 bytes per pixel
+      for (i <- 0 until (data.length / 2)) {
+        val byteAddr = address + i * 2
+        disp.updatePixel(byteAddr, data(i * 2))
+        disp.updatePixel(byteAddr + 1, data(i * 2 + 1))
+      }
+    }
+  }
+
+  /** Load framebuffer from 86Box state dump format with conversion
+    *
+    * Converts from 86Box format (2 bytes/pixel, configurable row width) to our format (4
+    * bytes/pixel, fixed stride).
+    *
+    * 86Box format:
+    *   - Color buffer at drawOffset: 2 bytes per pixel (RGB565)
+    *   - Depth buffer at auxOffset: 2 bytes per pixel (16-bit depth)
+    *   - Row stride: rowWidth bytes
+    *
+    * Our format:
+    *   - 4 bytes per pixel: low 16 bits = RGB565, high 16 bits = depth
+    *   - Row stride: targetStride * 4 bytes
+    *
+    * @param fbMem
+    *   Raw framebuffer memory from 86Box
+    * @param drawOffset
+    *   Color buffer offset in fbMem
+    * @param auxOffset
+    *   Depth buffer offset in fbMem
+    * @param rowWidth
+    *   Row stride in bytes (86Box format)
+    * @param hDisp
+    *   Horizontal display resolution
+    * @param vDisp
+    *   Vertical display resolution
+    * @param targetStride
+    *   Our target stride in pixels (e.g., 1024)
+    */
+  def loadFrom86BoxFormat(
+      fbMem: Array[Byte],
+      drawOffset: Long,
+      auxOffset: Long,
+      rowWidth: Long,
+      hDisp: Int,
+      vDisp: Int,
+      targetStride: Int
+  ): Unit = {
+    println(
+      s"[DEBUG] Converting 86Box FB: ${hDisp}x${vDisp}, rowWidth=$rowWidth, " +
+        s"drawOffset=$drawOffset, auxOffset=$auxOffset, targetStride=$targetStride"
+    )
+
+    for (y <- 0 until vDisp) {
+      for (x <- 0 until hDisp) {
+        // Read color from 86Box format (2 bytes, little-endian)
+        val colorAddr = (drawOffset + y * rowWidth + x * 2).toInt
+        if (colorAddr + 1 < fbMem.length) {
+          val colorLo = fbMem(colorAddr) & 0xff
+          val colorHi = fbMem(colorAddr + 1) & 0xff
+          val rgb565 = colorLo | (colorHi << 8)
+
+          // Read depth from 86Box format (2 bytes, little-endian)
+          val depthAddr = (auxOffset + y * rowWidth + x * 2).toInt
+          val depth = if (depthAddr + 1 < fbMem.length) {
+            val depthLo = fbMem(depthAddr) & 0xff
+            val depthHi = fbMem(depthAddr + 1) & 0xff
+            depthLo | (depthHi << 8)
+          } else 0
+
+          // Write to our format: (y * stride + x) * 4
+          val ourAddr = (y * targetStride + x) * 4L
+
+          // Write as 4 bytes: color in low 16 bits, depth in high 16 bits
+          memoryAgent.setByte(ourAddr, (rgb565 & 0xff).toByte)
+          memoryAgent.setByte(ourAddr + 1, ((rgb565 >> 8) & 0xff).toByte)
+          memoryAgent.setByte(ourAddr + 2, (depth & 0xff).toByte)
+          memoryAgent.setByte(ourAddr + 3, ((depth >> 8) & 0xff).toByte)
+
+          // Update display
+          display.foreach { disp =>
+            disp.updatePixel(ourAddr, (rgb565 & 0xff).toByte)
+            disp.updatePixel(ourAddr + 1, ((rgb565 >> 8) & 0xff).toByte)
+          }
+        }
+      }
+    }
+    println(s"[DEBUG] Converted ${hDisp * vDisp} pixels from 86Box format")
+  }
+
   /** Get the underlying sparse memory */
   def memory: SparseMemory = memoryAgent.memory
 }

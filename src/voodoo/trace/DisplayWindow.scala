@@ -8,17 +8,161 @@ import javafx.beans.property.{
   SimpleStringProperty
 }
 import javafx.collections.FXCollections
-import javafx.geometry.{Insets, Orientation}
+import javafx.geometry.{Insets, Orientation, Pos}
 import javafx.scene.Scene
 import javafx.scene.canvas.Canvas
-import javafx.scene.control.{Label, SplitPane, TableColumn, TableView, cell}
+import javafx.scene.control.{
+  Button,
+  CheckBox,
+  Label,
+  ListView,
+  Separator,
+  SplitPane,
+  Tab,
+  TabPane,
+  TableColumn,
+  TableView,
+  cell
+}
 import javafx.scene.image.{PixelWriter, WritableImage}
-import javafx.scene.layout.{Pane, Priority, VBox}
+import javafx.scene.layout.{BorderPane, HBox, Pane, Priority, VBox}
 import javafx.scene.paint.Color
 import javafx.stage.Stage
 import java.util.concurrent.{BlockingQueue, LinkedBlockingQueue}
 import scala.collection.mutable
 import scala.collection.JavaConverters._
+
+/** Pipeline stage identifiers */
+object PipelineStage extends Enumeration {
+  val Framebuffer, TMU0, TMU1, ColorCombine = Value
+}
+
+/** A stage-specific framebuffer that accumulates pixel data */
+class StageFramebuffer(val name: String, val width: Int, val height: Int) {
+  private val image = new WritableImage(width, height)
+  val pixelWriter: PixelWriter = image.getPixelWriter
+
+  // Clear to black initially
+  def clear(): Unit = {
+    for (y <- 0 until height; x <- 0 until width) {
+      pixelWriter.setColor(x, y, Color.BLACK)
+    }
+  }
+
+  def getImage: WritableImage = image
+
+  /** Write a pixel at the given coordinates (y=0 at bottom, OpenGL style) */
+  def writePixel(x: Int, y: Int, r: Int, g: Int, b: Int): Unit = {
+    if (x >= 0 && x < width && y >= 0 && y < height) {
+      val flippedY = height - 1 - y
+      pixelWriter.setColor(x, flippedY, Color.rgb(r & 0xff, g & 0xff, b & 0xff))
+    }
+  }
+
+  clear()
+}
+
+/** Data for a single triangle's rasterization */
+case class TriangleOverlayData(
+    id: Long,
+    edges: Array[(Double, Double, Double)],
+    boundingBox: (Int, Int, Int, Int),
+    vertices: Array[(Double, Double)] = Array.empty,
+    pixelHits: mutable.Set[(Int, Int)] = mutable.Set.empty
+) {
+  def pixelCount: Int = pixelHits.size
+}
+
+/** Rasterizer overlay for visualizing edge equations and pixel hits */
+class RasterizerOverlay(width: Int, height: Int) {
+  // Store data for all triangles
+  private val triangles = mutable.ArrayBuffer[TriangleOverlayData]()
+  private var currentTriangle: Option[TriangleOverlayData] = None
+
+  // Currently selected triangle for visualization
+  private var selectedTriangleId: Long = -1
+
+  /** Start a new triangle with edge equations, bounding box, and vertices */
+  def startTriangle(
+      triangleId: Long,
+      coeffs: Array[(Double, Double, Double)],
+      bbox: (Int, Int, Int, Int),
+      verts: Array[(Double, Double)] = Array.empty
+  ): Unit = {
+    val tri = TriangleOverlayData(triangleId, coeffs, bbox, verts)
+    triangles += tri
+    currentTriangle = Some(tri)
+    // Auto-select the latest triangle
+    selectedTriangleId = triangleId
+  }
+
+  /** Record a pixel hit for the current triangle */
+  def addPixelHit(x: Int, y: Int): Unit = {
+    if (x >= 0 && x < width && y >= 0 && y < height) {
+      currentTriangle.foreach(_.pixelHits += ((x, y)))
+    }
+  }
+
+  /** Get all triangles */
+  def getAllTriangles: Seq[TriangleOverlayData] = triangles.toSeq
+
+  /** Get selected triangle */
+  def getSelectedTriangle: Option[TriangleOverlayData] =
+    triangles.find(_.id == selectedTriangleId)
+
+  /** Select a triangle by ID */
+  def selectTriangle(id: Long): Unit = {
+    selectedTriangleId = id
+  }
+
+  /** Get selected triangle ID */
+  def getSelectedId: Long = selectedTriangleId
+
+  /** Clear all triangle data */
+  def clearAll(): Unit = {
+    triangles.clear()
+    currentTriangle = None
+    selectedTriangleId = -1
+  }
+
+  /** Keep only the last N triangles */
+  def trimToLast(n: Int): Unit = {
+    if (triangles.size > n) {
+      val toRemove = triangles.size - n
+      triangles.remove(0, toRemove)
+    }
+  }
+
+  /** Get edge equations for selected triangle */
+  def getEdges: Array[(Double, Double, Double)] = {
+    getSelectedTriangle.map(_.edges).getOrElse(Array.empty)
+  }
+
+  /** Get bounding box for selected triangle */
+  def getBoundingBox: (Int, Int, Int, Int) = {
+    getSelectedTriangle.map(_.boundingBox).getOrElse((0, 0, 0, 0))
+  }
+
+  /** Check if a pixel was hit by the selected triangle */
+  def getHit(x: Int, y: Int): Boolean = {
+    getSelectedTriangle.exists(_.pixelHits.contains((x, y)))
+  }
+
+  /** Alias for setEdges with triangle ID (for compatibility) */
+  def setEdges(
+      triangleId: Long,
+      coeffs: Array[(Double, Double, Double)],
+      bbox: (Int, Int, Int, Int)
+  ): Unit = {
+    startTriangle(triangleId, coeffs, bbox)
+  }
+
+  /** Clear current triangle data (for single-triangle mode compatibility) */
+  def clear(): Unit = {
+    // In multi-triangle mode, we don't clear all - just prepare for next
+    currentTriangle = None
+  }
+}
 
 /** JavaFX display window for real-time framebuffer rendering
   *
@@ -48,6 +192,11 @@ class DisplayWindow(
   private var triangleTable: TableView[TriangleRow] = _
   private var pixelTable: TableView[PixelRow] = _
 
+  // Rasterizer overlay panel components
+  private var rasterizerTriangleList: ListView[String] = _
+  private var showEdgesCheckbox: CheckBox = _
+  private var overlayStatsLabel: Label = _
+
   // Queue for pixel updates from simulation thread
   private val updateQueue: BlockingQueue[PixelUpdate] = new LinkedBlockingQueue()
 
@@ -72,6 +221,55 @@ class DisplayWindow(
   // Flag to track if window has been closed
   @volatile private var windowClosed = false
 
+  // Rasterizer overlay for debug visualization
+  val rasterizerOverlay = new RasterizerOverlay(width, height)
+
+  // Pipeline stage framebuffers
+  val rasterizerFramebuffer = new StageFramebuffer("Rasterizer", width, height)
+  val tmu0Framebuffer = new StageFramebuffer("TMU0", width, height)
+  val tmu1Framebuffer = new StageFramebuffer("TMU1", width, height)
+  val colorCombineFramebuffer = new StageFramebuffer("ColorCombine", width, height)
+
+  // Tab pane and per-tab canvases
+  private var tabPane: TabPane = _
+  private var fbTab: Tab = _
+  private var rasterizerTab: Tab = _
+  private var tmu0Tab: Tab = _
+  private var tmu1Tab: Tab = _
+  private var ccTab: Tab = _
+  private var rasterizerCanvas: Canvas = _
+  private var tmu0Canvas: Canvas = _
+  private var tmu1Canvas: Canvas = _
+  private var ccCanvas: Canvas = _
+  private var rasterizerCanvasPane: Pane = _
+  private var tmu0CanvasPane: Pane = _
+  private var tmu1CanvasPane: Pane = _
+  private var ccCanvasPane: Pane = _
+
+  // Overlay visibility flags (controlled by ControlPanelWindow)
+  @volatile var showEdgeLines = false
+
+  // Flag to enable/disable overlay data collection (enabled by default)
+  @volatile var overlayTrackingEnabled = true
+
+  // Play/pause control
+  @volatile var isPaused = true // Start paused by default
+  @volatile var stepRequested = false // Single-step mode
+  private var playPauseButton: Button = _
+  private var stepButton: Button = _
+
+  // Register state tracking
+  private val registerState = mutable.Map[Long, Long]()
+  private var registerTable: TableView[RegisterRow] = _
+  private var registersTab: Tab = _
+
+  // Trace viewer
+  private var traceTab: Tab = _
+  private var traceListView: ListView[String] = _
+  private val traceEntries = mutable.ArrayBuffer[String]()
+  @volatile private var currentTraceIndex = 0
+  private var tracePositionLabel: Label = _
+
   case class PixelUpdate(addr: Long, value: Byte)
 
   /** Initialize JavaFX window (called from JavaFX application thread) */
@@ -92,110 +290,73 @@ class DisplayWindow(
     canvasPane.getChildren.add(canvas)
     canvasPane.setStyle("-fx-background-color: #222222;") // Dark gray background
 
-    // Create root layout - either SplitPane with debug panel or just canvas
-    val root = debugTracker match {
+    // Create pipeline stage canvases
+    rasterizerCanvas = new Canvas(width, height)
+    rasterizerCanvasPane = new Pane()
+    rasterizerCanvasPane.getChildren.add(rasterizerCanvas)
+    rasterizerCanvasPane.setStyle("-fx-background-color: #222222;")
+
+    tmu0Canvas = new Canvas(width, height)
+    tmu0CanvasPane = new Pane()
+    tmu0CanvasPane.getChildren.add(tmu0Canvas)
+    tmu0CanvasPane.setStyle("-fx-background-color: #222222;")
+
+    tmu1Canvas = new Canvas(width, height)
+    tmu1CanvasPane = new Pane()
+    tmu1CanvasPane.getChildren.add(tmu1Canvas)
+    tmu1CanvasPane.setStyle("-fx-background-color: #222222;")
+
+    ccCanvas = new Canvas(width, height)
+    ccCanvasPane = new Pane()
+    ccCanvasPane.getChildren.add(ccCanvas)
+    ccCanvasPane.setStyle("-fx-background-color: #222222;")
+
+    // Create tabbed interface for different views
+    tabPane = new TabPane()
+    tabPane.setTabClosingPolicy(TabPane.TabClosingPolicy.UNAVAILABLE)
+
+    fbTab = new Tab("Framebuffer", canvasPane)
+    rasterizerTab = new Tab("Rasterizer", rasterizerCanvasPane)
+    tmu0Tab = new Tab("TMU0", tmu0CanvasPane)
+    tmu1Tab = new Tab("TMU1", tmu1CanvasPane)
+    ccTab = new Tab("ColorCombine", ccCanvasPane)
+
+    // Create registers tab
+    registersTab = new Tab("Registers", createRegistersPanel())
+
+    // Create trace tab
+    traceTab = new Tab("Trace", createTracePanel())
+
+    tabPane.getTabs.addAll(fbTab, rasterizerTab, tmu0Tab, tmu1Tab, ccTab, registersTab, traceTab)
+
+    // Setup mouse handlers for all canvas panes
+    setupCanvasPaneHandlers(canvasPane)
+    setupCanvasPaneHandlers(rasterizerCanvasPane)
+    setupCanvasPaneHandlers(tmu0CanvasPane)
+    setupCanvasPaneHandlers(tmu1CanvasPane)
+    setupCanvasPaneHandlers(ccCanvasPane)
+
+    // Create toolbar with play/pause button
+    val toolbar = createToolbar()
+
+    // Create root layout - BorderPane with toolbar at top
+    val mainContent = debugTracker match {
       case Some(_) =>
         val splitPane = new SplitPane()
         splitPane.setOrientation(Orientation.HORIZONTAL)
-        splitPane.getItems.addAll(canvasPane, createDebugPanel())
+        splitPane.getItems.addAll(tabPane, createDebugPanel())
         splitPane.setDividerPositions(0.7)
         splitPane
       case None =>
-        canvasPane
+        tabPane
     }
 
+    val root = new BorderPane()
+    root.setTop(toolbar)
+    root.setCenter(mainContent)
+
     val sceneWidth = if (debugTracker.isDefined) width + 350 else width
-    val scene = new Scene(root, sceneWidth, height)
-
-    // Zoom with scroll wheel (on canvasPane for proper containment)
-    canvasPane.setOnScroll(event => {
-      val scrollDelta = event.getDeltaY
-      if (scrollDelta != 0) {
-        val oldZoom = zoomLevel
-        val zoomFactor = Math.pow(1.01, scrollDelta)
-        // Cap zoom to avoid exceeding texture limits (4096 / 640 ≈ 6.4)
-        zoomLevel = Math.max(0.5, Math.min(6.0, zoomLevel * zoomFactor))
-
-        if (zoomLevel != oldZoom) {
-          // Zoom towards mouse position (use local coords relative to canvasPane)
-          val mouseX = event.getX
-          val mouseY = event.getY
-
-          // Calculate image coordinate under mouse before zoom
-          val imgX = (mouseX - panX) / oldZoom
-          val imgY = (mouseY - panY) / oldZoom
-
-          // Adjust pan so same image point stays under mouse after zoom
-          panX = mouseX - imgX * zoomLevel
-          panY = mouseY - imgY * zoomLevel
-
-          needsRedraw = true
-        }
-        event.consume()
-      }
-    })
-
-    // Pan with mouse drag (on canvasPane)
-    canvasPane.setOnMousePressed(event => {
-      dragStartX = event.getX
-      dragStartY = event.getY
-      dragStartPanX = panX
-      dragStartPanY = panY
-      wasDragged = false
-    })
-
-    canvasPane.setOnMouseDragged(event => {
-      val dx = event.getX - dragStartX
-      val dy = event.getY - dragStartY
-      // Only start dragging if moved more than 3 pixels (to allow for small jitter on clicks)
-      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
-        wasDragged = true
-        panX = dragStartPanX + dx
-        panY = dragStartPanY + dy
-        needsRedraw = true
-      }
-    })
-
-    // Handle clicks on canvasPane: single-click for inspection, double-click for reset
-    canvasPane.setOnMouseClicked(event => {
-      if (event.getClickCount == 2) {
-        // Double-click: reset zoom and pan
-        zoomLevel = 1.0
-        panX = 0.0
-        panY = 0.0
-        needsRedraw = true
-      } else if (event.getClickCount == 1 && !wasDragged && debugTracker.isDefined) {
-        // Single-click: inspect position (only if we have debug tracker and wasn't dragging)
-        val mouseX = event.getX
-        val mouseY = event.getY
-
-        // Convert screen coords to framebuffer coords
-        val fbX = ((mouseX - panX) / zoomLevel).toInt
-        // Flip Y coordinate (framebuffer has y=0 at bottom)
-        val fbY = height - 1 - ((mouseY - panY) / zoomLevel).toInt
-
-        if (fbX >= 0 && fbX < width && fbY >= 0 && fbY < height) {
-          updateDebugPanel(fbX, fbY)
-        }
-      }
-    })
-
-    // Update position on mouse move (on canvasPane)
-    canvasPane.setOnMouseMoved(event => {
-      if (debugTracker.isDefined && positionLabel != null) {
-        val mouseX = event.getX
-        val mouseY = event.getY
-
-        val fbX = ((mouseX - panX) / zoomLevel).toInt
-        val fbY = height - 1 - ((mouseY - panY) / zoomLevel).toInt
-
-        if (fbX >= 0 && fbX < width && fbY >= 0 && fbY < height) {
-          positionLabel.setText(s"Position: ($fbX, $fbY)")
-        } else {
-          positionLabel.setText("Position: (outside)")
-        }
-      }
-    })
+    val scene = new Scene(root, sceneWidth, height + 40)
 
     stage.setTitle(s"Voodoo Trace Player - ${width}x${height} (scroll to zoom, drag to pan)")
     stage.setScene(scene)
@@ -212,29 +373,229 @@ class DisplayWindow(
     startUpdateLoop()
   }
 
-  /** Redraw canvas with current zoom and pan */
-  private def redrawCanvas(): Unit = {
-    // Guard against redraw before canvas is fully initialized
-    if (canvas == null || image == null) return
+  /** Setup mouse handlers for a canvas pane (zoom, pan, click) */
+  private def setupCanvasPaneHandlers(pane: Pane): Unit = {
+    // Zoom with scroll wheel
+    pane.setOnScroll(event => {
+      val scrollDelta = event.getDeltaY
+      if (scrollDelta != 0) {
+        val oldZoom = zoomLevel
+        val zoomFactor = Math.pow(1.01, scrollDelta)
+        zoomLevel = Math.max(0.5, Math.min(6.0, zoomLevel * zoomFactor))
 
-    val gc = canvas.getGraphicsContext2D
+        if (zoomLevel != oldZoom) {
+          val mouseX = event.getX
+          val mouseY = event.getY
+          val imgX = (mouseX - panX) / oldZoom
+          val imgY = (mouseY - panY) / oldZoom
+          panX = mouseX - imgX * zoomLevel
+          panY = mouseY - imgY * zoomLevel
+          needsRedraw = true
+        }
+        event.consume()
+      }
+    })
+
+    // Pan with mouse drag
+    pane.setOnMousePressed(event => {
+      dragStartX = event.getX
+      dragStartY = event.getY
+      dragStartPanX = panX
+      dragStartPanY = panY
+      wasDragged = false
+    })
+
+    pane.setOnMouseDragged(event => {
+      val dx = event.getX - dragStartX
+      val dy = event.getY - dragStartY
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+        wasDragged = true
+        panX = dragStartPanX + dx
+        panY = dragStartPanY + dy
+        needsRedraw = true
+      }
+    })
+
+    // Handle clicks: double-click reset, single-click inspect
+    pane.setOnMouseClicked(event => {
+      if (event.getClickCount == 2) {
+        zoomLevel = 1.0
+        panX = 0.0
+        panY = 0.0
+        needsRedraw = true
+      } else if (event.getClickCount == 1 && !wasDragged && debugTracker.isDefined) {
+        val mouseX = event.getX
+        val mouseY = event.getY
+        val fbX = ((mouseX - panX) / zoomLevel).toInt
+        val fbY = height - 1 - ((mouseY - panY) / zoomLevel).toInt
+        if (fbX >= 0 && fbX < width && fbY >= 0 && fbY < height) {
+          updateDebugPanel(fbX, fbY)
+        }
+      }
+    })
+
+    // Update position on mouse move
+    pane.setOnMouseMoved(event => {
+      if (debugTracker.isDefined && positionLabel != null) {
+        val mouseX = event.getX
+        val mouseY = event.getY
+        val fbX = ((mouseX - panX) / zoomLevel).toInt
+        val fbY = height - 1 - ((mouseY - panY) / zoomLevel).toInt
+        if (fbX >= 0 && fbX < width && fbY >= 0 && fbY < height) {
+          positionLabel.setText(s"Position: ($fbX, $fbY)")
+        } else {
+          positionLabel.setText("Position: (outside)")
+        }
+      }
+    })
+  }
+
+  /** Redraw a single canvas with an image */
+  private def redrawSingleCanvas(
+      targetCanvas: Canvas,
+      targetImage: WritableImage,
+      withOverlays: Boolean = false
+  ): Unit = {
+    if (targetCanvas == null || targetImage == null) return
+    val gc = targetCanvas.getGraphicsContext2D
     if (gc == null) return
 
-    // Resize canvas to fit zoomed image, but cap to avoid exceeding texture limits
     val maxTextureSize = 4096.0
     val scaledWidth = Math.min(width * zoomLevel, maxTextureSize)
     val scaledHeight = Math.min(height * zoomLevel, maxTextureSize)
-    canvas.setWidth(scaledWidth)
-    canvas.setHeight(scaledHeight)
+    targetCanvas.setWidth(scaledWidth)
+    targetCanvas.setHeight(scaledHeight)
+    targetCanvas.setLayoutX(panX)
+    targetCanvas.setLayoutY(panY)
 
-    // Position canvas for pan
-    canvas.setLayoutX(panX)
-    canvas.setLayoutY(panY)
-
-    // Clear and draw image at scaled size with nearest-neighbor interpolation
-    gc.setImageSmoothing(false) // Pixel-perfect, no anti-aliasing!
+    gc.setImageSmoothing(false)
     gc.clearRect(0, 0, scaledWidth, scaledHeight)
-    gc.drawImage(image, 0, 0, scaledWidth, scaledHeight)
+    gc.drawImage(targetImage, 0, 0, scaledWidth, scaledHeight)
+
+    if (withOverlays) {
+      if (showEdgeLines) drawEdgeLines(gc)
+    }
+  }
+
+  /** Redraw all canvases with current zoom and pan */
+  private def redrawCanvas(): Unit = {
+    // Redraw main framebuffer with overlays
+    redrawSingleCanvas(canvas, image, withOverlays = true)
+
+    // Redraw pipeline stage canvases
+    redrawSingleCanvas(rasterizerCanvas, rasterizerFramebuffer.getImage)
+    redrawSingleCanvas(tmu0Canvas, tmu0Framebuffer.getImage)
+    redrawSingleCanvas(tmu1Canvas, tmu1Framebuffer.getImage)
+    redrawSingleCanvas(ccCanvas, colorCombineFramebuffer.getImage)
+  }
+
+  /** Draw edge equation lines for the current triangle */
+  private def drawEdgeLines(gc: javafx.scene.canvas.GraphicsContext): Unit = {
+    rasterizerOverlay.getSelectedTriangle match {
+      case None      => return
+      case Some(tri) =>
+        val edges = tri.edges
+        if (edges.isEmpty) return
+
+        val bbox = tri.boundingBox
+        val vertices = tri.vertices
+        val colors = Array(Color.RED, Color.LIME, Color.BLUE)
+
+        // Use extended range for line drawing (50 pixel margin beyond bbox)
+        val margin = 50.0
+        val xMin = bbox._1.toDouble - margin
+        val xMax = bbox._3.toDouble + margin
+        val yMin = bbox._2.toDouble - margin
+        val yMax = bbox._4.toDouble + margin
+
+        gc.setLineWidth(2.0)
+
+        for (i <- edges.indices) {
+          val (a, b, c) = edges(i)
+          gc.setStroke(colors(i % colors.length))
+
+          // Draw line ax + by + c = 0
+          // Compute line-bbox intersection using Liang-Barsky style clipping
+          // Try both x-based and y-based parameterization, pick the one that works
+
+          val points = scala.collection.mutable.ArrayBuffer[(Double, Double)]()
+
+          // Intersection with x = xMin
+          if (Math.abs(b) > 0.0001) {
+            val y = -(a * xMin + c) / b
+            if (y >= yMin && y <= yMax) points += ((xMin, y))
+          }
+
+          // Intersection with x = xMax
+          if (Math.abs(b) > 0.0001) {
+            val y = -(a * xMax + c) / b
+            if (y >= yMin && y <= yMax) points += ((xMax, y))
+          }
+
+          // Intersection with y = yMin
+          if (Math.abs(a) > 0.0001) {
+            val x = -(b * yMin + c) / a
+            if (x >= xMin && x <= xMax) points += ((x, yMin))
+          }
+
+          // Intersection with y = yMax
+          if (Math.abs(a) > 0.0001) {
+            val x = -(b * yMax + c) / a
+            if (x >= xMin && x <= xMax) points += ((x, yMax))
+          }
+
+          // Draw line between the two intersection points (if we found 2)
+          if (points.size >= 2) {
+            val (x1, y1) = points(0)
+            val (x2, y2) = points(1)
+            val screenX1 = x1 * zoomLevel
+            val screenY1 = (height - 1 - y1) * zoomLevel
+            val screenX2 = x2 * zoomLevel
+            val screenY2 = (height - 1 - y2) * zoomLevel
+            gc.strokeLine(screenX1, screenY1, screenX2, screenY2)
+          }
+        }
+
+        // Draw vertex markers (if we have vertices)
+        if (vertices.length >= 3) {
+          gc.setFill(Color.WHITE)
+          gc.setStroke(Color.BLACK)
+          gc.setLineWidth(1.0)
+          for (i <- 0 until 3) {
+            val (vx, vy) = vertices(i)
+            val screenX = vx * zoomLevel
+            val screenY = (height - 1 - vy) * zoomLevel
+            val markerSize = 6.0
+            gc.fillOval(screenX - markerSize / 2, screenY - markerSize / 2, markerSize, markerSize)
+            gc.strokeOval(
+              screenX - markerSize / 2,
+              screenY - markerSize / 2,
+              markerSize,
+              markerSize
+            )
+
+            // Label the vertex
+            gc.setFill(colors(i))
+            gc.fillText(s"V$i", screenX + 5, screenY - 5)
+          }
+        }
+
+        // Draw bounding box outline
+        gc.setStroke(Color.YELLOW)
+        gc.setLineWidth(1.0)
+        gc.setLineDashes(4.0, 4.0)
+        val bboxX = bbox._1 * zoomLevel
+        val bboxY = (height - 1 - bbox._4) * zoomLevel
+        val bboxW = (bbox._3 - bbox._1 + 1) * zoomLevel
+        val bboxH = (bbox._4 - bbox._2 + 1) * zoomLevel
+        gc.strokeRect(bboxX, bboxY, bboxW, bboxH)
+        gc.setLineDashes() // Reset to solid
+    }
+  }
+
+  /** Trigger a redraw (thread-safe) */
+  def requestRedraw(): Unit = {
+    needsRedraw = true
   }
 
   /** Start the pixel update loop (runs on JavaFX thread) */
@@ -337,6 +698,233 @@ class DisplayWindow(
     framebuffer.indices.foreach(i => framebuffer(i) = 0)
   }
 
+  /** Create the toolbar with play/pause button and status */
+  private def createToolbar(): HBox = {
+    val toolbar = new HBox(10)
+    toolbar.setPadding(new Insets(5, 10, 5, 10))
+    toolbar.setAlignment(Pos.CENTER_LEFT)
+    toolbar.setStyle("-fx-background-color: #444444;")
+
+    // Play/Pause button - starts showing Play since we start paused
+    playPauseButton = new Button("▶ Play")
+    playPauseButton.setStyle(
+      "-fx-font-size: 14px; -fx-min-width: 100px; -fx-background-color: #4CAF50;"
+    )
+    playPauseButton.setOnAction(_ => {
+      isPaused = !isPaused
+      updatePlayPauseButton()
+    })
+
+    // Step button
+    stepButton = new Button("⏭ Step")
+    stepButton.setStyle("-fx-font-size: 14px; -fx-min-width: 80px;")
+    stepButton.setOnAction(_ => {
+      stepRequested = true
+    })
+
+    // Status label
+    val statusLabel = new Label("Paused")
+    statusLabel.setId("playbackStatusLabel")
+    statusLabel.setStyle("-fx-text-fill: #ffaa00; -fx-font-size: 12px;")
+
+    toolbar.getChildren.addAll(playPauseButton, stepButton, statusLabel)
+    toolbar
+  }
+
+  /** Update play/pause button text based on current state */
+  private def updatePlayPauseButton(): Unit = {
+    if (playPauseButton != null) {
+      Platform.runLater(() => {
+        if (isPaused) {
+          playPauseButton.setText("▶ Play")
+          playPauseButton.setStyle(
+            "-fx-font-size: 14px; -fx-min-width: 100px; -fx-background-color: #4CAF50;"
+          )
+        } else {
+          playPauseButton.setText("⏸ Pause")
+          playPauseButton.setStyle("-fx-font-size: 14px; -fx-min-width: 100px;")
+        }
+      })
+    }
+  }
+
+  /** Create the registers panel with TableView */
+  private def createRegistersPanel(): VBox = {
+    val panel = new VBox(10)
+    panel.setPadding(new Insets(10))
+    panel.setStyle("-fx-background-color: #333333;")
+
+    val headerLabel = new Label("Register State")
+    headerLabel.setStyle("-fx-text-fill: white; -fx-font-size: 14px; -fx-font-weight: bold;")
+
+    registerTable = new TableView[RegisterRow]()
+    registerTable.setStyle("-fx-background-color: #444444;")
+    registerTable.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY)
+
+    val addrCol = new TableColumn[RegisterRow, String]("Address")
+    addrCol.setCellValueFactory(data => new SimpleStringProperty(data.getValue.addrHex))
+    addrCol.setPrefWidth(80)
+
+    val nameCol = new TableColumn[RegisterRow, String]("Name")
+    nameCol.setCellValueFactory(data => new SimpleStringProperty(data.getValue.name))
+    nameCol.setPrefWidth(150)
+
+    val valueCol = new TableColumn[RegisterRow, String]("Value")
+    valueCol.setCellValueFactory(data => new SimpleStringProperty(data.getValue.valueHex))
+    valueCol.setPrefWidth(120)
+
+    val decodedCol = new TableColumn[RegisterRow, String]("Decoded")
+    decodedCol.setCellValueFactory(data => new SimpleStringProperty(data.getValue.decoded))
+    decodedCol.setPrefWidth(200)
+
+    registerTable.getColumns.addAll(addrCol, nameCol, valueCol, decodedCol)
+    VBox.setVgrow(registerTable, Priority.ALWAYS)
+
+    panel.getChildren.addAll(headerLabel, registerTable)
+    panel
+  }
+
+  /** Update a register value (called from simulation thread) */
+  def updateRegister(addr: Long, value: Long): Unit = {
+    registerState(addr) = value
+    // Refresh the table periodically (handled in update loop)
+  }
+
+  /** Refresh the register table display (call from JavaFX thread) */
+  def refreshRegisterTable(): Unit = {
+    Platform.runLater(() => {
+      if (registerTable != null) {
+        val rows = registerState.toSeq.sortBy(_._1).map { case (addr, value) =>
+          val name = RegisterNames.getName(addr)
+          val decoded = RegisterNames.decode(addr, value)
+          RegisterRow(f"0x${addr}%03X", name, f"0x${value}%08X", decoded)
+        }
+        registerTable.setItems(FXCollections.observableArrayList(rows.asJava))
+      }
+    })
+  }
+
+  /** Row data for register table */
+  case class RegisterRow(addrHex: String, name: String, valueHex: String, decoded: String)
+
+  /** Create the trace panel with ListView */
+  private def createTracePanel(): VBox = {
+    val panel = new VBox(10)
+    panel.setPadding(new Insets(10))
+    panel.setStyle("-fx-background-color: #333333;")
+
+    val headerLabel = new Label("Trace Entries")
+    headerLabel.setStyle("-fx-text-fill: white; -fx-font-size: 14px; -fx-font-weight: bold;")
+
+    tracePositionLabel = new Label("Position: 0 / 0")
+    tracePositionLabel.setStyle("-fx-text-fill: #aaaaaa; -fx-font-size: 12px;")
+
+    traceListView = new ListView[String]()
+    traceListView.setStyle(
+      "-fx-background-color: #444444; -fx-control-inner-background: #222222; -fx-font-family: monospace;"
+    )
+    VBox.setVgrow(traceListView, Priority.ALWAYS)
+
+    // Custom cell factory to highlight current entry
+    traceListView.setCellFactory(_ =>
+      new javafx.scene.control.ListCell[String]() {
+        override def updateItem(item: String, empty: Boolean): Unit = {
+          super.updateItem(item, empty)
+          if (empty || item == null) {
+            setText(null)
+            setStyle("-fx-background-color: transparent;")
+          } else {
+            setText(item)
+            val idx = getIndex
+            if (idx == currentTraceIndex) {
+              setStyle(
+                "-fx-background-color: #4a6fa5; -fx-text-fill: white; -fx-font-family: monospace;"
+              )
+            } else if (idx < currentTraceIndex) {
+              setStyle(
+                "-fx-background-color: #2a2a2a; -fx-text-fill: #888888; -fx-font-family: monospace;"
+              )
+            } else {
+              setStyle(
+                "-fx-background-color: transparent; -fx-text-fill: #cccccc; -fx-font-family: monospace;"
+              )
+            }
+          }
+        }
+      }
+    )
+
+    panel.getChildren.addAll(headerLabel, tracePositionLabel, traceListView)
+    panel
+  }
+
+  /** Add a trace entry (called during trace loading) */
+  def addTraceEntry(index: Int, cmdType: Int, addr: Long, data: Long, count: Int): Unit = {
+    val cmdName = cmdType match {
+      case 0  => "WR_REG_L"
+      case 1  => "WR_REG_W"
+      case 2  => "WR_FB_L"
+      case 3  => "WR_FB_W"
+      case 4  => "WR_TEX_L"
+      case 5  => "WR_CMDFIFO"
+      case 6  => "RD_REG_L"
+      case 7  => "RD_REG_W"
+      case 8  => "RD_FB_L"
+      case 9  => "RD_FB_W"
+      case 10 => "VSYNC"
+      case 11 => "SWAP"
+      case 12 => "CONFIG"
+      case _  => f"CMD_$cmdType%02X"
+    }
+
+    val regName = if (cmdType == 0 || cmdType == 1) {
+      val maskedAddr = addr & 0xfff
+      " " + RegisterNames.getName(maskedAddr)
+    } else ""
+
+    val entry = f"$index%6d: $cmdName%-12s 0x${addr}%06X = 0x${data}%08X${
+        if (count > 1) s" x$count" else ""
+      }$regName"
+    traceEntries += entry
+
+    // Batch update the ListView (every 1000 entries)
+    if (traceEntries.size % 1000 == 0) {
+      refreshTraceList()
+    }
+  }
+
+  /** Finalize trace loading (call after all entries added) */
+  def finalizeTraceLoading(): Unit = {
+    refreshTraceList()
+  }
+
+  /** Refresh the trace list display */
+  private def refreshTraceList(): Unit = {
+    Platform.runLater(() => {
+      if (traceListView != null) {
+        traceListView.setItems(FXCollections.observableArrayList(traceEntries.asJava))
+      }
+    })
+  }
+
+  /** Update the current trace position (called during replay) */
+  def updateTracePosition(index: Int, forceUpdate: Boolean = false): Unit = {
+    currentTraceIndex = index
+    // Update UI periodically (every 100 entries to avoid overhead), or always if forced
+    if (forceUpdate || index % 100 == 0) {
+      Platform.runLater(() => {
+        if (tracePositionLabel != null) {
+          tracePositionLabel.setText(f"Position: $index%,d / ${traceEntries.size}%,d")
+        }
+        if (traceListView != null) {
+          // Scroll to keep current entry visible
+          traceListView.scrollTo(Math.max(0, index - 5))
+          traceListView.refresh()
+        }
+      })
+    }
+  }
+
   /** Create the debug panel with position label and tables */
   private def createDebugPanel(): VBox = {
     val panel = new VBox(10)
@@ -411,16 +999,121 @@ class DisplayWindow(
     statsLabel.setId("statsLabel")
     statsLabel.setStyle("-fx-text-fill: #888888; -fx-font-size: 10px;")
 
+    // Rasterizer overlay section
+    val overlaySection = createOverlaySection()
+
     panel.getChildren.addAll(
       positionLabel,
       triangleLabel,
       triangleTable,
       pixelLabel,
       pixelTable,
-      statsLabel
+      statsLabel,
+      overlaySection
     )
 
     panel
+  }
+
+  /** Create the rasterizer overlay section with toggles and triangle list */
+  private def createOverlaySection(): VBox = {
+    val section = new VBox(8)
+    section.setPadding(new Insets(10, 0, 0, 0))
+
+    // Section header with separator
+    val separator = new Separator()
+    separator.setStyle("-fx-background-color: #666666;")
+
+    val headerLabel = new Label("Rasterizer Debug Overlay")
+    headerLabel.setStyle("-fx-text-fill: white; -fx-font-size: 14px; -fx-font-weight: bold;")
+
+    // Overlay toggles
+    showEdgesCheckbox = new CheckBox("Show Edge Lines")
+    showEdgesCheckbox.setStyle("-fx-text-fill: #cccccc;")
+    showEdgesCheckbox.setSelected(showEdgeLines)
+    showEdgesCheckbox
+      .selectedProperty()
+      .addListener((_, _, newValue) => {
+        showEdgeLines = newValue
+        needsRedraw = true
+      })
+
+    // Triangle list label
+    val triListLabel = new Label("Triangles (select to view overlay):")
+    triListLabel.setStyle("-fx-text-fill: #aaaaaa; -fx-font-size: 12px;")
+
+    // Triangle list view
+    rasterizerTriangleList = new ListView[String]()
+    rasterizerTriangleList.setStyle(
+      "-fx-background-color: #444444; -fx-control-inner-background: #444444;"
+    )
+    rasterizerTriangleList.setPrefHeight(120)
+
+    // Selection listener
+    rasterizerTriangleList.getSelectionModel
+      .selectedItemProperty()
+      .addListener((_, _, newValue) => {
+        if (newValue != null) {
+          // Extract triangle ID from the list item string (format: "Tri #123: 45 pixels")
+          val idMatch = "Tri #(\\d+)".r.findFirstMatchIn(newValue)
+          idMatch.foreach { m =>
+            val id = m.group(1).toLong
+            rasterizerOverlay.selectTriangle(id)
+            needsRedraw = true
+          }
+        }
+      })
+
+    // Overlay stats
+    overlayStatsLabel = new Label("Overlay: 0 triangles")
+    overlayStatsLabel.setStyle("-fx-text-fill: #888888; -fx-font-size: 10px;")
+
+    section.getChildren.addAll(
+      separator,
+      headerLabel,
+      showEdgesCheckbox,
+      triListLabel,
+      rasterizerTriangleList,
+      overlayStatsLabel
+    )
+
+    section
+  }
+
+  /** Update the rasterizer overlay triangle list (call from simulation thread via
+    * Platform.runLater)
+    */
+  def updateOverlayTriangleList(): Unit = {
+    Platform.runLater(() => {
+      if (rasterizerTriangleList != null) {
+        val triangles = rasterizerOverlay.getAllTriangles
+        val items = triangles.map { tri =>
+          val bbox = tri.boundingBox
+          val vertsStr = if (tri.vertices.nonEmpty) {
+            tri.vertices.map { case (x, y) => f"(${x}%.1f,${y}%.1f)" }.mkString(" ")
+          } else {
+            "(no verts)"
+          }
+          f"Tri #${tri.id}%d: ${tri.pixelCount}%d px | $vertsStr"
+        }
+        rasterizerTriangleList.setItems(FXCollections.observableArrayList(items.asJava))
+
+        // Update stats
+        if (overlayStatsLabel != null) {
+          val totalPixels = triangles.map(_.pixelCount).sum
+          overlayStatsLabel.setText(s"Overlay: ${triangles.size} triangles, $totalPixels pixels")
+        }
+
+        // Auto-scroll to bottom (most recent triangle)
+        if (items.nonEmpty) {
+          rasterizerTriangleList.scrollTo(items.size - 1)
+          // Select the most recent if nothing is selected
+          if (rasterizerTriangleList.getSelectionModel.getSelectedItem == null) {
+            rasterizerTriangleList.getSelectionModel.selectLast()
+          }
+        }
+      }
+    })
   }
 
   /** Update the debug panel with data at the given position */
@@ -477,6 +1170,345 @@ class DisplayWindow(
 
   /** Row data for pixel table */
   case class PixelRow(triangleId: Long, color: String, depth: String, alpha: String)
+}
+
+/** Voodoo register names and decoding - based on RegisterBank.scala field definitions */
+object RegisterNames {
+  private val names = Map[Long, String](
+    // Status (0x000)
+    0x000L -> "status",
+    // Vertex data (0x008-0x01C)
+    0x008L -> "vertexAx",
+    0x00cL -> "vertexAy",
+    0x010L -> "vertexBx",
+    0x014L -> "vertexBy",
+    0x018L -> "vertexCx",
+    0x01cL -> "vertexCy",
+    // Start values (0x020-0x03C)
+    0x020L -> "startR",
+    0x024L -> "startG",
+    0x028L -> "startB",
+    0x02cL -> "startZ",
+    0x030L -> "startA",
+    0x034L -> "startS",
+    0x038L -> "startT",
+    0x03cL -> "startW",
+    // X gradients (0x040-0x05C)
+    0x040L -> "dRdX",
+    0x044L -> "dGdX",
+    0x048L -> "dBdX",
+    0x04cL -> "dZdX",
+    0x050L -> "dAdX",
+    0x054L -> "dSdX",
+    0x058L -> "dTdX",
+    0x05cL -> "dWdX",
+    // Y gradients (0x060-0x07C)
+    0x060L -> "dRdY",
+    0x064L -> "dGdY",
+    0x068L -> "dBdY",
+    0x06cL -> "dZdY",
+    0x070L -> "dAdY",
+    0x074L -> "dSdY",
+    0x078L -> "dTdY",
+    0x07cL -> "dWdY",
+    // Commands (0x080-0x128)
+    0x080L -> "triangleCMD",
+    0x100L -> "ftriangleCMD",
+    0x104L -> "fbzColorPath",
+    0x108L -> "fogMode",
+    0x10cL -> "alphaMode",
+    0x110L -> "fbzMode",
+    0x114L -> "lfbMode",
+    0x118L -> "clipLeftRight",
+    0x11cL -> "clipLowYHighY",
+    0x120L -> "nopCMD",
+    0x124L -> "fastfillCMD",
+    0x128L -> "swapbufferCMD",
+    // Color constants (0x12C-0x148)
+    0x12cL -> "fogColor",
+    0x130L -> "zaColor",
+    0x134L -> "chromaKey",
+    0x140L -> "stipple",
+    0x144L -> "color0",
+    0x148L -> "color1",
+    // Statistics (0x14C-0x15C)
+    0x14cL -> "fbiPixelsIn",
+    0x150L -> "fbiChromaFail",
+    0x154L -> "fbiZfuncFail",
+    0x158L -> "fbiAfuncFail",
+    0x15cL -> "fbiPixelsOut",
+    // FBI init (0x200-0x24C)
+    0x200L -> "fbiInit4",
+    0x208L -> "backPorch",
+    0x20cL -> "videoDimensions",
+    0x210L -> "fbiInit0",
+    0x214L -> "fbiInit1",
+    0x218L -> "fbiInit2",
+    0x21cL -> "fbiInit3",
+    0x220L -> "hSync",
+    0x224L -> "vSync",
+    0x230L -> "maxRgbDelta",
+    0x244L -> "fbiInit5",
+    0x248L -> "fbiInit6",
+    0x24cL -> "fbiInit7",
+    // TMU1 coords (0x250-0x264)
+    0x250L -> "startS1",
+    0x254L -> "startT1",
+    0x258L -> "dS1dX",
+    0x25cL -> "dT1dX",
+    0x260L -> "dS1dY",
+    0x264L -> "dT1dY",
+    // TMU0 config (0x300-0x30C)
+    0x300L -> "textureMode0",
+    0x304L -> "tLOD0",
+    0x308L -> "tDetail0",
+    0x30cL -> "texBaseAddr0",
+    // TMU1 config (0x340-0x34C)
+    0x340L -> "textureMode1",
+    0x344L -> "tLOD1",
+    0x348L -> "tDetail1",
+    0x34cL -> "texBaseAddr1"
+  )
+
+  // Add fog table registers (0x160-0x1DC)
+  private val fogTableNames = (0 until 32).map(i => (0x160L + i * 4) -> s"fogTable$i").toMap
+
+  private val allNames = names ++ fogTableNames
+
+  def getName(addr: Long): String = allNames.getOrElse(addr, f"reg_0x${addr}%03X")
+
+  private val depthFuncNames = Seq("never", "<", "==", "<=", ">", "!=", ">=", "always")
+  private val blendFuncNames = Seq(
+    "zero",
+    "srcA",
+    "srcColor",
+    "dstA",
+    "one",
+    "1-srcA",
+    "1-srcColor",
+    "1-dstA",
+    "dstColor",
+    "1-dstColor",
+    "srcA_sat",
+    "x",
+    "x",
+    "x",
+    "x",
+    "x"
+  )
+
+  def decode(addr: Long, value: Long): String = {
+    addr match {
+      case 0x000L => // status
+        val pciFifoFree = value & 0x3f
+        val vRetrace = (value >> 6) & 0x1
+        val fbiBusy = (value >> 7) & 0x1
+        val trexBusy = (value >> 8) & 0x1
+        val sstBusy = (value >> 9) & 0x1
+        val dispBuf = (value >> 10) & 0x3
+        val memFifoFree = (value >> 12) & 0xffff
+        val swapsPend = (value >> 28) & 0x7
+        f"pciFifo:$pciFifoFree,vRet:$vRetrace,busy:fbi=$fbiBusy/trex=$trexBusy/sst=$sstBusy,buf:$dispBuf,swaps:$swapsPend"
+
+      case 0x110L => // fbzMode (detailed field decode from RegisterBank)
+        val enableClipping = (value >> 0) & 0x1
+        val enableChromaKey = (value >> 1) & 0x1
+        val enableStipple = (value >> 2) & 0x1
+        val wBufferSelect = (value >> 3) & 0x1
+        val enableDepthBuffer = (value >> 4) & 0x1
+        val depthFunction = (value >> 5) & 0x7
+        val enableDithering = (value >> 8) & 0x1
+        val rgbBufferMask = (value >> 9) & 0x1
+        val auxBufferMask = (value >> 10) & 0x1
+        val ditherAlgo = (value >> 11) & 0x1
+        val enableStipplePattern = (value >> 12) & 0x1
+        val enableAlphaMask = (value >> 13) & 0x1
+        val drawBuffer = (value >> 14) & 0x3
+        val enableDepthBias = (value >> 16) & 0x1
+        val yOrigin = (value >> 17) & 0x1
+        val enableAlphaPlanes = (value >> 18) & 0x1
+        val depthSource = (value >> 20) & 0x1
+        f"clip:$enableClipping,chroma:$enableChromaKey,depth:$enableDepthBuffer(${depthFuncNames(depthFunction.toInt)}),dither:$enableDithering,rgbMask:$rgbBufferMask,auxMask:$auxBufferMask,drawBuf:$drawBuffer,yOrig:${
+            if (yOrigin == 1) "bot" else "top"
+          }"
+
+      case 0x114L => // lfbMode
+        val writeFormat = value & 0xf
+        val writeBufSel = (value >> 4) & 0x3
+        val readBufSel = (value >> 6) & 0x3
+        val pixPipeEn = (value >> 8) & 0x1
+        val rgbaLanes = (value >> 9) & 0x3
+        val wordSwapW = (value >> 11) & 0x1
+        val byteSwizzW = (value >> 12) & 0x1
+        val yOrigin = (value >> 13) & 0x1
+        val fmtNames = Seq(
+          "565",
+          "555",
+          "1555",
+          "x888",
+          "888",
+          "8888",
+          "565_d",
+          "555_d",
+          "1555_d",
+          "x888_d",
+          "888_d",
+          "8888_d",
+          "Z",
+          "x",
+          "x",
+          "x"
+        )
+        val bufNames = Seq("front", "back", "aux", "?")
+        f"fmt:${fmtNames(writeFormat.toInt)},wBuf:${bufNames(writeBufSel.toInt)},rBuf:${bufNames(readBufSel.toInt)},pipe:$pixPipeEn,yOrig:${
+            if (yOrigin == 1) "bot" else "top"
+          }"
+
+      case 0x118L => // clipLeftRight
+        val clipLeft = value & 0x3ff
+        val clipRight = (value >> 16) & 0x3ff
+        f"left:$clipLeft,right:$clipRight"
+
+      case 0x11cL => // clipLowYHighY
+        val clipLow = value & 0x3ff
+        val clipHigh = (value >> 16) & 0x3ff
+        f"top:$clipLow,bottom:$clipHigh"
+
+      case 0x104L => // fbzColorPath
+        val rgbSelA = value & 0x3
+        val aSelA = (value >> 2) & 0x3
+        val ccLocalSel = (value >> 4) & 0x1
+        val cczLocalSel = (value >> 5) & 0x3
+        val ccASelMux = (value >> 7) & 0x7
+        val ccARGBInvert = (value >> 10) & 0xf
+        val ccAShift = (value >> 14) & 0x3
+        val ccAInvert = (value >> 16) & 0x1
+        val ccAClamp = (value >> 17) & 0x1
+        val ccASubClocal = (value >> 18) & 0x1
+        val ccRGBAdd = (value >> 19) & 0x3
+        val ccAAdd = (value >> 21) & 0x3
+        val textureEn = (value >> 27) & 0x1
+        val rgbSelNames = Seq("iter", "tex", "color1", "lfb")
+        f"rgbA:${rgbSelNames(rgbSelA.toInt)},aA:$aSelA,texEn:$textureEn,ccLocal:$ccLocalSel"
+
+      case 0x108L => // fogMode
+        val fogEnable = value & 0x1
+        val fogAdd = (value >> 1) & 0x1
+        val fogMult = (value >> 2) & 0x1
+        val fogZa = (value >> 3) & 0x1
+        val fogConst = (value >> 4) & 0x1
+        val fogDither = (value >> 5) & 0x1
+        val fogZones = (value >> 6) & 0x1
+        f"en:$fogEnable,add:$fogAdd,mult:$fogMult,za:$fogZa,const:$fogConst,dither:$fogDither"
+
+      case 0x10cL => // alphaMode
+        val alphaFunc = value & 0x7
+        val alphaRef = (value >> 8) & 0xff
+        val srcRGBFactor = (value >> 8) & 0xf // overlaps with alphaRef for blend
+        val dstRGBFactor = (value >> 12) & 0xf
+        val srcAFactor = (value >> 16) & 0xf
+        val dstAFactor = (value >> 20) & 0xf
+        val alphaTest = (value >> 1) & 0x1
+        val alphaBlend = (value >> 4) & 0x1
+        f"test:${depthFuncNames(alphaFunc.toInt)},ref:$alphaRef,srcRGB:${blendFuncNames(srcRGBFactor.toInt)},dstRGB:${blendFuncNames(dstRGBFactor.toInt)}"
+
+      case 0x20cL => // videoDimensions
+        val hDisp = value & 0xfff
+        val vDisp = (value >> 16) & 0xfff
+        f"${hDisp + 1}x$vDisp"
+
+      case 0x210L => // fbiInit0
+        val vgaPassthrough = value & 0x1
+        val graphicsReset = (value >> 1) & 0x1
+        f"vgaPass:$vgaPassthrough,gfxReset:$graphicsReset"
+
+      case 0x214L => // fbiInit1
+        val pciWriteWait = (value >> 1) & 0x1
+        val multiSst = (value >> 2) & 0x1
+        val videoReset = (value >> 8) & 0x1
+        val sliEnable = (value >> 23) & 0x1
+        f"pciWait:$pciWriteWait,multiSST:$multiSst,vidReset:$videoReset,sli:$sliEnable"
+
+      case 0x218L => // fbiInit2
+        val swapAlgo = (value >> 9) & 0x3
+        val bufOffset = (value >> 11) & 0x3ff
+        val algoNames = Seq("vsync", "data", "stall", "sli")
+        f"swap:${algoNames(swapAlgo.toInt)},bufOffset:${bufOffset * 4}KB"
+
+      case 0x21cL => // fbiInit3
+        val remapEn = value & 0x1
+        f"remap:$remapEn"
+
+      case 0x220L => // hSync
+        val hSyncOn = value & 0xff
+        val hSyncOff = (value >> 16) & 0x3ff
+        f"on:$hSyncOn,off:$hSyncOff"
+
+      case 0x224L => // vSync
+        val vSyncOn = value & 0xffff
+        val vSyncOff = (value >> 16) & 0xffff
+        f"on:$vSyncOn,off:$vSyncOff"
+
+      case 0x300L | 0x340L => // textureMode0/1
+        val format = value & 0xf
+        val reverseS = (value >> 4) & 0x1
+        val reverseT = (value >> 5) & 0x1
+        val clampS = (value >> 6) & 0x1
+        val clampT = (value >> 7) & 0x1
+        val filterMode = (value >> 8) & 0x3
+        val tcGen = (value >> 12) & 0x1
+        val perspCorr = (value >> 31) & 0x1
+        val fmtNames = Seq(
+          "8idx",
+          "YIQ",
+          "A8",
+          "I8",
+          "AI44",
+          "P8",
+          "ARGB8332",
+          "A8I8",
+          "ARGB4444",
+          "ARGB1555",
+          "ARGB565",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x"
+        )
+        val filtNames = Seq("point", "bilin", "x", "trilin")
+        f"fmt:${fmtNames(format.toInt)},filt:${filtNames(filterMode.toInt)},clampS:$clampS,clampT:$clampT,persp:$perspCorr"
+
+      case 0x304L | 0x344L => // tLOD0/1
+        val lodMin = value & 0x3f
+        val lodMax = (value >> 6) & 0x3f
+        val lodBias = ((value >> 12) & 0x3f).toInt
+        val biasSign = if (lodBias >= 32) lodBias - 64 else lodBias
+        val split = (value >> 18) & 0x1
+        val odd = (value >> 19) & 0x1
+        val smode = (value >> 20) & 0x3
+        f"min:$lodMin,max:$lodMax,bias:$biasSign,split:$split"
+
+      case 0x30cL | 0x34cL => // texBaseAddr0/1
+        val baseAddr = value & 0xffffff
+        f"addr:0x${baseAddr}%06X (${baseAddr * 8} bytes)"
+
+      case 0x12cL => // fogColor
+        val b = value & 0xff
+        val g = (value >> 8) & 0xff
+        val r = (value >> 16) & 0xff
+        f"RGB($r,$g,$b)"
+
+      case 0x144L | 0x148L => // color0/1
+        val b = value & 0xff
+        val g = (value >> 8) & 0xff
+        val r = (value >> 16) & 0xff
+        val a = (value >> 24) & 0xff
+        f"ARGB($a,$r,$g,$b)"
+
+      case _ => ""
+    }
+  }
 }
 
 /** JavaFX Application class (required by JavaFX) */

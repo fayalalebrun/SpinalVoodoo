@@ -8,8 +8,8 @@ import _root_.math.{Fpxx, FpxxConfig, Fpxx2AFix}
 
 case class Core(c: Config) extends Component {
   val io = new Bundle {
-    // Register bus interface
-    val regBus = slave(Bmb(RegisterBank.bmbParams(c)))
+    // Register bus interface (external: 22-bit address for remap detection)
+    val regBus = slave(Bmb(RegisterBank.externalBmbParams(c)))
 
     // Framebuffer write bus
     val fbWrite = master(Bmb(Write.baseBmbParams(c)))
@@ -45,6 +45,8 @@ case class Core(c: Config) extends Component {
   }
 
   // Instantiate components
+  val addressRemapper =
+    AddressRemapper(RegisterBank.externalBmbParams(c), RegisterBank.bmbParams(c))
   val regBank = RegisterBank(c)
   val triangleSetup = TriangleSetup(c)
   val rasterizer = Rasterizer(c)
@@ -57,8 +59,10 @@ case class Core(c: Config) extends Component {
   regBank.commands.triangleCmd.simPublic()
   regBank.commands.ftriangleCmd.simPublic()
 
-  // Connect register bank
-  regBank.io.bus <> io.regBus
+  // Connect address remapper between external bus and register bank
+  // AddressRemapper handles RGBZASTW → standard layout translation for remapped addresses
+  addressRemapper.io.input <> io.regBus
+  addressRemapper.io.output <> regBank.io.bus
   regBank.io.statusInputs <> io.statusInputs
   regBank.io.statisticsIn <> io.statisticsIn
 
@@ -94,24 +98,58 @@ case class Core(c: Config) extends Component {
   // Fork ftriangleCmd to feed all 6 converters
   val ftriangleForks = StreamFork(regBank.commands.ftriangleCmd, 6, synchronous = true)
 
+  val fvertexAx = regBank.floatTriangleGeometry.fvertexAx
+  val fvertexAy = regBank.floatTriangleGeometry.fvertexAy
+  val fvertexBx = regBank.floatTriangleGeometry.fvertexBx
+  val fvertexBy = regBank.floatTriangleGeometry.fvertexBy
+  val fvertexCx = regBank.floatTriangleGeometry.fvertexCx
+  val fvertexCy = regBank.floatTriangleGeometry.fvertexCy
+
+  val fstartR = regBank.floatTriangleGeometry.fstartR
+  val fstartG = regBank.floatTriangleGeometry.fstartG
+  val fstartB = regBank.floatTriangleGeometry.fstartB
+  val fstartZ = regBank.floatTriangleGeometry.fstartZ
+  val fstartA = regBank.floatTriangleGeometry.fstartA
+  val fstartS = regBank.floatTriangleGeometry.fstartS
+  val fstartT = regBank.floatTriangleGeometry.fstartT
+  val fstartW = regBank.floatTriangleGeometry.fstartW
+
+  val fdRdX = regBank.floatTriangleGeometry.fdRdX
+  val fdGdX = regBank.floatTriangleGeometry.fdGdX
+  val fdBdX = regBank.floatTriangleGeometry.fdBdX
+  val fdZdX = regBank.floatTriangleGeometry.fdZdX
+  val fdAdX = regBank.floatTriangleGeometry.fdAdX
+  val fdSdX = regBank.floatTriangleGeometry.fdSdX
+  val fdTdX = regBank.floatTriangleGeometry.fdTdX
+  val fdWdX = regBank.floatTriangleGeometry.fdWdX
+
+  val fdRdY = regBank.floatTriangleGeometry.fdRdY
+  val fdGdY = regBank.floatTriangleGeometry.fdGdY
+  val fdBdY = regBank.floatTriangleGeometry.fdBdY
+  val fdZdY = regBank.floatTriangleGeometry.fdZdY
+  val fdAdY = regBank.floatTriangleGeometry.fdAdY
+  val fdSdY = regBank.floatTriangleGeometry.fdSdY
+  val fdTdY = regBank.floatTriangleGeometry.fdTdY
+  val fdWdY = regBank.floatTriangleGeometry.fdWdY
+
   // Feed each forked stream to its converter with appropriate data
   convVax.io.op.translateFrom(ftriangleForks(0)) { (fpxx, _) =>
-    fpxx.assignFromBits(regBank.floatTriangleGeometry.fvertexAx)
+    fpxx.assignFromBits(fvertexAx)
   }
   convVay.io.op.translateFrom(ftriangleForks(1)) { (fpxx, _) =>
-    fpxx.assignFromBits(regBank.floatTriangleGeometry.fvertexAy)
+    fpxx.assignFromBits(fvertexAy)
   }
   convVbx.io.op.translateFrom(ftriangleForks(2)) { (fpxx, _) =>
-    fpxx.assignFromBits(regBank.floatTriangleGeometry.fvertexBx)
+    fpxx.assignFromBits(fvertexBx)
   }
   convVby.io.op.translateFrom(ftriangleForks(3)) { (fpxx, _) =>
-    fpxx.assignFromBits(regBank.floatTriangleGeometry.fvertexBy)
+    fpxx.assignFromBits(fvertexBy)
   }
   convVcx.io.op.translateFrom(ftriangleForks(4)) { (fpxx, _) =>
-    fpxx.assignFromBits(regBank.floatTriangleGeometry.fvertexCx)
+    fpxx.assignFromBits(fvertexCx)
   }
   convVcy.io.op.translateFrom(ftriangleForks(5)) { (fpxx, _) =>
-    fpxx.assignFromBits(regBank.floatTriangleGeometry.fvertexCy)
+    fpxx.assignFromBits(fvertexCy)
   }
 
   // Join all converter results

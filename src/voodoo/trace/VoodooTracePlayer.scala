@@ -136,6 +136,9 @@ object VoodooTracePlayer {
     SimConfig.withVerilator.withWave.compile(Core(voodooConfig)).doSimUntilVoid { dut =>
       println("[DEBUG] Simulation started, setting up DUT...")
 
+      // Load register names from the elaborated RegisterBank's RegIf interface
+      RegisterNames.loadFromRegBank(dut.regBank)
+
       // Tracked gradient values for creating triangles
       var startR, startG, startB, startZ, startA, startW = 0L
       var dRdX, dGdX, dBdX, dZdX, dAdX, dWdX = 0L
@@ -358,15 +361,17 @@ object VoodooTracePlayer {
           // Process command based on type
           entry.cmdType match {
             case TraceCommandType.WRITE_REG_L =>
-              // Skip if address is outside register space (LFB/texture writes mislabeled as register)
-              // Registers are in range 0x000-0x3FF (10-bit address space)
-              // Addresses >= 0x100000 are LFB/aux writes that should be ignored
-              if ((entry.addr & 0xfff000) != 0) {
+              // Check if address is in valid register space:
+              // - Standard registers: 0x000-0x3FF
+              // - Remapped registers: 0x200000-0x2003FF (bit 21 set for fbiInit3 remap mode)
+              val isStandardReg = (entry.addr & 0xfff000) == 0
+              val isRemappedReg = (entry.addr & 0xfff000) == 0x200000
+              if (!isStandardReg && !isRemappedReg) {
                 // This is a mislabeled LFB write, skip it
               } else {
-                // Repeat the command 'count' times if coalesced
-                // Mask address to 12 bits for register bus
-                val regAddr = entry.addr & 0xfff
+                // Keep bit 21 for remapped registers, mask lower 12 bits for register offset
+                // Full address: 0x200xxx for remapped, 0x000xxx for standard
+                val regAddr = if (isRemappedReg) (entry.addr & 0x2003ff) else (entry.addr & 0xfff)
 
                 // Track triangle geometry values and gradients
                 regAddr match {
@@ -408,10 +413,11 @@ object VoodooTracePlayer {
               } // end if valid register address
 
             case TraceCommandType.WRITE_REG_W =>
-              // Skip if address is outside register space (mislabeled LFB writes)
-              if ((entry.addr & 0xfff000) == 0) {
-                // Mask address to 12 bits for register bus
-                val regAddr = entry.addr & 0xfff
+              // Check if address is in valid register space (same as WRITE_REG_L)
+              val isStdReg = (entry.addr & 0xfff000) == 0
+              val isRemapReg = (entry.addr & 0xfff000) == 0x200000
+              if (isStdReg || isRemapReg) {
+                val regAddr = if (isRemapReg) (entry.addr & 0x2003ff) else (entry.addr & 0xfff)
                 val data16 = entry.data & 0xffff
                 for (_ <- 0 until entry.count) {
                   bmbDriver.write(BigInt(data16), BigInt(regAddr))
@@ -558,30 +564,27 @@ object VoodooTracePlayer {
     StreamMonitor(dut.rasterizer.o, dut.clockDomain) { pixel =>
       val x = pixel.coords(0).toInt
       val y = pixel.coords(1).toInt
-      val r = pixel.grads.redGrad.toDouble
-      val g = pixel.grads.greenGrad.toDouble
-      val b = pixel.grads.blueGrad.toDouble
-      val z = pixel.grads.depthGrad.toDouble
-      val a = pixel.grads.alphaGrad.toDouble
 
-      // Add pixel to debug tracker
+      // Add pixel to debug tracker with iterated color values
       debugTracker.addPixel(
         x = x,
         y = y,
-        r = r,
-        g = g,
-        b = b,
-        depth = z,
-        alpha = a,
+        r = pixel.grads.redGrad.toDouble,
+        g = pixel.grads.greenGrad.toDouble,
+        b = pixel.grads.blueGrad.toDouble,
+        depth = pixel.grads.depthGrad.toDouble,
+        alpha = pixel.grads.alphaGrad.toDouble,
         timestamp = simTime()
       )
 
-      // Convert iterated color values to 8-bit RGB for display
-      // Colors are in S18.14 format, so extract integer part (divide by 2^14)
-      // and clamp to 0-255
-      val rInt = Math.max(0, Math.min(255, (r / 16384.0).toInt))
-      val gInt = Math.max(0, Math.min(255, (g / 16384.0).toInt))
-      val bInt = Math.max(0, Math.min(255, (b / 16384.0).toInt))
+      // Use per-triangle color for rasterizer visualization (same as framebuffer overlay)
+      // currentTriangleColor is RGB565 format, convert to 8-bit RGB
+      val r5 = (currentTriangleColor >> 11) & 0x1f
+      val g6 = (currentTriangleColor >> 5) & 0x3f
+      val b5 = currentTriangleColor & 0x1f
+      val rInt = (r5 * 255) / 31
+      val gInt = (g6 * 255) / 63
+      val bInt = (b5 * 255) / 31
       display.rasterizerFramebuffer.writePixel(x, y, rInt, gInt, bInt)
 
       // Add pixel hit to rasterizer overlay (if tracking enabled)

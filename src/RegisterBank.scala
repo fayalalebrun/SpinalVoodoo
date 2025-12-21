@@ -56,9 +56,10 @@ case class RegisterBank(config: Config) extends Component {
   }
 
   // Create BMB bus interface for RegIf - shared across all Areas
+  // Address remapping (for bit 21 set) is handled by AddressRemapper before this
   implicit val moduleName: spinal.lib.bus.regif.ClassName =
     spinal.lib.bus.regif.ClassName("RegisterBank")
-  val busif = BmbBusInterface(io.bus, SizeMapping(0x000, 1 KiB), "VDO")
+  val busif = BmbBusInterface(io.bus, SizeMapping(0x000, 4 KiB), "VDO")
 
   // Connect pipeline busy signal for Sync=Yes register FIFO drain blocking
   busif.setPipelineBusy(io.pipelineBusy)
@@ -812,7 +813,19 @@ case class RegisterBank(config: Config) extends Component {
 
 object RegisterBank {
   def bmbParams(c: Config) = BmbParameter(
-    addressWidth = 12, // 4KB register space
+    addressWidth = 12, // 4KB address space (remapping handled by AddressRemapper)
+    dataWidth = 32,
+    sourceWidth = 4,
+    contextWidth = 0,
+    lengthWidth = 2,
+    canRead = true,
+    canWrite = true,
+    alignment = BmbParameter.BurstAlignement.WORD
+  )
+
+  // External bus params include bit 21 for remap detection
+  def externalBmbParams(c: Config) = BmbParameter(
+    addressWidth = 22, // 4MB address space to include bit 21 for remapped registers
     dataWidth = 32,
     sourceWidth = 4,
     contextWidth = 0,

@@ -266,7 +266,13 @@ class DisplayWindow(
   // Trace viewer
   private var traceTab: Tab = _
   private var traceListView: ListView[String] = _
-  private val traceEntries = mutable.ArrayBuffer[String]()
+
+  // Windowed trace view - store raw data, format on demand
+  case class TraceEntryData(index: Int, cmdType: Int, addr: Long, data: Long, count: Int)
+  private val traceEntries = mutable.ArrayBuffer[TraceEntryData]()
+  private val windowSize = 200 // Show 200 entries at a time
+  private var windowStart = 0 // Current window start index in traceEntries
+
   @volatile private var currentTraceIndex = 0
   private var tracePositionLabel: Label = _
 
@@ -797,7 +803,8 @@ class DisplayWindow(
         val rows = registerState.toSeq.sortBy(_._1).map { case (addr, value) =>
           val name = RegisterNames.getName(addr)
           val decoded = RegisterNames.decode(addr, value)
-          RegisterRow(f"0x${addr}%03X", name, f"0x${value}%08X", decoded)
+          val addrStr = if (addr >= 0x200000) f"0x${addr}%06X" else f"0x${addr}%03X"
+          RegisterRow(addrStr, name, f"0x${value}%08X", decoded)
         }
         registerTable.setItems(FXCollections.observableArrayList(rows.asJava))
       }
@@ -826,6 +833,7 @@ class DisplayWindow(
     VBox.setVgrow(traceListView, Priority.ALWAYS)
 
     // Custom cell factory to highlight current entry
+    // Note: getIndex returns position within the window, convert to absolute trace index
     traceListView.setCellFactory(_ =>
       new javafx.scene.control.ListCell[String]() {
         override def updateItem(item: String, empty: Boolean): Unit = {
@@ -835,12 +843,13 @@ class DisplayWindow(
             setStyle("-fx-background-color: transparent;")
           } else {
             setText(item)
-            val idx = getIndex
-            if (idx == currentTraceIndex) {
+            // Convert window index to absolute trace index
+            val actualIdx = windowStart + getIndex
+            if (actualIdx == currentTraceIndex) {
               setStyle(
                 "-fx-background-color: #4a6fa5; -fx-text-fill: white; -fx-font-family: monospace;"
               )
-            } else if (idx < currentTraceIndex) {
+            } else if (actualIdx < currentTraceIndex) {
               setStyle(
                 "-fx-background-color: #2a2a2a; -fx-text-fill: #888888; -fx-font-family: monospace;"
               )
@@ -858,9 +867,9 @@ class DisplayWindow(
     panel
   }
 
-  /** Add a trace entry (called during trace loading) */
-  def addTraceEntry(index: Int, cmdType: Int, addr: Long, data: Long, count: Int): Unit = {
-    val cmdName = cmdType match {
+  /** Format a TraceEntryData to a display string */
+  private def formatEntry(entry: TraceEntryData): String = {
+    val cmdName = entry.cmdType match {
       case 0  => "WR_REG_L"
       case 1  => "WR_REG_W"
       case 2  => "WR_FB_L"
@@ -874,51 +883,65 @@ class DisplayWindow(
       case 10 => "VSYNC"
       case 11 => "SWAP"
       case 12 => "CONFIG"
-      case _  => f"CMD_$cmdType%02X"
+      case _  => f"CMD_${entry.cmdType}%02X"
     }
 
-    val regName = if (cmdType == 0 || cmdType == 1) {
-      val maskedAddr = addr & 0xfff
+    val regName = if (entry.cmdType == 0 || entry.cmdType == 1) {
+      val maskedAddr = entry.addr & 0xfff
       " " + RegisterNames.getName(maskedAddr)
     } else ""
 
-    val entry = f"$index%6d: $cmdName%-12s 0x${addr}%06X = 0x${data}%08X${
-        if (count > 1) s" x$count" else ""
+    f"${entry.index}%6d: $cmdName%-12s 0x${entry.addr}%06X = 0x${entry.data}%08X${
+        if (entry.count > 1) s" x${entry.count}" else ""
       }$regName"
-    traceEntries += entry
+  }
 
-    // Batch update the ListView (every 1000 entries)
-    if (traceEntries.size % 1000 == 0) {
-      refreshTraceList()
-    }
+  /** Add a trace entry (called during trace loading) */
+  def addTraceEntry(index: Int, cmdType: Int, addr: Long, data: Long, count: Int): Unit = {
+    traceEntries += TraceEntryData(index, cmdType, addr, data, count)
   }
 
   /** Finalize trace loading (call after all entries added) */
   def finalizeTraceLoading(): Unit = {
-    refreshTraceList()
+    updateTraceWindow(force = true)
   }
 
-  /** Refresh the trace list display */
-  private def refreshTraceList(): Unit = {
-    Platform.runLater(() => {
-      if (traceListView != null) {
-        traceListView.setItems(FXCollections.observableArrayList(traceEntries.asJava))
-      }
-    })
+  /** Update the windowed trace view - only shows ~200 entries centered on current position */
+  private def updateTraceWindow(force: Boolean = false): Unit = {
+    // Calculate window centered on current position
+    val newStart = Math.max(0, currentTraceIndex - windowSize / 2)
+    val newEnd = Math.min(traceEntries.size, newStart + windowSize)
+
+    // Only update if window actually changed or forced
+    if (force || newStart != windowStart) {
+      windowStart = newStart
+      val windowEntries = traceEntries.slice(newStart, newEnd).map(formatEntry)
+      Platform.runLater(() => {
+        if (traceListView != null) {
+          traceListView.setItems(FXCollections.observableArrayList(windowEntries.asJava))
+        }
+        if (tracePositionLabel != null) {
+          tracePositionLabel.setText(
+            f"Position: $currentTraceIndex%,d / ${traceEntries.size}%,d [window: $newStart%,d-${newEnd - 1}%,d]"
+          )
+        }
+      })
+    }
   }
 
   /** Update the current trace position (called during replay) */
   def updateTracePosition(index: Int, forceUpdate: Boolean = false): Unit = {
     currentTraceIndex = index
-    // Update UI periodically (every 100 entries to avoid overhead), or always if forced
-    if (forceUpdate || index % 100 == 0) {
+    // Update UI periodically (every 50 entries to avoid overhead), or always if forced
+    if (forceUpdate || index % 50 == 0) {
+      updateTraceWindow()
       Platform.runLater(() => {
-        if (tracePositionLabel != null) {
-          tracePositionLabel.setText(f"Position: $index%,d / ${traceEntries.size}%,d")
-        }
         if (traceListView != null) {
-          // Scroll to keep current entry visible
-          traceListView.scrollTo(Math.max(0, index - 5))
+          // Scroll to keep current entry visible within window
+          val relativeIndex = currentTraceIndex - windowStart
+          if (relativeIndex >= 0 && relativeIndex < windowSize) {
+            traceListView.scrollTo(Math.max(0, relativeIndex - 5))
+          }
           traceListView.refresh()
         }
       })
@@ -1172,110 +1195,27 @@ class DisplayWindow(
   case class PixelRow(triangleId: Long, color: String, depth: String, alpha: String)
 }
 
-/** Voodoo register names and decoding - based on RegisterBank.scala field definitions */
+/** Voodoo register names and decoding - loaded from RegIf interface */
 object RegisterNames {
-  private val names = Map[Long, String](
-    // Status (0x000)
-    0x000L -> "status",
-    // Vertex data (0x008-0x01C)
-    0x008L -> "vertexAx",
-    0x00cL -> "vertexAy",
-    0x010L -> "vertexBx",
-    0x014L -> "vertexBy",
-    0x018L -> "vertexCx",
-    0x01cL -> "vertexCy",
-    // Start values (0x020-0x03C)
-    0x020L -> "startR",
-    0x024L -> "startG",
-    0x028L -> "startB",
-    0x02cL -> "startZ",
-    0x030L -> "startA",
-    0x034L -> "startS",
-    0x038L -> "startT",
-    0x03cL -> "startW",
-    // X gradients (0x040-0x05C)
-    0x040L -> "dRdX",
-    0x044L -> "dGdX",
-    0x048L -> "dBdX",
-    0x04cL -> "dZdX",
-    0x050L -> "dAdX",
-    0x054L -> "dSdX",
-    0x058L -> "dTdX",
-    0x05cL -> "dWdX",
-    // Y gradients (0x060-0x07C)
-    0x060L -> "dRdY",
-    0x064L -> "dGdY",
-    0x068L -> "dBdY",
-    0x06cL -> "dZdY",
-    0x070L -> "dAdY",
-    0x074L -> "dSdY",
-    0x078L -> "dTdY",
-    0x07cL -> "dWdY",
-    // Commands (0x080-0x128)
-    0x080L -> "triangleCMD",
-    0x100L -> "ftriangleCMD",
-    0x104L -> "fbzColorPath",
-    0x108L -> "fogMode",
-    0x10cL -> "alphaMode",
-    0x110L -> "fbzMode",
-    0x114L -> "lfbMode",
-    0x118L -> "clipLeftRight",
-    0x11cL -> "clipLowYHighY",
-    0x120L -> "nopCMD",
-    0x124L -> "fastfillCMD",
-    0x128L -> "swapbufferCMD",
-    // Color constants (0x12C-0x148)
-    0x12cL -> "fogColor",
-    0x130L -> "zaColor",
-    0x134L -> "chromaKey",
-    0x140L -> "stipple",
-    0x144L -> "color0",
-    0x148L -> "color1",
-    // Statistics (0x14C-0x15C)
-    0x14cL -> "fbiPixelsIn",
-    0x150L -> "fbiChromaFail",
-    0x154L -> "fbiZfuncFail",
-    0x158L -> "fbiAfuncFail",
-    0x15cL -> "fbiPixelsOut",
-    // FBI init (0x200-0x24C)
-    0x200L -> "fbiInit4",
-    0x208L -> "backPorch",
-    0x20cL -> "videoDimensions",
-    0x210L -> "fbiInit0",
-    0x214L -> "fbiInit1",
-    0x218L -> "fbiInit2",
-    0x21cL -> "fbiInit3",
-    0x220L -> "hSync",
-    0x224L -> "vSync",
-    0x230L -> "maxRgbDelta",
-    0x244L -> "fbiInit5",
-    0x248L -> "fbiInit6",
-    0x24cL -> "fbiInit7",
-    // TMU1 coords (0x250-0x264)
-    0x250L -> "startS1",
-    0x254L -> "startT1",
-    0x258L -> "dS1dX",
-    0x25cL -> "dT1dX",
-    0x260L -> "dS1dY",
-    0x264L -> "dT1dY",
-    // TMU0 config (0x300-0x30C)
-    0x300L -> "textureMode0",
-    0x304L -> "tLOD0",
-    0x308L -> "tDetail0",
-    0x30cL -> "texBaseAddr0",
-    // TMU1 config (0x340-0x34C)
-    0x340L -> "textureMode1",
-    0x344L -> "tLOD1",
-    0x348L -> "tDetail1",
-    0x34cL -> "texBaseAddr1"
+  import scala.collection.mutable
+
+  private val registerMap = mutable.Map[Long, String]()
+
+  /** Load register names from RegisterBank's RegIf interface */
+  def loadFromRegBank(regBank: voodoo.RegisterBank): Unit = {
+    registerMap.clear()
+    regBank.busif.slices.foreach { slice =>
+      // Use getDoc() which contains the register name passed to newRegAt
+      // (the second parameter is doc/name, not the implicit SymbolName)
+      registerMap(slice.getAddr().toLong) = slice.getDoc()
+    }
+    println(s"[RegisterNames] Loaded ${registerMap.size} registers from RegIf")
+  }
+
+  def getName(addr: Long): String = registerMap.getOrElse(
+    addr,
+    if (addr >= 0x200000) f"reg_0x${addr}%06X" else f"reg_0x${addr}%03X"
   )
-
-  // Add fog table registers (0x160-0x1DC)
-  private val fogTableNames = (0 until 32).map(i => (0x160L + i * 4) -> s"fogTable$i").toMap
-
-  private val allNames = names ++ fogTableNames
-
-  def getName(addr: Long): String = allNames.getOrElse(addr, f"reg_0x${addr}%03X")
 
   private val depthFuncNames = Seq("never", "<", "==", "<=", ">", "!=", ">=", "always")
   private val blendFuncNames = Seq(

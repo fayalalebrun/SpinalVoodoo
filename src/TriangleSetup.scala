@@ -18,14 +18,14 @@ case class TriangleSetup(c: Config) extends Component {
     val yminRaw = tri.map(_(1)).reduceBalancedTree((a, b) => a.min(b))
     val ymaxRaw = tri.map(_(1)).reduceBalancedTree((a, b) => a.max(b))
 
-    // Floor to integer pixel positions for rasterization
+    // Convert to integer pixel positions for rasterization
     // The rasterizer iterates through integer pixels, so bounds must be integers
     // floor(min) gives first pixel that could be inside
-    // floor(max) gives last pixel that could be inside (no need to ceil since we use >=)
+    // ceil(max) gives last pixel that could be inside (handles subpixel vertices)
     out.xrange(0) := xminRaw.floor(0).fixTo(c.vertexFormat)
-    out.xrange(1) := xmaxRaw.floor(0).fixTo(c.vertexFormat)
+    out.xrange(1) := xmaxRaw.ceil(0).fixTo(c.vertexFormat)
     out.yrange(0) := yminRaw.floor(0).fixTo(c.vertexFormat)
-    out.yrange(1) := ymaxRaw.floor(0).fixTo(c.vertexFormat)
+    out.yrange(1) := ymaxRaw.ceil(0).fixTo(c.vertexFormat)
 
     // Compute edge coefficients for all 3 edges
     // Note: Our formula produces inverted signs. For CCW triangles (signBit=0),

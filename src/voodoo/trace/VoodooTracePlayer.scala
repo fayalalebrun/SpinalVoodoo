@@ -80,9 +80,15 @@ object VoodooTracePlayer {
   def run(config: Config): Unit = {
     // Parse trace file
     val indexFile = config.indexFile.orElse {
+      // Try trace.bin.idx first, then index.csv in the same directory
       val idxPath = config.traceFile.getAbsolutePath + ".idx"
       val f = new File(idxPath)
-      if (f.exists()) Some(f) else None
+      if (f.exists()) Some(f)
+      else {
+        // Look for index.csv in the trace file's parent directory
+        val csvPath = new File(config.traceFile.getParentFile, "index.csv")
+        if (csvPath.exists()) Some(csvPath) else None
+      }
     }
 
     val parser = new TraceParser(config.traceFile, indexFile)
@@ -139,10 +145,86 @@ object VoodooTracePlayer {
       // Load register names from the elaborated RegisterBank's RegIf interface
       RegisterNames.loadFromRegBank(dut.regBank)
 
-      // Tracked gradient values for creating triangles
+      // Set up hardware register reader - reads directly from DUT's regif slices
+      // Build a map of address -> (name, fields) for reading during simulation
+      // Test accessibility ONCE during setup to avoid repeated error messages
+      val regBank = dut.regBank
+
+      // Redirect stderr during accessibility testing to suppress SpinalHDL's warnings
+      val originalErr = System.err
+      val devNull = new java.io.PrintStream(new java.io.OutputStream {
+        override def write(b: Int): Unit = {}
+      })
+
+      val regFieldsMap = regBank.busif.slices.map { slice =>
+        val addr = slice.getAddr().toLong
+        val name = slice.getDoc()
+        // Get fields and their bit positions for combining into full register value
+        // Only include fields that are accessible (test once during setup)
+        val fields = slice.getFields().flatMap { field =>
+          val start = field.getSection().start
+          val end = field.getSection().end
+          val hardbit = field.hardbit
+          // Test accessibility by trying to read once (suppress errors)
+          System.setErr(devNull)
+          val accessible =
+            try {
+              hardbit.toBigInt // Test read
+              true
+            } catch {
+              case _: Exception => false
+            } finally {
+              System.setErr(originalErr)
+            }
+          if (accessible) Some((start, end, hardbit)) else None
+        }
+        (addr, name, fields)
+      }.toSeq
+
+      val totalFields = regFieldsMap.map(_._3.size).sum
+      println(
+        s"[DEBUG] Hardware register reader: ${regFieldsMap.size} registers, $totalFields accessible fields"
+      )
+
+      // TMU config registers need to be read directly from output signals
+      // because they are WO (write-only) and regif hardbits may not be readable
+      val tmuConfig = regBank.tmuConfig
+
+      display.setHardwareRegisterReader(() => {
+        // Read regif fields first
+        val regifRegisters = regFieldsMap.map { case (addr, name, fields) =>
+          // Combine all field values into a single register value
+          var value = 0L
+          for ((start, end, hardbit) <- fields) {
+            val fieldValue = hardbit.toBigInt.toLong
+            val mask = ((1L << (end - start + 1)) - 1) << start
+            value = (value & ~mask) | ((fieldValue << start) & mask)
+          }
+          (addr, name, value)
+        }
+
+        // Add TMU registers from output signals directly (override regif values)
+        val tmuRegisters = Seq(
+          (0x300L, "textureMode", tmuConfig.textureMode.toBigInt.toLong),
+          (0x304L, "tLOD", tmuConfig.tLOD.toBigInt.toLong),
+          (0x308L, "tDetail", tmuConfig.tDetail.toBigInt.toLong),
+          (0x30cL, "texBaseAddr", tmuConfig.texBaseAddr.toBigInt.toLong)
+        )
+
+        // Merge: TMU registers override any regif values at same address
+        val tmuAddrSet = tmuRegisters.map(_._1).toSet
+        regifRegisters.filterNot(r => tmuAddrSet.contains(r._1)) ++ tmuRegisters
+      })
+
+      // Tracked gradient values for creating triangles (for debug UI only)
       var startR, startG, startB, startZ, startA, startW = 0L
+      var startS_trace, startT_trace, startW_trace = 0L // Track S/T/W separately for debug
+      // Track texBaseAddr for texture memory writes (address/8 format, like hardware register)
+      var currentTexBaseAddr = 0L
       var dRdX, dGdX, dBdX, dZdX, dAdX, dWdX = 0L
+      var dSdX_trace, dTdX_trace, dWdX_trace = 0L
       var dRdY, dGdY, dBdY, dZdY, dAdY, dWdY = 0L
+      var dSdY_trace, dTdY_trace, dWdY_trace = 0L
 
       setupDut(
         dut,
@@ -224,23 +306,50 @@ object VoodooTracePlayer {
       val framebuffer = FramebufferModel(fbSize, Some(display))
       framebuffer.addPort(dut.io.fbWrite, 0, dut.clockDomain)
 
-      // Create texture memory model (4MB for each TMU, typical Voodoo config)
-      val texMemSize = 4 * 1024 * 1024L
-      val textureMemory = TextureMemoryModel(texMemSize)
-      textureMemory.addReadPort(dut.io.texRead0, 0, dut.clockDomain)
-      textureMemory.addReadPort(dut.io.texRead1, 0, dut.clockDomain)
-      println("[DEBUG] Texture memory model created (4MB)")
-
-      // Load initial state for the specified frame (or frame 0)
+      // Load initial state for the specified frame (or frame 0) FIRST
+      // to get texBaseAddr before setting up texture memory ports
       val stateFrameNum = config.frameNum.getOrElse(0)
       val traceDir = StateParser.getTraceDir(config.traceFile)
-      StateParser.findStateFile(traceDir, stateFrameNum) match {
-        case Some(stateFile) =>
-          println(s"[DEBUG] Loading state for frame $stateFrameNum from ${stateFile.getName}")
-          val stateParser = new StateParser(stateFile)
-          val state = stateParser.loadState()
-          stateParser.close()
+      val stateOpt = StateParser.findStateFile(traceDir, stateFrameNum).map { stateFile =>
+        println(s"[DEBUG] Loading state for frame $stateFrameNum from ${stateFile.getName}")
+        val stateParser = new StateParser(stateFile)
+        val state = stateParser.loadState()
+        stateParser.close()
+        state
+      }
 
+      // Extract texBaseAddr from state registers
+      // IMPORTANT: In the 86Box state file:
+      // - 0x190 = params.texBaseAddr[0] (already shifted to byte address!)
+      // - 0x191 = params.texBaseAddr[1] (already shifted to byte address!)
+      // - 0x30c = fb_write_offset (NOT texBaseAddr!)
+      // The values at 0x190/0x191 are already byte addresses (shifted by 3)
+      val texBaseAddr0 = stateOpt
+        .flatMap(_.registers.find(_.addr == 0x190))
+        .map(_.value)
+        .getOrElse(0L)
+      val texBaseAddr1 = stateOpt
+        .flatMap(_.registers.find(_.addr == 0x191))
+        .map(_.value)
+        .getOrElse(0L)
+
+      println(f"[DEBUG] texBaseAddr0 = 0x$texBaseAddr0%06x, texBaseAddr1 = 0x$texBaseAddr1%06x")
+
+      // Create texture memory model (4MB for each TMU, typical Voodoo config)
+      // Use busAddress = 0 since we handle texBaseAddr in both writes and reads:
+      // - Texture writes: addr = texBaseAddr * 8 + offset (computed in trace player)
+      // - TMU reads: addr = texBaseAddr * 8 + LOD_offset + texel_offset (computed in hardware)
+      // Both use absolute addresses, so no offset translation needed
+      val texMemSize = 4 * 1024 * 1024L
+      val textureMemory = TextureMemoryModel(texMemSize)
+      textureMemory.addReadPort(dut.io.texRead, 0, dut.clockDomain) // busAddress = 0
+      println("[DEBUG] Texture memory model created (4MB)")
+
+      // Wire up texture memory to display for texture viewer tab
+      display.setTextureMemory(textureMemory)
+
+      stateOpt match {
+        case Some(state) =>
           // Load framebuffer data with format conversion from 86Box
           println(s"[DEBUG] Loading framebuffer: ${state.framebuffer.length} bytes")
           println(
@@ -264,8 +373,23 @@ object VoodooTracePlayer {
             println(s"[DEBUG] No layout info, skipping framebuffer load")
           }
 
-          // Load texture memory for TMU 0
+          // Load texture memory for TMU 0 at address 0
+          // The busAddress offset will translate TMU reads appropriately
           println(s"[DEBUG] Loading TMU0 texture: ${state.texture0.length} bytes")
+          // Check if texture data is non-zero
+          val nonZeroCount = state.texture0.count(_ != 0)
+          val firstNonZeroIdx = state.texture0.indexWhere(_ != 0)
+          println(
+            f"[DEBUG] Texture data: $nonZeroCount%d non-zero bytes, first at index $firstNonZeroIdx"
+          )
+
+          if (firstNonZeroIdx >= 0 && firstNonZeroIdx < state.texture0.length - 8) {
+            val sample = state.texture0
+              .slice(firstNonZeroIdx, firstNonZeroIdx + 8)
+              .map(b => f"${b & 0xff}%02x")
+              .mkString(" ")
+            println(s"[DEBUG] Texture sample at $firstNonZeroIdx: $sample")
+          }
           textureMemory.loadData(0, state.texture0)
 
           // Load texture memory for TMU 1 if present
@@ -276,13 +400,7 @@ object VoodooTracePlayer {
             textureMemory.loadData(0, tex1)
           }
 
-          // Load registers into display
-          for (reg <- state.registers) {
-            display.updateRegister(reg.addr, reg.value)
-          }
-          display.refreshRegisterTable()
-
-          // Log loaded registers
+          // Log loaded state (registers read from hardware, not state file)
           println(
             s"[DEBUG] State loaded: ${state.registers.length} registers, " +
               f"${state.header.fbSize}%d bytes FB, ${state.header.texSize}%d bytes TEX, " +
@@ -310,6 +428,7 @@ object VoodooTracePlayer {
         var currentCycle = 0L
         var lastTimestamp = 0L
         var entryCount = 0
+        var texWriteCount = 0
 
         // Track triangle geometry for logging (vertices only - gradients tracked above)
         var vax, vay, vbx, vby, vcx, vcy = 0L
@@ -362,16 +481,17 @@ object VoodooTracePlayer {
           entry.cmdType match {
             case TraceCommandType.WRITE_REG_L =>
               // Check if address is in valid register space:
-              // - Standard registers: 0x000-0x3FF
+              // - Standard registers: 0x000-0x3FF (ignore chip field in bits 13:10 for now)
               // - Remapped registers: 0x200000-0x2003FF (bit 21 set for fbiInit3 remap mode)
-              val isStandardReg = (entry.addr & 0xfff000) == 0
-              val isRemappedReg = (entry.addr & 0xfff000) == 0x200000
-              if (!isStandardReg && !isRemappedReg) {
+              // Note: We ignore the chip field and only support single TMU (Voodoo 1 level)
+              val baseAddr = entry.addr & 0x3ff // Extract register field only
+              val isStandardReg =
+                (entry.addr & 0x3fc000) == 0 || (entry.addr & 0x3fc000) != 0 // Accept any chip field
+              val isRemappedReg = (entry.addr & 0x200000) != 0
+              val regAddr = if (isRemappedReg) (0x200000 | baseAddr) else baseAddr
+              if (baseAddr > 0x3ff) {
                 // This is a mislabeled LFB write, skip it
               } else {
-                // Keep bit 21 for remapped registers, mask lower 12 bits for register offset
-                // Full address: 0x200xxx for remapped, 0x000xxx for standard
-                val regAddr = if (isRemappedReg) (entry.addr & 0x2003ff) else (entry.addr & 0xfff)
 
                 // Track triangle geometry values and gradients
                 regAddr match {
@@ -381,49 +501,70 @@ object VoodooTracePlayer {
                   case 0x014 => vby = entry.data
                   case 0x018 => vcx = entry.data
                   case 0x01c => vcy = entry.data
-                  // Start values (R, G, B, Z, A, W)
+                  // Start values (R, G, B, Z, A, S, T, W)
                   case 0x020 => startR = entry.data
                   case 0x024 => startG = entry.data
                   case 0x028 => startB = entry.data
                   case 0x02c => startZ = entry.data
                   case 0x030 => startA = entry.data
-                  case 0x034 => startW = entry.data
-                  // X gradients (dR/dX, dG/dX, dB/dX, dZ/dX, dA/dX, dW/dX)
+                  case 0x034 => startS_trace = entry.data // S is at 0x034, not W!
+                  case 0x038 => startT_trace = entry.data // T is at 0x038
+                  case 0x03c => startW_trace = entry.data; startW = entry.data // W is at 0x03c
+                  // X gradients (dR/dX, dG/dX, dB/dX, dZ/dX, dA/dX, dS/dX, dT/dX, dW/dX)
                   case 0x040 => dRdX = entry.data
                   case 0x044 => dGdX = entry.data
                   case 0x048 => dBdX = entry.data
                   case 0x04c => dZdX = entry.data
                   case 0x050 => dAdX = entry.data
-                  case 0x054 => dWdX = entry.data
-                  // Y gradients (dR/dY, dG/dY, dB/dY, dZ/dY, dA/dY, dW/dY)
+                  case 0x054 => dSdX_trace = entry.data // dS/dX is at 0x054
+                  case 0x058 => dTdX_trace = entry.data // dT/dX is at 0x058
+                  case 0x05c => dWdX_trace = entry.data; dWdX = entry.data // dW/dX is at 0x05c
+                  // Y gradients (dR/dY, dG/dY, dB/dY, dZ/dY, dA/dY, dS/dY, dT/dY, dW/dY)
                   case 0x060 => dRdY = entry.data
                   case 0x064 => dGdY = entry.data
                   case 0x068 => dBdY = entry.data
                   case 0x06c => dZdY = entry.data
                   case 0x070 => dAdY = entry.data
-                  case 0x074 => dWdY = entry.data
-                  case _     =>
+                  case 0x074 => dSdY_trace = entry.data // dS/dY is at 0x074
+                  case 0x078 => dTdY_trace = entry.data // dT/dY is at 0x078
+                  case 0x07c => dWdY_trace = entry.data; dWdY = entry.data // dW/dY is at 0x07c
+                  // Triangle command - log captured S/T/W values from trace
+                  case 0x080 =>
+                    println(
+                      f"[TRI CMD] Trace captured: startS=0x${startS_trace}%08X startT=0x${startT_trace}%08X startW=0x${startW_trace}%08X"
+                    )
+                    println(
+                      f"[TRI CMD]   dSdX=0x${dSdX_trace}%08X dTdX=0x${dTdX_trace}%08X dWdX=0x${dWdX_trace}%08X"
+                    )
+                    println(
+                      f"[TRI CMD]   dSdY=0x${dSdY_trace}%08X dTdY=0x${dTdY_trace}%08X dWdY=0x${dWdY_trace}%08X"
+                    )
+                  case _ =>
+                }
+
+                // Track texBaseAddr writes for texture memory address calculation
+                if (regAddr == 0x30c) {
+                  currentTexBaseAddr = entry.data & 0x7ffffL // 19 bits
+                  println(
+                    f"[REG WRITE] texBaseAddr (0x30c) = 0x${currentTexBaseAddr}%08X (raw addr=0x${entry.addr}%08X)"
+                  )
                 }
 
                 for (_ <- 0 until entry.count) {
                   bmbDriver.write(BigInt(entry.data), BigInt(regAddr))
                 }
-                // Track register state for display
-                display.updateRegister(regAddr, entry.data)
               } // end if valid register address
 
             case TraceCommandType.WRITE_REG_W =>
-              // Check if address is in valid register space (same as WRITE_REG_L)
-              val isStdReg = (entry.addr & 0xfff000) == 0
-              val isRemapReg = (entry.addr & 0xfff000) == 0x200000
-              if (isStdReg || isRemapReg) {
-                val regAddr = if (isRemapReg) (entry.addr & 0x2003ff) else (entry.addr & 0xfff)
+              // Single TMU support only - ignore chip field, extract register address
+              val baseAddr = entry.addr & 0x3ff
+              val isRemapReg = (entry.addr & 0x200000) != 0
+              val regAddr = if (isRemapReg) (0x200000 | baseAddr) else baseAddr
+              if (baseAddr <= 0x3ff) {
                 val data16 = entry.data & 0xffff
                 for (_ <- 0 until entry.count) {
                   bmbDriver.write(BigInt(data16), BigInt(regAddr))
                 }
-                // Track register state for display
-                display.updateRegister(regAddr, data16)
               }
 
             case TraceCommandType.VSYNC =>
@@ -432,8 +573,26 @@ object VoodooTracePlayer {
             case TraceCommandType.SWAP =>
             // Buffer swap - no action needed
 
+            case TraceCommandType.WRITE_TEX_L =>
+              // Texture memory write - write to texture memory model
+              // Per SST-1 spec: texBaseAddr is used for BOTH texture writes AND rendering
+              // The actual texture address = texBaseAddr * 8 + offset
+              // The entry.addr contains the PCI address; we extract the offset and add texBaseAddr
+              val textureMask = (4 * 1024 * 1024L) - 1 // 0x3FFFFF for 4MB texture memory
+              val texOffset = entry.addr & textureMask // Extract offset from PCI address
+              val texBaseByteAddr = currentTexBaseAddr << 3 // texBaseAddr is in units of 8 bytes
+              val texAddr = (texBaseByteAddr + texOffset) & textureMask // Final address with wrap
+              val texData = entry.data.toInt
+              textureMemory.setInt(texAddr, texData)
+              texWriteCount += 1
+              if (texWriteCount <= 10 || texWriteCount % 10000 == 0) {
+                println(
+                  f"[TEX_WRITE] #$texWriteCount offset=0x$texOffset%06X + base=0x$texBaseByteAddr%06X -> addr=0x$texAddr%06X data=0x$texData%08X"
+                )
+              }
+
             case _ =>
-            // Ignore other command types (FB/TEX writes, reads)
+            // Ignore other command types (FB writes, reads)
           }
 
           lastTimestamp = entry.timestamp
@@ -534,9 +693,29 @@ object VoodooTracePlayer {
     dut.io.statisticsIn.pixelsOut #= 0
 
     // Monitor triangles passing through pipeline (after arbiter)
+    var triInputCount = 0
     StreamMonitor(dut.triangleSetup.i, dut.clockDomain) { payload =>
       val tri = payload.triWithSign.tri
       val sign = payload.triWithSign.signBit.toBoolean
+
+      // Debug: print S/T/W gradient values captured from registers
+      if (triInputCount < 10) {
+        val sStartRaw = payload.grads.sGrad.start.raw.toBigInt
+        val tStartRaw = payload.grads.tGrad.start.raw.toBigInt
+        val wStartRaw = payload.grads.wGrad.start.raw.toBigInt
+        val sDxRaw = payload.grads.sGrad.d(0).raw.toBigInt
+        val tDxRaw = payload.grads.tGrad.d(0).raw.toBigInt
+        val wDxRaw = payload.grads.wGrad.d(0).raw.toBigInt
+        val sDyRaw = payload.grads.sGrad.d(1).raw.toBigInt
+        val tDyRaw = payload.grads.tGrad.d(1).raw.toBigInt
+        val wDyRaw = payload.grads.wGrad.d(1).raw.toBigInt
+        println(
+          f"[TRI GRADS] $triInputCount: startS=0x$sStartRaw%08X startT=0x$tStartRaw%08X startW=0x$wStartRaw%08X"
+        )
+        println(f"[TRI GRADS]   dSdX=0x$sDxRaw%08X dTdX=0x$tDxRaw%08X dWdX=0x$wDxRaw%08X")
+        println(f"[TRI GRADS]   dSdY=0x$sDyRaw%08X dTdY=0x$tDyRaw%08X dWdY=0x$wDyRaw%08X")
+        triInputCount += 1
+      }
 
       // Generate random RGB565 color for this triangle
       val r5 = scala.util.Random.nextInt(32) // 5 bits (0-31)
@@ -593,24 +772,62 @@ object VoodooTracePlayer {
       }
     }
 
-    // Monitor TMU0 output - texture color after first TMU
-    StreamMonitor(dut.tmu0.io.output, dut.clockDomain) { payload =>
-      val x = payload.coords(0).toInt
-      val y = payload.coords(1).toInt
-      val r = payload.texture.r.toInt
-      val g = payload.texture.g.toInt
-      val b = payload.texture.b.toInt
-      display.tmu0Framebuffer.writePixel(x, y, r, g, b)
+    // Monitor TMU texture read requests - debug what addresses are being read
+    var tmuReadCount = 0
+    StreamMonitor(dut.io.texRead.cmd, dut.clockDomain) { payload =>
+      val addr = payload.fragment.address.toLong
+      if (tmuReadCount < 10 || (addr >= 0x6000 && tmuReadCount < 30)) {
+        println(f"[TMU READ] request $tmuReadCount: addr=0x$addr%06x")
+      }
+      tmuReadCount += 1
     }
 
-    // Monitor TMU1 output - texture color after second TMU
-    StreamMonitor(dut.tmu1.io.output, dut.clockDomain) { payload =>
+    // Monitor TMU texture read responses - debug what data is returned
+    var tmuRspCount = 0
+    StreamMonitor(dut.io.texRead.rsp, dut.clockDomain) { payload =>
+      if (tmuRspCount < 10) {
+        val data = payload.fragment.data.toLong
+        println(f"[TMU RSP] response $tmuRspCount: data=0x$data%08x")
+        tmuRspCount += 1
+      }
+    }
+
+    // Monitor TMU input - S/T coordinates and config
+    var tmuInputCount = 0
+    StreamMonitor(dut.tmu.io.input, dut.clockDomain) { payload =>
+      if (tmuInputCount < 20) {
+        val x = payload.coords(0).toInt
+        val y = payload.coords(1).toInt
+        val sRaw = payload.s.raw.toBigInt
+        val tRaw = payload.t.raw.toBigInt
+        val wRaw = payload.w.raw.toBigInt
+        val s = payload.s.toDouble
+        val t = payload.t.toDouble
+        val w = payload.w.toDouble
+        val texMode = payload.config.textureMode.toBigInt
+        val texBase = payload.config.texBaseAddr.toBigInt
+        println(
+          f"[TMU IN] $tmuInputCount: ($x,$y) S=0x$sRaw%08X ($s%.4f) T=0x$tRaw%08X ($t%.4f) W=0x$wRaw%08X ($w%.6f)"
+        )
+        println(f"[TMU IN]   mode=0x$texMode%08X base=0x$texBase%06X")
+        tmuInputCount += 1
+      }
+    }
+
+    // Monitor TMU output - texture color from single TMU
+    var tmuPixelCount = 0
+    StreamMonitor(dut.tmu.io.output, dut.clockDomain) { payload =>
       val x = payload.coords(0).toInt
       val y = payload.coords(1).toInt
       val r = payload.texture.r.toInt
       val g = payload.texture.g.toInt
       val b = payload.texture.b.toInt
-      display.tmu1Framebuffer.writePixel(x, y, r, g, b)
+      // Debug: print first few TMU outputs
+      if (tmuPixelCount < 20) {
+        println(f"[TMU OUT] $tmuPixelCount: ($x, $y) RGB=($r, $g, $b)")
+        tmuPixelCount += 1
+      }
+      display.tmuFramebuffer.writePixel(x, y, r, g, b)
     }
 
     // Monitor ColorCombine output - final color before write stage
@@ -643,10 +860,8 @@ object VoodooTracePlayer {
       "triangleSetup.i",
       "triangleSetup.o",
       "rasterizer.o",
-      "tmu0.io.input",
-      "tmu0.io.output",
-      "tmu1.io.input",
-      "tmu1.io.output",
+      "tmu.io.input",
+      "tmu.io.output",
       "colorCombine.io.input",
       "colorCombine.io.output",
       "write.i.fromPipeline",
@@ -704,32 +919,18 @@ object VoodooTracePlayer {
         dut.rasterizer.o.ready.toBoolean
       )
 
-      // TMU0 input
+      // TMU input
       checkStreamStall(
-        "tmu0.io.input",
-        dut.tmu0.io.input.valid.toBoolean,
-        dut.tmu0.io.input.ready.toBoolean
+        "tmu.io.input",
+        dut.tmu.io.input.valid.toBoolean,
+        dut.tmu.io.input.ready.toBoolean
       )
 
-      // TMU0 output
+      // TMU output
       checkStreamStall(
-        "tmu0.io.output",
-        dut.tmu0.io.output.valid.toBoolean,
-        dut.tmu0.io.output.ready.toBoolean
-      )
-
-      // TMU1 input
-      checkStreamStall(
-        "tmu1.io.input",
-        dut.tmu1.io.input.valid.toBoolean,
-        dut.tmu1.io.input.ready.toBoolean
-      )
-
-      // TMU1 output
-      checkStreamStall(
-        "tmu1.io.output",
-        dut.tmu1.io.output.valid.toBoolean,
-        dut.tmu1.io.output.ready.toBoolean
+        "tmu.io.output",
+        dut.tmu.io.output.valid.toBoolean,
+        dut.tmu.io.output.ready.toBoolean
       )
 
       // ColorCombine input

@@ -97,25 +97,15 @@ object TriangleSetup {
     val fogMode = Bits(6 bits) // Fog mode control (FBI)
     val alphaMode = Bits(32 bits) // Alpha mode control (FBI)
 
-    // TMU0 registers
-    val tmu0TextureMode = Bits(32 bits) // Texture mode (format, filtering, clamp/wrap)
-    val tmu0TexBaseAddr = UInt(24 bits)
-    val tmu0TLOD = Bits(27 bits) // tLOD register for mipmapping
-    // TMU0 texture coordinate gradients for LOD calculation
-    val tmu0dSdX = AFix(c.texCoordsFormat)
-    val tmu0dTdX = AFix(c.texCoordsFormat)
-    val tmu0dSdY = AFix(c.texCoordsFormat)
-    val tmu0dTdY = AFix(c.texCoordsFormat)
-
-    // TMU1 registers
-    val tmu1TextureMode = Bits(32 bits) // Texture mode (format, filtering, clamp/wrap)
-    val tmu1TexBaseAddr = UInt(24 bits)
-    val tmu1TLOD = Bits(27 bits) // tLOD register for mipmapping
-    // TMU1 texture coordinate gradients for LOD calculation
-    val tmu1dSdX = AFix(c.texCoordsFormat)
-    val tmu1dTdX = AFix(c.texCoordsFormat)
-    val tmu1dSdY = AFix(c.texCoordsFormat)
-    val tmu1dTdY = AFix(c.texCoordsFormat)
+    // TMU registers (single TMU support - Voodoo 1 level functionality)
+    val tmuTextureMode = Bits(32 bits) // Texture mode (format, filtering, clamp/wrap)
+    val tmuTexBaseAddr = UInt(24 bits)
+    val tmuTLOD = Bits(27 bits) // tLOD register for mipmapping
+    // TMU texture coordinate gradients for LOD calculation
+    val tmudSdX = AFix(c.texCoordsFormat)
+    val tmudTdX = AFix(c.texCoordsFormat)
+    val tmudSdY = AFix(c.texCoordsFormat)
+    val tmudTdY = AFix(c.texCoordsFormat)
   }
 
   /** Input bundle - triangle with gradients and render config captured at command time */

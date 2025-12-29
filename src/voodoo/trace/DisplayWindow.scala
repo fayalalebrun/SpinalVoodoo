@@ -226,24 +226,20 @@ class DisplayWindow(
 
   // Pipeline stage framebuffers
   val rasterizerFramebuffer = new StageFramebuffer("Rasterizer", width, height)
-  val tmu0Framebuffer = new StageFramebuffer("TMU0", width, height)
-  val tmu1Framebuffer = new StageFramebuffer("TMU1", width, height)
+  val tmuFramebuffer = new StageFramebuffer("TMU", width, height) // Single TMU (Voodoo 1 level)
   val colorCombineFramebuffer = new StageFramebuffer("ColorCombine", width, height)
 
   // Tab pane and per-tab canvases
   private var tabPane: TabPane = _
   private var fbTab: Tab = _
   private var rasterizerTab: Tab = _
-  private var tmu0Tab: Tab = _
-  private var tmu1Tab: Tab = _
+  private var tmuTab: Tab = _
   private var ccTab: Tab = _
   private var rasterizerCanvas: Canvas = _
-  private var tmu0Canvas: Canvas = _
-  private var tmu1Canvas: Canvas = _
+  private var tmuCanvas: Canvas = _
   private var ccCanvas: Canvas = _
   private var rasterizerCanvasPane: Pane = _
-  private var tmu0CanvasPane: Pane = _
-  private var tmu1CanvasPane: Pane = _
+  private var tmuCanvasPane: Pane = _
   private var ccCanvasPane: Pane = _
 
   // Overlay visibility flags (controlled by ControlPanelWindow)
@@ -266,6 +262,16 @@ class DisplayWindow(
   // Trace viewer
   private var traceTab: Tab = _
   private var traceListView: ListView[String] = _
+
+  // Texture viewer
+  private var textureTab: Tab = _
+  private var textureMemoryRef: Option[TextureMemoryModel] = None
+  private var texture0Canvas: Canvas = _
+  private var texture0InfoLabel: Label = _
+
+  // Hardware register reader - set by VoodooTracePlayer to read directly from DUT
+  // Returns Seq[(addr, name, value)] for all registers
+  private var hwRegisterReader: Option[() => Seq[(Long, String, Long)]] = None
 
   // Windowed trace view - store raw data, format on demand
   case class TraceEntryData(index: Int, cmdType: Int, addr: Long, data: Long, count: Int)
@@ -302,15 +308,10 @@ class DisplayWindow(
     rasterizerCanvasPane.getChildren.add(rasterizerCanvas)
     rasterizerCanvasPane.setStyle("-fx-background-color: #222222;")
 
-    tmu0Canvas = new Canvas(width, height)
-    tmu0CanvasPane = new Pane()
-    tmu0CanvasPane.getChildren.add(tmu0Canvas)
-    tmu0CanvasPane.setStyle("-fx-background-color: #222222;")
-
-    tmu1Canvas = new Canvas(width, height)
-    tmu1CanvasPane = new Pane()
-    tmu1CanvasPane.getChildren.add(tmu1Canvas)
-    tmu1CanvasPane.setStyle("-fx-background-color: #222222;")
+    tmuCanvas = new Canvas(width, height)
+    tmuCanvasPane = new Pane()
+    tmuCanvasPane.getChildren.add(tmuCanvas)
+    tmuCanvasPane.setStyle("-fx-background-color: #222222;")
 
     ccCanvas = new Canvas(width, height)
     ccCanvasPane = new Pane()
@@ -323,8 +324,7 @@ class DisplayWindow(
 
     fbTab = new Tab("Framebuffer", canvasPane)
     rasterizerTab = new Tab("Rasterizer", rasterizerCanvasPane)
-    tmu0Tab = new Tab("TMU0", tmu0CanvasPane)
-    tmu1Tab = new Tab("TMU1", tmu1CanvasPane)
+    tmuTab = new Tab("TMU", tmuCanvasPane)
     ccTab = new Tab("ColorCombine", ccCanvasPane)
 
     // Create registers tab
@@ -333,13 +333,15 @@ class DisplayWindow(
     // Create trace tab
     traceTab = new Tab("Trace", createTracePanel())
 
-    tabPane.getTabs.addAll(fbTab, rasterizerTab, tmu0Tab, tmu1Tab, ccTab, registersTab, traceTab)
+    // Create texture viewer tab
+    textureTab = new Tab("Textures", createTexturePanel())
+
+    tabPane.getTabs.addAll(fbTab, rasterizerTab, tmuTab, ccTab, registersTab, traceTab, textureTab)
 
     // Setup mouse handlers for all canvas panes
     setupCanvasPaneHandlers(canvasPane)
     setupCanvasPaneHandlers(rasterizerCanvasPane)
-    setupCanvasPaneHandlers(tmu0CanvasPane)
-    setupCanvasPaneHandlers(tmu1CanvasPane)
+    setupCanvasPaneHandlers(tmuCanvasPane)
     setupCanvasPaneHandlers(ccCanvasPane)
 
     // Create toolbar with play/pause button
@@ -490,8 +492,7 @@ class DisplayWindow(
 
     // Redraw pipeline stage canvases
     redrawSingleCanvas(rasterizerCanvas, rasterizerFramebuffer.getImage)
-    redrawSingleCanvas(tmu0Canvas, tmu0Framebuffer.getImage)
-    redrawSingleCanvas(tmu1Canvas, tmu1Framebuffer.getImage)
+    redrawSingleCanvas(tmuCanvas, tmuFramebuffer.getImage)
     redrawSingleCanvas(ccCanvas, colorCombineFramebuffer.getImage)
   }
 
@@ -790,25 +791,35 @@ class DisplayWindow(
     panel
   }
 
-  /** Update a register value (called from simulation thread) */
-  def updateRegister(addr: Long, value: Long): Unit = {
-    registerState(addr) = value
-    // Refresh the table periodically (handled in update loop)
-  }
-
-  /** Refresh the register table display (call from JavaFX thread) */
+  /** Refresh the register table display - reads directly from hardware Must be called from
+    * simulation thread after hwRegisterReader is set
+    */
   def refreshRegisterTable(): Unit = {
-    Platform.runLater(() => {
-      if (registerTable != null) {
-        val rows = registerState.toSeq.sortBy(_._1).map { case (addr, value) =>
-          val name = RegisterNames.getName(addr)
-          val decoded = RegisterNames.decode(addr, value)
-          val addrStr = if (addr >= 0x200000) f"0x${addr}%06X" else f"0x${addr}%03X"
-          RegisterRow(addrStr, name, f"0x${value}%08X", decoded)
+    hwRegisterReader match {
+      case Some(reader) =>
+        // Read directly from hardware
+        val regData = reader()
+
+        // Update registerState for texture viewer
+        regData.foreach { case (addr, _, value) =>
+          registerState(addr) = value
         }
-        registerTable.setItems(FXCollections.observableArrayList(rows.asJava))
-      }
-    })
+
+        // Update UI on JavaFX thread
+        Platform.runLater(() => {
+          if (registerTable != null) {
+            val rows = regData.sortBy(_._1).map { case (addr, name, value) =>
+              val decoded = RegisterNames.decode(addr, value)
+              val addrStr = if (addr >= 0x200000) f"0x${addr}%06X" else f"0x${addr}%03X"
+              RegisterRow(addrStr, name, f"0x${value}%08X", decoded)
+            }
+            registerTable.setItems(FXCollections.observableArrayList(rows.asJava))
+          }
+        })
+
+      case None =>
+      // No hardware reader set - do nothing
+    }
   }
 
   /** Row data for register table */
@@ -945,6 +956,264 @@ class DisplayWindow(
           traceListView.refresh()
         }
       })
+    }
+  }
+
+  /** Set texture memory reference for texture viewer */
+  def setTextureMemory(texMem: TextureMemoryModel): Unit = {
+    textureMemoryRef = Some(texMem)
+  }
+
+  /** Set hardware register reader function (called from simulation thread) */
+  def setHardwareRegisterReader(reader: () => Seq[(Long, String, Long)]): Unit = {
+    hwRegisterReader = Some(reader)
+  }
+
+  /** Create the texture viewer panel */
+  private def createTexturePanel(): VBox = {
+    val panel = new VBox(10)
+    panel.setPadding(new Insets(10))
+    panel.setStyle("-fx-background-color: #333333;")
+
+    val headerLabel = new Label("Texture Viewer")
+    headerLabel.setStyle("-fx-text-fill: white; -fx-font-size: 14px; -fx-font-weight: bold;")
+
+    // TMU section (single TMU - Voodoo 1 level)
+    val tmuLabel = new Label("TMU")
+    tmuLabel.setStyle("-fx-text-fill: #88ccff; -fx-font-size: 12px; -fx-font-weight: bold;")
+
+    texture0InfoLabel = new Label("No texture configured")
+    texture0InfoLabel.setStyle(
+      "-fx-text-fill: #aaaaaa; -fx-font-size: 11px; -fx-font-family: monospace;"
+    )
+
+    texture0Canvas = new Canvas(256, 256)
+    texture0Canvas.setStyle("-fx-background-color: #222222;")
+    val gc0 = texture0Canvas.getGraphicsContext2D
+    gc0.setFill(Color.rgb(32, 32, 32))
+    gc0.fillRect(0, 0, 256, 256)
+
+    // Refresh button
+    val refreshButton = new Button("Refresh Textures")
+    refreshButton.setOnAction(_ => refreshTextureDisplay())
+
+    panel.getChildren.addAll(
+      headerLabel,
+      tmuLabel,
+      texture0InfoLabel,
+      texture0Canvas,
+      refreshButton
+    )
+    panel
+  }
+
+  /** Decode textureMode register */
+  private def decodeTextureMode(value: Long): String = {
+    val tformat = ((value >> 8) & 0xf).toInt
+    val formatName = tformat match {
+      case 0  => "RGB332"
+      case 1  => "YIQ"
+      case 2  => "Alpha"
+      case 3  => "Intensity"
+      case 4  => "AI44"
+      case 5  => "Palette8"
+      case 8  => "ARGB8332"
+      case 9  => "AYIQ8422"
+      case 10 => "RGB565"
+      case 11 => "ARGB1555"
+      case 12 => "ARGB4444"
+      case 13 => "AI88"
+      case 14 => "Palette8-ARGB6666"
+      case _  => f"Unknown($tformat)"
+    }
+    val tpersp = (value & 1) != 0
+    val tminfilter = ((value >> 1) & 1) != 0
+    val tmagfilter = ((value >> 2) & 1) != 0
+    val tclampw = ((value >> 3) & 1) != 0
+    val tloddither = ((value >> 4) & 1) != 0
+    val tcEnable = ((value >> 12) & 1) != 0
+
+    f"format=$formatName persp=$tpersp%s minF=$tminfilter%s magF=$tmagfilter%s clampW=$tclampw%s lodDith=$tloddither%s tcEn=$tcEnable%s"
+  }
+
+  /** Decode tLOD register */
+  private def decodeTLOD(value: Long): (Int, Int, Int, Int, Int, Int) = {
+    val lodmin = (value & 0x3f).toInt
+    val lodmax = ((value >> 6) & 0x3f).toInt
+    val lodbias = ((value >> 12) & 0x3f).toInt
+    val lodAspectS = ((value >> 21) & 0x3).toInt
+    val lodAspectT = ((value >> 23) & 0x3).toInt
+    val splitS = ((value >> 18) & 0x1).toInt
+    (lodmin, lodmax, lodbias, lodAspectS, lodAspectT, splitS)
+  }
+
+  /** Get texture dimensions from tLOD */
+  private def getTextureDimensions(tLOD: Long): (Int, Int) = {
+    val (lodmin, lodmax, _, aspectS, aspectT, _) = decodeTLOD(tLOD)
+    // Base LOD 0 is 256x256, each LOD level halves the size
+    // aspectS/T adjust the ratio
+    val baseLod = lodmin >> 2 // LOD is in 2.4 fixed point
+    val baseSize = 256 >> baseLod
+    val width = Math.max(1, baseSize >> aspectS)
+    val height = Math.max(1, baseSize >> aspectT)
+    (width, height)
+  }
+
+  /** Refresh texture display based on current register state */
+  def refreshTextureDisplay(): Unit = {
+    Platform.runLater(() => {
+      // TMU registers (single TMU - Voodoo 1 level)
+      // Use Option to detect missing registers
+      val textureMode0Opt = registerState.get(0x300L)
+      val tLOD0Opt = registerState.get(0x304L)
+      val texBaseAddr0Opt = registerState.get(0x30cL)
+
+      // Check if required registers are available
+      val hasRequiredRegs =
+        textureMode0Opt.isDefined && tLOD0Opt.isDefined && texBaseAddr0Opt.isDefined
+
+      if (!hasRequiredRegs) {
+        // Show unavailable message when registers can't be read
+        val missingRegs = Seq(
+          if (textureMode0Opt.isEmpty) "textureMode" else "",
+          if (tLOD0Opt.isEmpty) "tLOD" else "",
+          if (texBaseAddr0Opt.isEmpty) "texBaseAddr" else ""
+        ).filter(_.nonEmpty).mkString(", ")
+        texture0InfoLabel.setText(
+          s"TMU registers unavailable: $missingRegs\n(refresh register table first)"
+        )
+
+        // Clear the canvas
+        val gc = texture0Canvas.getGraphicsContext2D
+        gc.setFill(Color.rgb(48, 32, 32))
+        gc.fillRect(0, 0, texture0Canvas.getWidth, texture0Canvas.getHeight)
+        gc.setFill(Color.GRAY)
+        gc.fillText("No data", 10, 20)
+        return
+      }
+
+      val textureMode0 = textureMode0Opt.get
+      val tLOD0 = tLOD0Opt.get
+      val texBaseAddr0 = texBaseAddr0Opt.get
+
+      // Update TMU info
+      val (w0, h0) = getTextureDimensions(tLOD0)
+      val (lodmin0, lodmax0, lodbias0, aspectS0, aspectT0, _) = decodeTLOD(tLOD0)
+      texture0InfoLabel.setText(
+        f"baseAddr=0x${texBaseAddr0 * 8}%06X size=${w0}x$h0\n" +
+          f"tLOD: min=$lodmin0 max=$lodmax0 bias=$lodbias0 aspect=($aspectS0,$aspectT0)\n" +
+          decodeTextureMode(textureMode0)
+      )
+
+      // Render texture if memory is available
+      textureMemoryRef.foreach { texMem =>
+        renderTexture(texture0Canvas, texMem, texBaseAddr0 * 8, w0, h0, textureMode0)
+      }
+    })
+  }
+
+  /** Render texture to canvas */
+  private def renderTexture(
+      canvas: Canvas,
+      texMem: TextureMemoryModel,
+      baseAddr: Long,
+      texW: Int,
+      texH: Int,
+      textureMode: Long
+  ): Unit = {
+    val gc = canvas.getGraphicsContext2D
+    val canvasW = canvas.getWidth.toInt
+    val canvasH = canvas.getHeight.toInt
+    val tformat = ((textureMode >> 8) & 0xf).toInt
+
+    // Clear canvas
+    gc.setFill(Color.rgb(32, 32, 32))
+    gc.fillRect(0, 0, canvasW, canvasH)
+
+    if (texW == 0 || texH == 0) return
+
+    // Scale to fit canvas
+    val scaleX = canvasW.toDouble / texW
+    val scaleY = canvasH.toDouble / texH
+    val scale = Math.min(scaleX, scaleY)
+    val renderW = (texW * scale).toInt
+    val renderH = (texH * scale).toInt
+    val offsetX = (canvasW - renderW) / 2
+    val offsetY = (canvasH - renderH) / 2
+
+    // Check if texture memory has any non-zero data at this address
+    var nonZeroCount = 0
+    val bytesPerPixel = if (tformat >= 8) 2 else 1
+    val totalBytes = texW * texH * bytesPerPixel
+
+    for (i <- 0 until Math.min(totalBytes, 1024)) {
+      if (texMem.getByte(baseAddr + i) != 0) nonZeroCount += 1
+    }
+
+    if (nonZeroCount == 0) {
+      gc.setFill(Color.rgb(64, 32, 32))
+      gc.fillRect(offsetX, offsetY, renderW, renderH)
+      gc.setFill(Color.WHITE)
+      gc.fillText("No data", offsetX + 10, offsetY + 20)
+      return
+    }
+
+    // Render texture pixels
+    val pw = gc.getPixelWriter
+    for (ty <- 0 until texH; tx <- 0 until texW) {
+      val texOffset = ty * texW + tx
+      val (r, g, b) = tformat match {
+        case 10 => // RGB565
+          val addr = baseAddr + texOffset * 2
+          val lo = texMem.getByte(addr) & 0xff
+          val hi = texMem.getByte(addr + 1) & 0xff
+          val pixel = lo | (hi << 8)
+          val r5 = (pixel >> 11) & 0x1f
+          val g6 = (pixel >> 5) & 0x3f
+          val b5 = pixel & 0x1f
+          ((r5 << 3) | (r5 >> 2), (g6 << 2) | (g6 >> 4), (b5 << 3) | (b5 >> 2))
+        case 11 => // ARGB1555
+          val addr = baseAddr + texOffset * 2
+          val lo = texMem.getByte(addr) & 0xff
+          val hi = texMem.getByte(addr + 1) & 0xff
+          val pixel = lo | (hi << 8)
+          val r5 = (pixel >> 10) & 0x1f
+          val g5 = (pixel >> 5) & 0x1f
+          val b5 = pixel & 0x1f
+          ((r5 << 3) | (r5 >> 2), (g5 << 3) | (g5 >> 2), (b5 << 3) | (b5 >> 2))
+        case 12 => // ARGB4444
+          val addr = baseAddr + texOffset * 2
+          val lo = texMem.getByte(addr) & 0xff
+          val hi = texMem.getByte(addr + 1) & 0xff
+          val pixel = lo | (hi << 8)
+          val r4 = (pixel >> 8) & 0xf
+          val g4 = (pixel >> 4) & 0xf
+          val b4 = pixel & 0xf
+          ((r4 << 4) | r4, (g4 << 4) | g4, (b4 << 4) | b4)
+        case 0 => // RGB332
+          val addr = baseAddr + texOffset
+          val pixel = texMem.getByte(addr) & 0xff
+          val r3 = (pixel >> 5) & 0x7
+          val g3 = (pixel >> 2) & 0x7
+          val b2 = pixel & 0x3
+          (
+            (r3 << 5) | (r3 << 2) | (r3 >> 1),
+            (g3 << 5) | (g3 << 2) | (g3 >> 1),
+            (b2 << 6) | (b2 << 4) | (b2 << 2) | b2
+          )
+        case _ => // Other formats - show as grayscale
+          val addr = baseAddr + texOffset * bytesPerPixel
+          val v = texMem.getByte(addr) & 0xff
+          (v, v, v)
+      }
+
+      // Draw scaled pixel
+      val px = offsetX + (tx * scale).toInt
+      val py = offsetY + (ty * scale).toInt
+      val pxEnd = offsetX + ((tx + 1) * scale).toInt
+      val pyEnd = offsetY + ((ty + 1) * scale).toInt
+      gc.setFill(Color.rgb(r & 0xff, g & 0xff, b & 0xff))
+      gc.fillRect(px, py, Math.max(1, pxEnd - px), Math.max(1, pyEnd - py))
     }
   }
 

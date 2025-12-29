@@ -220,7 +220,9 @@ case class Tmu(c: voodoo.Config) extends Component {
   val texelByteOffset =
     Mux(is16BitFormat, (texelOffset << 1).resize(24 bits), texelOffset.resize(24 bits))
 
-  val texAddr = io.input.payload.config.texBaseAddr.resize(c.addressWidth.value bits) +
+  // texBaseAddr register value is address/8 (8-byte aligned), so shift left by 3
+  val texBaseByteAddr = (io.input.payload.config.texBaseAddr << 3).resize(c.addressWidth.value bits)
+  val texAddr = texBaseByteAddr +
     lodBaseOffset.resize(c.addressWidth.value bits) +
     texelByteOffset.resize(c.addressWidth.value bits)
 

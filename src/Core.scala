@@ -14,9 +14,8 @@ case class Core(c: Config) extends Component {
     // Framebuffer write bus
     val fbWrite = master(Bmb(Write.baseBmbParams(c)))
 
-    // Texture memory read buses (one per TMU)
-    val texRead0 = master(Bmb(Tmu.bmbParams(c)))
-    val texRead1 = master(Bmb(Tmu.bmbParams(c)))
+    // Texture memory read bus (single TMU - Voodoo 1 level)
+    val texRead = master(Bmb(Tmu.bmbParams(c)))
 
     // Status inputs (hardware state)
     // Note: pciFifoFree now comes from RegisterBank's internal FIFO
@@ -50,8 +49,7 @@ case class Core(c: Config) extends Component {
   val regBank = RegisterBank(c)
   val triangleSetup = TriangleSetup(c)
   val rasterizer = Rasterizer(c)
-  val tmu0 = Tmu(c)
-  val tmu1 = Tmu(c)
+  val tmu = Tmu(c) // Single TMU (Voodoo 1 level)
   val colorCombine = ColorCombine(c)
   val write = Write(c)
 
@@ -67,7 +65,7 @@ case class Core(c: Config) extends Component {
   regBank.io.statisticsIn <> io.statisticsIn
 
   // Pipeline busy signal: any stage has valid data
-  regBank.io.pipelineBusy := triangleSetup.o.valid || rasterizer.o.valid || tmu0.io.input.valid || tmu1.io.input.valid || colorCombine.io.input.valid || write.i.fromPipeline.valid
+  regBank.io.pipelineBusy := triangleSetup.o.valid || rasterizer.o.valid || tmu.io.input.valid || colorCombine.io.input.valid || write.i.fromPipeline.valid
 
   // TODO: Wire unused command streams to always ready
   regBank.commands.fastfillCmd.ready := True
@@ -86,6 +84,84 @@ case class Core(c: Config) extends Component {
 
   // Intermediate format: SQ(16, 16) = 32 bits (enough for float32 mantissa)
   val intermediateFormat = SQ(16, 16)
+
+  // Combinatorial IEEE 754 float32 to fixed-point conversion
+  // Used for gradient registers where pipelined conversion isn't needed
+  def floatToFixed(floatBits: Bits, intBits: Int, fracBits: Int): SInt = {
+    val sign = floatBits(31)
+    val exponent = floatBits(30 downto 23).asUInt
+    val mantissa = floatBits(22 downto 0).asUInt
+
+    // Total output bits
+    val totalBits = intBits + fracBits
+
+    // For a float, value = (-1)^sign * 2^(exp-127) * 1.mantissa
+    // For fixed point Q(intBits, fracBits), the binary point is after fracBits bits from LSB
+
+    // Build the mantissa with implicit 1: 1.mantissa = 24 bits total
+    val mantissaWithOne = U(1, 1 bit) @@ mantissa // 24 bits
+
+    // The shift amount depends on exponent and target format
+    // When exp=127, value = 1.xxx (no shift needed relative to integer 1)
+    // For Q(intBits, fracBits): integer 1 is at bit position fracBits
+    // So mantissa MSB (the implicit 1) should end up at position fracBits + (exp - 127)
+
+    // We'll shift left if exp > 127, right if exp < 127
+    // Base position: mantissa bit 23 (the implicit 1) represents 2^0
+    // In target format, 2^0 is at bit position fracBits
+
+    // Calculate shift: positive = left, negative = right
+    // We need mantissa positioned so implicit 1 is at bit (fracBits + exp - 127)
+    // Mantissa is 24 bits, with bit 23 = implicit 1 (2^0), bit 0 = 2^-23
+
+    // To place bit 23 at position P, we need to shift by (P - 23)
+    // P = fracBits + exp - 127
+    // shift = fracBits + exp - 127 - 23 = fracBits + exp - 150
+
+    val shiftAmount = (exponent.resize(9 bits).asSInt + S(fracBits - 150, 9 bits)).resize(9 bits)
+
+    // Widen mantissa to accommodate shifts
+    val wideMantissa = mantissaWithOne.resize(64 bits)
+
+    // Apply shift - use barrel shifter approach
+    val maxShift = 40 // Reasonable max shift for our formats
+    val shiftedValue = UInt(64 bits)
+
+    when(shiftAmount >= 0) {
+      // Left shift
+      val leftShift = shiftAmount.asUInt.resize(6 bits)
+      when(leftShift > maxShift) {
+        shiftedValue := U(0) // Overflow - saturate to max or 0
+      } otherwise {
+        shiftedValue := wideMantissa |<< leftShift
+      }
+    } otherwise {
+      // Right shift
+      val rightShift = (-shiftAmount).asUInt.resize(6 bits)
+      when(rightShift > 63) {
+        shiftedValue := U(0) // Underflow to 0
+      } otherwise {
+        shiftedValue := wideMantissa |>> rightShift
+      }
+    }
+
+    // Extract result bits and apply sign
+    val unsignedResult = shiftedValue(totalBits - 1 downto 0)
+    val signedResult = SInt(totalBits bits)
+
+    when(exponent === 0) {
+      // Zero or denormal - treat as zero
+      signedResult := S(0)
+    } otherwise {
+      when(sign) {
+        signedResult := -unsignedResult.asSInt
+      } otherwise {
+        signedResult := unsignedResult.asSInt
+      }
+    }
+
+    signedResult
+  }
 
   // Create individual converters for each vertex coordinate
   val convVax = new Fpxx2AFix(16 bits, 16 bits, floatConfig)
@@ -175,9 +251,57 @@ case class Core(c: Config) extends Component {
     out.triWithSign.tri(2)(0) := results(4).number.fixTo(c.vertexFormat)
     out.triWithSign.tri(2)(1) := results(5).number.fixTo(c.vertexFormat)
     out.triWithSign.signBit := regBank.commands.ftriangleSignBit
-    out.grads := captureGradients()
-    out.config := capturePerTriangleConfig()
+    out.grads := captureFloatGradients() // Use float-to-fixed conversion for ftriangleCmd
+    out.config := captureFloatPerTriangleConfig() // Also convert float gradients in config
     out
+  }
+
+  // Helper function to capture gradients from floating-point registers with conversion
+  // This is used for ftriangleCmd path where gradients are in IEEE 754 float format
+  def captureFloatGradients(): Rasterizer.GradientBundle[Rasterizer.InputGradient] = {
+    val grads = Rasterizer.GradientBundle(Rasterizer.InputGradient(_), c)
+
+    // Red gradient (12.12 fixed point) - convert from float
+    grads.redGrad.start.raw := floatToFixed(fstartR, 12, 12).asBits
+    grads.redGrad.d(0).raw := floatToFixed(fdRdX, 12, 12).asBits
+    grads.redGrad.d(1).raw := floatToFixed(fdRdY, 12, 12).asBits
+
+    // Green gradient (12.12 fixed point)
+    grads.greenGrad.start.raw := floatToFixed(fstartG, 12, 12).asBits
+    grads.greenGrad.d(0).raw := floatToFixed(fdGdX, 12, 12).asBits
+    grads.greenGrad.d(1).raw := floatToFixed(fdGdY, 12, 12).asBits
+
+    // Blue gradient (12.12 fixed point)
+    grads.blueGrad.start.raw := floatToFixed(fstartB, 12, 12).asBits
+    grads.blueGrad.d(0).raw := floatToFixed(fdBdX, 12, 12).asBits
+    grads.blueGrad.d(1).raw := floatToFixed(fdBdY, 12, 12).asBits
+
+    // Depth gradient (20.12 fixed point)
+    grads.depthGrad.start.raw := floatToFixed(fstartZ, 20, 12).asBits
+    grads.depthGrad.d(0).raw := floatToFixed(fdZdX, 20, 12).asBits
+    grads.depthGrad.d(1).raw := floatToFixed(fdZdY, 20, 12).asBits
+
+    // Alpha gradient (12.12 fixed point)
+    grads.alphaGrad.start.raw := floatToFixed(fstartA, 12, 12).asBits
+    grads.alphaGrad.d(0).raw := floatToFixed(fdAdX, 12, 12).asBits
+    grads.alphaGrad.d(1).raw := floatToFixed(fdAdY, 12, 12).asBits
+
+    // W gradient (2.30 fixed point)
+    grads.wGrad.start.raw := floatToFixed(fstartW, 2, 30).asBits
+    grads.wGrad.d(0).raw := floatToFixed(fdWdX, 2, 30).asBits
+    grads.wGrad.d(1).raw := floatToFixed(fdWdY, 2, 30).asBits
+
+    // TMU S gradient (14.18 fixed point)
+    grads.sGrad.start.raw := floatToFixed(fstartS, 14, 18).asBits
+    grads.sGrad.d(0).raw := floatToFixed(fdSdX, 14, 18).asBits
+    grads.sGrad.d(1).raw := floatToFixed(fdSdY, 14, 18).asBits
+
+    // TMU T gradient (14.18 fixed point)
+    grads.tGrad.start.raw := floatToFixed(fstartT, 14, 18).asBits
+    grads.tGrad.d(0).raw := floatToFixed(fdTdX, 14, 18).asBits
+    grads.tGrad.d(1).raw := floatToFixed(fdTdY, 14, 18).asBits
+
+    grads
   }
 
   // Helper function to capture all gradients from registers at command time
@@ -215,25 +339,15 @@ case class Core(c: Config) extends Component {
     grads.wGrad.d(0).raw := regBank.triangleGeometry.dWdX.asBits
     grads.wGrad.d(1).raw := regBank.triangleGeometry.dWdY.asBits
 
-    // TMU0 S gradient (14.18 fixed point)
-    grads.s0Grad.start.raw := regBank.triangleGeometry.startS.asBits
-    grads.s0Grad.d(0).raw := regBank.triangleGeometry.dSdX.asBits
-    grads.s0Grad.d(1).raw := regBank.triangleGeometry.dSdY.asBits
+    // TMU S gradient (14.18 fixed point) - single TMU (Voodoo 1 level)
+    grads.sGrad.start.raw := regBank.triangleGeometry.startS.asBits
+    grads.sGrad.d(0).raw := regBank.triangleGeometry.dSdX.asBits
+    grads.sGrad.d(1).raw := regBank.triangleGeometry.dSdY.asBits
 
-    // TMU0 T gradient (14.18 fixed point)
-    grads.t0Grad.start.raw := regBank.triangleGeometry.startT.asBits
-    grads.t0Grad.d(0).raw := regBank.triangleGeometry.dTdX.asBits
-    grads.t0Grad.d(1).raw := regBank.triangleGeometry.dTdY.asBits
-
-    // TMU1 S gradient (14.18 fixed point)
-    grads.s1Grad.start.raw := regBank.tmu1Coords.startS1.asBits
-    grads.s1Grad.d(0).raw := regBank.tmu1Coords.dS1dX.asBits
-    grads.s1Grad.d(1).raw := regBank.tmu1Coords.dS1dY.asBits
-
-    // TMU1 T gradient (14.18 fixed point)
-    grads.t1Grad.start.raw := regBank.tmu1Coords.startT1.asBits
-    grads.t1Grad.d(0).raw := regBank.tmu1Coords.dT1dX.asBits
-    grads.t1Grad.d(1).raw := regBank.tmu1Coords.dT1dY.asBits
+    // TMU T gradient (14.18 fixed point) - single TMU (Voodoo 1 level)
+    grads.tGrad.start.raw := regBank.triangleGeometry.startT.asBits
+    grads.tGrad.d(0).raw := regBank.triangleGeometry.dTdX.asBits
+    grads.tGrad.d(1).raw := regBank.triangleGeometry.dTdY.asBits
 
     grads
   }
@@ -248,26 +362,39 @@ case class Core(c: Config) extends Component {
     cfg.fogMode := regBank.renderConfig.fogMode.resized
     cfg.alphaMode := regBank.renderConfig.alphaMode
 
-    // TMU0 registers
-    cfg.tmu0TextureMode := regBank.tmu0Config.textureMode
-    cfg.tmu0TexBaseAddr := regBank.tmu0Config.texBaseAddr
-    cfg.tmu0TLOD := regBank.tmu0Config.tLOD.resized
-    // TMU0 texture coordinate gradients (dX and dY for S and T)
+    // TMU registers (single TMU - Voodoo 1 level)
+    cfg.tmuTextureMode := regBank.tmuConfig.textureMode
+    cfg.tmuTexBaseAddr := regBank.tmuConfig.texBaseAddr
+    cfg.tmuTLOD := regBank.tmuConfig.tLOD.resized
+    // TMU texture coordinate gradients (dX and dY for S and T)
     // Using .raw because AFix isn't a BaseType and can't be used directly with BusIf register fields
-    cfg.tmu0dSdX.raw := regBank.triangleGeometry.dSdX.asBits
-    cfg.tmu0dTdX.raw := regBank.triangleGeometry.dTdX.asBits
-    cfg.tmu0dSdY.raw := regBank.triangleGeometry.dSdY.asBits
-    cfg.tmu0dTdY.raw := regBank.triangleGeometry.dTdY.asBits
+    cfg.tmudSdX.raw := regBank.triangleGeometry.dSdX.asBits
+    cfg.tmudTdX.raw := regBank.triangleGeometry.dTdX.asBits
+    cfg.tmudSdY.raw := regBank.triangleGeometry.dSdY.asBits
+    cfg.tmudTdY.raw := regBank.triangleGeometry.dTdY.asBits
 
-    // TMU1 registers
-    cfg.tmu1TextureMode := regBank.tmu1Config.textureMode
-    cfg.tmu1TexBaseAddr := regBank.tmu1Config.texBaseAddr
-    cfg.tmu1TLOD := regBank.tmu1Config.tLOD.resized
-    // TMU1 texture coordinate gradients (dX and dY for S and T)
-    cfg.tmu1dSdX.raw := regBank.tmu1Coords.dS1dX.asBits
-    cfg.tmu1dTdX.raw := regBank.tmu1Coords.dT1dX.asBits
-    cfg.tmu1dSdY.raw := regBank.tmu1Coords.dS1dY.asBits
-    cfg.tmu1dTdY.raw := regBank.tmu1Coords.dT1dY.asBits
+    cfg
+  }
+
+  // Float version of capturePerTriangleConfig - converts float S/T gradients
+  def captureFloatPerTriangleConfig(): TriangleSetup.PerTriangleConfig = {
+    val cfg = TriangleSetup.PerTriangleConfig(c)
+
+    // FBI registers - same as fixed-point version (these aren't float registers)
+    cfg.fbzColorPath := regBank.renderConfig.fbzColorPath.resized
+    cfg.fogMode := regBank.renderConfig.fogMode.resized
+    cfg.alphaMode := regBank.renderConfig.alphaMode
+
+    // TMU registers (single TMU - Voodoo 1 level)
+    cfg.tmuTextureMode := regBank.tmuConfig.textureMode
+    cfg.tmuTexBaseAddr := regBank.tmuConfig.texBaseAddr
+    cfg.tmuTLOD := regBank.tmuConfig.tLOD.resized
+
+    // TMU texture coordinate gradients - convert from float (14.18 fixed point)
+    cfg.tmudSdX.raw := floatToFixed(fdSdX, 14, 18).asBits
+    cfg.tmudTdX.raw := floatToFixed(fdTdX, 14, 18).asBits
+    cfg.tmudSdY.raw := floatToFixed(fdSdY, 14, 18).asBits
+    cfg.tmudTdY.raw := floatToFixed(fdTdY, 14, 18).asBits
 
     cfg
   }
@@ -306,10 +433,8 @@ case class Core(c: Config) extends Component {
   write.o.fbWrite.simPublic()
 
   // Make TMU and ColorCombine streams accessible for stall monitoring
-  tmu0.io.input.simPublic()
-  tmu0.io.output.simPublic()
-  tmu1.io.input.simPublic()
-  tmu1.io.output.simPublic()
+  tmu.io.input.simPublic()
+  tmu.io.output.simPublic()
   colorCombine.io.input.simPublic()
   colorCombine.io.output.simPublic()
   write.i.fromPipeline.simPublic()
@@ -352,89 +477,57 @@ case class Core(c: Config) extends Component {
   }
 
   // ========================================================================
-  // Texture Mapping Units (TMU0 → TMU1 sequential chain)
+  // Texture Mapping Unit (single TMU - Voodoo 1 level)
   // ========================================================================
   // Architecture:
   //   Rasterizer output is forked:
-  //     - One path goes to TMU0 for texture fetch
-  //     - Other path is queued to preserve gradients during TMU0's latency
-  //   TMU0's texture output is joined with the queued gradients
-  //   This joined result is then forked again for TMU1, etc.
+  //     - One path goes to TMU for texture fetch
+  //     - Other path is queued to preserve gradients during TMU's latency
+  //   TMU's texture output is joined with the queued gradients
+  //   This joined result goes to ColorCombine
   //
   // TMU configuration is now captured per-triangle and flows through the stream
 
-  // Connect texture memory buses
-  io.texRead0 <> tmu0.io.texRead
-  io.texRead1 <> tmu1.io.texRead
+  // Connect texture memory bus
+  io.texRead <> tmu.io.texRead
 
-  // Fork rasterizer output: one to TMU0, one to a queue for synchronization
+  // Fork rasterizer output: one to TMU, one to a queue for synchronization
   val rasterFork = StreamFork2(rasterizer.o, synchronous = true)
 
-  // Queue to hold rasterizer data while TMU0 processes
-  // Depth must be >= TMU0's maximum in-flight transactions
-  val tmu0GradQueue = rasterFork._2.queue(4)
+  // Queue to hold rasterizer data while TMU processes
+  // Depth must be >= TMU's maximum in-flight transactions
+  val tmuGradQueue = rasterFork._2.queue(4)
 
-  // Connect fork path 1 to TMU0
-  tmu0.io.input.translateFrom(rasterFork._1) { (out, in) =>
+  // Connect fork path 1 to TMU
+  tmu.io.input.translateFrom(rasterFork._1) { (out, in) =>
     out.coords := in.coords
-    out.s := in.grads.s0Grad // TMU0's S/W coordinate (interpolated value from rasterizer)
-    out.t := in.grads.t0Grad // TMU0's T/W coordinate (interpolated value from rasterizer)
+    out.s := in.grads.sGrad // TMU's S/W coordinate (interpolated value from rasterizer)
+    out.t := in.grads.tGrad // TMU's T/W coordinate (interpolated value from rasterizer)
     out.w := in.grads.wGrad // Shared 1/W (interpolated value from rasterizer)
-    out.cOther.r := 0 // No upstream texture for TMU0
+    out.cOther.r := 0 // No upstream texture for single TMU
     out.cOther.g := 0
     out.cOther.b := 0
     out.aOther := 0
-    // TMU0 config from captured per-triangle state
-    out.config.textureMode := in.config.tmu0TextureMode
-    out.config.texBaseAddr := in.config.tmu0TexBaseAddr
-    out.config.tLOD := in.config.tmu0TLOD
+    // TMU config from captured per-triangle state
+    out.config.textureMode := in.config.tmuTextureMode
+    out.config.texBaseAddr := in.config.tmuTexBaseAddr
+    out.config.tLOD := in.config.tmuTLOD
     // Texture coordinate gradients for LOD calculation (from config, captured at command time)
-    out.dSdX := in.config.tmu0dSdX
-    out.dTdX := in.config.tmu0dTdX
-    out.dSdY := in.config.tmu0dSdY
-    out.dTdY := in.config.tmu0dTdY
+    out.dSdX := in.config.tmudSdX
+    out.dTdX := in.config.tmudTdX
+    out.dSdY := in.config.tmudSdY
+    out.dTdY := in.config.tmudTdY
   }
 
-  // Join TMU0 output with queued gradients
-  val tmu0Joined = StreamJoin(tmu0.io.output, tmu0GradQueue)
+  // Join TMU output with queued gradients
+  val tmuJoined = StreamJoin(tmu.io.output, tmuGradQueue)
 
-  // Fork the joined result: one to TMU1, one to a queue for synchronization
-  val tmu1InputFork = StreamFork2(tmu0Joined, synchronous = true)
+  // Connect TMU joined output to ColorCombine
+  colorCombine.io.input.translateFrom(tmuJoined) { (out, payload) =>
+    val tmuOut = payload._1
+    val rasterOut = payload._2 // Original rasterizer output
 
-  // Queue to hold data while TMU1 processes
-  val tmu1GradQueue = tmu1InputFork._2.queue(4)
-
-  // Connect fork path 1 to TMU1
-  tmu1.io.input.translateFrom(tmu1InputFork._1) { (out, payload) =>
-    val tmu0Out = payload._1
-    val rasterOut = payload._2
-    out.coords := tmu0Out.coords
-    out.s := rasterOut.grads.s1Grad // TMU1's S/W coordinate from original rasterizer output (interpolated value)
-    out.t := rasterOut.grads.t1Grad // TMU1's T/W coordinate from original rasterizer output (interpolated value)
-    out.w := rasterOut.grads.wGrad // Shared 1/W (interpolated value)
-    out.cOther := tmu0Out.texture // TMU0's texture output becomes TMU1's c_other
-    out.aOther := tmu0Out.textureAlpha
-    // TMU1 config from captured per-triangle state
-    out.config.textureMode := rasterOut.config.tmu1TextureMode
-    out.config.texBaseAddr := rasterOut.config.tmu1TexBaseAddr
-    out.config.tLOD := rasterOut.config.tmu1TLOD
-    // Texture coordinate gradients for LOD calculation (from config, captured at command time)
-    out.dSdX := rasterOut.config.tmu1dSdX
-    out.dTdX := rasterOut.config.tmu1dTdX
-    out.dSdY := rasterOut.config.tmu1dSdY
-    out.dTdY := rasterOut.config.tmu1dTdY
-  }
-
-  // Join TMU1 output with queued data (contains TMU0 output + original raster data)
-  val tmu1Joined = StreamJoin(tmu1.io.output, tmu1GradQueue)
-
-  // Connect TMU1 joined output to ColorCombine
-  colorCombine.io.input.translateFrom(tmu1Joined) { (out, payload) =>
-    val tmu1Out = payload._1
-    val tmu0JoinedData = payload._2
-    val rasterOut = tmu0JoinedData._2 // Extract original rasterizer output
-
-    out.coords := tmu1Out.coords
+    out.coords := tmuOut.coords
 
     // Convert interpolated color values from 12.12 fixed-point to 8-bit unsigned
     // Use interpolated values from rasterizer output (properly synchronized)
@@ -461,9 +554,9 @@ case class Core(c: Config) extends Component {
     // Pass through depth for later stages
     out.depth := rasterOut.grads.depthGrad
 
-    // Use texture from TMU1 (final texture output)
-    out.texture := tmu1Out.texture
-    out.textureAlpha := tmu1Out.textureAlpha
+    // Use texture from TMU (single TMU output)
+    out.texture := tmuOut.texture
+    out.textureAlpha := tmuOut.textureAlpha
 
     // Constant colors from registers (packed as ARGB in 32-bit register)
     val color0Bits = regBank.renderConfig.color0

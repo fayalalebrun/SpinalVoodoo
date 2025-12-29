@@ -64,7 +64,7 @@ case class Rasterizer(c: Config) extends Component {
       val negOne = AFix.SQ(7 bits, 4 bits)
       negOne := -1.0
 
-      // Gradient formats in order: red, green, blue, depth, alpha, w, s0, t0, s1, t1
+      // Gradient formats in order: red, green, blue, depth, alpha, w, s, t
       val gradFormats = Seq(
         c.vColorFormat,
         c.vColorFormat,
@@ -72,8 +72,6 @@ case class Rasterizer(c: Config) extends Component {
         c.vDepthFormat,
         c.vColorFormat,
         c.wFormat,
-        c.texCoordsFormat,
-        c.texCoordsFormat,
         c.texCoordsFormat,
         c.texCoordsFormat
       )
@@ -142,15 +140,12 @@ object Rasterizer {
     val depthGrad = mk(c.vDepthFormat)
     val alphaGrad = mk(c.vColorFormat)
     val wGrad = mk(c.wFormat)
-    // TMU0 texture coordinates (14.18 format)
-    val s0Grad = mk(c.texCoordsFormat)
-    val t0Grad = mk(c.texCoordsFormat)
-    // TMU1 texture coordinates (14.18 format)
-    val s1Grad = mk(c.texCoordsFormat)
-    val t1Grad = mk(c.texCoordsFormat)
+    // TMU texture coordinates (14.18 format) - single TMU support (Voodoo 1 level)
+    val sGrad = mk(c.texCoordsFormat)
+    val tGrad = mk(c.texCoordsFormat)
 
     def all: Seq[T] =
-      Seq(redGrad, greenGrad, blueGrad, depthGrad, alphaGrad, wGrad, s0Grad, t0Grad, s1Grad, t1Grad)
+      Seq(redGrad, greenGrad, blueGrad, depthGrad, alphaGrad, wGrad, sGrad, tGrad)
   }
 
   /** Input is directly the TriangleSetup output (which includes gradients) */

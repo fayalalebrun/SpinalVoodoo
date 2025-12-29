@@ -1,6 +1,7 @@
 package voodoo
 
 import spinal.core._
+import spinal.core.sim._
 import spinal.lib._
 import spinal.lib.bus.bmb._
 import spinal.lib.bus.regif._
@@ -267,37 +268,37 @@ case class RegisterBank(config: Config) extends Component {
       .field(Bits(32 bits), AccessType.WO, 0, "Vertex C Y coordinate (IEEE 754 float32)")
       .asOutput()
 
-    // Float Start Value Registers (0x0a0-0x0bc)
+    // Float Start Value Registers (0x0a0-0x0bc) - all need fifoNoSync for proper triangle command capture
     val fstartR = busif
-      .newRegAt(0x0a0, "fstartR")
+      .newRegAtWithCategory(0x0a0, "fstartR", RegisterCategory.fifoNoSync)
       .field(Bits(32 bits), AccessType.WO, 0, "Starting red value (IEEE 754 float32)")
       .asOutput()
     val fstartG = busif
-      .newRegAt(0x0a4, "fstartG")
+      .newRegAtWithCategory(0x0a4, "fstartG", RegisterCategory.fifoNoSync)
       .field(Bits(32 bits), AccessType.WO, 0, "Starting green value (IEEE 754 float32)")
       .asOutput()
     val fstartB = busif
-      .newRegAt(0x0a8, "fstartB")
+      .newRegAtWithCategory(0x0a8, "fstartB", RegisterCategory.fifoNoSync)
       .field(Bits(32 bits), AccessType.WO, 0, "Starting blue value (IEEE 754 float32)")
       .asOutput()
     val fstartZ = busif
-      .newRegAt(0x0ac, "fstartZ")
+      .newRegAtWithCategory(0x0ac, "fstartZ", RegisterCategory.fifoNoSync)
       .field(Bits(32 bits), AccessType.WO, 0, "Starting Z depth (IEEE 754 float32)")
       .asOutput()
     val fstartA = busif
-      .newRegAt(0x0b0, "fstartA")
+      .newRegAtWithCategory(0x0b0, "fstartA", RegisterCategory.fifoNoSync)
       .field(Bits(32 bits), AccessType.WO, 0, "Starting alpha value (IEEE 754 float32)")
       .asOutput()
     val fstartS = busif
-      .newRegAt(0x0b4, "fstartS")
+      .newRegAtWithCategory(0x0b4, "fstartS", RegisterCategory.fifoNoSync)
       .field(Bits(32 bits), AccessType.WO, 0, "Starting S texture coord (IEEE 754 float32)")
       .asOutput()
     val fstartT = busif
-      .newRegAt(0x0b8, "fstartT")
+      .newRegAtWithCategory(0x0b8, "fstartT", RegisterCategory.fifoNoSync)
       .field(Bits(32 bits), AccessType.WO, 0, "Starting T texture coord (IEEE 754 float32)")
       .asOutput()
     val fstartW = busif
-      .newRegAt(0x0bc, "fstartW")
+      .newRegAtWithCategory(0x0bc, "fstartW", RegisterCategory.fifoNoSync)
       .field(Bits(32 bits), AccessType.WO, 0, "Starting W value (IEEE 754 float32)")
       .asOutput()
 
@@ -367,42 +368,6 @@ case class RegisterBank(config: Config) extends Component {
     val fdWdY = busif
       .newRegAtWithCategory(0x0fc, "fdWdY", RegisterCategory.fifoNoSync)
       .field(Bits(32 bits), AccessType.WO, 0, "W gradient dW/dY (IEEE 754 float32)")
-      .asOutput()
-  }
-
-  // ========================================================================
-  // TMU1 Texture Coordinates (for second texture unit)
-  // These are placed at 0x250-0x26C to avoid conflicts with other register areas
-  // ========================================================================
-  val tmu1Coords = new Area {
-    // TMU1 Start Values
-    val startS1 = busif
-      .newRegAt(0x250, "startS1")
-      .field(SInt(32 bits), AccessType.WO, 0, "TMU1 Starting S texture coord (14.18 fixed)")
-      .asOutput()
-    val startT1 = busif
-      .newRegAt(0x254, "startT1")
-      .field(SInt(32 bits), AccessType.WO, 0, "TMU1 Starting T texture coord (14.18 fixed)")
-      .asOutput()
-
-    // TMU1 X Gradients
-    val dS1dX = busif
-      .newRegAt(0x258, "dS1dX")
-      .field(SInt(32 bits), AccessType.WO, 0, "TMU1 S texture gradient dS/dX (14.18 fixed)")
-      .asOutput()
-    val dT1dX = busif
-      .newRegAt(0x25c, "dT1dX")
-      .field(SInt(32 bits), AccessType.WO, 0, "TMU1 T texture gradient dT/dX (14.18 fixed)")
-      .asOutput()
-
-    // TMU1 Y Gradients
-    val dS1dY = busif
-      .newRegAt(0x260, "dS1dY")
-      .field(SInt(32 bits), AccessType.WO, 0, "TMU1 S texture gradient dS/dY (14.18 fixed)")
-      .asOutput()
-    val dT1dY = busif
-      .newRegAt(0x264, "dT1dY")
-      .field(SInt(32 bits), AccessType.WO, 0, "TMU1 T texture gradient dT/dY (14.18 fixed)")
       .asOutput()
   }
 
@@ -761,53 +726,45 @@ case class RegisterBank(config: Config) extends Component {
   }
 
   // ========================================================================
-  // TMU Configuration Registers (0x300-0x320 for TMU0, 0x340-0x360 for TMU1)
+  // TMU Configuration Registers (0x300-0x320)
+  // Single TMU support only (Voodoo 1 level functionality)
   // These control texture format, filtering, and base addresses
   // ========================================================================
-  val tmu0Config = new Area {
+  val tmuConfig = new Area {
     // textureMode (0x300) - Texture format, filtering, clamp, combine modes
     val textureModeReg =
-      busif.newRegAtWithCategory(0x300, "textureMode0", RegisterCategory.fifoNoSync)
+      busif.newRegAtWithCategory(0x300, "textureMode", RegisterCategory.fifoNoSync)
     val textureMode =
-      textureModeReg.field(Bits(32 bits), AccessType.WO, 0, "TMU0 texture mode").asOutput()
+      textureModeReg.field(Bits(32 bits), AccessType.WO, 0, "Texture mode").asOutput()
 
-    // tLOD (0x304) - LOD configuration (not used initially)
-    val tLODReg = busif.newRegAtWithCategory(0x304, "tLOD0", RegisterCategory.fifoNoSync)
-    val tLOD = tLODReg.field(Bits(32 bits), AccessType.WO, 0, "TMU0 LOD configuration").asOutput()
+    // tLOD (0x304) - LOD configuration
+    val tLODReg = busif.newRegAtWithCategory(0x304, "tLOD", RegisterCategory.fifoNoSync)
+    val tLOD = tLODReg.field(Bits(32 bits), AccessType.WO, 0, "LOD configuration").asOutput()
 
-    // tDetail (0x308) - Detail texture parameters (not used initially)
-    val tDetailReg = busif.newRegAtWithCategory(0x308, "tDetail0", RegisterCategory.fifoNoSync)
+    // tDetail (0x308) - Detail texture parameters
+    val tDetailReg = busif.newRegAtWithCategory(0x308, "tDetail", RegisterCategory.fifoNoSync)
     val tDetail =
-      tDetailReg.field(Bits(32 bits), AccessType.WO, 0, "TMU0 detail texture params").asOutput()
+      tDetailReg.field(Bits(32 bits), AccessType.WO, 0, "Detail texture params").asOutput()
 
     // texBaseAddr (0x30C) - Texture base address
     val texBaseAddrReg =
-      busif.newRegAtWithCategory(0x30c, "texBaseAddr0", RegisterCategory.fifoNoSync)
+      busif.newRegAtWithCategory(0x30c, "texBaseAddr", RegisterCategory.fifoNoSync)
     val texBaseAddr =
-      texBaseAddrReg.field(UInt(24 bits), AccessType.WO, 0, "TMU0 texture base address").asOutput()
+      texBaseAddrReg.field(UInt(24 bits), AccessType.WO, 0, "Texture base address").asOutput()
   }
 
-  val tmu1Config = new Area {
-    // textureMode (0x340) - Texture format, filtering, clamp, combine modes
-    val textureModeReg =
-      busif.newRegAtWithCategory(0x340, "textureMode1", RegisterCategory.fifoNoSync)
-    val textureMode =
-      textureModeReg.field(Bits(32 bits), AccessType.WO, 0, "TMU1 texture mode").asOutput()
-
-    // tLOD (0x344) - LOD configuration (not used initially)
-    val tLODReg = busif.newRegAtWithCategory(0x344, "tLOD1", RegisterCategory.fifoNoSync)
-    val tLOD = tLODReg.field(Bits(32 bits), AccessType.WO, 0, "TMU1 LOD configuration").asOutput()
-
-    // tDetail (0x348) - Detail texture parameters (not used initially)
-    val tDetailReg = busif.newRegAtWithCategory(0x348, "tDetail1", RegisterCategory.fifoNoSync)
-    val tDetail =
-      tDetailReg.field(Bits(32 bits), AccessType.WO, 0, "TMU1 detail texture params").asOutput()
-
-    // texBaseAddr (0x34C) - Texture base address
-    val texBaseAddrReg =
-      busif.newRegAtWithCategory(0x34c, "texBaseAddr1", RegisterCategory.fifoNoSync)
-    val texBaseAddr =
-      texBaseAddrReg.field(UInt(24 bits), AccessType.WO, 0, "TMU1 texture base address").asOutput()
+  // ========================================================================
+  // Simulation Support - Make all register fields accessible during simulation
+  // ========================================================================
+  busif.slices.foreach { slice =>
+    val addr = slice.getAddr()
+    var fieldIndex = 0
+    slice.getFields().foreach { field =>
+      // Simple naming: address + field index (no string manipulation needed)
+      field.hardbit.setName(f"sim_reg_${addr}%03x_f$fieldIndex")
+      field.hardbit.simPublic()
+      fieldIndex += 1
+    }
   }
 }
 

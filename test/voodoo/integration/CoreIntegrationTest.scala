@@ -1322,4 +1322,271 @@ class CoreIntegrationTest extends AnyFunSuite {
       }
     }
   }
+
+  // ========================================================================
+  // Test 7: Color combine modes (data-driven, 12 sub-cases)
+  // ========================================================================
+  test("Color combine modes: comprehensive coverage") {
+    compiled.doSim("cc_modes") { dut =>
+      val (driver, fbMemory, texMemory, writtenAddrs) = setupDut(dut)
+
+      // ---- Shared geometry ----
+      // Triangle: A(120,60) B(180,140) C(60,140) in 12.4 format
+      val vAx = 120 * 16
+      val vAy = 60 * 16
+      val vBx = 180 * 16
+      val vBy = 140 * 16
+      val vCx = 60 * 16
+      val vCy = 140 * 16
+
+      // ---- Shared iterated colors ----
+      // R=100, G=80, B=60, A=200 in 12.12 format
+      val startR = 100 << 12
+      val startG = 80 << 12
+      val startB = 60 << 12
+      val startA = 200 << 12
+      // Gradients: +0.5 per pixel for R and G (dRdX = dGdX = 0.5 in 12.12)
+      val dRdX = 1 << 11 // 0.5 in 12.12
+      val dGdX = 1 << 11
+
+      // ---- Shared constant colors ----
+      val color0 = 0xC0304050 // A=0xC0, R=0x30, G=0x40, B=0x50
+      val color1 = 0xA0102060 // A=0xA0, R=0x10, G=0x20, B=0x60
+
+      // ---- 4x4 ARGB4444 texture ----
+      // Texels with varied colors; some with alpha >= 0x80 for localSelectOverride
+      val texWidth = 4
+      val texHeight = 4
+      // Row 0: (R=0xF,G=0x0,B=0x0,A=0xF), (R=0xA,G=0x5,B=0x3,A=0xE), (R=0x5,G=0xA,B=0x7,A=0x6), (R=0x0,G=0xF,B=0xF,A=0x3)
+      // Row 1: same pattern shifted
+      val texels = Array(
+        // Row 0
+        0xFF00, 0xEA53, 0x65A7, 0x30FF,
+        // Row 1
+        0xF880, 0xD964, 0x74B8, 0x21EE,
+        // Row 2
+        0xE770, 0xCA75, 0x83C9, 0x12DD,
+        // Row 3
+        0xD660, 0xBB86, 0x92DA, 0x03CC
+      )
+
+      for (t <- 0 until texHeight; s <- 0 until texWidth) {
+        val texel = texels(t * texWidth + s)
+        val addr = (t * texWidth + s) * 2
+        texMemory.setByte(addr, (texel & 0xff).toByte)
+        texMemory.setByte(addr + 1, ((texel >> 8) & 0xff).toByte)
+      }
+
+      // Pre-decode for reference
+      val refTexData = new Array[Int](texWidth * texHeight)
+      for (i <- texels.indices)
+        refTexData(i) = VoodooReference.decodeTexel(texels(i), 0xc) // 0xc = ARGB4444
+
+      val texDataPerLod = Array.fill(9)(Array.empty[Int])
+      texDataPerLod(0) = refTexData
+      val texWMaskPerLod = Array.fill(9)(0)
+      texWMaskPerLod(0) = texWidth - 1
+      val texHMaskPerLod = Array.fill(9)(0)
+      texHMaskPerLod(0) = texHeight - 1
+      val texShiftPerLod = Array.fill(9)(0)
+      texShiftPerLod(0) = 8 // tex_shift = 8 - lod, lod=0
+      val texLodPerLod = Array.fill(9)(0)
+
+      // Texture coords: S and T increase by ~3/80 per pixel to span 0..3 across ~80 px
+      // dSdX = (3 << 14) / 80 = 614 (approximately)
+      val startS_reg = 0
+      val startT_reg = 0
+      val dSdX_reg = 614
+      val dTdX_reg = 0
+      val dSdY_reg = 0
+      val dTdY_reg = 614
+
+      // textureMode: ARGB4444 (12 << 8), clampS, clampT, non-perspective
+      val textureMode = (12 << 8) | (1 << 6) | (1 << 7)
+
+      // ---- fbzColorPath bit-field constructors ----
+      def mkFbzCP(
+          rgbSel: Int = 0, alphaSel: Int = 0,
+          localSelect: Int = 0, alphaLocalSel: Int = 0,
+          localSelectOverride: Int = 0,
+          zeroOther: Int = 0, subClocal: Int = 0,
+          mselect: Int = 0, reverseBlend: Int = 0,
+          add: Int = 0, invertOutput: Int = 0,
+          alphaZeroOther: Int = 0, alphaSubClocal: Int = 0,
+          alphaMselect: Int = 0, alphaReverseBlend: Int = 0,
+          alphaAdd: Int = 0, alphaInvertOutput: Int = 0,
+          textureEnable: Int = 1
+      ): Int = {
+        (rgbSel & 3) |
+        ((alphaSel & 3) << 2) |
+        ((localSelect & 1) << 4) |
+        ((alphaLocalSel & 3) << 5) |
+        ((localSelectOverride & 1) << 7) |
+        ((zeroOther & 1) << 8) |
+        ((subClocal & 1) << 9) |
+        ((mselect & 7) << 10) |
+        ((reverseBlend & 1) << 13) |
+        ((add & 3) << 14) |
+        ((invertOutput & 1) << 16) |
+        ((alphaZeroOther & 1) << 17) |
+        ((alphaSubClocal & 1) << 18) |
+        ((alphaMselect & 7) << 19) |
+        ((alphaReverseBlend & 1) << 22) |
+        ((alphaAdd & 3) << 23) |
+        ((alphaInvertOutput & 1) << 25) |
+        ((textureEnable & 1) << 27)
+      }
+
+      // ---- Test case table: (name, fbzColorPath, fbzMode) ----
+      val baseFbzMode = 1 | (1 << 9) // clipping + RGB write
+
+      val testCases: Seq[(String, Int, Int)] = Seq(
+        // 1. mselect_clocal: tex * clocal/256
+        //    rgbSel=TEX(1), mselect=CLOCAL(1), reverseBlend=1 (passthrough)
+        ("mselect_clocal",
+          mkFbzCP(rgbSel = 1, mselect = 1, reverseBlend = 1),
+          baseFbzMode),
+
+        // 2. mselect_alocal: tex * alocal/256
+        //    rgbSel=TEX(1), mselect=ALOCAL(3), reverseBlend=1
+        ("mselect_alocal",
+          mkFbzCP(rgbSel = 1, mselect = 3, reverseBlend = 1),
+          baseFbzMode),
+
+        // 3. mselect_texalpha: iter * texA/256 + clocal
+        //    rgbSel=ITER(0), mselect=TEX_ALPHA(4), reverseBlend=1, add=CLOCAL(1)
+        ("mselect_texalpha",
+          mkFbzCP(rgbSel = 0, mselect = 4, reverseBlend = 1, add = 1),
+          baseFbzMode),
+
+        // 4. mselect_texrgb: iter * texRGB/256
+        //    rgbSel=ITER(0), mselect=TEX_RGB(5), reverseBlend=1
+        //    Note: here we use zeroOther=0 so src = cother = iter, then multiply
+        //    but actually: src = cother - (subClocal? clocal:0) * factor
+        //    With zeroOther=0, subClocal=0: src=cother=iter; src*factor>>8
+        ("mselect_texrgb",
+          mkFbzCP(rgbSel = 0, mselect = 5, reverseBlend = 1),
+          baseFbzMode),
+
+        // 5. sub_clocal: tex - clocal, factor=256 (msel=0, reverseBlend=0 → ~0+1=256)
+        //    rgbSel=TEX(1), subClocal=1, mselect=ZERO(0), reverseBlend=0
+        ("sub_clocal",
+          mkFbzCP(rgbSel = 1, subClocal = 1, mselect = 0, reverseBlend = 0),
+          baseFbzMode),
+
+        // 6. add_alocal: tex * 256/256 + alocal
+        //    rgbSel=TEX(1), mselect=ZERO(0), reverseBlend=0, add=ALOCAL(2)
+        ("add_alocal",
+          mkFbzCP(rgbSel = 1, mselect = 0, reverseBlend = 0, add = 2),
+          baseFbzMode),
+
+        // 7. invert_output: ~(clocal) = ~(iter clamped)
+        //    zeroOther=1, add=CLOCAL(1), invertOutput=1
+        ("invert_output",
+          mkFbzCP(zeroOther = 1, add = 1, invertOutput = 1),
+          baseFbzMode),
+
+        // 8. rgb_sel_color1: color1 * 256/256 (passthrough)
+        //    rgbSel=COLOR1(2), mselect=ZERO(0), reverseBlend=0
+        ("rgb_sel_color1",
+          mkFbzCP(rgbSel = 2, mselect = 0, reverseBlend = 0),
+          baseFbzMode),
+
+        // 9. local_sel_color0: output = color0 (zeroOther=1, add=CLOCAL(1), localSelect=1)
+        ("local_sel_color0",
+          mkFbzCP(zeroOther = 1, add = 1, localSelect = 1),
+          baseFbzMode),
+
+        // 10. local_sel_override: localSelectOverride=1 → clocal = color0 when texA>=0x80, else iter
+        //     zeroOther=1, add=CLOCAL(1), localSelectOverride=1
+        ("local_sel_override",
+          mkFbzCP(zeroOther = 1, add = 1, localSelectOverride = 1),
+          baseFbzMode),
+
+        // 11. alpha_path: exercise alpha combine separately
+        //     alphaSel=TEX(1), alphaLocalSel=COLOR0(1), alphaMselect=ALOCAL(3), alphaReverseBlend=1
+        //     RGB path: texture passthrough (rgbSel=1, msel=0, revBlend=0 → factor=256)
+        ("alpha_path",
+          mkFbzCP(rgbSel = 1, mselect = 0, reverseBlend = 0,
+                  alphaSel = 1, alphaLocalSel = 1, alphaMselect = 3, alphaReverseBlend = 1),
+          baseFbzMode),
+
+        // 12. alpha_planes: fbzMode bit 18 → alpha written instead of depth
+        //     Simple texture passthrough, but fbzMode has bit 18 set and depth write enabled
+        ("alpha_planes",
+          mkFbzCP(rgbSel = 1, mselect = 0, reverseBlend = 0),
+          baseFbzMode | (1 << 10) | (1 << 18)) // aux write mask + alpha planes
+      )
+
+      for ((name, fbzColorPath, fbzMode) <- testCases) {
+        writtenAddrs.clear()
+        writeReg(driver, REG_TEXBASEADDR, 0)
+
+        submitTriangle(
+          driver, dut.clockDomain,
+          vertexAx = vAx, vertexAy = vAy,
+          vertexBx = vBx, vertexBy = vBy,
+          vertexCx = vCx, vertexCy = vCy,
+          startR = startR, startG = startG, startB = startB, startA = startA,
+          startZ = 0, startS = startS_reg, startT = startT_reg, startW = 0,
+          dRdX = dRdX, dGdX = dGdX, dBdX = 0, dAdX = 0, dZdX = 0,
+          dSdX = dSdX_reg, dTdX = dTdX_reg, dWdX = 0,
+          dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
+          dSdY = dSdY_reg, dTdY = dTdY_reg, dWdY = 0,
+          fbzColorPath = fbzColorPath, fbzMode = fbzMode, sign = false,
+          textureMode = textureMode, tLOD = 0,
+          color0 = color0, color1 = color1,
+          clipRight = 640, clipHighY = 480
+        )
+
+        dut.clockDomain.waitSampling(200000)
+
+        val simPixels = collectPixels(fbMemory, writtenAddrs, 0)
+
+        val refParams = VoodooReference.fromRegisterValues(
+          vertexAx = vAx, vertexAy = vAy,
+          vertexBx = vBx, vertexBy = vBy,
+          vertexCx = vCx, vertexCy = vCy,
+          startR = startR, startG = startG, startB = startB, startA = startA,
+          startZ = 0, startS = startS_reg, startT = startT_reg, startW = 0,
+          dRdX = dRdX, dGdX = dGdX, dBdX = 0, dAdX = 0, dZdX = 0,
+          dSdX = dSdX_reg, dTdX = dTdX_reg, dWdX = 0,
+          dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
+          dSdY = dSdY_reg, dTdY = dTdY_reg, dWdY = 0,
+          fbzColorPath = fbzColorPath, fbzMode = fbzMode, sign = false,
+          textureMode = textureMode, tLOD = 0,
+          color0 = color0, color1 = color1,
+          clipRight = 640, clipHighY = 480,
+          texData = texDataPerLod,
+          texWMask = texWMaskPerLod,
+          texHMask = texHMaskPerLod,
+          texShift = texShiftPerLod,
+          texLod = texLodPerLod
+        )
+
+        val refPixels = VoodooReference.voodooTriangle(refParams)
+        println(s"[cc_modes/$name] sim=${simPixels.size} ref=${refPixels.size}")
+
+        if (name == "alpha_planes") {
+          // For alpha_planes: use fuzzy spatial compare for RGB (edge tolerance)
+          // but ignore depth16 since the ref writes depth while HW writes alpha.
+          comparePixelsFuzzy(refPixels, simPixels, s"cc_modes/$name", checkColor = true)
+
+          // Additionally verify alpha planes: since startZ=0 and dZdX=dZdY=0,
+          // without alpha planes the depth16 field would be 0.
+          // With alpha planes, it should contain the alpha value (non-zero).
+          val nonZeroAlpha = simPixels.values.count(_._2 != 0)
+          println(s"[cc_modes/$name] pixels with non-zero alpha field: $nonZeroAlpha / ${simPixels.size}")
+          assert(nonZeroAlpha > 0, s"$name: expected non-zero alpha in depth16 field with alpha planes enabled")
+
+          // The CC alpha path is default (iter alpha passthrough): alpha = CLAMP(ia >> 12)
+          // startA = 200<<12, dAdX=0 → alpha should be 200=0xC8, zero-extended to 16 bits = 0x00C8
+          val alphaValues = simPixels.values.map(_._2).toSet
+          println(s"[cc_modes/$name] unique alpha values: ${alphaValues.toSeq.sorted.map(v => f"0x$v%04X").mkString(", ")}")
+        } else {
+          comparePixelsFuzzy(refPixels, simPixels, s"cc_modes/$name")
+        }
+      }
+    }
+  }
 }

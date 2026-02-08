@@ -346,21 +346,24 @@ case class ColorCombine(c: voodoo.Config) extends Component {
   // Stage 4: Reverse Blend
   // Voodoo1 convention: when cc_reverse_blend=0, factor IS inverted.
   // When cc_reverse_blend=1, factor passes through unchanged.
-  // Inversion follows 86Box: factor ^= 0xFF; factor += 1
-  // This maps 0 → 256, 255 → 1 (9-bit result)
+  // 86Box: factor ^= 0xFF (conditional on !reverseBlend); factor += 1 (always)
+  // The unconditional +1 maps: passthrough 0→1..255→256, inverted 0→256..255→1
   // Factor is UQ(0,8), representing 0..255/256.
-  // After inversion, result needs 9 bits to hold 256 (=1.0).
-  // We widen to UQ(1,8) for the inverted result.
+  // After +1, result needs 9 bits to hold 256 (=1.0).
+  // We widen to UQ(1,8) for the result.
   def invertFactor(f: AFix, reverseBlend: Bool): AFix = {
     val fRaw = f.raw.asUInt.resize(8 bits)
-    val invRaw = (~fRaw).resize(9 bits) + 1  // XOR 0xFF + 1, result is 9 bits
-    val passRaw = fRaw.resize(9 bits)
-    val result = AFix.UQ(1 bits, 8 bits)  // wider: can hold 0..256
+    // 86Box: factor ^= 0xFF (conditional); factor += 1 (unconditional)
+    // The +1 ensures the factor range is 1..256 (inverted) or 1..256 (passthrough),
+    // allowing exact 1.0 scaling (256/256).
+    val xored = UInt(8 bits)
     when(reverseBlend) {
-      result.raw := passRaw.asBits  // reverse_blend=1: pass through
+      xored := fRaw                // reverse_blend=1: pass through
     }.otherwise {
-      result.raw := invRaw.asBits   // reverse_blend=0: invert
+      xored := ~fRaw               // reverse_blend=0: invert (XOR 0xFF)
     }
+    val result = AFix.UQ(1 bits, 8 bits)  // wider: can hold 0..256
+    result.raw := (xored.resize(9 bits) + 1).asBits  // +1 unconditionally
     result
   }
   (n4(C_FACTOR).channels, n4(C_FACTOR_PRE).channels).zipped.foreach { (dst, src) =>

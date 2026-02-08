@@ -24,8 +24,13 @@ case class TriangleSetup(c: Config) extends Component {
     // ceil(max) gives last pixel that could be inside (handles subpixel vertices)
     out.xrange(0) := xminRaw.floor(0).fixTo(c.vertexFormat)
     out.xrange(1) := xmaxRaw.ceil(0).fixTo(c.vertexFormat)
-    out.yrange(0) := yminRaw.floor(0).fixTo(c.vertexFormat)
-    out.yrange(1) := ymaxRaw.ceil(0).fixTo(c.vertexFormat)
+
+    // Y range: match 86Box's scanline computation
+    // 86Box: ystart = (vertexAy + 7) >> 4, yend = (vertexCy + 7) >> 4
+    // Vertices are sorted A=top, C=bottom by the driver.
+    // (raw + 7) >> 4 on a 12.4 value = roundHalfDown to integer (ties toward -inf)
+    out.yrange(0) := tri(0)(1).roundHalfDown(0).fixTo(c.vertexFormat) // ystart (inclusive)
+    out.yrange(1) := tri(2)(1).roundHalfDown(0).fixTo(c.vertexFormat) // yend (exclusive)
 
     // Compute edge coefficients for all 3 edges
     // Note: Our formula produces inverted signs. For CCW triangles (signBit=0),
@@ -77,8 +82,24 @@ case class TriangleSetup(c: Config) extends Component {
     }
     out.edgeStart := edgeStartVec
 
-    // Pass through gradients and config captured at command time
-    out.grads := input.grads
+    // Adjust gradient start values for origin shift from bbox corner to vertex A
+    // 86Box uses vertex A as gradient origin; SpinalVoodoo rasterizer starts at (xmin, ymin)
+    // adjustedStart = start + (xmin - Ax) * dX + (ymin - Ay) * dY
+    val dx = out.xrange(0) - tri(0)(0) // xmin - Ax
+    val dy = out.yrange(0) - tri(0)(1) // ymin - Ay
+
+    val gradFormats = Seq(
+      c.vColorFormat, c.vColorFormat, c.vColorFormat,
+      c.vDepthFormat, c.vColorFormat,
+      c.wFormat, c.texCoordsFormat, c.texCoordsFormat
+    )
+
+    out.grads.all.zip(input.grads.all).zip(gradFormats).foreach {
+      case ((outG, inG), fmt) =>
+        outG.d := inG.d // pass through per-pixel gradients unchanged
+        outG.start := (inG.start + dx * inG.d(0) + dy * inG.d(1)).fixTo(fmt)
+    }
+
     out.config := input.config
 
     out

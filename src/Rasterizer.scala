@@ -112,7 +112,8 @@ case class Rasterizer(c: Config) extends Component {
       next.input := state.input
 
       // Check if this is the last pixel: either next Y is out of bounds, or at max iterations
-      val nextOutOfBounds = next.coords(1) > state.input.yrange(1)
+      // yrange(1) is the exclusive upper bound, so >= means next scanline is past the end
+      val nextOutOfBounds = next.coords(1) >= state.input.yrange(1)
       val isLast = nextOutOfBounds
 
       (next, isLast)

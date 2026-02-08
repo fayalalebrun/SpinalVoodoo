@@ -129,8 +129,8 @@ case class ColorCombine(c: voodoo.Config) extends Component {
   val factorFormat = AFix.UQ(0 bits, 8 bits)
   val C_FACTOR_PRE = Payload(Color.ufactor())
   val A_FACTOR_PRE = Payload(AFix.UQ(0 bits, 8 bits))
-  val C_FACTOR = Payload(Color.ufactor())
-  val A_FACTOR = Payload(AFix.UQ(0 bits, 8 bits))
+  val C_FACTOR = Payload(Color(AFix.UQ(1 bits, 8 bits), AFix.UQ(1 bits, 8 bits), AFix.UQ(1 bits, 8 bits)))
+  val A_FACTOR = Payload(AFix.UQ(1 bits, 8 bits))
 
   // After multiply/add (wide for intermediate results)
   // SQ(10, 0) * UQ(0, 8) = SQ(10, 8) - 10 integer bits + 8 fractional bits
@@ -343,18 +343,23 @@ case class ColorCombine(c: voodoo.Config) extends Component {
     }
   }
 
-  // Stage 4: Reverse Blend (invert factor: 1.0 - factor)
-  // Create a constant 1.0 in UQ(1,8) format so subtraction stays in range
-  val one = AFix.UQ(1 bits, 8 bits)
-  one := 1.0
-
-  def invertFactor(f: AFix, invert: Bool): AFix = {
-    val inverted = (one - f).fixTo(UQ(0, 8))
-    val result = AFix.UQ(0 bits, 8 bits)
-    when(invert) {
-      result := inverted
+  // Stage 4: Reverse Blend
+  // Voodoo1 convention: when cc_reverse_blend=0, factor IS inverted.
+  // When cc_reverse_blend=1, factor passes through unchanged.
+  // Inversion follows 86Box: factor ^= 0xFF; factor += 1
+  // This maps 0 → 256, 255 → 1 (9-bit result)
+  // Factor is UQ(0,8), representing 0..255/256.
+  // After inversion, result needs 9 bits to hold 256 (=1.0).
+  // We widen to UQ(1,8) for the inverted result.
+  def invertFactor(f: AFix, reverseBlend: Bool): AFix = {
+    val fRaw = f.raw.asUInt.resize(8 bits)
+    val invRaw = (~fRaw).resize(9 bits) + 1  // XOR 0xFF + 1, result is 9 bits
+    val passRaw = fRaw.resize(9 bits)
+    val result = AFix.UQ(1 bits, 8 bits)  // wider: can hold 0..256
+    when(reverseBlend) {
+      result.raw := passRaw.asBits  // reverse_blend=1: pass through
     }.otherwise {
-      result := f
+      result.raw := invRaw.asBits   // reverse_blend=0: invert
     }
     result
   }

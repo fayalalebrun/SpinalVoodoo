@@ -165,8 +165,9 @@ class ColorCombineTest extends AnyFunSuite {
       dut.io.input.payload.config.rgbSel #= ColorCombine.RgbSel.COLOR1
       dut.io.input.payload.config.zeroOther #= false
       dut.io.input.payload.config.mselect #= ColorCombine.MSelect.ALOCAL
+      dut.io.input.payload.config.reverseBlend #= true // pass through factor (no inversion)
       dut.io.input.payload.config.localSelect #= ColorCombine.LocalSel.ITERATED
-      // aLocal = iteratedAlpha = 255, so factor = 255
+      // aLocal = iteratedAlpha = 255, reverseBlend=true means factor passes through
       // result = color1 * 255 >> 8 ≈ color1 * 0.996 ≈ color1
 
       val (r, g, b, a) = sendAndReceive(dut)
@@ -219,6 +220,7 @@ class ColorCombineTest extends AnyFunSuite {
       dut.io.input.payload.config.localSelect #= ColorCombine.LocalSel.COLOR0
       dut.io.input.payload.config.zeroOther #= false
       dut.io.input.payload.config.mselect #= ColorCombine.MSelect.CLOCAL
+      dut.io.input.payload.config.reverseBlend #= true // pass through factor (no inversion)
       dut.io.input.payload.config.add #= ColorCombine.AddMode.NONE
 
       val (r, g, b, a) = sendAndReceive(dut)
@@ -226,6 +228,7 @@ class ColorCombineTest extends AnyFunSuite {
       println(s"Multiply by local: R=$r, G=$g, B=$b, A=$a")
 
       // iterated = (128, 64, 32), color0 = (200, 150, 100)
+      // reverseBlend=true means factor passes through unchanged
       // result = (128 * 200, 64 * 150, 32 * 100) >> 8
       //        = (25600, 9600, 3200) >> 8
       //        = (100, 37, 12)
@@ -242,20 +245,21 @@ class ColorCombineTest extends AnyFunSuite {
 
       // Set up: c_other = iterated, c_local = color0
       // With sub_clocal: c_other - c_local
-      // With mselect=ZERO, multiply gives 0
+      // With mselect=ZERO and reverseBlend=true: factor=0 (pass through zero), multiply gives 0
       // With add=CLOCAL, add back c_local
       // So result should be c_local (color0)
       dut.io.input.payload.config.rgbSel #= ColorCombine.RgbSel.ITERATED
       dut.io.input.payload.config.localSelect #= ColorCombine.LocalSel.COLOR0
       dut.io.input.payload.config.subClocal #= true
       dut.io.input.payload.config.mselect #= ColorCombine.MSelect.ZERO
+      dut.io.input.payload.config.reverseBlend #= true // pass through factor (zero stays zero)
       dut.io.input.payload.config.add #= ColorCombine.AddMode.CLOCAL
 
       val (r, g, b, a) = sendAndReceive(dut)
 
       println(s"Subtract and add local: R=$r, G=$g, B=$b, A=$a")
 
-      // color0 = (200, 150, 100)
+      // (iter - color0) * 0 + color0 = color0 = (200, 150, 100)
       assert(r == 200, s"Expected R=200, got $r")
       assert(g == 150, s"Expected G=150, got $g")
       assert(b == 100, s"Expected B=100, got $b")
@@ -308,12 +312,13 @@ class ColorCombineTest extends AnyFunSuite {
       dut.io.input.payload.color0.b #= 200
 
       // zero_other + add clocal + add clocal again via...
-      // Actually: set c_other=iterated, multiply by 1 (ALOCAL with alpha=255), then add clocal
+      // Actually: set c_other=iterated, multiply by 1 (ALOCAL with alpha=255, reverseBlend=true), then add clocal
       dut.io.input.payload.config.rgbSel #= ColorCombine.RgbSel.ITERATED
       dut.io.input.payload.config.localSelect #= ColorCombine.LocalSel.COLOR0
       dut.io.input.payload.config.mselect #= ColorCombine.MSelect.ALOCAL
+      dut.io.input.payload.config.reverseBlend #= true // pass through factor (no inversion)
       dut.io.input.payload.config.add #= ColorCombine.AddMode.CLOCAL
-      // alocal = 255, so: 200 * 255 >> 8 + 200 = 199 + 200 = 399, clamped to 255
+      // alocal = 255, reverseBlend=true: factor=255, so: 200 * 255 >> 8 + 200 = 199 + 200 = 399, clamped to 255
 
       val (r, g, b, a) = sendAndReceive(dut)
 
@@ -331,18 +336,18 @@ class ColorCombineTest extends AnyFunSuite {
       setDefaultInput(dut)
 
       // c_other = iterated = (128, 64, 32)
-      // factor = ALOCAL = 255, reversed = 0
-      // result = 128 * 0 >> 8 = 0
+      // factor = ALOCAL = 255, reverseBlend=false → invert: 1.0 - 255/256 ≈ 0
+      // result = 128 * ~0 >> 8 = 0
       dut.io.input.payload.config.rgbSel #= ColorCombine.RgbSel.ITERATED
       dut.io.input.payload.config.mselect #= ColorCombine.MSelect.ALOCAL
-      dut.io.input.payload.config.reverseBlend #= true
+      dut.io.input.payload.config.reverseBlend #= false  // invert factor (Voodoo1 convention)
       dut.io.input.payload.config.add #= ColorCombine.AddMode.NONE
 
       val (r, g, b, a) = sendAndReceive(dut)
 
       println(s"Reverse blend: R=$r, G=$g, B=$b, A=$a")
 
-      // 255 reversed = 0, so multiply by 0 = 0
+      // reverseBlend=false: factor = 1.0 - 255/256 ≈ 1/256 ≈ 0, so multiply by ~0 = 0
       assert(r == 0, s"Expected R=0, got $r")
       assert(g == 0, s"Expected G=0, got $g")
       assert(b == 0, s"Expected B=0, got $b")

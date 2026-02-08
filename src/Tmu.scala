@@ -436,13 +436,13 @@ object Tmu {
     val I8 = 3
     val AI44 = 4
     val P8 = 5
-    val ARGB8332 = 6
-    val AYIQ8422 = 7
-    val RGB565 = 8
-    val ARGB1555 = 9
-    val ARGB4444 = 10
-    val AI88 = 11
-    val AP88 = 12
+    val ARGB8332 = 8
+    val AYIQ8422 = 9
+    val RGB565 = 10
+    val ARGB1555 = 11
+    val ARGB4444 = 12
+    val AI88 = 13
+    val AP88 = 14
   }
 
   /** Decoded tLOD register fields */

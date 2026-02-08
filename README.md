@@ -101,8 +101,6 @@ SpinalHDL implementation of the 3dfx Voodoo Graphics GPU.
   - [x] AI88 (16-bit, alpha + intensity)
   - [ ] YIQ422 / AYIQ8422 (NCC compressed)
   - [ ] P8 / AP88 (palettized)
-  - **Bug:** 16-bit format enum values are offset by 2 from the Voodoo1 datasheet
-    (HDL: ARGB8332=6, Datasheet: ARGB8332=8). 8-bit formats (0-5) are correct.
 - Texture Combine
   - [x] Texture output to color combine unit
   - [ ] Multi-texture (TMU chaining)

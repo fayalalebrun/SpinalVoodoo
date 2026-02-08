@@ -83,15 +83,15 @@ class CoreIntegrationTest extends AnyFunSuite {
     TexFormatInfo("I8", 3, 0x3, 1, (r, _, _, _) => r),  // intensity = R channel
     TexFormatInfo("AI44", 4, 0x4, 1, (r, _, _, a) =>
       ((a >> 4) << 4) | (r >> 4)),  // A4:I4
-    TexFormatInfo("ARGB8332", 6, 0x8, 2, (r, g, b, a) =>
+    TexFormatInfo("ARGB8332", 8, 0x8, 2, (r, g, b, a) =>
       (a << 8) | ((r >> 5) << 5) | ((g >> 5) << 2) | (b >> 6)),
-    TexFormatInfo("RGB565", 8, 0xa, 2, (r, g, b, _) =>
+    TexFormatInfo("RGB565", 10, 0xa, 2, (r, g, b, _) =>
       ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)),
-    TexFormatInfo("ARGB1555", 9, 0xb, 2, (r, g, b, a) =>
+    TexFormatInfo("ARGB1555", 11, 0xb, 2, (r, g, b, a) =>
       ((if (a >= 128) 1 else 0) << 15) | ((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3)),
-    TexFormatInfo("ARGB4444", 10, 0xc, 2, (r, g, b, a) =>
+    TexFormatInfo("ARGB4444", 12, 0xc, 2, (r, g, b, a) =>
       ((a >> 4) << 12) | ((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4)),
-    TexFormatInfo("AI88", 11, 0xd, 2, (r, _, _, a) =>
+    TexFormatInfo("AI88", 13, 0xd, 2, (r, _, _, a) =>
       (a << 8) | r)  // A8:I8, intensity = R channel
   )
 
@@ -746,8 +746,8 @@ class CoreIntegrationTest extends AnyFunSuite {
       val dSdY_reg = 0
       val dTdY_reg = 3072
 
-      // textureMode: format=ARGB4444 (10 << 8), clampS (bit 6), clampT (bit 7), no perspective (bit 0 = 0)
-      val textureMode = (10 << 8) | (1 << 6) | (1 << 7)
+      // textureMode: format=ARGB4444 (12 << 8), clampS (bit 6), clampT (bit 7), no perspective (bit 0 = 0)
+      val textureMode = (12 << 8) | (1 << 6) | (1 << 7)
 
       // tLOD: lodmin=0, lodmax=0 (single LOD level)
       val tLOD = 0
@@ -1090,7 +1090,7 @@ class CoreIntegrationTest extends AnyFunSuite {
       // --- Sub-test A: wrap mode (clampS=0, clampT=1) ---
       writtenAddrs.clear()
 
-      val textureModeWrap = (8 << 8) | (1 << 7)  // RGB565, clampT only
+      val textureModeWrap = (10 << 8) | (1 << 7)  // RGB565, clampT only
 
       writeReg(driver, REG_TEXBASEADDR, 0)
 
@@ -1142,7 +1142,7 @@ class CoreIntegrationTest extends AnyFunSuite {
       // --- Sub-test B: clamp mode (clampS=1, clampT=1) ---
       writtenAddrs.clear()
 
-      val textureModeClamp = (8 << 8) | (1 << 6) | (1 << 7)  // RGB565, clampS+clampT
+      val textureModeClamp = (10 << 8) | (1 << 6) | (1 << 7)  // RGB565, clampS+clampT
 
       writeReg(driver, REG_TEXBASEADDR, 0)
 
@@ -1229,8 +1229,8 @@ class CoreIntegrationTest extends AnyFunSuite {
       val vCx = 84 * 16
       val vCy = 116 * 16
 
-      // textureMode: ARGB4444 (10), clampS, clampT, non-perspective
-      val textureMode = (10 << 8) | (1 << 6) | (1 << 7)
+      // textureMode: ARGB4444 (12), clampS, clampT, non-perspective
+      val textureMode = (12 << 8) | (1 << 6) | (1 << 7)
 
       // fbzColorPath: texture passthrough
       val fbzColorPath = 1 | (1 << 27)

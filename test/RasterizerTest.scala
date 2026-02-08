@@ -26,11 +26,11 @@ class RasterizerTest extends AnyFunSuite {
   // Helper to set default gradients (simple constant values)
   def setDefaultGradients(
       dut: Rasterizer,
-      startVals: Seq[Double] = Seq(0.01, 0.02, 0.03, 0.04, 0.05, 0.0),
-      dxVals: Seq[Double] = Seq(0.001, 0.001, 0.001, 0.001, 0.001, 0.0),
-      dyVals: Seq[Double] = Seq(0.002, 0.002, 0.002, 0.002, 0.002, 0.0)
+      startVals: Seq[Double] = Seq(0.01, 0.02, 0.03, 0.04, 0.05, 0.0, 0.0, 0.0),
+      dxVals: Seq[Double] = Seq(0.001, 0.001, 0.001, 0.001, 0.001, 0.0, 0.0, 0.0),
+      dyVals: Seq[Double] = Seq(0.002, 0.002, 0.002, 0.002, 0.002, 0.0, 0.0, 0.0)
   ): Unit = {
-    for (i <- 0 until 6) {
+    for (i <- 0 until 8) { // 8 gradients: r,g,b,depth,alpha,w,s,t
       dut.i.grads.all(i).start #= startVals(i)
       dut.i.grads.all(i).d(0) #= dxVals(i)
       dut.i.grads.all(i).d(1) #= dyVals(i)
@@ -39,7 +39,7 @@ class RasterizerTest extends AnyFunSuite {
 
   // Helper to set zero gradients
   def setZeroGradients(dut: Rasterizer): Unit = {
-    for (i <- 0 until 6) {
+    for (i <- 0 until 8) { // 8 gradients: r,g,b,depth,alpha,w,s,t
       dut.i.grads.all(i).start #= 0.0
       dut.i.grads.all(i).d(0) #= 0.0
       dut.i.grads.all(i).d(1) #= 0.0
@@ -271,8 +271,8 @@ class RasterizerTest extends AnyFunSuite {
     SimConfig.withIVerilog.withWave.compile(Rasterizer(config)).doSim { dut =>
       setupDut(dut)
 
-      // Small 3x3 box from (0,0) to (2,2)
-      setBox(dut, xmin = 0.0, xmax = 2.0, ymin = 0.0, ymax = 2.0)
+      // Small 3x3 box from (0,0) to (2,2) — yrange is exclusive upper bound
+      setBox(dut, xmin = 0.0, xmax = 2.0, ymin = 0.0, ymax = 3.0)
       setZeroGradients(dut)
 
       val outputs = sendAndCollect(dut, cycles = 50)
@@ -305,13 +305,13 @@ class RasterizerTest extends AnyFunSuite {
     SimConfig.withIVerilog.withWave.compile(Rasterizer(config)).doSim { dut =>
       setupDut(dut)
 
-      // 2x2 box from (0,0) to (1,1)
-      setBox(dut, xmin = 0.0, xmax = 1.0, ymin = 0.0, ymax = 1.0)
+      // 2x2 box from (0,0) to (1,1) — yrange is exclusive upper bound
+      setBox(dut, xmin = 0.0, xmax = 1.0, ymin = 0.0, ymax = 2.0)
 
       // Gradient: start=0.1, dx=0.01, dy=0.02
-      val gradStart = Seq(0.1, 0.1, 0.1, 0.1, 0.1, 0.0)
-      val gradDx = Seq(0.01, 0.01, 0.01, 0.01, 0.01, 0.0)
-      val gradDy = Seq(0.02, 0.02, 0.02, 0.02, 0.02, 0.0)
+      val gradStart = Seq(0.1, 0.1, 0.1, 0.1, 0.1, 0.0, 0.0, 0.0)
+      val gradDx = Seq(0.01, 0.01, 0.01, 0.01, 0.01, 0.0, 0.0, 0.0)
+      val gradDy = Seq(0.02, 0.02, 0.02, 0.02, 0.02, 0.0, 0.0, 0.0)
       setDefaultGradients(dut, gradStart, gradDx, gradDy)
 
       dut.i.valid #= true
@@ -358,8 +358,8 @@ class RasterizerTest extends AnyFunSuite {
       dut.o.ready #= false
       dut.clockDomain.waitSampling()
 
-      // 2x2 box
-      setBox(dut, xmin = 0.0, xmax = 1.0, ymin = 0.0, ymax = 1.0)
+      // 2x2 box — yrange is exclusive upper bound
+      setBox(dut, xmin = 0.0, xmax = 1.0, ymin = 0.0, ymax = 2.0)
       setZeroGradients(dut)
 
       dut.i.valid #= true

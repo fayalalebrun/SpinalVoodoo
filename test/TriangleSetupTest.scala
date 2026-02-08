@@ -45,7 +45,7 @@ class TriangleSetupTest extends AnyFunSuite {
 
   // Helper to set zero gradients for tests
   def setZeroGradients(dut: TriangleSetup): Unit = {
-    for (i <- 0 until 10) { // 10 gradients in GradientBundle
+    for (i <- 0 until 8) { // 8 gradients in GradientBundle: r,g,b,depth,alpha,w,s,t
       dut.i.grads.all(i).start #= 0.0
       dut.i.grads.all(i).d(0) #= 0.0
       dut.i.grads.all(i).d(1) #= 0.0
@@ -304,8 +304,8 @@ class TriangleSetupTest extends AnyFunSuite {
   }
 
   test("Acute triangle (equilateral-ish)") {
-    // Vertices: (4,3), (6,0), (2,0)
-    testTriangle(Seq((4.0, 3.0), (6.0, 0.0), (2.0, 0.0)), signBit = false) { dut =>
+    // Vertices sorted by Y (A=top, C=bottom): (2,0), (6,0), (4,3)
+    testTriangle(Seq((2.0, 0.0), (6.0, 0.0), (4.0, 3.0)), signBit = false) { dut =>
       val xmin = fromFixed(dut.o.xrange(0))
       val xmax = fromFixed(dut.o.xrange(1))
       val ymin = fromFixed(dut.o.yrange(0))
@@ -321,8 +321,8 @@ class TriangleSetupTest extends AnyFunSuite {
   }
 
   test("Very thin triangle (extreme aspect ratio)") {
-    // Vertices: (5,0), (5,8), (6,4)
-    testTriangle(Seq((5.0, 0.0), (5.0, 8.0), (6.0, 4.0)), signBit = false) { dut =>
+    // Vertices sorted by Y (A=top, C=bottom): (5,0), (6,4), (5,8)
+    testTriangle(Seq((5.0, 0.0), (6.0, 4.0), (5.0, 8.0)), signBit = false) { dut =>
       val xmin = fromFixed(dut.o.xrange(0))
       val xmax = fromFixed(dut.o.xrange(1))
       val ymin = fromFixed(dut.o.yrange(0))
@@ -355,8 +355,8 @@ class TriangleSetupTest extends AnyFunSuite {
   }
 
   test("Upside-down triangle (flat top, point down)") {
-    // Vertices: (2,4), (8,4), (5,0)
-    testTriangle(Seq((2.0, 4.0), (8.0, 4.0), (5.0, 0.0)), signBit = false) { dut =>
+    // Vertices sorted by Y (A=top, C=bottom): (5,0), (2,4), (8,4) — CW winding
+    testTriangle(Seq((5.0, 0.0), (2.0, 4.0), (8.0, 4.0)), signBit = true) { dut =>
       val xmin = fromFixed(dut.o.xrange(0))
       val xmax = fromFixed(dut.o.xrange(1))
       val ymin = fromFixed(dut.o.yrange(0))
@@ -401,7 +401,7 @@ class TriangleSetupTest extends AnyFunSuite {
         dut.i.triWithSign.tri(i)(1) #= yFixed
       }
       // Set zero gradients for large triangle tests
-      for (i <- 0 until 10) {
+      for (i <- 0 until 8) { // 8 gradients in GradientBundle
         dut.i.grads.all(i).start #= 0.0
         dut.i.grads.all(i).d(0) #= 0.0
         dut.i.grads.all(i).d(1) #= 0.0

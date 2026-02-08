@@ -312,8 +312,9 @@ class TmuTest extends AnyFunSuite {
       setDefaultInput(dut)
 
       // Set texture base address (now part of input stream config)
-      val baseAddr = 0x100000
-      dut.io.input.payload.config.texBaseAddr #= baseAddr
+      // texBaseAddr register is address/8 (hardware shifts left by 3)
+      val baseByteAddr = 0x100000
+      dut.io.input.payload.config.texBaseAddr #= baseByteAddr / 8
 
       // Set S=10, T=20 (in integer coordinates)
       dut.io.input.payload.s #= 10.0
@@ -345,7 +346,7 @@ class TmuTest extends AnyFunSuite {
 
       // Expected address: base + (y * stride + x) * 2
       // With stride=256, x=10, y=20: base + (20 * 256 + 10) * 2 = base + 10260
-      val expectedAddress = baseAddr + (20 * 256 + 10) * 2
+      val expectedAddress = baseByteAddr + (20 * 256 + 10) * 2
       println(
         s"Texture address: expected=0x${expectedAddress.toHexString}, actual=0x${capturedAddress.toHexString}"
       )

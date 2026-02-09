@@ -22,7 +22,8 @@ case class Write(c: Config) extends Component {
     out.fragment.opcode := Bmb.Cmd.Opcode.WRITE
     out.fragment.length := 3 // 4 bytes - 1
     out.fragment.source := 0 // Single source
-    out.fragment.mask := B"1111" // Write all 4 bytes
+    // bytes 0-1 = RGB565 color, bytes 2-3 = depth/alpha
+    out.fragment.mask := in.auxWrite ## in.auxWrite ## in.rgbWrite ## in.rgbWrite
     out.last := True
   }
 
@@ -35,6 +36,8 @@ object Write {
     val coords = Vec.fill(2)(SInt(c.vertexFormat.nonFraction bits))
 
     val toFb = FbWord()
+    val rgbWrite = Bool()
+    val auxWrite = Bool()
   }
 
   case class FbWord() extends Bundle {

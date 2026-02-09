@@ -32,32 +32,34 @@ SpinalHDL implementation of the 3dfx Voodoo Graphics GPU.
   - [x] All alpha mselect modes
   - [x] alpha_reverse_blend, alpha_add, alpha_invert_output
 - Fog
-  - [ ] W-based fog table lookup
-  - [ ] Iterated fog (alpha/Z based)
-  - [ ] Fog color blending
+  - [x] W-based fog table lookup
+  - [x] Iterated fog (alpha/Z based)
+  - [x] Fog color blending
 - Alpha Test
-  - [ ] Comparison functions (never, <, ==, <=, >, !=, >=, always)
-  - [ ] Reference alpha
+  - [x] Comparison functions (never, <, ==, <=, >, !=, >=, always)
+  - [x] Reference alpha
 - Depth Buffer
-  - [ ] Z-buffer read/compare
-  - [ ] Depth function selection
-  - [ ] Z-buffer write
-  - [ ] W-buffer mode
-  - [ ] Depth bias
+  - [x] Z-buffer read/compare
+  - [x] Depth function selection
+  - [x] Z-buffer write
+  - [x] W-buffer mode
+  - [x] Depth bias
+  - [x] Depth source select (iterated Z or W)
 - Alpha Blending
-  - [ ] Source blend factors
-  - [ ] Destination blend factors
-  - [ ] Framebuffer read for blending
+  - [x] Source blend factors (10 modes)
+  - [x] Destination blend factors (10 modes)
+  - [x] Framebuffer read for blending (fork-queue-join BMB pattern)
 - Chroma Key
-  - [ ] Color key comparison
+  - [x] Color key comparison
 - Dithering
-  - [ ] 4x4 ordered dither
-  - [ ] 2x2 ordered dither
+  - [x] 4x4 ordered dither
+  - [x] 2x2 ordered dither
 - Framebuffer Write
   - [x] 16-bit RGB565 output
   - [x] Draw buffer selection
   - [x] Depth/alpha planes selection (fbzMode bit 18)
-  - [ ] RGB write mask
+  - [x] RGB write mask
+  - [x] Aux write mask
 - Linear Frame Buffer (LFB)
   - [ ] Direct CPU writes
   - [ ] Pixel format conversion
@@ -107,12 +109,6 @@ SpinalHDL implementation of the 3dfx Voodoo Graphics GPU.
   - [ ] NCC table decode
   - [ ] LOD dither
   - [ ] Data swizzle/swap
-
-### Integration Tests
-
-- [x] Flat-shaded triangle (constant color, 9520 pixels)
-- [x] Gouraud-shaded triangle (color gradients, 9520 pixels)
-- [x] Textured triangle (ARGB4444, point sample, clamp, non-perspective, LOD 0, 240 pixels)
 
 ## Scala CLI Commands
 

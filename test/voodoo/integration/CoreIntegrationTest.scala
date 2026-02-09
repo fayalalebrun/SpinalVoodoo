@@ -413,6 +413,14 @@ class CoreIntegrationTest extends AnyFunSuite {
       }
     }
 
+    // Add fbRead port to same FB memory agent (reads see prior writes)
+    fbMemory.addPort(
+      bus = dut.io.fbRead,
+      busAddress = 0,
+      clockDomain = dut.clockDomain,
+      withDriver = true
+    )
+
     // Create BmbMemoryAgent for texture reads
     val texMemSize = 4 * 1024 * 1024L
     val texMemory = new BmbMemoryAgent(texMemSize)
@@ -1977,6 +1985,276 @@ class CoreIntegrationTest extends AnyFunSuite {
       assert(foggedPixels > 0, "Fog should affect at least some pixels")
 
       comparePixelsFuzzy(refPixels, simPixels, "fog_z_based")
+    }
+  }
+
+  // ========================================================================
+  // Test 12: Depth test — closer triangle occludes farther one
+  // ========================================================================
+  test("Depth test: closer triangle occludes farther") {
+    compiled.doSim("depth_test") { dut =>
+      val (driver, fbMemory, _, writtenAddrs) = setupDut(dut)
+
+      // Same vertices for both triangles (full overlap)
+      val vAx = 100 * 16; val vAy = 50 * 16
+      val vBx = 200 * 16; val vBy = 150 * 16
+      val vCx = 50 * 16;  val vCy = 150 * 16
+
+      // Triangle 1: RED, Z=0x8000 (far), depth func = ALWAYS (establish depth)
+      // fbzMode: clip(0) + depthEnable(4) + ALWAYS(5,6,7=111) + RGB write(9) + aux write(10)
+      val fbzMode1 = 1 | (1 << 4) | (7 << 5) | (1 << 9) | (1 << 10)
+      val startZ1 = 0x8000 << 12 // Z = 0x8000 (far)
+
+      submitTriangle(
+        driver, dut.clockDomain,
+        vertexAx = vAx, vertexAy = vAy,
+        vertexBx = vBx, vertexBy = vBy,
+        vertexCx = vCx, vertexCy = vCy,
+        startR = 255 << 12, startG = 0, startB = 0, startA = 255 << 12,
+        startZ = startZ1, startS = 0, startT = 0, startW = 0,
+        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
+        dSdX = 0, dTdX = 0, dWdX = 0,
+        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
+        dSdY = 0, dTdY = 0, dWdY = 0,
+        fbzColorPath = (1 << 8) | (1 << 14),
+        fbzMode = fbzMode1, sign = false,
+        clipRight = 640, clipHighY = 480
+      )
+
+      dut.clockDomain.waitSampling(200000)
+
+      // Triangle 2: BLUE, Z=0x1000 (near), depth func = LESS
+      // LESS: 0x1000 < 0x8000 = true → blue should overwrite red
+      // fbzMode: clip(0) + depthEnable(4) + LESS(5=1) + RGB write(9) + aux write(10)
+      val fbzMode2 = 1 | (1 << 4) | (1 << 5) | (1 << 9) | (1 << 10)
+      val startZ2 = 0x1000 << 12 // Z = 0x1000 (near)
+
+      submitTriangle(
+        driver, dut.clockDomain,
+        vertexAx = vAx, vertexAy = vAy,
+        vertexBx = vBx, vertexBy = vBy,
+        vertexCx = vCx, vertexCy = vCy,
+        startR = 0, startG = 0, startB = 255 << 12, startA = 255 << 12,
+        startZ = startZ2, startS = 0, startT = 0, startW = 0,
+        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
+        dSdX = 0, dTdX = 0, dWdX = 0,
+        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
+        dSdY = 0, dTdY = 0, dWdY = 0,
+        fbzColorPath = (1 << 8) | (1 << 14),
+        fbzMode = fbzMode2, sign = false,
+        clipRight = 640, clipHighY = 480
+      )
+
+      dut.clockDomain.waitSampling(200000)
+
+      // Then Triangle 3: GREEN, Z=0x4000 (middle), depth func = LESS
+      // LESS: 0x4000 < 0x1000 = false → green should NOT overwrite blue
+      // fbzMode: clip(0) + depthEnable(4) + LESS(5=1) + RGB write(9) + aux write(10)
+      val startZ3 = 0x4000 << 12 // Z = 0x4000 (between)
+
+      submitTriangle(
+        driver, dut.clockDomain,
+        vertexAx = vAx, vertexAy = vAy,
+        vertexBx = vBx, vertexBy = vBy,
+        vertexCx = vCx, vertexCy = vCy,
+        startR = 0, startG = 255 << 12, startB = 0, startA = 255 << 12,
+        startZ = startZ3, startS = 0, startT = 0, startW = 0,
+        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
+        dSdX = 0, dTdX = 0, dWdX = 0,
+        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
+        dSdY = 0, dTdY = 0, dWdY = 0,
+        fbzColorPath = (1 << 8) | (1 << 14),
+        fbzMode = fbzMode2, sign = false,
+        clipRight = 640, clipHighY = 480
+      )
+
+      dut.clockDomain.waitSampling(200000)
+
+      val simPixels = collectPixels(fbMemory, writtenAddrs, 0)
+      println(s"[depth_test] Simulation produced ${simPixels.size} pixels total")
+
+      // Reference model: render all three triangles into shared framebuffer
+      val fb = scala.collection.mutable.Map.empty[(Int, Int), (Int, Int)]
+
+      val refParams1 = VoodooReference.fromRegisterValues(
+        vertexAx = vAx, vertexAy = vAy,
+        vertexBx = vBx, vertexBy = vBy,
+        vertexCx = vCx, vertexCy = vCy,
+        startR = 255 << 12, startG = 0, startB = 0, startA = 255 << 12,
+        startZ = startZ1, startS = 0, startT = 0, startW = 0,
+        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
+        dSdX = 0, dTdX = 0, dWdX = 0,
+        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
+        dSdY = 0, dTdY = 0, dWdY = 0,
+        fbzColorPath = (1 << 8) | (1 << 14),
+        fbzMode = fbzMode1, sign = false,
+        clipRight = 640, clipHighY = 480
+      )
+      VoodooReference.voodooTriangle(refParams1, fb)
+
+      val refParams2 = VoodooReference.fromRegisterValues(
+        vertexAx = vAx, vertexAy = vAy,
+        vertexBx = vBx, vertexBy = vBy,
+        vertexCx = vCx, vertexCy = vCy,
+        startR = 0, startG = 0, startB = 255 << 12, startA = 255 << 12,
+        startZ = startZ2, startS = 0, startT = 0, startW = 0,
+        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
+        dSdX = 0, dTdX = 0, dWdX = 0,
+        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
+        dSdY = 0, dTdY = 0, dWdY = 0,
+        fbzColorPath = (1 << 8) | (1 << 14),
+        fbzMode = fbzMode2, sign = false,
+        clipRight = 640, clipHighY = 480
+      )
+      VoodooReference.voodooTriangle(refParams2, fb)
+
+      val refParams3 = VoodooReference.fromRegisterValues(
+        vertexAx = vAx, vertexAy = vAy,
+        vertexBx = vBx, vertexBy = vBy,
+        vertexCx = vCx, vertexCy = vCy,
+        startR = 0, startG = 255 << 12, startB = 0, startA = 255 << 12,
+        startZ = startZ3, startS = 0, startT = 0, startW = 0,
+        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
+        dSdX = 0, dTdX = 0, dWdX = 0,
+        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
+        dSdY = 0, dTdY = 0, dWdY = 0,
+        fbzColorPath = (1 << 8) | (1 << 14),
+        fbzMode = fbzMode2, sign = false,
+        clipRight = 640, clipHighY = 480
+      )
+      VoodooReference.voodooTriangle(refParams3, fb)
+
+      val refPixels = fb.map { case ((x, y), (rgb565, depth16)) =>
+        VoodooReference.RefPixel(x, y, rgb565, depth16)
+      }.toSeq
+
+      println(s"[depth_test] Reference produced ${refPixels.size} pixels in final FB")
+
+      // All pixels should be blue (near triangle overwrites, green is rejected as farther)
+      val blueRgb = VoodooReference.writePixel(0, 0, 255)
+      val greenRgb = VoodooReference.writePixel(0, 255, 0)
+      val bluePixels = refPixels.count(_.rgb565 == blueRgb)
+      val greenPixels = refPixels.count(_.rgb565 == greenRgb)
+      println(s"[depth_test] Blue pixels: $bluePixels, Green pixels: $greenPixels")
+      assert(bluePixels > 0, "Should have blue pixels (closer triangle)")
+      assert(greenPixels == 0, "Should have no green pixels (farther triangle rejected)")
+
+      comparePixelsFuzzy(refPixels, simPixels, "depth_test")
+    }
+  }
+
+  // ========================================================================
+  // Test 13: Alpha blend — transparent blue over opaque red
+  // ========================================================================
+  test("Alpha blend: transparent over opaque") {
+    compiled.doSim("alpha_blend") { dut =>
+      val (driver, fbMemory, _, writtenAddrs) = setupDut(dut)
+
+      // Triangle 1: opaque RED, no blend, depth func ALWAYS
+      val vAx = 100 * 16; val vAy = 50 * 16
+      val vBx = 200 * 16; val vBy = 150 * 16
+      val vCx = 50 * 16;  val vCy = 150 * 16
+
+      // fbzMode: clip(0) + depthEnable(4) + ALWAYS(5,6,7) + RGB write(9) + aux write(10)
+      val fbzMode1 = 1 | (1 << 4) | (7 << 5) | (1 << 9) | (1 << 10)
+
+      submitTriangle(
+        driver, dut.clockDomain,
+        vertexAx = vAx, vertexAy = vAy,
+        vertexBx = vBx, vertexBy = vBy,
+        vertexCx = vCx, vertexCy = vCy,
+        startR = 255 << 12, startG = 0, startB = 0, startA = 255 << 12,
+        startZ = 0, startS = 0, startT = 0, startW = 0,
+        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
+        dSdX = 0, dTdX = 0, dWdX = 0,
+        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
+        dSdY = 0, dTdY = 0, dWdY = 0,
+        fbzColorPath = (1 << 8) | (1 << 14), // zero_other + add_clocal
+        fbzMode = fbzMode1, sign = false,
+        clipRight = 640, clipHighY = 480
+      )
+
+      dut.clockDomain.waitSampling(200000)
+
+      // Triangle 2: semi-transparent BLUE (alpha=128), depth func ALWAYS, blend enabled
+      // Same vertices as triangle 1 (full overlap)
+      // alphaMode: blendEnable(4) + srcFunc=SRC_ALPHA(8) + dstFunc=ONE_MINUS_SRC_ALPHA(12)
+      val alphaMode2 = (1 << 4) | (1 << 8) | (5 << 12)
+      // fbzMode: clip(0) + depthEnable(4) + ALWAYS(5,6,7) + RGB write(9) + aux write(10)
+      val fbzMode2 = 1 | (1 << 4) | (7 << 5) | (1 << 9) | (1 << 10)
+
+      submitTriangle(
+        driver, dut.clockDomain,
+        vertexAx = vAx, vertexAy = vAy,
+        vertexBx = vBx, vertexBy = vBy,
+        vertexCx = vCx, vertexCy = vCy,
+        startR = 0, startG = 0, startB = 255 << 12, startA = 128 << 12,
+        startZ = 0, startS = 0, startT = 0, startW = 0,
+        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
+        dSdX = 0, dTdX = 0, dWdX = 0,
+        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
+        dSdY = 0, dTdY = 0, dWdY = 0,
+        fbzColorPath = (1 << 8) | (1 << 14), // zero_other + add_clocal
+        fbzMode = fbzMode2, sign = false,
+        alphaMode = alphaMode2,
+        clipRight = 640, clipHighY = 480
+      )
+
+      dut.clockDomain.waitSampling(200000)
+
+      val simPixels = collectPixels(fbMemory, writtenAddrs, 0)
+      println(s"[alpha_blend] Simulation produced ${simPixels.size} pixels total")
+
+      // Reference model
+      val fb = scala.collection.mutable.Map.empty[(Int, Int), (Int, Int)]
+
+      val refParams1 = VoodooReference.fromRegisterValues(
+        vertexAx = vAx, vertexAy = vAy,
+        vertexBx = vBx, vertexBy = vBy,
+        vertexCx = vCx, vertexCy = vCy,
+        startR = 255 << 12, startG = 0, startB = 0, startA = 255 << 12,
+        startZ = 0, startS = 0, startT = 0, startW = 0,
+        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
+        dSdX = 0, dTdX = 0, dWdX = 0,
+        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
+        dSdY = 0, dTdY = 0, dWdY = 0,
+        fbzColorPath = (1 << 8) | (1 << 14),
+        fbzMode = fbzMode1, sign = false,
+        clipRight = 640, clipHighY = 480
+      )
+      VoodooReference.voodooTriangle(refParams1, fb)
+
+      val refParams2 = VoodooReference.fromRegisterValues(
+        vertexAx = vAx, vertexAy = vAy,
+        vertexBx = vBx, vertexBy = vBy,
+        vertexCx = vCx, vertexCy = vCy,
+        startR = 0, startG = 0, startB = 255 << 12, startA = 128 << 12,
+        startZ = 0, startS = 0, startT = 0, startW = 0,
+        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
+        dSdX = 0, dTdX = 0, dWdX = 0,
+        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
+        dSdY = 0, dTdY = 0, dWdY = 0,
+        fbzColorPath = (1 << 8) | (1 << 14),
+        fbzMode = fbzMode2, sign = false,
+        alphaMode = alphaMode2,
+        clipRight = 640, clipHighY = 480
+      )
+      VoodooReference.voodooTriangle(refParams2, fb)
+
+      val refPixels = fb.map { case ((x, y), (rgb565, depth16)) =>
+        VoodooReference.RefPixel(x, y, rgb565, depth16)
+      }.toSeq
+
+      println(s"[alpha_blend] Reference produced ${refPixels.size} pixels in final FB")
+
+      // Sanity: blended pixels should not be pure red or pure blue
+      val pureRed = VoodooReference.writePixel(255, 0, 0)
+      val pureBlue = VoodooReference.writePixel(0, 0, 255)
+      val blendedPixels = refPixels.count(p => p.rgb565 != pureRed && p.rgb565 != pureBlue)
+      println(s"[alpha_blend] Blended (non-pure) pixels: $blendedPixels of ${refPixels.size}")
+      assert(blendedPixels > 0, "Alpha blend should produce blended (non-pure) colors")
+
+      comparePixelsFuzzy(refPixels, simPixels, "alpha_blend")
     }
   }
 }

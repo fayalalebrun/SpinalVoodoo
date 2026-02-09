@@ -17,6 +17,9 @@ case class Core(c: Config) extends Component {
     // Texture memory read bus (single TMU - Voodoo 1 level)
     val texRead = master(Bmb(Tmu.bmbParams(c)))
 
+    // Framebuffer read bus (for depth test and alpha blend)
+    val fbRead = master(Bmb(FramebufferAccess.bmbParams(c)))
+
     // Status inputs (hardware state)
     // Note: pciFifoFree now comes from RegisterBank's internal FIFO
     val statusInputs = in(new Bundle {
@@ -624,8 +627,32 @@ case class Core(c: Config) extends Component {
   val alphaKill = alphaTestEnable && !alphaPassed
   val afterAlphaTest = fog.io.output.throwWhen(alphaKill)
 
-  // Connect color combine unit to write stage
-  write.i.fromPipeline.translateFrom(afterAlphaTest) { (out, in) =>
+  // ========================================================================
+  // Framebuffer Access (depth test + alpha blend)
+  // ========================================================================
+  val fbAccess = FramebufferAccess(c)
+  fbAccess.io.input << afterAlphaTest
+  fbAccess.io.fbRead <> io.fbRead
+  fbAccess.io.fbBaseAddr := io.fbBaseAddr
+
+  // Wire fbzMode fields
+  fbAccess.io.enableDepthBuffer := regBank.renderConfig.fbzMode.enableDepthBuffer
+  fbAccess.io.depthFunction     := regBank.renderConfig.fbzMode.depthFunction
+  fbAccess.io.wBufferSelect     := regBank.renderConfig.fbzMode.wBufferSelect
+  fbAccess.io.enableDepthBias   := regBank.renderConfig.fbzMode.enableDepthBias
+  fbAccess.io.depthSourceSelect := regBank.renderConfig.fbzMode.depthSourceSelect
+  fbAccess.io.rgbBufferMask     := regBank.renderConfig.fbzMode.rgbBufferMask
+  fbAccess.io.auxBufferMask     := regBank.renderConfig.fbzMode.auxBufferMask
+  fbAccess.io.enableAlphaPlanes := regBank.renderConfig.fbzMode.enableAlphaPlanes
+
+  // Wire alphaMode fields
+  fbAccess.io.alphaBlendEnable := regBank.renderConfig.alphaMode(4)
+  fbAccess.io.srcBlendFunc     := regBank.renderConfig.alphaMode(11 downto 8).asUInt
+  fbAccess.io.dstBlendFunc     := regBank.renderConfig.alphaMode(15 downto 12).asUInt
+  fbAccess.io.zaColor          := regBank.renderConfig.zaColor
+
+  // Connect framebuffer access output to write stage
+  write.i.fromPipeline.translateFrom(fbAccess.io.output) { (out, in) =>
     out.coords := in.coords
 
     val fbWord = cloneOf(out.toFb)
@@ -644,19 +671,12 @@ case class Core(c: Config) extends Component {
     fbWord.color.g := dither.io.ditG
     fbWord.color.b := dither.io.ditB
 
-    // fbzMode bit 18: 0=depth buffering, 1=destination alpha planes
-    val useAlpha = regBank.renderConfig.fbzMode.enableAlphaPlanes
-
-    // Depth: convert from AFix to 16-bit integer
-    val depth16 = in.depth.sat(satMax = 0xffff, satMin = 0, exp = 0 exp).asUInt.resize(16 bits)
-
-    // Alpha: extend 8-bit to 16-bit
-    val alpha16 = in.alpha.resize(16 bits)
-
-    // Select based on fbzMode bit 18
-    fbWord.depthAlpha := (useAlpha ? alpha16 | depth16).asBits
+    // Depth or alpha planes: use newDepth from FramebufferAccess (already computed)
+    fbWord.depthAlpha := (in.enableAlphaPlanes ? in.alpha.resize(16 bits) | in.newDepth).asBits
 
     out.toFb := fbWord
+    out.rgbWrite := in.rgbWrite
+    out.auxWrite := in.auxWrite
   }
 
   write.i.fbBaseAddr := io.fbBaseAddr
@@ -665,5 +685,5 @@ case class Core(c: Config) extends Component {
   write.o.fbWrite <> io.fbWrite
 
   // Pipeline busy signal: any stage has valid data (placed after all stages instantiated)
-  regBank.io.pipelineBusy := triangleSetup.o.valid || rasterizer.o.valid || tmu.io.input.valid || colorCombine.io.input.valid || fog.io.input.valid || write.i.fromPipeline.valid
+  regBank.io.pipelineBusy := triangleSetup.o.valid || rasterizer.o.valid || tmu.io.input.valid || colorCombine.io.input.valid || fog.io.input.valid || fbAccess.io.input.valid || write.i.fromPipeline.valid
 }

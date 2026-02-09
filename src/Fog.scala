@@ -10,6 +10,8 @@ object Fog {
     val color = Color(UInt(8 bits), UInt(8 bits), UInt(8 bits))
     val alpha = UInt(8 bits)
     val depth = AFix(c.vDepthFormat)
+    val wDepth = UInt(16 bits)                                         // precomputed wDepth for W-buffer depth mode
+    val colorBeforeFog = Color(UInt(8 bits), UInt(8 bits), UInt(8 bits)) // pre-fog color for ACOLORBEFOREFOG blend factor
   }
 }
 
@@ -37,6 +39,9 @@ case class Fog(c: Config) extends Component {
   io.output.payload.coords := payload.coords
   io.output.payload.alpha := payload.alpha
   io.output.payload.depth := payload.depth
+  io.output.payload.colorBeforeFog.r := payload.color.r
+  io.output.payload.colorBeforeFog.g := payload.color.g
+  io.output.payload.colorBeforeFog.b := payload.color.b
 
   // Fog mode bits
   val fogEnable = io.fogMode(0)
@@ -127,6 +132,9 @@ case class Fog(c: Config) extends Component {
   }.otherwise {
     wDepth := wDepthClamped.resize(16 bits)
   }
+
+  // Export wDepth for FramebufferAccess W-buffer depth mode
+  io.output.payload.wDepth := wDepth
 
   // --- W-table interpolation ---
   val tableIdx = wDepth(15 downto 10)   // 6-bit index

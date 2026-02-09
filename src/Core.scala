@@ -27,11 +27,13 @@ case class Core(c: Config) extends Component {
       val fbiBusy = Bool()
       val trexBusy = Bool()
       val sstBusy = Bool()
-      val displayedBuffer = UInt(2 bits)
       val memFifoFree = UInt(16 bits)
-      val swapsPending = UInt(3 bits)
       val pciInterrupt = Bool()
     })
+
+    // SwapBuffer outputs (active buffer index and pending swap count)
+    val swapDisplayedBuffer = out UInt (2 bits)
+    val swapsPending = out UInt (3 bits)
 
     // Statistics inputs
     val statisticsIn = in(new Bundle {
@@ -71,7 +73,21 @@ case class Core(c: Config) extends Component {
 
   // TODO: Wire unused command streams to always ready
   regBank.commands.nopCmd.ready := True
-  regBank.commands.swapbufferCmd.ready := True
+
+  // ========================================================================
+  // SwapBuffer command handler
+  // ========================================================================
+  val swapBuffer = SwapBuffer()
+  swapBuffer.io.cmd << regBank.commands.swapbufferCmd
+  swapBuffer.io.vRetrace := io.statusInputs.vRetrace
+  swapBuffer.io.vsyncEnable := regBank.commands.swapVsyncEnable
+  swapBuffer.io.swapInterval := regBank.commands.swapInterval
+  swapBuffer.io.swapCmdEnqueued := regBank.io.swapCmdEnqueued
+
+  regBank.io.swapDisplayedBuffer := swapBuffer.io.swapCount
+  regBank.io.swapsPending := swapBuffer.io.swapsPending
+  io.swapDisplayedBuffer := swapBuffer.io.swapCount
+  io.swapsPending := swapBuffer.io.swapsPending
 
   // ========================================================================
   // Float to Fixed-Point Conversion for fTriangleCMD
@@ -740,5 +756,5 @@ case class Core(c: Config) extends Component {
   write.o.fbWrite <> io.fbWrite
 
   // Pipeline busy signal: any stage has valid data (placed after all stages instantiated)
-  regBank.io.pipelineBusy := triangleSetup.o.valid || rasterizer.o.valid || tmu.io.input.valid || colorCombine.io.input.valid || fog.io.input.valid || fbAccess.io.input.valid || write.i.fromPipeline.valid || fastfill.running
+  regBank.io.pipelineBusy := triangleSetup.o.valid || rasterizer.o.valid || tmu.io.input.valid || colorCombine.io.input.valid || fog.io.input.valid || fbAccess.io.input.valid || write.i.fromPipeline.valid || fastfill.running || swapBuffer.io.waiting
 }

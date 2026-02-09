@@ -64,6 +64,7 @@ class CoreIntegrationTest extends AnyFunSuite {
   val REG_COLOR1 = 0x148
   val REG_FOGCOLOR = 0x12c
   val REG_FASTFILL_CMD = 0x124
+  val REG_SWAPBUFFER_CMD = 0x128
   val REG_TEXTUREMODE = 0x300
   val REG_TLOD = 0x304
   val REG_TEXBASEADDR = 0x30c
@@ -378,9 +379,7 @@ class CoreIntegrationTest extends AnyFunSuite {
     dut.io.statusInputs.fbiBusy #= false
     dut.io.statusInputs.trexBusy #= false
     dut.io.statusInputs.sstBusy #= false
-    dut.io.statusInputs.displayedBuffer #= 0
     dut.io.statusInputs.memFifoFree #= 0xffff
-    dut.io.statusInputs.swapsPending #= 0
     dut.io.statusInputs.pciInterrupt #= false
 
     // Init statistics
@@ -2312,6 +2311,77 @@ class CoreIntegrationTest extends AnyFunSuite {
       println(s"[fastfill] Reference produced ${refPixels.size} pixels")
 
       comparePixels(refPixels, simPixels, "fastfill")
+    }
+  }
+
+  // ========================================================================
+  // Test 14: SwapBuffer immediate swap (no vsync)
+  // ========================================================================
+  test("SwapBuffer: immediate swap without vsync") {
+    compiled.doSim("swap_immediate") { dut =>
+      val (driver, _, _, _) = setupDut(dut)
+
+      // Verify initial state
+      assert(dut.io.swapDisplayedBuffer.toInt == 0, "displayedBuffer should start at 0")
+      assert(dut.io.swapsPending.toInt == 0, "swapsPending should start at 0")
+
+      // Issue swapbufferCMD with data=0 (vsync=0, interval=0) — immediate swap
+      writeReg(driver, REG_SWAPBUFFER_CMD, 0)
+
+      // Per SST-1 spec 5.24: swapsPending increments when command enters the FIFO.
+      // Immediately after writeReg returns (BMB response received), the FIFO enqueue
+      // has happened so swapsPending should already be >= 1. The swap hasn't completed
+      // yet (FIFO drain + SAMPLING takes a few more cycles).
+      assert(dut.io.swapsPending.toInt >= 1,
+        s"swapsPending should be >= 1 right after writeReg (FIFO enqueue), got ${dut.io.swapsPending.toInt}")
+
+      dut.clockDomain.waitSampling(50)
+
+      assert(dut.io.swapDisplayedBuffer.toInt == 1, s"displayedBuffer should be 1, got ${dut.io.swapDisplayedBuffer.toInt}")
+      assert(dut.io.swapsPending.toInt == 0, s"swapsPending should be 0 after swap, got ${dut.io.swapsPending.toInt}")
+
+      // Issue second swap
+      writeReg(driver, REG_SWAPBUFFER_CMD, 0)
+      assert(dut.io.swapsPending.toInt >= 1,
+        s"swapsPending should be >= 1 right after second writeReg, got ${dut.io.swapsPending.toInt}")
+
+      dut.clockDomain.waitSampling(50)
+
+      assert(dut.io.swapDisplayedBuffer.toInt == 2, s"displayedBuffer should be 2, got ${dut.io.swapDisplayedBuffer.toInt}")
+      assert(dut.io.swapsPending.toInt == 0, s"swapsPending should be 0, got ${dut.io.swapsPending.toInt}")
+
+      println("[swap_immediate] PASS: immediate swap without vsync works correctly")
+    }
+  }
+
+  // ========================================================================
+  // Test 15: SwapBuffer with vsync synchronization
+  // ========================================================================
+  test("SwapBuffer: vsync-synchronized swap blocks until retrace") {
+    compiled.doSim("swap_vsync") { dut =>
+      val (driver, _, _, _) = setupDut(dut)
+
+      // Issue swapbufferCMD with data=1 (vsync=1, interval=0)
+      // Bit 0 = vsync enable, bits 8:1 = interval
+      writeReg(driver, REG_SWAPBUFFER_CMD, 1)
+
+      // Wait 100 cycles with vRetrace=false — swap should NOT have happened
+      dut.clockDomain.waitSampling(100)
+      assert(dut.io.swapDisplayedBuffer.toInt == 0, s"displayedBuffer should still be 0 (waiting for vsync), got ${dut.io.swapDisplayedBuffer.toInt}")
+      assert(dut.io.swapsPending.toInt == 1, s"swapsPending should be 1 while waiting, got ${dut.io.swapsPending.toInt}")
+
+      // Pulse vRetrace high for a few cycles
+      dut.io.statusInputs.vRetrace #= true
+      dut.clockDomain.waitSampling(3)
+      dut.io.statusInputs.vRetrace #= false
+
+      // Wait for swap to complete
+      dut.clockDomain.waitSampling(50)
+
+      assert(dut.io.swapDisplayedBuffer.toInt == 1, s"displayedBuffer should be 1 after vsync, got ${dut.io.swapDisplayedBuffer.toInt}")
+      assert(dut.io.swapsPending.toInt == 0, s"swapsPending should be 0 after swap, got ${dut.io.swapsPending.toInt}")
+
+      println("[swap_vsync] PASS: vsync-synchronized swap blocks correctly")
     }
   }
 }

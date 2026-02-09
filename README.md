@@ -9,7 +9,8 @@ SpinalHDL implementation of the 3dfx Voodoo Graphics GPU.
 - Rasterization
   - [x] Triangle setup (bounding-box scan + edge function testing)
   - [x] Span generation (serpentine scan)
-  - [x] Clipping (clipLeftRight, clipLowYHighY)
+  - [ ] Scissor clipping (clipLeftRight, clipLowYHighY)
+  - [ ] Y-origin transform (fbzMode bit 17)
   - [ ] Stipple patterns
 - Gradient Interpolation
   - [x] Color (R, G, B, A) - 12.12 fixed-point
@@ -56,7 +57,7 @@ SpinalHDL implementation of the 3dfx Voodoo Graphics GPU.
   - [x] 2x2 ordered dither
 - Framebuffer Write
   - [x] 16-bit RGB565 output
-  - [x] Draw buffer selection
+  - [ ] Draw buffer selection
   - [x] Depth/alpha planes selection (fbzMode bit 18)
   - [x] RGB write mask
   - [x] Aux write mask
@@ -68,7 +69,7 @@ SpinalHDL implementation of the 3dfx Voodoo Graphics GPU.
   - [x] triangleCMD / ftriangleCMD
   - [x] fastfillCMD (screen clear via clip rectangle, color1/zaColor, with dithering)
   - [x] nopCMD
-  - [ ] swapbufferCMD
+  - [x] swapbufferCMD (immediate + vsync-synchronized, swapsPending tracking)
 
 ### TMU (Texture Mapping Unit)
 
@@ -109,6 +110,34 @@ SpinalHDL implementation of the 3dfx Voodoo Graphics GPU.
   - [ ] NCC table decode
   - [ ] LOD dither
   - [ ] Data swizzle/swap
+
+### Bus Interface / Register System
+
+- [x] BMB bus adapter (BmbBusInterface)
+- [x] 64-entry PCI FIFO with categorized routing (fifoBypass / syncRequired)
+- [x] Pipeline drain blocking for sync registers (triangleCMD, swapbufferCMD, etc.)
+- [x] Address remapping (fbiInit3 bit 0, external bit 21)
+- [ ] PCI configuration space (initEnable, busSnoop)
+- [ ] Memory FIFO (off-screen framebuffer extension)
+
+### Display Controller
+
+- [ ] Video timing generator (hSync, vSync, backPorch, videoDimensions)
+- [ ] Framebuffer scan-out
+- [ ] Gamma correction CLUT (clutData)
+- [ ] DAC programming (dacData)
+- vRetrace is currently an external input (no internal generation)
+
+### Integration Tests (16 passing)
+
+Pixel-for-pixel verification against a Scala reference model:
+
+- Flat shading, Gouraud shading, textured triangles
+- 9 texture format coverage (RGB332, A8, I8, AI44, ARGB8332, RGB565, ARGB1555, ARGB4444, AI88)
+- Texture wrap modes, LOD selection
+- Color combine (12 sub-cases), dithering, chroma key
+- Alpha test, fog (Z-based), depth test, alpha blending
+- Fastfill, swap buffer (immediate + vsync)
 
 ## Scala CLI Commands
 

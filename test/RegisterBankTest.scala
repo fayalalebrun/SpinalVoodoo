@@ -21,10 +21,10 @@ class RegisterBankTest extends AnyFunSuite {
     dut.io.statusInputs.fbiBusy #= false
     dut.io.statusInputs.trexBusy #= false
     dut.io.statusInputs.sstBusy #= false
-    dut.io.statusInputs.displayedBuffer #= 0
     dut.io.statusInputs.memFifoFree #= 0xffff
-    dut.io.statusInputs.swapsPending #= 0
     dut.io.statusInputs.pciInterrupt #= false
+    dut.io.swapDisplayedBuffer #= 0
+    dut.io.swapsPending #= 0
 
     // Initialize statistics inputs
     dut.io.statisticsIn.pixelsIn #= 0
@@ -96,8 +96,8 @@ class RegisterBankTest extends AnyFunSuite {
 
       // Set specific status inputs (pciFifoFree is now from actual FIFO)
       dut.io.statusInputs.fbiBusy #= true
-      dut.io.statusInputs.displayedBuffer #= 1
-      dut.io.statusInputs.swapsPending #= 2
+      dut.io.swapDisplayedBuffer #= 1
+      dut.io.swapsPending #= 2
 
       dut.clockDomain.waitSampling(2)
 

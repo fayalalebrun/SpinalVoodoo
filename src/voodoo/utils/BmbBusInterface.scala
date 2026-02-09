@@ -95,6 +95,13 @@ case class BmbBusInterface(
   val fifoBypass = Bool().setName("busif_fifoBypass")
   val syncRequired = Bool().setName("busif_syncRequired")
 
+  /** Returns True on the cycle a write to the given address is enqueued into the FIFO.
+    * Used by swapbufferCMD to increment swapsPending per SST-1 spec.
+    */
+  def wasEnqueued(addr: BigInt): Bool = {
+    shouldQueue && bus.cmd.address === U(addr, busAddrWidth bits)
+  }
+
   // Queued write transaction for FIFO
   private val queuedWriteTx = Stream(QueuedWrite())
   queuedWriteTx.valid := shouldQueue

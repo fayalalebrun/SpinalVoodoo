@@ -24,10 +24,10 @@ class BmbDriverDebugTest extends AnyFunSuite {
       dut.io.statusInputs.fbiBusy #= false
       dut.io.statusInputs.trexBusy #= false
       dut.io.statusInputs.sstBusy #= false
-      dut.io.statusInputs.displayedBuffer #= 0
       dut.io.statusInputs.memFifoFree #= 0xffff
-      dut.io.statusInputs.swapsPending #= 0
       dut.io.statusInputs.pciInterrupt #= false
+      dut.io.swapDisplayedBuffer #= 0
+      dut.io.swapsPending #= 0
 
       dut.io.statisticsIn.pixelsIn #= 0
       dut.io.statisticsIn.chromaFail #= 0

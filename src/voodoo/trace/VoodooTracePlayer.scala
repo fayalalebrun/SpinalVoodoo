@@ -680,9 +680,7 @@ object VoodooTracePlayer {
     dut.io.statusInputs.fbiBusy #= false
     dut.io.statusInputs.trexBusy #= false
     dut.io.statusInputs.sstBusy #= false
-    dut.io.statusInputs.displayedBuffer #= 0
     dut.io.statusInputs.memFifoFree #= 0xffff
-    dut.io.statusInputs.swapsPending #= 0
     dut.io.statusInputs.pciInterrupt #= false
 
     // Initialize statistics inputs

@@ -34,11 +34,13 @@ case class RegisterBank(config: Config) extends Component {
       val fbiBusy = Bool()
       val trexBusy = Bool()
       val sstBusy = Bool()
-      val displayedBuffer = UInt(2 bits)
       val memFifoFree = UInt(16 bits)
-      val swapsPending = UInt(3 bits)
       val pciInterrupt = Bool()
     })
+
+    // SwapBuffer-driven status fields (outputs from SwapBuffer component)
+    val swapDisplayedBuffer = in UInt (2 bits)
+    val swapsPending = in UInt (3 bits)
 
     // Statistics counter inputs (hardware → register bank, read-only)
     val statisticsIn = in(new Bundle {
@@ -54,6 +56,9 @@ case class RegisterBank(config: Config) extends Component {
 
     // Pipeline busy signal - used to stall Sync=Yes register writes
     val pipelineBusy = in Bool ()
+
+    // Pulses when swapbufferCMD enters the FIFO (for swapsPending per SST-1 spec)
+    val swapCmdEnqueued = out Bool ()
   }
 
   // Create BMB bus interface for RegIf - shared across all Areas
@@ -91,13 +96,13 @@ case class RegisterBank(config: Config) extends Component {
     sstBusy := io.statusInputs.sstBusy
 
     val displayedBuffer = reg.fieldAt(10, UInt(2 bits), AccessType.RO, 0, "Displayed buffer")
-    displayedBuffer := io.statusInputs.displayedBuffer
+    displayedBuffer := io.swapDisplayedBuffer
 
     val memFifoFree = reg.fieldAt(12, UInt(16 bits), AccessType.RO, 0xffff, "Memory FIFO freespace")
     memFifoFree := io.statusInputs.memFifoFree
 
     val swapsPending = reg.fieldAt(28, UInt(3 bits), AccessType.RO, 0, "Swap buffers pending")
-    swapsPending := io.statusInputs.swapsPending
+    swapsPending := io.swapsPending
 
     val pciInterrupt = reg.fieldAt(31, Bool(), AccessType.RO, 0, "PCI interrupt generated")
     pciInterrupt := io.statusInputs.pciInterrupt
@@ -401,7 +406,15 @@ case class RegisterBank(config: Config) extends Component {
     // Define full 32-bit fields for other command registers
     nopCmdReg.field(Bits(32 bits), AccessType.RW, 0, "NOP command data")
     fastfillCmdReg.field(Bits(32 bits), AccessType.RW, 0, "Fastfill command data")
-    swapbufferCmdReg.field(Bits(32 bits), AccessType.RW, 0, "Swapbuffer command data")
+    val swapVsyncEnable = swapbufferCmdReg
+      .field(Bool(), AccessType.RW, 0, "Vsync synchronization enable")
+      .asOutput()
+    val swapInterval = swapbufferCmdReg
+      .field(UInt(8 bits), AccessType.RW, 0, "Swap interval (vsyncs to wait)")
+      .asOutput()
+
+    // Detect when swapbufferCMD enters the FIFO (for swapsPending increment per spec)
+    io.swapCmdEnqueued := busif.wasEnqueued(0x128)
 
     // Expose streams for convenience (backwards compatibility)
     val triangleCmd = master(triangleCmdStream)

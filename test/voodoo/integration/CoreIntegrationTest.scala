@@ -63,6 +63,7 @@ class CoreIntegrationTest extends AnyFunSuite {
   val REG_COLOR0 = 0x144
   val REG_COLOR1 = 0x148
   val REG_FOGCOLOR = 0x12c
+  val REG_FASTFILL_CMD = 0x124
   val REG_TEXTUREMODE = 0x300
   val REG_TLOD = 0x304
   val REG_TEXBASEADDR = 0x30c
@@ -2255,6 +2256,62 @@ class CoreIntegrationTest extends AnyFunSuite {
       assert(blendedPixels > 0, "Alpha blend should produce blended (non-pure) colors")
 
       comparePixelsFuzzy(refPixels, simPixels, "alpha_blend")
+    }
+  }
+
+  // ========================================================================
+  // Test 14: Fastfill - screen clear
+  // ========================================================================
+  test("Fastfill: fills clip rectangle with color") {
+    compiled.doSim("fastfill") { dut =>
+      val (driver, fbMemory, _, writtenAddrs) = setupDut(dut)
+
+      // Clip region: (5,3) to (15,13) exclusive = 10x10 = 100 pixels
+      val clipLeft = 5
+      val clipRight = 15
+      val clipLowY = 3
+      val clipHighY = 13
+
+      // color1 = 0x00FF8040 (R=255, G=128, B=64)
+      val color1 = 0x00FF8040
+      // zaColor = 0x0000ABCD (depth = 0xABCD)
+      val zaColor = 0x0000ABCD
+
+      // fbzMode: clipping enabled (bit 0) + rgbBufferMask (bit 9) + auxBufferMask (bit 10), no dithering
+      val fbzMode = (1 << 0) | (1 << 9) | (1 << 10)
+
+      // Write config registers
+      writeReg(driver, REG_FBZMODE, fbzMode)
+      writeReg(driver, REG_COLOR1, color1)
+      writeReg(driver, REG_ZACOLOR, zaColor)
+      writeReg(driver, REG_CLIP_LR, (clipRight.toLong << 16) | clipLeft.toLong)
+      writeReg(driver, REG_CLIP_TB, (clipHighY.toLong << 16) | clipLowY.toLong)
+
+      // Wait for FIFO to drain
+      dut.clockDomain.waitSampling(50)
+
+      // Issue fastfillCMD
+      writeReg(driver, REG_FASTFILL_CMD, 0)
+
+      // Wait for completion
+      dut.clockDomain.waitSampling(500)
+
+      val simPixels = collectPixels(fbMemory, writtenAddrs, 0)
+      println(s"[fastfill] Simulation produced ${simPixels.size} pixels")
+
+      // Reference
+      val refPixels = VoodooReference.voodooFastfill(
+        color1 = color1,
+        zaColor = zaColor,
+        fbzMode = fbzMode,
+        clipLeft = clipLeft,
+        clipRight = clipRight,
+        clipLowY = clipLowY,
+        clipHighY = clipHighY
+      )
+      println(s"[fastfill] Reference produced ${refPixels.size} pixels")
+
+      comparePixels(refPixels, simPixels, "fastfill")
     }
   }
 }

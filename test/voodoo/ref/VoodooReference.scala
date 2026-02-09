@@ -1301,4 +1301,30 @@ object VoodooReference {
       fogTable = fogTable
     )
   }
+
+  // ========================================================================
+  // voodooFastfill - screen clear command
+  // Fills clip rectangle with constant color1 and zaColor
+  // ========================================================================
+  def voodooFastfill(
+      color1: Int,
+      zaColor: Int,
+      fbzMode: Int,
+      clipLeft: Int,
+      clipRight: Int,
+      clipLowY: Int,
+      clipHighY: Int
+  ): Seq[RefPixel] = {
+    val pixels = scala.collection.mutable.ArrayBuffer.empty[RefPixel]
+    val r = (color1 >> 16) & 0xff
+    val g = (color1 >> 8) & 0xff
+    val b = color1 & 0xff
+    val depth16 = zaColor & 0xffff
+
+    for (y <- clipLowY until clipHighY; x <- clipLeft until clipRight) {
+      val rgb565 = ditherPixel(r, g, b, x, y, fbzMode)
+      pixels += RefPixel(x, y, rgb565, depth16)
+    }
+    pixels
+  }
 }

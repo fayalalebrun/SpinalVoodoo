@@ -66,7 +66,7 @@ SpinalHDL implementation of the 3dfx Voodoo Graphics GPU.
   - [ ] Pipeline routing option
 - Commands
   - [x] triangleCMD / ftriangleCMD
-  - [ ] fastfillCMD
+  - [x] fastfillCMD (screen clear via clip rectangle, color1/zaColor, with dithering)
   - [x] nopCMD
   - [ ] swapbufferCMD
 

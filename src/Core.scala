@@ -70,7 +70,6 @@ case class Core(c: Config) extends Component {
   // Pipeline busy signal: assigned after all pipeline stages are instantiated (see below)
 
   // TODO: Wire unused command streams to always ready
-  regBank.commands.fastfillCmd.ready := True
   regBank.commands.nopCmd.ready := True
   regBank.commands.swapbufferCmd.ready := True
 
@@ -446,6 +445,16 @@ case class Core(c: Config) extends Component {
   rasterizer.i << triangleSetup.o
 
   // ========================================================================
+  // Fastfill (screen clear) - bypasses TMU/CC/Fog/AlphaTest/FBAccess chain
+  // ========================================================================
+  val fastfill = Fastfill(c)
+  fastfill.i << regBank.commands.fastfillCmd
+  fastfill.clipLeft  := regBank.renderConfig.clipLeftX
+  fastfill.clipRight := regBank.renderConfig.clipRightX
+  fastfill.clipLowY  := regBank.renderConfig.clipLowY
+  fastfill.clipHighY := regBank.renderConfig.clipHighY
+
+  // ========================================================================
   // Color Combine Unit
   // ========================================================================
   // Helper to decode enum from bits (takes captured fbzColorPath per-triangle)
@@ -651,25 +660,29 @@ case class Core(c: Config) extends Component {
   fbAccess.io.dstBlendFunc     := regBank.renderConfig.alphaMode(15 downto 12).asUInt
   fbAccess.io.zaColor          := regBank.renderConfig.zaColor
 
-  // Connect framebuffer access output to write stage
-  write.i.fromPipeline.translateFrom(fbAccess.io.output) { (out, in) =>
+  // ========================================================================
+  // Triangle → Write path (from FramebufferAccess output)
+  // ========================================================================
+  val triangleWriteInput = fbAccess.io.output.translateWith {
+    val in = fbAccess.io.output.payload
+    val out = Write.Input(c)
     out.coords := in.coords
 
     val fbWord = cloneOf(out.toFb)
 
     // Dither 8-bit RGB to 5-6-5 format
-    val dither = Dither()
-    dither.io.r := in.color.r
-    dither.io.g := in.color.g
-    dither.io.b := in.color.b
-    dither.io.x := in.coords(0).asUInt.resize(2 bits)
-    dither.io.y := in.coords(1).asUInt.resize(2 bits)
-    dither.io.enable := regBank.renderConfig.fbzMode.enableDithering
-    dither.io.use2x2 := regBank.renderConfig.fbzMode.ditherAlgorithm
+    val triDither = Dither()
+    triDither.io.r := in.color.r
+    triDither.io.g := in.color.g
+    triDither.io.b := in.color.b
+    triDither.io.x := in.coords(0).asUInt.resize(2 bits)
+    triDither.io.y := in.coords(1).asUInt.resize(2 bits)
+    triDither.io.enable := regBank.renderConfig.fbzMode.enableDithering
+    triDither.io.use2x2 := regBank.renderConfig.fbzMode.ditherAlgorithm
 
-    fbWord.color.r := dither.io.ditR
-    fbWord.color.g := dither.io.ditG
-    fbWord.color.b := dither.io.ditB
+    fbWord.color.r := triDither.io.ditR
+    fbWord.color.g := triDither.io.ditG
+    fbWord.color.b := triDither.io.ditB
 
     // Depth or alpha planes: use newDepth from FramebufferAccess (already computed)
     fbWord.depthAlpha := (in.enableAlphaPlanes ? in.alpha.resize(16 bits) | in.newDepth).asBits
@@ -677,7 +690,49 @@ case class Core(c: Config) extends Component {
     out.toFb := fbWord
     out.rgbWrite := in.rgbWrite
     out.auxWrite := in.auxWrite
+    out
   }
+
+  // ========================================================================
+  // Fastfill → Write path (direct color1/zaColor with dithering)
+  // ========================================================================
+  val fastfillWriteInput = fastfill.o.translateWith {
+    val in = fastfill.o.payload
+    val out = Write.Input(c)
+    out.coords := in.coords
+
+    // Extract R/G/B from color1 register (bits 23:16, 15:8, 7:0)
+    val color1Bits = regBank.renderConfig.color1
+    val ffR = color1Bits(23 downto 16).asUInt
+    val ffG = color1Bits(15 downto 8).asUInt
+    val ffB = color1Bits(7 downto 0).asUInt
+
+    // Dither
+    val ffDither = Dither()
+    ffDither.io.r := ffR
+    ffDither.io.g := ffG
+    ffDither.io.b := ffB
+    ffDither.io.x := in.coords(0).asUInt.resize(2 bits)
+    ffDither.io.y := in.coords(1).asUInt.resize(2 bits)
+    ffDither.io.enable := regBank.renderConfig.fbzMode.enableDithering
+    ffDither.io.use2x2 := regBank.renderConfig.fbzMode.ditherAlgorithm
+
+    val fbWord = cloneOf(out.toFb)
+    fbWord.color.r := ffDither.io.ditR
+    fbWord.color.g := ffDither.io.ditG
+    fbWord.color.b := ffDither.io.ditB
+    fbWord.depthAlpha := regBank.renderConfig.zaColor(15 downto 0)
+
+    out.toFb := fbWord
+    out.rgbWrite := regBank.renderConfig.fbzMode.rgbBufferMask
+    out.auxWrite := regBank.renderConfig.fbzMode.auxBufferMask
+    out
+  }
+
+  // Merge fastfill and triangle paths — lowerFirst gives fastfill priority (index 0)
+  write.i.fromPipeline << StreamArbiterFactory.lowerFirst.on(
+    Seq(fastfillWriteInput, triangleWriteInput)
+  )
 
   write.i.fbBaseAddr := io.fbBaseAddr
 
@@ -685,5 +740,5 @@ case class Core(c: Config) extends Component {
   write.o.fbWrite <> io.fbWrite
 
   // Pipeline busy signal: any stage has valid data (placed after all stages instantiated)
-  regBank.io.pipelineBusy := triangleSetup.o.valid || rasterizer.o.valid || tmu.io.input.valid || colorCombine.io.input.valid || fog.io.input.valid || fbAccess.io.input.valid || write.i.fromPipeline.valid
+  regBank.io.pipelineBusy := triangleSetup.o.valid || rasterizer.o.valid || tmu.io.input.valid || colorCombine.io.input.valid || fog.io.input.valid || fbAccess.io.input.valid || write.i.fromPipeline.valid || fastfill.running
 }

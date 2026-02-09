@@ -59,6 +59,7 @@ class CoreIntegrationTest extends AnyFunSuite {
   val REG_CLIP_LR = 0x118
   val REG_CLIP_TB = 0x11c
   val REG_ZACOLOR = 0x130
+  val REG_CHROMAKEY = 0x134
   val REG_COLOR0 = 0x144
   val REG_COLOR1 = 0x148
   val REG_TEXTUREMODE = 0x300
@@ -148,6 +149,7 @@ class CoreIntegrationTest extends AnyFunSuite {
       zaColor: Int = 0,
       fogMode: Int = 0,
       alphaMode: Int = 0,
+      chromaKey: Int = 0,
       clipLeft: Int = 0,
       clipRight: Int = 0x3ff,
       clipLowY: Int = 0,
@@ -163,6 +165,7 @@ class CoreIntegrationTest extends AnyFunSuite {
     writeReg(driver, REG_COLOR0, color0)
     writeReg(driver, REG_COLOR1, color1)
     writeReg(driver, REG_ZACOLOR, zaColor)
+    writeReg(driver, REG_CHROMAKEY, chromaKey)
 
     // Clip registers
     writeReg(driver, REG_CLIP_LR, (clipRight.toLong << 16) | clipLeft.toLong)
@@ -1665,6 +1668,221 @@ class CoreIntegrationTest extends AnyFunSuite {
 
         comparePixelsFuzzy(refPixels, simPixels, s"dithering/$name")
       }
+    }
+  }
+
+  // ========================================================================
+  // Test 8: Chroma key - texture pixels matching key are discarded
+  // ========================================================================
+  test("Chroma key: texture pixels matching key are discarded") {
+    compiled.doSim("chroma_key") { dut =>
+      val (driver, fbMemory, texMemory, writtenAddrs) = setupDut(dut)
+
+      // LOD 0 = 256x256 texture with RGB565 format
+      // Columns 0-127: red (0xF800) — matches chroma key
+      // Columns 128-255: green (0x07E0) — does NOT match chroma key
+      val red565 = 0xF800   // R=31,G=0,B=0 → decoded R=0xFF,G=0x00,B=0x00
+      val green565 = 0x07E0 // R=0,G=63,B=0 → decoded R=0x00,G=0xFF,B=0x00
+
+      // Chroma key = pure red (matches decoded red565)
+      val chromaKeyColor = 0x00FF0000
+
+      // Write texture row 0, columns 0-255 (T=0 for all pixels since dTdX=dTdY=0)
+      for (row <- 0 until 1; col <- 0 until 256) {
+        val texel = if (col < 128) red565 else green565
+        val addr = (row * 256 + col) * 2
+        texMemory.setByte(addr, (texel & 0xff).toByte)
+        texMemory.setByte(addr + 1, ((texel >> 8) & 0xff).toByte)
+      }
+
+      // Pre-decode texture for reference model (full 256x256 conceptual, but only populate rows 0-3)
+      val refTexData256 = new Array[Int](256 * 256)
+      for (row <- 0 until 256; col <- 0 until 256) {
+        val raw = if (col < 128) red565 else green565
+        refTexData256(col + row * 256) = VoodooReference.decodeTexel(raw, 0xa) // 0xa = RGB565
+      }
+
+      // Triangle: A(160,80) B(240,200) C(80,200) — same as flat/gouraud tests
+      val vAx = 160 * 16
+      val vAy = 80 * 16
+      val vBx = 240 * 16
+      val vBy = 200 * 16
+      val vCx = 80 * 16
+      val vCy = 200 * 16
+
+      // S maps texels 120..~260 across the triangle width (~140px at widest)
+      // texS = tmu0_s >> 28; point-sample s = texS >> 4
+      // Need s to start at ~120 and increase by 1 per pixel
+      // texS_start = 120 * 16 = 1920; startS_reg >> 14 = 1920 → startS_reg = 1920 << 14
+      val startS_reg = 1920 << 14
+      val startT_reg = 0
+      // Per pixel: texS += 16 → dSdX_reg = 16 << 14
+      val dSdX_reg = 16 << 14
+      val dTdX_reg = 0
+      val dSdY_reg = 0
+      val dTdY_reg = 0
+
+      // textureMode: RGB565 (10<<8), clampS, clampT
+      val textureMode = (10 << 8) | (1 << 6) | (1 << 7)
+      val tLOD = 0
+
+      // fbzColorPath: texture passthrough + textureEnable
+      val fbzColorPath = 1 |       // rgbSel=1 (TREX/texture)
+        (0 << 8) |                  // zero_other=0
+        (0 << 10) |                 // mselect=0 (ZERO)
+        (0 << 13) |                 // reverse_blend=0 (factor=256)
+        (0 << 14) |                 // add=0
+        (1 << 27)                   // texture_enable
+
+      // fbzMode: clipping + chroma key + RGB write
+      val fbzMode = 1 | (1 << 1) | (1 << 9)
+
+      writeReg(driver, REG_TEXBASEADDR, 0)
+
+      submitTriangle(
+        driver, dut.clockDomain,
+        vertexAx = vAx, vertexAy = vAy,
+        vertexBx = vBx, vertexBy = vBy,
+        vertexCx = vCx, vertexCy = vCy,
+        startR = 0, startG = 0, startB = 0, startA = 255 << 12,
+        startZ = 0, startS = startS_reg, startT = startT_reg, startW = 0,
+        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
+        dSdX = dSdX_reg, dTdX = dTdX_reg, dWdX = 0,
+        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
+        dSdY = dSdY_reg, dTdY = dTdY_reg, dWdY = 0,
+        fbzColorPath = fbzColorPath, fbzMode = fbzMode, sign = false,
+        textureMode = textureMode, tLOD = tLOD,
+        chromaKey = chromaKeyColor,
+        clipRight = 640, clipHighY = 480
+      )
+
+      dut.clockDomain.waitSampling(200000)
+
+      val simPixels = collectPixels(fbMemory, writtenAddrs, 0)
+      println(s"[chroma_key] Simulation produced ${simPixels.size} pixels")
+
+      // Build reference
+      val texDataPerLod = Array.fill(9)(Array.empty[Int])
+      texDataPerLod(0) = refTexData256
+      val texWMaskPerLod = Array.fill(9)(0)
+      texWMaskPerLod(0) = 255
+      val texHMaskPerLod = Array.fill(9)(0)
+      texHMaskPerLod(0) = 255
+      val texShiftPerLod = Array.fill(9)(0)
+      texShiftPerLod(0) = 8
+      val texLodPerLod = Array.fill(9)(0)
+
+      val refParams = VoodooReference.fromRegisterValues(
+        vertexAx = vAx, vertexAy = vAy,
+        vertexBx = vBx, vertexBy = vBy,
+        vertexCx = vCx, vertexCy = vCy,
+        startR = 0, startG = 0, startB = 0, startA = 255 << 12,
+        startZ = 0, startS = startS_reg, startT = startT_reg, startW = 0,
+        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
+        dSdX = dSdX_reg, dTdX = dTdX_reg, dWdX = 0,
+        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
+        dSdY = dSdY_reg, dTdY = dTdY_reg, dWdY = 0,
+        fbzColorPath = fbzColorPath, fbzMode = fbzMode, sign = false,
+        textureMode = textureMode, tLOD = tLOD,
+        chromaKey = chromaKeyColor,
+        clipRight = 640, clipHighY = 480,
+        texData = texDataPerLod,
+        texWMask = texWMaskPerLod,
+        texHMask = texHMaskPerLod,
+        texShift = texShiftPerLod,
+        texLod = texLodPerLod
+      )
+
+      val refPixels = VoodooReference.voodooTriangle(refParams)
+      println(s"[chroma_key] Reference produced ${refPixels.size} pixels")
+
+      // Verify that some pixels were killed (ref should have fewer than total triangle area)
+      assert(refPixels.nonEmpty, "Reference should produce some pixels")
+
+      comparePixelsFuzzy(refPixels, simPixels, "chroma_key")
+    }
+  }
+
+  // ========================================================================
+  // Test 9: Alpha test - pixels failing comparison are discarded
+  // ========================================================================
+  test("Alpha test: pixels failing comparison are discarded") {
+    compiled.doSim("alpha_test") { dut =>
+      val (driver, fbMemory, _, writtenAddrs) = setupDut(dut)
+
+      // Gouraud triangle: A(160,80) B(240,200) C(80,200)
+      val vAx = 160 * 16
+      val vAy = 80 * 16
+      val vBx = 240 * 16
+      val vBy = 200 * 16
+      val vCx = 80 * 16
+      val vCy = 200 * 16
+
+      // Color: constant red=200
+      val startR = 200 << 12
+      val startG = 0
+      val startB = 0
+
+      // Alpha: varies across X. startA=0, dAdX=4<<12 (alpha increases 4 per pixel)
+      val startA = 0
+      val dAdX = 4 << 12
+
+      // fbzColorPath: iterated color passthrough (zero_other + add_clocal)
+      // Alpha: iterated alpha passthrough (alphaZeroOther + alphaAdd=ALOCAL)
+      val fbzColorPath = (1 << 8) | (1 << 14) | // CCU: zero_other + add_clocal
+        (1 << 17) |                               // ACU: alpha_zero_other
+        (2 << 23)                                  // ACU: alpha_add=ALOCAL (2)
+
+      // fbzMode: clipping + RGB write
+      val fbzMode = 1 | (1 << 9)
+
+      // alphaMode: enable=1, func=GREATER(4), ref=0x80
+      // Pixels with combined alpha > 0x80 pass, others killed
+      val alphaMode = 1 | (4 << 1) | (0x80 << 24)
+
+      submitTriangle(
+        driver, dut.clockDomain,
+        vertexAx = vAx, vertexAy = vAy,
+        vertexBx = vBx, vertexBy = vBy,
+        vertexCx = vCx, vertexCy = vCy,
+        startR = startR, startG = startG, startB = startB, startA = startA,
+        startZ = 0, startS = 0, startT = 0, startW = 0,
+        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = dAdX, dZdX = 0,
+        dSdX = 0, dTdX = 0, dWdX = 0,
+        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
+        dSdY = 0, dTdY = 0, dWdY = 0,
+        fbzColorPath = fbzColorPath, fbzMode = fbzMode, sign = false,
+        alphaMode = alphaMode,
+        clipRight = 640, clipHighY = 480
+      )
+
+      dut.clockDomain.waitSampling(200000)
+
+      val simPixels = collectPixels(fbMemory, writtenAddrs, 0)
+      println(s"[alpha_test] Simulation produced ${simPixels.size} pixels")
+
+      val refParams = VoodooReference.fromRegisterValues(
+        vertexAx = vAx, vertexAy = vAy,
+        vertexBx = vBx, vertexBy = vBy,
+        vertexCx = vCx, vertexCy = vCy,
+        startR = startR, startG = startG, startB = startB, startA = startA,
+        startZ = 0, startS = 0, startT = 0, startW = 0,
+        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = dAdX, dZdX = 0,
+        dSdX = 0, dTdX = 0, dWdX = 0,
+        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
+        dSdY = 0, dTdY = 0, dWdY = 0,
+        fbzColorPath = fbzColorPath, fbzMode = fbzMode, sign = false,
+        alphaMode = alphaMode,
+        clipRight = 640, clipHighY = 480
+      )
+
+      val refPixels = VoodooReference.voodooTriangle(refParams)
+      println(s"[alpha_test] Reference produced ${refPixels.size} pixels")
+
+      // Verify that some pixels were killed
+      assert(refPixels.nonEmpty, "Reference should produce some pixels")
+
+      comparePixelsFuzzy(refPixels, simPixels, "alpha_test")
     }
   }
 }

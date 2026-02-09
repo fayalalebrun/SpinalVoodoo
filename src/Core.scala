@@ -522,8 +522,20 @@ case class Core(c: Config) extends Component {
   // Join TMU output with queued gradients
   val tmuJoined = StreamJoin(tmu.io.output, tmuGradQueue)
 
+  // Chroma key: discard pixels where texture color matches chromaKey register
+  val ckBits = regBank.renderConfig.chromaKey
+  val ckR = ckBits(23 downto 16).asUInt
+  val ckG = ckBits(15 downto 8).asUInt
+  val ckB = ckBits(7 downto 0).asUInt
+  val texColor = tmuJoined.payload._1.texture
+  val textureEnabled = tmuJoined.payload._2.config.fbzColorPath(27)
+  val chromaKill = regBank.renderConfig.fbzMode.enableChromaKey &&
+                   textureEnabled &&
+                   texColor.r === ckR && texColor.g === ckG && texColor.b === ckB
+  val afterChromaKey = tmuJoined.throwWhen(chromaKill)
+
   // Connect TMU joined output to ColorCombine
-  colorCombine.io.input.translateFrom(tmuJoined) { (out, payload) =>
+  colorCombine.io.input.translateFrom(afterChromaKey) { (out, payload) =>
     val tmuOut = payload._1
     val rasterOut = payload._2 // Original rasterizer output
 
@@ -572,8 +584,29 @@ case class Core(c: Config) extends Component {
     out.config := decodeColorCombineConfig(rasterOut.config.fbzColorPath)
   }
 
+  // Alpha test: discard pixels that fail alpha comparison
+  val alphaBits = regBank.renderConfig.alphaMode
+  val alphaTestEnable = alphaBits(0)
+  val alphaFunc = alphaBits(3 downto 1).asUInt
+  val alphaRef = alphaBits(31 downto 24).asUInt
+  val srcAlpha = colorCombine.io.output.payload.alpha
+
+  val alphaPassed = alphaFunc.mux(
+    0 -> False,                        // NEVER
+    1 -> (srcAlpha < alphaRef),        // LESS
+    2 -> (srcAlpha === alphaRef),      // EQUAL
+    3 -> (srcAlpha <= alphaRef),       // LEQUAL
+    4 -> (srcAlpha > alphaRef),        // GREATER
+    5 -> (srcAlpha =/= alphaRef),      // NOTEQUAL
+    6 -> (srcAlpha >= alphaRef),       // GEQUAL
+    7 -> True                          // ALWAYS
+  )
+
+  val alphaKill = alphaTestEnable && !alphaPassed
+  val afterAlphaTest = colorCombine.io.output.throwWhen(alphaKill)
+
   // Connect color combine unit to write stage
-  write.i.fromPipeline.translateFrom(colorCombine.io.output) { (out, in) =>
+  write.i.fromPipeline.translateFrom(afterAlphaTest) { (out, in) =>
     out.coords := in.coords
 
     val fbWord = cloneOf(out.toFb)

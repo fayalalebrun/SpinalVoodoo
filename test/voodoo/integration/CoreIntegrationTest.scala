@@ -339,8 +339,16 @@ class CoreIntegrationTest extends AnyFunSuite {
         if (colorTolerance == 0) {
           if (simRgb != refRgb)
             colorMismatches += f"($testName) (${xy._1},${xy._2}) color: ref=0x$refRgb%04X sim=0x$simRgb%04X"
+        } else {
+          // Per-channel comparison with tolerance on RGB565
+          val refR = (refRgb >> 11) & 0x1f; val simR = (simRgb >> 11) & 0x1f
+          val refG = (refRgb >> 5) & 0x3f; val simG = (simRgb >> 5) & 0x3f
+          val refB = refRgb & 0x1f; val simB = simRgb & 0x1f
+          if (scala.math.abs(refR - simR) > colorTolerance ||
+              scala.math.abs(refG - simG) > colorTolerance ||
+              scala.math.abs(refB - simB) > colorTolerance)
+            colorMismatches += f"($testName) (${xy._1},${xy._2}) color: ref=0x$refRgb%04X sim=0x$simRgb%04X"
         }
-        // With tolerance > 0, could compare per-channel (future)
       }
     }
 
@@ -2357,6 +2365,264 @@ class CoreIntegrationTest extends AnyFunSuite {
   // ========================================================================
   // Test 15: SwapBuffer with vsync synchronization
   // ========================================================================
+  // ========================================================================
+  // Test 17: Textured triangle with perspective correction (constant W)
+  // ========================================================================
+  test("Perspective correction: constant W across triangle") {
+    compiled.doSim("perspective_constant_w") { dut =>
+      val (driver, fbMemory, texMemory, writtenAddrs) = setupDut(dut)
+
+      // Load a 256×256 RGB565 texture with unique colors per texel
+      // Encode texel (s,t) as RGB565 with r=s[7:3], g=t[5:0]<<5|s[4:3], b=t[7:3]
+      val texWidth = 256
+      val texHeight = 256
+      for (t <- 0 until texHeight; s <- 0 until texWidth) {
+        val r5 = (s >> 3) & 0x1f
+        val g6 = (t >> 2) & 0x3f
+        val b5 = ((s + t) >> 3) & 0x1f
+        val rgb565 = (r5 << 11) | (g6 << 5) | b5
+        val addr = (t * texWidth + s) * 2
+        texMemory.setByte(addr, (rgb565 & 0xff).toByte)
+        texMemory.setByte(addr + 1, ((rgb565 >> 8) & 0xff).toByte)
+      }
+
+      // Pre-decode for reference model
+      val refTexData = new Array[Int](texWidth * texHeight)
+      for (t <- 0 until texHeight; s <- 0 until texWidth) {
+        val r5 = (s >> 3) & 0x1f
+        val g6 = (t >> 2) & 0x3f
+        val b5 = ((s + t) >> 3) & 0x1f
+        val rgb565 = (r5 << 11) | (g6 << 5) | b5
+        refTexData(s + t * texWidth) = VoodooReference.decodeTexel(rgb565, 0xa) // RGB565
+      }
+
+      // Small triangle
+      val vAx = 100 * 16
+      val vAy = 100 * 16
+      val vBx = 120 * 16
+      val vBy = 120 * 16
+      val vCx = 80 * 16
+      val vCy = 120 * 16
+
+      // Perspective enabled with constant W=2.0 (1/W = 0.5 in 2.30 format)
+      // 1/W = 0.5 → startW_reg = 0.5 * (1<<30) = 0x20000000
+      val startW_reg = 0x20000000
+
+      // S/W starts at 5.0, increases by 1.0 per pixel in X
+      // S/W = 5.0 → startS_reg = 5 * (1<<18) = 0x140000
+      // dS/W_dX = 1.0 → dSdX_reg = 1 * (1<<18) = 0x40000
+      val startS_reg = 5 * (1 << 18)
+      val dSdX_reg = 1 * (1 << 18)
+
+      // T/W starts at 3.0, increases by 1.0 per pixel in Y
+      val startT_reg = 3 * (1 << 18)
+      val dTdY_reg = 1 * (1 << 18)
+
+      // textureMode: RGB565 (10 << 8), clampS, clampT, perspectiveEnable (bit 0)
+      val textureMode = (10 << 8) | (1 << 7) | (1 << 6) | 1
+      // tLOD: lodmin=0, lodmax=0 (force LOD 0)
+      val tLOD = 0
+
+      // fbzColorPath: texture passthrough
+      val fbzColorPath = 1 |       // rgbSel=1 (TREX/texture)
+        (0 << 8) |                  // zero_other=0
+        (0 << 9) |                  // sub_clocal=0
+        (0 << 10) |                 // mselect=0 (ZERO)
+        (0 << 13) |                 // reverse_blend=0 (factor inverted: 0→0xff→+1=256)
+        (0 << 14) |                 // add=0
+        (1 << 27)                   // texture_enable
+
+      val fbzMode = 1 | (1 << 9)   // clipping + RGB write
+      val sign = false
+
+      writeReg(driver, REG_TEXBASEADDR, 0)
+
+      submitTriangle(
+        driver, dut.clockDomain,
+        vertexAx = vAx, vertexAy = vAy,
+        vertexBx = vBx, vertexBy = vBy,
+        vertexCx = vCx, vertexCy = vCy,
+        startR = 0, startG = 0, startB = 0, startA = 255 << 12,
+        startZ = 0, startS = startS_reg, startT = startT_reg, startW = startW_reg,
+        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
+        dSdX = dSdX_reg, dTdX = 0, dWdX = 0,
+        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
+        dSdY = 0, dTdY = dTdY_reg, dWdY = 0,
+        fbzColorPath = fbzColorPath, fbzMode = fbzMode, sign = sign,
+        textureMode = textureMode, tLOD = tLOD,
+        clipRight = 640, clipHighY = 480
+      )
+
+      dut.clockDomain.waitSampling(30000)
+
+      val simPixels = collectPixels(fbMemory, writtenAddrs, 0)
+      println(s"[perspective_constant_w] Simulation produced ${simPixels.size} pixels")
+
+      // Build reference
+      val texDataPerLod = Array.fill(9)(Array.empty[Int])
+      texDataPerLod(0) = refTexData
+      val texWMaskPerLod = Array.fill(9)(0)
+      texWMaskPerLod(0) = texWidth - 1
+      val texHMaskPerLod = Array.fill(9)(0)
+      texHMaskPerLod(0) = texHeight - 1
+      val texShiftPerLod = Array.fill(9)(0)
+      texShiftPerLod(0) = 8 // tex_shift = 8 - tex_lod, lod=0
+      val texLodPerLod = Array.fill(9)(0)
+
+      val refParams = VoodooReference.fromRegisterValues(
+        vertexAx = vAx, vertexAy = vAy,
+        vertexBx = vBx, vertexBy = vBy,
+        vertexCx = vCx, vertexCy = vCy,
+        startR = 0, startG = 0, startB = 0, startA = 255 << 12,
+        startZ = 0, startS = startS_reg, startT = startT_reg, startW = startW_reg,
+        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
+        dSdX = dSdX_reg, dTdX = 0, dWdX = 0,
+        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
+        dSdY = 0, dTdY = dTdY_reg, dWdY = 0,
+        fbzColorPath = fbzColorPath, fbzMode = fbzMode, sign = sign,
+        textureMode = textureMode, tLOD = tLOD,
+        clipRight = 640, clipHighY = 480,
+        texData = texDataPerLod, texWMask = texWMaskPerLod,
+        texHMask = texHMaskPerLod, texShift = texShiftPerLod,
+        texLod = texLodPerLod
+      )
+
+      val refPixels = VoodooReference.voodooTriangle(refParams)
+      println(s"[perspective_constant_w] Reference produced ${refPixels.size} pixels")
+
+      if (refPixels.nonEmpty) {
+        for (p <- refPixels.take(5)) {
+          println(f"  ref pixel (${p.x},${p.y}) rgb565=0x${p.rgb565}%04X")
+        }
+      }
+
+      comparePixelsFuzzy(refPixels, simPixels, "perspective_constant_w")
+    }
+  }
+
+  // ========================================================================
+  // Test 18: Textured triangle with perspective correction (varying W)
+  // ========================================================================
+  test("Perspective correction: varying W across triangle") {
+    compiled.doSim("perspective_varying_w") { dut =>
+      val (driver, fbMemory, texMemory, writtenAddrs) = setupDut(dut)
+
+      // Same 256×256 RGB565 texture
+      val texWidth = 256
+      val texHeight = 256
+      for (t <- 0 until texHeight; s <- 0 until texWidth) {
+        val r5 = (s >> 3) & 0x1f
+        val g6 = (t >> 2) & 0x3f
+        val b5 = ((s + t) >> 3) & 0x1f
+        val rgb565 = (r5 << 11) | (g6 << 5) | b5
+        val addr = (t * texWidth + s) * 2
+        texMemory.setByte(addr, (rgb565 & 0xff).toByte)
+        texMemory.setByte(addr + 1, ((rgb565 >> 8) & 0xff).toByte)
+      }
+
+      val refTexData = new Array[Int](texWidth * texHeight)
+      for (t <- 0 until texHeight; s <- 0 until texWidth) {
+        val r5 = (s >> 3) & 0x1f
+        val g6 = (t >> 2) & 0x3f
+        val b5 = ((s + t) >> 3) & 0x1f
+        val rgb565 = (r5 << 11) | (g6 << 5) | b5
+        refTexData(s + t * texWidth) = VoodooReference.decodeTexel(rgb565, 0xa)
+      }
+
+      // Triangle
+      val vAx = 100 * 16
+      val vAy = 100 * 16
+      val vBx = 120 * 16
+      val vBy = 120 * 16
+      val vCx = 80 * 16
+      val vCy = 120 * 16
+
+      // 1/W starts at 1.0 (W=1), decreases across X so W increases
+      // startW_reg = 1.0 in 2.30 = 0x40000000
+      // dWdX_reg = -0.01 in 2.30 ≈ -(1<<30)/100 = -10737418 ≈ 0xFF5B9B5A (as 32-bit)
+      val startW_reg = 0x40000000
+      val dWdX_reg = -10737418 // ~-0.01 per pixel
+
+      // S/W starts at 10.0, increases by 2.0 per pixel
+      val startS_reg = 10 * (1 << 18)
+      val dSdX_reg = 2 * (1 << 18)
+
+      // T/W starts at 5.0, increases by 1.0 per pixel in Y
+      val startT_reg = 5 * (1 << 18)
+      val dTdY_reg = 1 * (1 << 18)
+
+      // textureMode: RGB565 (10 << 8), clampS, clampT, perspectiveEnable
+      val textureMode = (10 << 8) | (1 << 7) | (1 << 6) | 1
+      val tLOD = 0
+
+      val fbzColorPath = 1 | (0 << 8) | (0 << 9) | (0 << 10) | (0 << 13) | (0 << 14) | (1 << 27)
+      val fbzMode = 1 | (1 << 9)
+      val sign = false
+
+      writeReg(driver, REG_TEXBASEADDR, 0)
+
+      submitTriangle(
+        driver, dut.clockDomain,
+        vertexAx = vAx, vertexAy = vAy,
+        vertexBx = vBx, vertexBy = vBy,
+        vertexCx = vCx, vertexCy = vCy,
+        startR = 0, startG = 0, startB = 0, startA = 255 << 12,
+        startZ = 0, startS = startS_reg, startT = startT_reg, startW = startW_reg,
+        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
+        dSdX = dSdX_reg, dTdX = 0, dWdX = dWdX_reg,
+        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
+        dSdY = 0, dTdY = dTdY_reg, dWdY = 0,
+        fbzColorPath = fbzColorPath, fbzMode = fbzMode, sign = sign,
+        textureMode = textureMode, tLOD = tLOD,
+        clipRight = 640, clipHighY = 480
+      )
+
+      dut.clockDomain.waitSampling(30000)
+
+      val simPixels = collectPixels(fbMemory, writtenAddrs, 0)
+      println(s"[perspective_varying_w] Simulation produced ${simPixels.size} pixels")
+
+      val texDataPerLod = Array.fill(9)(Array.empty[Int])
+      texDataPerLod(0) = refTexData
+      val texWMaskPerLod = Array.fill(9)(0)
+      texWMaskPerLod(0) = texWidth - 1
+      val texHMaskPerLod = Array.fill(9)(0)
+      texHMaskPerLod(0) = texHeight - 1
+      val texShiftPerLod = Array.fill(9)(0)
+      texShiftPerLod(0) = 8
+      val texLodPerLod = Array.fill(9)(0)
+
+      val refParams = VoodooReference.fromRegisterValues(
+        vertexAx = vAx, vertexAy = vAy,
+        vertexBx = vBx, vertexBy = vBy,
+        vertexCx = vCx, vertexCy = vCy,
+        startR = 0, startG = 0, startB = 0, startA = 255 << 12,
+        startZ = 0, startS = startS_reg, startT = startT_reg, startW = startW_reg,
+        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
+        dSdX = dSdX_reg, dTdX = 0, dWdX = dWdX_reg,
+        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
+        dSdY = 0, dTdY = dTdY_reg, dWdY = 0,
+        fbzColorPath = fbzColorPath, fbzMode = fbzMode, sign = sign,
+        textureMode = textureMode, tLOD = tLOD,
+        clipRight = 640, clipHighY = 480,
+        texData = texDataPerLod, texWMask = texWMaskPerLod,
+        texHMask = texHMaskPerLod, texShift = texShiftPerLod,
+        texLod = texLodPerLod
+      )
+
+      val refPixels = VoodooReference.voodooTriangle(refParams)
+      println(s"[perspective_varying_w] Reference produced ${refPixels.size} pixels")
+
+      if (refPixels.nonEmpty) {
+        for (p <- refPixels.take(5)) {
+          println(f"  ref pixel (${p.x},${p.y}) rgb565=0x${p.rgb565}%04X")
+        }
+      }
+
+      comparePixelsFuzzy(refPixels, simPixels, "perspective_varying_w", colorTolerance = 1)
+    }
+  }
+
   test("SwapBuffer: vsync-synchronized swap blocks until retrace") {
     compiled.doSim("swap_vsync") { dut =>
       val (driver, _, _, _) = setupDut(dut)

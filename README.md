@@ -75,7 +75,7 @@ SpinalHDL implementation of the 3dfx Voodoo Graphics GPU.
 
 - Texture Coordinates
   - [x] S/T/W interpolation
-  - [ ] Perspective correction (S/W, T/W division) — parsed but not yet implemented
+  - [x] Perspective correction (S/W, T/W division via 257-entry reciprocal LUT)
 - LOD (Level of Detail)
   - [x] LOD calculation from gradients (max gradient MSB position)
   - [x] Mipmap base offset calculation (per-LOD cumulative sizes)
@@ -128,7 +128,7 @@ SpinalHDL implementation of the 3dfx Voodoo Graphics GPU.
 - [ ] DAC programming (dacData)
 - vRetrace is currently an external input (no internal generation)
 
-### Integration Tests (16 passing)
+### Integration Tests (18 passing)
 
 Pixel-for-pixel verification against a Scala reference model:
 
@@ -138,6 +138,7 @@ Pixel-for-pixel verification against a Scala reference model:
 - Color combine (12 sub-cases), dithering, chroma key
 - Alpha test, fog (Z-based), depth test, alpha blending
 - Fastfill, swap buffer (immediate + vsync)
+- Perspective correction (constant W, varying W)
 
 ## Scala CLI Commands
 

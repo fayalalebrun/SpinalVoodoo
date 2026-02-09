@@ -42,13 +42,85 @@ case class Tmu(c: voodoo.Config) extends Component {
 
   // Perspective Correction
   // The rasterizer interpolates S/W, T/W, and 1/W.
-  // TODO: Implement proper perspective division when tpersp_st=1
-  // For now, pass through S/W and T/W directly (correct when W=1)
+  // When tpersp_st=1: compute S = (S/W) / (1/W) via reciprocal LUT
+  // When tpersp_st=0: pass through S/W and T/W directly (correct when W=1)
   val oow = io.input.payload.w // 1/W in 2.30 format
   val sow = io.input.payload.s // S/W in 14.18 format
   val tow = io.input.payload.t // T/W in 14.18 format
-  val sCorrected = sow
-  val tCorrected = tow
+
+  // CLZ32: count leading zeros on 32-bit unsigned value (binary search)
+  def clz32(v: UInt): UInt = {
+    val v0 = v.resize(32 bits)
+
+    val test0 = (v0(31 downto 16) === 0)
+    val n0 = test0 ? U(16, 6 bits) | U(0, 6 bits)
+    val s0 = test0 ? (v0 |<< 16) | v0
+
+    val test1 = (s0(31 downto 24) === 0)
+    val n1 = n0 + (test1 ? U(8, 6 bits) | U(0, 6 bits))
+    val s1 = test1 ? (s0 |<< 8) | s0
+
+    val test2 = (s1(31 downto 28) === 0)
+    val n2 = n1 + (test2 ? U(4, 6 bits) | U(0, 6 bits))
+    val s2 = test2 ? (s1 |<< 4) | s1
+
+    val test3 = (s2(31 downto 30) === 0)
+    val n3 = n2 + (test3 ? U(2, 6 bits) | U(0, 6 bits))
+    val s3 = test3 ? (s2 |<< 2) | s2
+
+    val test4 = !s3(31)
+    (n3 + (test4 ? U(1, 6 bits) | U(0, 6 bits))).resize(6 bits)
+  }
+
+  // Reciprocal LUT: 257 entries, 17-bit values
+  // recipTable[i] = round((1 << 24) / (256 + i))
+  val recipTable = Vec(UInt(17 bits), 257)
+  for (i <- 0 to 256) {
+    recipTable(i) := U(scala.math.round((1 << 24).toDouble / (256.0 + i)).toLong, 17 bits)
+  }
+
+  // Compute perspective-corrected integer texel coordinates
+  val sInt = SInt(14 bits)
+  val tInt = SInt(14 bits)
+
+  when(!texMode.perspectiveEnable) {
+    // Non-perspective: sow/tow ARE the S/T coords, extract integer part
+    sInt := sow.floor(0).asSInt.resized
+    tInt := tow.floor(0).asSInt.resized
+  } otherwise {
+    // Perspective: S = (S/W) / (1/W) via reciprocal LUT
+    val oowRaw = oow.raw.asSInt                         // SInt(32 bits)
+    val absOow = oowRaw.abs.resize(32 bits)                // UInt(32 bits)
+    val clz = clz32(absOow)
+    val msbPos = U(31, 6 bits) - clz                     // UInt(6 bits)
+
+    // Normalize: shift left so MSB is at bit 31
+    val norm = (absOow |<< clz).resize(32 bits)
+    val index = norm(30 downto 23)                        // 8-bit table index
+    val frac = norm(22 downto 15)                         // 8-bit interpolation fraction
+
+    // LUT lookup + linear interpolation
+    val base = recipTable(index.resize(9 bits))
+    val next = recipTable((index +^ U(1)).resize(9 bits))
+    val diff = base - next                                // UInt(17 bits)
+    val interp = base - ((diff * frac) >> 8).resize(17 bits)
+
+    // Handle oow <= 0 (degenerate): reciprocal = 0
+    val validOow = !oowRaw.msb && (absOow =/= 0)
+    val safeInterp = validOow ? interp | U(0, 17 bits)
+
+    // Multiply: product = sow_raw * interp (signed × unsigned)
+    val sowRaw = sow.raw.asSInt                           // SInt(32 bits)
+    val towRaw = tow.raw.asSInt                           // SInt(32 bits)
+    val interpSigned = (False ## safeInterp).asSInt        // 18-bit signed (always positive)
+    val productS = sowRaw * interpSigned                   // 50-bit signed
+    val productT = towRaw * interpSigned                   // 50-bit signed
+
+    // Shift to get integer texel coordinate: product >> (msbPos + 4)
+    val shiftAmount = (msbPos + U(4)).resize(6 bits)
+    sInt := (productS >> shiftAmount).resized
+    tInt := (productT >> shiftAmount).resized
+  }
 
   // Clamp W (force S=T=0 when W is negative)
   val wNegative = oow.raw.msb
@@ -117,9 +189,7 @@ case class Tmu(c: voodoo.Config) extends Component {
     lodLevel := lodClamped.asUInt.resize(4 bits)
   }
 
-  // Coordinate Wrapping/Clamping
-  val sInt = sCorrected.floor(0).asSInt
-  val tInt = tCorrected.floor(0).asSInt
+  // Coordinate Wrapping/Clamping (sInt/tInt computed above in perspective correction)
 
   // Compute texture dimensions based on LOD and aspect ratio
   val baseDimBits = U(8, 4 bits)

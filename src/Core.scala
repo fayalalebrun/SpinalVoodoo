@@ -578,10 +578,19 @@ case class Core(c: Config) extends Component {
 
     val fbWord = cloneOf(out.toFb)
 
-    // Convert 8-bit RGB to 5-6-5 format (take MSBs)
-    fbWord.color.r := in.color.r(7 downto 3)
-    fbWord.color.g := in.color.g(7 downto 2)
-    fbWord.color.b := in.color.b(7 downto 3)
+    // Dither 8-bit RGB to 5-6-5 format
+    val dither = Dither()
+    dither.io.r := in.color.r
+    dither.io.g := in.color.g
+    dither.io.b := in.color.b
+    dither.io.x := in.coords(0).asUInt.resize(2 bits)
+    dither.io.y := in.coords(1).asUInt.resize(2 bits)
+    dither.io.enable := regBank.renderConfig.fbzMode.enableDithering
+    dither.io.use2x2 := regBank.renderConfig.fbzMode.ditherAlgorithm
+
+    fbWord.color.r := dither.io.ditR
+    fbWord.color.g := dither.io.ditG
+    fbWord.color.b := dither.io.ditB
 
     // fbzMode bit 18: 0=depth buffering, 1=destination alpha planes
     val useAlpha = regBank.renderConfig.fbzMode.enableAlphaPlanes

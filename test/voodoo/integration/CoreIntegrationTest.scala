@@ -1589,4 +1589,82 @@ class CoreIntegrationTest extends AnyFunSuite {
       }
     }
   }
+
+  // ========================================================================
+  // Test 8: Dithering (4x4 and 2x2 Bayer)
+  // ========================================================================
+  test("Dithering: 4x4 and 2x2 Bayer") {
+    compiled.doSim("dithering") { dut =>
+      val (driver, fbMemory, _, writtenAddrs) = setupDut(dut)
+
+      // Reuse Gouraud test geometry: A(160,80) B(240,200) C(80,200)
+      val vAx = 160 * 16
+      val vAy = 80 * 16
+      val vBx = 240 * 16
+      val vBy = 200 * 16
+      val vCx = 80 * 16
+      val vCy = 200 * 16
+
+      // Gouraud shading with gradients to exercise many frac values
+      val startR = 100 << 12
+      val startG = 50 << 12
+      val startB = 0
+      val startA = 255 << 12
+      val dRdX = 1 << 12  // +1 red per pixel in X
+      val dBdX = 1 << 12  // +1 blue per pixel in X
+
+      // fbzColorPath: zero_other + add_clocal (iterated color passthrough)
+      val fbzColorPath = (1 << 8) | (1 << 14)
+      val sign = false
+
+      // Sub-test configs: (name, fbzMode)
+      // fbzMode bits: 0=clip, 8=dithering, 9=rgb write, 11=2x2 algorithm
+      val subTests = Seq(
+        ("4x4", 1 | (1 << 8) | (1 << 9)),
+        ("2x2", 1 | (1 << 8) | (1 << 9) | (1 << 11))
+      )
+
+      for ((name, fbzMode) <- subTests) {
+        writtenAddrs.clear()
+
+        submitTriangle(
+          driver, dut.clockDomain,
+          vertexAx = vAx, vertexAy = vAy,
+          vertexBx = vBx, vertexBy = vBy,
+          vertexCx = vCx, vertexCy = vCy,
+          startR = startR, startG = startG, startB = startB, startA = startA,
+          startZ = 0, startS = 0, startT = 0, startW = 0,
+          dRdX = dRdX, dGdX = 0, dBdX = dBdX, dAdX = 0, dZdX = 0,
+          dSdX = 0, dTdX = 0, dWdX = 0,
+          dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
+          dSdY = 0, dTdY = 0, dWdY = 0,
+          fbzColorPath = fbzColorPath, fbzMode = fbzMode, sign = sign,
+          clipRight = 640, clipHighY = 480
+        )
+
+        dut.clockDomain.waitSampling(200000)
+
+        val simPixels = collectPixels(fbMemory, writtenAddrs, 0)
+        println(s"[dithering/$name] Simulation produced ${simPixels.size} pixels")
+
+        val refParams = VoodooReference.fromRegisterValues(
+          vertexAx = vAx, vertexAy = vAy,
+          vertexBx = vBx, vertexBy = vBy,
+          vertexCx = vCx, vertexCy = vCy,
+          startR = startR, startG = startG, startB = startB, startA = startA,
+          startZ = 0, startS = 0, startT = 0, startW = 0,
+          dRdX = dRdX, dGdX = 0, dBdX = dBdX, dAdX = 0, dZdX = 0,
+          dSdX = 0, dTdX = 0, dWdX = 0,
+          dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
+          dSdY = 0, dTdY = 0, dWdY = 0,
+          fbzColorPath = fbzColorPath, fbzMode = fbzMode, sign = sign,
+          clipRight = 640, clipHighY = 480
+        )
+        val refPixels = VoodooReference.voodooTriangle(refParams)
+        println(s"[dithering/$name] Reference produced ${refPixels.size} pixels")
+
+        comparePixelsFuzzy(refPixels, simPixels, s"dithering/$name")
+      }
+    }
+  }
 }

@@ -62,6 +62,7 @@ class CoreIntegrationTest extends AnyFunSuite {
   val REG_CHROMAKEY = 0x134
   val REG_COLOR0 = 0x144
   val REG_COLOR1 = 0x148
+  val REG_FOGCOLOR = 0x12c
   val REG_TEXTUREMODE = 0x300
   val REG_TLOD = 0x304
   val REG_TEXBASEADDR = 0x30c
@@ -148,6 +149,7 @@ class CoreIntegrationTest extends AnyFunSuite {
       color1: Int = 0,
       zaColor: Int = 0,
       fogMode: Int = 0,
+      fogColor: Int = 0,
       alphaMode: Int = 0,
       chromaKey: Int = 0,
       clipLeft: Int = 0,
@@ -159,6 +161,7 @@ class CoreIntegrationTest extends AnyFunSuite {
     writeReg(driver, REG_FBZCOLORPATH, fbzColorPath)
     writeReg(driver, REG_FBZMODE, fbzMode)
     writeReg(driver, REG_FOGMODE, fogMode)
+    writeReg(driver, REG_FOGCOLOR, fogColor)
     writeReg(driver, REG_ALPHAMODE, alphaMode)
     writeReg(driver, REG_TEXTUREMODE, textureMode)
     writeReg(driver, REG_TLOD, tLOD)
@@ -1883,6 +1886,97 @@ class CoreIntegrationTest extends AnyFunSuite {
       assert(refPixels.nonEmpty, "Reference should produce some pixels")
 
       comparePixelsFuzzy(refPixels, simPixels, "alpha_test")
+    }
+  }
+
+  // ========================================================================
+  // Test 10: Fog - Z-based fog blends color toward fog color
+  // ========================================================================
+  test("Fog: Z-based fog blends color toward fog color") {
+    compiled.doSim("fog_z_based") { dut =>
+      val (driver, fbMemory, _, writtenAddrs) = setupDut(dut)
+
+      // Gouraud triangle: A(160,80) B(240,200) C(80,200)
+      val vAx = 160 * 16
+      val vAy = 80 * 16
+      val vBx = 240 * 16
+      val vBy = 200 * 16
+      val vCx = 80 * 16
+      val vCy = 200 * 16
+
+      // Constant color: R=200, G=100, B=50
+      val startR = 200 << 12
+      val startG = 100 << 12
+      val startB = 50 << 12
+      val startA = 255 << 12
+
+      // Varying Z: startZ=0, dZdX = 4<<12 (Z increases across X)
+      // Z-based fog uses (z >> 20) & 0xFF as fog factor
+      // With dZdX = 4<<12, after 64 pixels z = 64*4*4096 = 1048576 = 0x100000
+      // (z >> 20) = 1, so fog builds up slowly across the triangle
+      val startZ = 0
+      val dZdX = 4 << 12
+
+      // fogMode = 0x11: FOG_ENABLE (bit 0) + FOG_Z (bits 4:3 = 10 → bit 4 set)
+      val fogMode = 0x11
+
+      // fogColor = gray (R=128, G=128, B=128)
+      val fogColor = 0x00808080
+
+      // fbzColorPath: iterated passthrough (zero_other + add_clocal)
+      val fbzColorPath = (1 << 8) | (1 << 14)
+
+      // fbzMode: clip + RGB write
+      val fbzMode = 1 | (1 << 9)
+
+      submitTriangle(
+        driver, dut.clockDomain,
+        vertexAx = vAx, vertexAy = vAy,
+        vertexBx = vBx, vertexBy = vBy,
+        vertexCx = vCx, vertexCy = vCy,
+        startR = startR, startG = startG, startB = startB, startA = startA,
+        startZ = startZ, startS = 0, startT = 0, startW = 0,
+        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = dZdX,
+        dSdX = 0, dTdX = 0, dWdX = 0,
+        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
+        dSdY = 0, dTdY = 0, dWdY = 0,
+        fbzColorPath = fbzColorPath, fbzMode = fbzMode, sign = false,
+        fogMode = fogMode, fogColor = fogColor,
+        clipRight = 640, clipHighY = 480
+      )
+
+      dut.clockDomain.waitSampling(200000)
+
+      val simPixels = collectPixels(fbMemory, writtenAddrs, 0)
+      println(s"[fog_z_based] Simulation produced ${simPixels.size} pixels")
+
+      val refParams = VoodooReference.fromRegisterValues(
+        vertexAx = vAx, vertexAy = vAy,
+        vertexBx = vBx, vertexBy = vBy,
+        vertexCx = vCx, vertexCy = vCy,
+        startR = startR, startG = startG, startB = startB, startA = startA,
+        startZ = startZ, startS = 0, startT = 0, startW = 0,
+        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = dZdX,
+        dSdX = 0, dTdX = 0, dWdX = 0,
+        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
+        dSdY = 0, dTdY = 0, dWdY = 0,
+        fbzColorPath = fbzColorPath, fbzMode = fbzMode, sign = false,
+        fogMode = fogMode, fogColor = fogColor,
+        clipRight = 640, clipHighY = 480
+      )
+
+      val refPixels = VoodooReference.voodooTriangle(refParams)
+      println(s"[fog_z_based] Reference produced ${refPixels.size} pixels")
+
+      assert(refPixels.nonEmpty, "Reference should produce some pixels")
+
+      // Verify that fog actually changes some colors (not all pixels same as unfog'd)
+      val unfoggedRgb = VoodooReference.writePixel(200, 100, 50)
+      val foggedPixels = refPixels.count(_.rgb565 != unfoggedRgb)
+      println(s"[fog_z_based] Pixels affected by fog: $foggedPixels of ${refPixels.size}")
+      assert(foggedPixels > 0, "Fog should affect at least some pixels")
+
+      comparePixelsFuzzy(refPixels, simPixels, "fog_z_based")
     }
   }
 }

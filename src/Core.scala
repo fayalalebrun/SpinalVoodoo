@@ -64,8 +64,7 @@ case class Core(c: Config) extends Component {
   regBank.io.statusInputs <> io.statusInputs
   regBank.io.statisticsIn <> io.statisticsIn
 
-  // Pipeline busy signal: any stage has valid data
-  regBank.io.pipelineBusy := triangleSetup.o.valid || rasterizer.o.valid || tmu.io.input.valid || colorCombine.io.input.valid || write.i.fromPipeline.valid
+  // Pipeline busy signal: assigned after all pipeline stages are instantiated (see below)
 
   // TODO: Wire unused command streams to always ready
   regBank.commands.fastfillCmd.ready := True
@@ -566,6 +565,9 @@ case class Core(c: Config) extends Component {
     // Pass through depth for later stages
     out.depth := rasterOut.grads.depthGrad
 
+    // Pass through raw W value for fog wDepth calculation (SQ(32,30) → raw 32-bit SInt)
+    out.rawW := rasterOut.grads.wGrad.asSInt
+
     // Use texture from TMU (single TMU output)
     out.texture := tmuOut.texture
     out.textureAlpha := tmuOut.textureAlpha
@@ -584,12 +586,29 @@ case class Core(c: Config) extends Component {
     out.config := decodeColorCombineConfig(rasterOut.config.fbzColorPath)
   }
 
+  // ========================================================================
+  // Fog Stage
+  // ========================================================================
+  // Build fog table Vec from register bank entries
+  val fogTableVec = Vec(regBank.fogTable.fogTable.map { case (dfog, fog) =>
+    val entry = Bits(16 bits)
+    entry(15 downto 8) := dfog  // signed delta
+    entry(7 downto 0) := fog    // unsigned value
+    entry
+  })
+
+  val fog = Fog(c)
+  fog.io.fogMode := regBank.renderConfig.fogMode
+  fog.io.fogColor := regBank.renderConfig.fogColor
+  fog.io.fogTable := fogTableVec
+  fog.io.input << colorCombine.io.output
+
   // Alpha test: discard pixels that fail alpha comparison
   val alphaBits = regBank.renderConfig.alphaMode
   val alphaTestEnable = alphaBits(0)
   val alphaFunc = alphaBits(3 downto 1).asUInt
   val alphaRef = alphaBits(31 downto 24).asUInt
-  val srcAlpha = colorCombine.io.output.payload.alpha
+  val srcAlpha = fog.io.output.payload.alpha
 
   val alphaPassed = alphaFunc.mux(
     0 -> False,                        // NEVER
@@ -603,7 +622,7 @@ case class Core(c: Config) extends Component {
   )
 
   val alphaKill = alphaTestEnable && !alphaPassed
-  val afterAlphaTest = colorCombine.io.output.throwWhen(alphaKill)
+  val afterAlphaTest = fog.io.output.throwWhen(alphaKill)
 
   // Connect color combine unit to write stage
   write.i.fromPipeline.translateFrom(afterAlphaTest) { (out, in) =>
@@ -644,4 +663,7 @@ case class Core(c: Config) extends Component {
 
   // Connect framebuffer write bus
   write.o.fbWrite <> io.fbWrite
+
+  // Pipeline busy signal: any stage has valid data (placed after all stages instantiated)
+  regBank.io.pipelineBusy := triangleSetup.o.valid || rasterizer.o.valid || tmu.io.input.valid || colorCombine.io.input.valid || fog.io.input.valid || write.i.fromPipeline.valid
 }

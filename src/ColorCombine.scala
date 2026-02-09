@@ -70,6 +70,7 @@ object ColorCombine {
     val iteratedAlpha = UInt(8 bits) // Iterated alpha, 0-255
     val iteratedZ = UInt(8 bits) // Upper bits of Z for alpha local select
     val depth = AFix(c.vDepthFormat)
+    val rawW = SInt(32 bits) // Raw W value for fog wDepth calculation
 
     // Texture colors from TMU chain
     val texture = Color.u8()
@@ -89,6 +90,8 @@ object ColorCombine {
     val color = Color(UInt(8 bits), UInt(8 bits), UInt(8 bits))
     val alpha = UInt(8 bits)
     val depth = AFix(c.vDepthFormat)
+    val iteratedAlpha = UInt(8 bits) // Pass-through for fog alpha mode
+    val rawW = SInt(32 bits) // Pass-through for fog wDepth calculation
   }
 }
 
@@ -104,6 +107,8 @@ case class ColorCombine(c: voodoo.Config) extends Component {
   // Define pipeline payloads (Stageables)
   val COORDS = Payload(Vec.fill(2)(SInt(c.vertexFormat.nonFraction bits)))
   val DEPTH = Payload(AFix(c.vDepthFormat))
+  val ITERATED_ALPHA_PT = Payload(UInt(8 bits))
+  val RAW_W = Payload(SInt(32 bits))
   val CONFIG = Payload(ColorCombine.Config())
 
   // Color payloads at various precisions
@@ -193,6 +198,8 @@ case class ColorCombine(c: voodoo.Config) extends Component {
   n0.driveFrom(io.input) { (self, payload) =>
     self(COORDS) := payload.coords
     self(DEPTH) := payload.depth
+    self(ITERATED_ALPHA_PT) := payload.iteratedAlpha
+    self(RAW_W) := payload.rawW
     self(CONFIG) := payload.config
 
     // Helper to convert UInt(8) to SInt(9) by zero-extending
@@ -426,6 +433,8 @@ case class ColorCombine(c: voodoo.Config) extends Component {
   n8.driveTo(io.output) { (payload, self) =>
     payload.coords := self(COORDS)
     payload.depth := self(DEPTH)
+    payload.iteratedAlpha := self(ITERATED_ALPHA_PT)
+    payload.rawW := self(RAW_W)
 
     // Stage 8: Invert Output
     (payload.color.channels, self(C_CLAMPED).channels).zipped.foreach { (dst, src) =>

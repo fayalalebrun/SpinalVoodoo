@@ -678,8 +678,9 @@ case class RegisterBank(config: Config) extends Component {
       fbiInit1Reg.fieldAt(2, Bool(), AccessType.RW, 0, "Multi-SST (SLI) mode [V1]").asOutput()
     val fbiInit1_videoReset =
       fbiInit1Reg.fieldAt(8, Bool(), AccessType.RW, 0, "Video timing reset").asOutput()
-    val fbiInit1_sliEnable =
-      fbiInit1Reg.fieldAt(23, Bool(), AccessType.RW, 0, "SLI enable [V2+]").asOutput()
+    val fbiInit1_yOriginSwap = fbiInit1Reg
+      .fieldAt(22, UInt(10 bits), AccessType.RW, 0, "Y origin swap subtraction value")
+      .asOutput()
 
     // fbiInit2 (0x218) - Buffer config and swap algorithm
     val fbiInit2Reg = busif.newRegAt(0x218, "fbiInit2")

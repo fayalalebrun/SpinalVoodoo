@@ -551,8 +551,22 @@ case class Core(c: Config) extends Component {
   // Connect texture memory bus
   io.texRead <> tmu.io.texRead
 
+  // Y-origin transform: when fbzMode bit 17 is set, flip Y for bottom-up rendering
+  // yOriginSwapValue comes from fbiInit1[31:22]; fb_y = yOriginSwapValue - raster_y
+  val yOriginSwapValue = regBank.init.fbiInit1_yOriginSwap
+  val yOriginEnable = regBank.renderConfig.fbzMode.yOrigin
+
+  val rasterYTransformed = rasterizer.o.map { out =>
+    val result = cloneOf(out)
+    result := out
+    when(yOriginEnable) {
+      result.coords(1) := yOriginSwapValue.resize(c.vertexFormat.nonFraction bits).asSInt - out.coords(1)
+    }
+    result
+  }
+
   // Fork rasterizer output: one to TMU, one to a queue for synchronization
-  val rasterFork = StreamFork2(rasterizer.o, synchronous = true)
+  val rasterFork = StreamFork2(rasterYTransformed, synchronous = true)
 
   // Queue to hold rasterizer data while TMU processes
   // Depth must be >= TMU's maximum in-flight transactions
@@ -752,6 +766,9 @@ case class Core(c: Config) extends Component {
     val in = fastfill.o.payload
     val out = Write.Input(c)
     out.coords := in.coords
+    when(yOriginEnable) {
+      out.coords(1) := yOriginSwapValue.resize(c.vertexFormat.nonFraction bits).asSInt - in.coords(1)
+    }
 
     // Extract R/G/B from color1 register (bits 23:16, 15:8, 7:0)
     val color1Bits = regBank.renderConfig.color1

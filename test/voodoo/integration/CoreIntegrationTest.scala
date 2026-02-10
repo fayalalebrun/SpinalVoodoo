@@ -65,6 +65,7 @@ class CoreIntegrationTest extends AnyFunSuite {
   val REG_FOGCOLOR = 0x12c
   val REG_FASTFILL_CMD = 0x124
   val REG_SWAPBUFFER_CMD = 0x128
+  val REG_FBIINIT1 = 0x214
   val REG_TEXTUREMODE = 0x300
   val REG_TLOD = 0x304
   val REG_TEXBASEADDR = 0x30c
@@ -3977,6 +3978,129 @@ class CoreIntegrationTest extends AnyFunSuite {
       }
 
       println("[scissor_clip] PASS: all sub-cases passed")
+    }
+  }
+
+  // ========================================================================
+  // Test 25: Y-origin transform
+  // ========================================================================
+  test("Y-origin transform: fbzMode bit 17 flips Y in framebuffer") {
+    compiled.doSim("y_origin") { dut =>
+      val (driver, fbMemory, _, writtenAddrs) = setupDut(dut)
+
+      // Small triangle: A(20,10), B(30,20), C(10,20)
+      val vAx = 20 * 16; val vAy = 10 * 16
+      val vBx = 30 * 16; val vBy = 20 * 16
+      val vCx = 10 * 16; val vCy = 20 * 16
+
+      val startR = 180 << 12
+      val startG = 0
+      val startB = 0
+      val startA = 255 << 12
+
+      val fbzColorPath = (1 << 8) | (1 << 14) // zeroOther + add_clocal
+
+      // Sub-case 1: yOrigin disabled — pixels at raster Y positions
+      {
+        writtenAddrs.clear()
+        // fbzMode: enableClipping=1, rgbWrite=1, auxWrite=1, yOrigin=0
+        val fbzMode = 1 | (1 << 9) | (1 << 10)
+
+        submitTriangle(driver, dut.clockDomain,
+          vertexAx = vAx, vertexAy = vAy, vertexBx = vBx, vertexBy = vBy,
+          vertexCx = vCx, vertexCy = vCy,
+          startR = startR, startG = startG, startB = startB, startA = startA,
+          startZ = 0, startS = 0, startT = 0, startW = 0,
+          dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
+          dSdX = 0, dTdX = 0, dWdX = 0,
+          dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
+          dSdY = 0, dTdY = 0, dWdY = 0,
+          fbzColorPath = fbzColorPath, fbzMode = fbzMode, sign = false
+        )
+        dut.clockDomain.waitSampling(5000)
+        val normalPixels = collectPixels(fbMemory, writtenAddrs, 0)
+
+        // Verify pixels are in raster Y range [10, 20)
+        val yRange = normalPixels.keys.map(_._2)
+        assert(yRange.min >= 10 && yRange.max < 20,
+          f"[y_origin_1] expected Y in [10,20), got [${yRange.min},${yRange.max}]")
+        assert(normalPixels.size > 20, "Expected substantial triangle")
+
+        println(f"[y_origin_1] PASS: ${normalPixels.size} pixels, Y range [${yRange.min},${yRange.max}]")
+      }
+
+      // Sub-case 2: yOrigin enabled with yOriginSwap=99 — Y flipped
+      {
+        writtenAddrs.clear()
+        val yOriginSwap = 99
+
+        // Write fbiInit1 with yOriginSwap in bits [31:22] (bypass register)
+        writeReg(driver, REG_FBIINIT1, yOriginSwap.toLong << 22)
+        dut.clockDomain.waitSampling(5)
+
+        // fbzMode: enableClipping=1, rgbWrite=1, auxWrite=1, yOrigin=1 (bit 17)
+        val fbzMode = 1 | (1 << 9) | (1 << 10) | (1 << 17)
+
+        submitTriangle(driver, dut.clockDomain,
+          vertexAx = vAx, vertexAy = vAy, vertexBx = vBx, vertexBy = vBy,
+          vertexCx = vCx, vertexCy = vCy,
+          startR = startR, startG = startG, startB = startB, startA = startA,
+          startZ = 0, startS = 0, startT = 0, startW = 0,
+          dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
+          dSdX = 0, dTdX = 0, dWdX = 0,
+          dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
+          dSdY = 0, dTdY = 0, dWdY = 0,
+          fbzColorPath = fbzColorPath, fbzMode = fbzMode, sign = false
+        )
+        dut.clockDomain.waitSampling(5000)
+        val flippedPixels = collectPixels(fbMemory, writtenAddrs, 0)
+
+        // Flipped Y should be yOriginSwap - rasterY
+        // Raster Y in [10, 20) → FB Y in [99-19, 99-10] = [80, 89]
+        val yRange = flippedPixels.keys.map(_._2)
+        assert(yRange.min >= 80 && yRange.max <= 89,
+          f"[y_origin_2] expected Y in [80,89], got [${yRange.min},${yRange.max}]")
+        assert(flippedPixels.size > 20, "Expected substantial triangle")
+
+        println(f"[y_origin_2] PASS: ${flippedPixels.size} pixels, Y range [${yRange.min},${yRange.max}] (flipped)")
+      }
+
+      // Sub-case 3: Fastfill with yOrigin — verify fill region is Y-flipped
+      {
+        writtenAddrs.clear()
+        val yOriginSwap = 99
+
+        // fbiInit1 already set from sub-case 2, but write again to be safe
+        writeReg(driver, REG_FBIINIT1, yOriginSwap.toLong << 22)
+        dut.clockDomain.waitSampling(5)
+
+        // fbzMode: enableClipping=1, rgbWrite=1, auxWrite=1, yOrigin=1 (bit 17)
+        val fbzMode = 1 | (1 << 9) | (1 << 10) | (1 << 17)
+        writeReg(driver, REG_FBZMODE, fbzMode)
+        writeReg(driver, REG_COLOR1, 0x00FF00) // green
+        writeReg(driver, REG_ZACOLOR, 0)
+
+        // Clip rect for fastfill: x=[5,15), y=[10,15)
+        writeReg(driver, REG_CLIP_LR, (15L << 16) | 5L)
+        writeReg(driver, REG_CLIP_TB, (15L << 16) | 10L)
+        dut.clockDomain.waitSampling(50)
+
+        writeReg(driver, REG_FASTFILL_CMD, 0)
+        dut.clockDomain.waitSampling(3000)
+        val fillPixels = collectPixels(fbMemory, writtenAddrs, 0)
+
+        // Fastfill clip rect y=[10,15) → FB Y = [99-14, 99-10] = [85, 89]
+        val yRange = fillPixels.keys.map(_._2)
+        val xRange = fillPixels.keys.map(_._1)
+        assert(xRange.min >= 5 && xRange.max < 15,
+          f"[y_origin_3] expected X in [5,15), got [${xRange.min},${xRange.max}]")
+        assert(yRange.min >= 85 && yRange.max <= 89,
+          f"[y_origin_3] expected Y in [85,89], got [${yRange.min},${yRange.max}]")
+
+        println(f"[y_origin_3] PASS: ${fillPixels.size} fastfill pixels, Y range [${yRange.min},${yRange.max}] (flipped)")
+      }
+
+      println("[y_origin] PASS: all sub-cases passed")
     }
   }
 }

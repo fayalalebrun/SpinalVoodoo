@@ -10,7 +10,7 @@ SpinalHDL implementation of the 3dfx Voodoo Graphics GPU.
   - [x] Triangle setup (bounding-box scan + edge function testing)
   - [x] Span generation (serpentine scan)
   - [x] Scissor clipping (clipLeftRight, clipLowYHighY)
-  - [ ] Y-origin transform (fbzMode bit 17)
+  - [x] Y-origin transform (fbzMode bit 17)
   - [ ] Stipple patterns
 - Gradient Interpolation
   - [x] Color (R, G, B, A) - 12.12 fixed-point

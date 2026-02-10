@@ -20,6 +20,9 @@ case class Core(c: Config) extends Component {
     // Framebuffer read bus (for depth test and alpha blend)
     val fbRead = master(Bmb(FramebufferAccess.bmbParams(c)))
 
+    // Linear frame buffer write bus
+    val lfbBus = slave(Bmb(Lfb.bmbParams(c)))
+
     // Status inputs (hardware state)
     // Note: pciFifoFree now comes from RegisterBank's internal FIFO
     val statusInputs = in(new Bundle {
@@ -471,6 +474,20 @@ case class Core(c: Config) extends Component {
   fastfill.clipHighY := regBank.renderConfig.clipHighY
 
   // ========================================================================
+  // Linear Frame Buffer (LFB) writes
+  // ========================================================================
+  val lfb = Lfb(c)
+  lfb.io.bus <> io.lfbBus
+  lfb.io.writeFormat := regBank.renderConfig.lfbMode.writeFormat
+  lfb.io.rgbaLanes := regBank.renderConfig.lfbMode.rgbaLanes
+  lfb.io.wordSwapWrites := regBank.renderConfig.lfbMode.wordSwapWrites
+  lfb.io.byteSwizzleWrites := regBank.renderConfig.lfbMode.byteSwizzleWrites
+  lfb.io.enableDithering := regBank.renderConfig.fbzMode.enableDithering
+  lfb.io.ditherAlgorithm := regBank.renderConfig.fbzMode.ditherAlgorithm
+  lfb.io.zaColor := regBank.renderConfig.zaColor
+  lfb.io.enableAlphaPlanes := regBank.renderConfig.fbzMode.enableAlphaPlanes
+
+  // ========================================================================
   // Color Combine Unit
   // ========================================================================
   // Helper to decode enum from bits (takes captured fbzColorPath per-triangle)
@@ -745,9 +762,9 @@ case class Core(c: Config) extends Component {
     out
   }
 
-  // Merge fastfill and triangle paths — lowerFirst gives fastfill priority (index 0)
+  // Merge fastfill, triangle, and LFB paths — lowerFirst gives fastfill priority (index 0)
   write.i.fromPipeline << StreamArbiterFactory.lowerFirst.on(
-    Seq(fastfillWriteInput, triangleWriteInput)
+    Seq(fastfillWriteInput, triangleWriteInput, lfb.io.writeOutput)
   )
 
   write.i.fbBaseAddr := io.fbBaseAddr
@@ -756,5 +773,5 @@ case class Core(c: Config) extends Component {
   write.o.fbWrite <> io.fbWrite
 
   // Pipeline busy signal: any stage has valid data (placed after all stages instantiated)
-  regBank.io.pipelineBusy := triangleSetup.o.valid || rasterizer.o.valid || tmu.io.input.valid || colorCombine.io.input.valid || fog.io.input.valid || fbAccess.io.input.valid || write.i.fromPipeline.valid || fastfill.running || swapBuffer.io.waiting
+  regBank.io.pipelineBusy := triangleSetup.o.valid || rasterizer.o.valid || tmu.io.input.valid || colorCombine.io.input.valid || fog.io.input.valid || fbAccess.io.input.valid || write.i.fromPipeline.valid || fastfill.running || swapBuffer.io.waiting || lfb.io.busy
 }

@@ -439,10 +439,38 @@ class CoreIntegrationTest extends AnyFunSuite {
       withDriver = true
     )
 
+    // Initialize LFB bus: drive cmd.valid=false so no spurious LFB writes
+    // Don't use BmbDriver here — LFB tests create their own via setupDutWithLfb
+    dut.io.lfbBus.cmd.valid #= false
+    dut.io.lfbBus.cmd.address #= 0
+    dut.io.lfbBus.cmd.data #= 0
+    dut.io.lfbBus.cmd.opcode #= 0
+    dut.io.lfbBus.cmd.length #= 0
+    dut.io.lfbBus.cmd.source #= 0
+    dut.io.lfbBus.cmd.mask #= 0xf
+    dut.io.lfbBus.cmd.last #= true
+    dut.io.lfbBus.rsp.ready #= true
+
     dut.clockDomain.waitSampling(5)
 
     (bmbDriver, fbMemory, texMemory, writtenAddrs)
   }
+
+  // ========================================================================
+  // DUT setup helper with LFB driver
+  // ========================================================================
+  def setupDutWithLfb(
+      dut: Core
+  ): (BmbDriver, BmbDriver, BmbMemoryAgent, BmbMemoryAgent, scala.collection.mutable.Set[Long]) = {
+    val (regDriver, fbMemory, texMemory, writtenAddrs) = setupDut(dut)
+    val lfbDriver = new BmbDriver(dut.io.lfbBus, dut.clockDomain)
+    (regDriver, lfbDriver, fbMemory, texMemory, writtenAddrs)
+  }
+
+  // ========================================================================
+  // Register address for lfbMode
+  // ========================================================================
+  val REG_LFBMODE = 0x114
 
   // ========================================================================
   // Test 1: Flat-shaded triangle
@@ -2878,6 +2906,541 @@ class CoreIntegrationTest extends AnyFunSuite {
       assert(dut.io.swapsPending.toInt == 0, s"swapsPending should be 0 after swap, got ${dut.io.swapsPending.toInt}")
 
       println("[swap_vsync] PASS: vsync-synchronized swap blocks correctly")
+    }
+  }
+
+  // ========================================================================
+  // Test 21: LFB write bypass mode
+  // ========================================================================
+  test("LFB write bypass mode") {
+    compiled.doSim("lfb_write") { dut =>
+      val (regDriver, lfbDriver, fbMemory, _, writtenAddrs) = setupDutWithLfb(dut)
+
+      // Helper: compute RGB565 from 8-bit components (truncate, no dither)
+      def toRgb565(r8: Int, g8: Int, b8: Int): Int =
+        ((r8 >> 3) << 11) | ((g8 >> 2) << 5) | (b8 >> 3)
+
+      // Helper: expand 5-bit to 8-bit matching 86Box
+      def expand5to8(v: Int): Int = { val s = (v & 0x1f) << 3; s | (s >> 5) }
+      def expand6to8(v: Int): Int = { val s = (v & 0x3f) << 2; s | (s >> 4) }
+
+      // Helper: round-trip RGB565 (expand then re-pack, no dithering)
+      def roundTripRgb565(rgb565: Int): Int = {
+        val r5 = (rgb565 >> 11) & 0x1f
+        val g6 = (rgb565 >> 5) & 0x3f
+        val b5 = rgb565 & 0x1f
+        val r8 = expand5to8(r5)
+        val g8 = expand6to8(g6)
+        val b8 = expand5to8(b5)
+        toRgb565(r8, g8, b8)
+      }
+
+      // ----------------------------------------------------------------
+      // Sub-case 1: RGB565 format (0) - dual pixel, no dither
+      // ----------------------------------------------------------------
+      {
+        // lfbMode: writeFormat=0, rgbaLanes=0, bypass (pixelPipelineEnable=0)
+        val lfbMode = 0 // format 0, all other bits 0
+        writeReg(regDriver, REG_LFBMODE, lfbMode)
+        // fbzMode: RGB write mask (bit 9), no dithering
+        writeReg(regDriver, REG_FBZMODE, 1 << 9)
+        dut.clockDomain.waitSampling(50)
+
+        // Write 3 words = 6 pixels at y=10, starting x=20
+        // 16-bit stride: addr = (y << 11) | (x << 1)
+        val y = 10
+        val baseX = 20
+        val testPixels = Seq(
+          (0xF800, 0x07E0), // word 0: pure red, pure green
+          (0x001F, 0xFFFF), // word 1: pure blue, white
+          (0x8410, 0x0000)  // word 2: mid-gray, black
+        )
+
+        for (i <- testPixels.indices) {
+          val x = baseX + i * 2
+          val addr = (y << 11) | (x << 1)
+          val data = (testPixels(i)._2 << 16) | testPixels(i)._1
+          lfbDriver.write(BigInt(data.toLong & 0xffffffffL), BigInt(addr))
+        }
+
+        dut.clockDomain.waitSampling(100)
+
+        val pixels = collectPixels(fbMemory, writtenAddrs, 0)
+
+        // Verify each pixel
+        // RGB565 expand-truncate round-trip is identity (no dithering)
+        val expectedFlat = Seq(
+          (baseX + 0, y, 0xF800),
+          (baseX + 1, y, 0x07E0),
+          (baseX + 2, y, 0x001F),
+          (baseX + 3, y, 0xFFFF),
+          (baseX + 4, y, 0x8410),
+          (baseX + 5, y, 0x0000)
+        )
+
+        var mismatches = 0
+        for ((x, py, expectedRgb) <- expectedFlat) {
+          pixels.get((x, py)) match {
+            case Some((actualRgb, _)) =>
+              if (actualRgb != expectedRgb) {
+                println(f"[lfb_rgb565] ($x,$py) MISMATCH: expected=0x$expectedRgb%04X actual=0x$actualRgb%04X")
+                mismatches += 1
+              }
+            case None =>
+              println(f"[lfb_rgb565] ($x,$py) MISSING in output")
+              mismatches += 1
+          }
+        }
+        assert(mismatches == 0, s"[lfb_rgb565] $mismatches pixel mismatches")
+        println(s"[lfb_rgb565] PASS: ${expectedFlat.size} pixels match")
+        writtenAddrs.clear()
+      }
+
+      // ----------------------------------------------------------------
+      // Sub-case 2: ARGB8888 format (5) - single pixel, no dither
+      // ----------------------------------------------------------------
+      {
+        // lfbMode: writeFormat=5, rgbaLanes=0 (ARGB), bypass
+        val lfbMode = 5 // format 5
+        writeReg(regDriver, REG_LFBMODE, lfbMode)
+        writeReg(regDriver, REG_FBZMODE, 1 << 9) // RGB write mask only
+        dut.clockDomain.waitSampling(50)
+
+        // Write 3 single-pixel words at y=20
+        // 32-bit stride: addr = (y << 12) | (x << 2)
+        val y = 20
+        val testPixels32 = Seq(
+          (50, 0xFFC08040L), // x=50, ARGB: A=0xFF, R=0xC0, G=0x80, B=0x40
+          (51, 0xFF00FF00L), // x=51, ARGB: pure green
+          (52, 0xFFFFFFFFL)  // x=52, ARGB: white
+        )
+
+        for ((x, argb) <- testPixels32) {
+          val addr = (y << 12) | (x << 2)
+          lfbDriver.write(BigInt(argb & 0xffffffffL), BigInt(addr))
+        }
+
+        dut.clockDomain.waitSampling(100)
+
+        val pixels = collectPixels(fbMemory, writtenAddrs, 0)
+
+        // Expected: 8-bit RGB truncated to 565 (no dithering)
+        val expected32 = Seq(
+          (50, y, toRgb565(0xC0, 0x80, 0x40)),
+          (51, y, toRgb565(0x00, 0xFF, 0x00)),
+          (52, y, toRgb565(0xFF, 0xFF, 0xFF))
+        )
+
+        var mismatches = 0
+        for ((x, py, expectedRgb) <- expected32) {
+          pixels.get((x, py)) match {
+            case Some((actualRgb, _)) =>
+              if (actualRgb != expectedRgb) {
+                println(f"[lfb_argb8888] ($x,$py) MISMATCH: expected=0x$expectedRgb%04X actual=0x$actualRgb%04X")
+                mismatches += 1
+              }
+            case None =>
+              println(f"[lfb_argb8888] ($x,$py) MISSING")
+              mismatches += 1
+          }
+        }
+        assert(mismatches == 0, s"[lfb_argb8888] $mismatches pixel mismatches")
+        println(s"[lfb_argb8888] PASS: ${expected32.size} pixels match")
+        writtenAddrs.clear()
+      }
+
+      // ----------------------------------------------------------------
+      // Sub-case 3: Depth+RGB565 format (12) - single pixel with depth
+      // ----------------------------------------------------------------
+      {
+        // lfbMode: writeFormat=12, bypass
+        val lfbMode = 12
+        writeReg(regDriver, REG_LFBMODE, lfbMode)
+        // fbzMode: RGB write mask (bit 9) + aux write mask (bit 10)
+        writeReg(regDriver, REG_FBZMODE, (1 << 9) | (1 << 10))
+        dut.clockDomain.waitSampling(50)
+
+        // 16-bit stride: addr = (y << 11) | (x << 1)
+        // Data: hi16 = depth, lo16 = RGB565
+        val y = 30
+        val x = 100
+        val rgb565val = 0xF800 // pure red
+        val depthVal = 0x1234
+        val addr = (y << 11) | (x << 1)
+        val data = (depthVal << 16) | rgb565val
+        lfbDriver.write(BigInt(data.toLong & 0xffffffffL), BigInt(addr))
+
+        dut.clockDomain.waitSampling(100)
+
+        val pixels = collectPixels(fbMemory, writtenAddrs, 0)
+
+        pixels.get((x, y)) match {
+          case Some((actualRgb, actualDepth)) =>
+            assert(actualRgb == rgb565val,
+              f"[lfb_depth_rgb565] color: expected=0x$rgb565val%04X actual=0x$actualRgb%04X")
+            assert(actualDepth == depthVal,
+              f"[lfb_depth_rgb565] depth: expected=0x$depthVal%04X actual=0x$actualDepth%04X")
+            println(f"[lfb_depth_rgb565] PASS: color=0x$actualRgb%04X depth=0x$actualDepth%04X")
+          case None =>
+            fail(s"[lfb_depth_rgb565] pixel ($x,$y) MISSING")
+        }
+        writtenAddrs.clear()
+      }
+
+      // ----------------------------------------------------------------
+      // Sub-case 4: Depth-only format (15) - dual pixel
+      // ----------------------------------------------------------------
+      {
+        // lfbMode: writeFormat=15, bypass
+        val lfbMode = 15
+        writeReg(regDriver, REG_LFBMODE, lfbMode)
+        // fbzMode: aux write mask only (bit 10)
+        writeReg(regDriver, REG_FBZMODE, 1 << 10)
+        dut.clockDomain.waitSampling(50)
+
+        // 16-bit stride: addr = (y << 11) | (x << 1)
+        val y = 40
+        val x = 200
+        val depth0 = 0xAAAA
+        val depth1 = 0x5555
+        val addr = (y << 11) | (x << 1)
+        val data = (depth1 << 16) | depth0
+        lfbDriver.write(BigInt(data.toLong & 0xffffffffL), BigInt(addr))
+
+        dut.clockDomain.waitSampling(100)
+
+        val pixels = collectPixels(fbMemory, writtenAddrs, 0)
+
+        // Depth-only: rgbWrite=False, auxWrite=True
+        // So only bytes 2-3 (depth) should be written via mask
+        pixels.get((x, y)) match {
+          case Some((_, actualDepth0)) =>
+            assert(actualDepth0 == depth0,
+              f"[lfb_depth_only] pixel 0: expected=0x$depth0%04X actual=0x$actualDepth0%04X")
+          case None =>
+            fail(s"[lfb_depth_only] pixel ($x,$y) MISSING")
+        }
+        pixels.get((x + 1, y)) match {
+          case Some((_, actualDepth1)) =>
+            assert(actualDepth1 == depth1,
+              f"[lfb_depth_only] pixel 1: expected=0x$depth1%04X actual=0x$actualDepth1%04X")
+          case None =>
+            fail(s"[lfb_depth_only] pixel (${x + 1},$y) MISSING")
+        }
+        println(f"[lfb_depth_only] PASS: depth0=0x$depth0%04X depth1=0x$depth1%04X")
+      }
+
+      // ----------------------------------------------------------------
+      // Sub-case 5: RGB555 format (1) - verify 5-5-5 expansion
+      // ----------------------------------------------------------------
+      {
+        val lfbMode = 1 // format 1 = RGB555
+        writeReg(regDriver, REG_LFBMODE, lfbMode)
+        writeReg(regDriver, REG_FBZMODE, 1 << 9) // RGB write mask
+        dut.clockDomain.waitSampling(50)
+
+        // RGB555: bit 15 ignored, [14:10]=R, [9:5]=G, [4:0]=B
+        // Use values where 5→8→5 round trip is verifiable:
+        // R=31(0x1F), G=16(0x10), B=1(0x01) → 0x7C01 | (0x10 << 5) = 0x7E01
+        val y = 50
+        val x = 10
+        val px555 = (31 << 10) | (16 << 5) | 1 // 0x7E01
+        val px555_2 = (0 << 10) | (31 << 5) | 31 // 0x03FF — G=31, B=31, R=0
+        val addr = (y << 11) | (x << 1)
+        val data = (px555_2 << 16) | px555
+        lfbDriver.write(BigInt(data.toLong & 0xffffffffL), BigInt(addr))
+
+        dut.clockDomain.waitSampling(100)
+        val pixels = collectPixels(fbMemory, writtenAddrs, 0)
+
+        // 5-bit expand: v5 → (v5<<3)|(v5>>2) → truncate >>3 = v5 (identity for R/B channels)
+        // Green in 555 mode: 5→8→6-bit truncation. g5=16 → g8=(16<<3)|(16>>2)=128|4=132 → g6=132>>2=33
+        // So RGB565 output: R=31, G=33, B=1
+        def expand555to565(r5: Int, g5: Int, b5: Int): Int = {
+          val r8 = (r5 << 3) | (r5 >> 2)
+          val g8 = (g5 << 3) | (g5 >> 2)
+          val b8 = (b5 << 3) | (b5 >> 2)
+          ((r8 >> 3) << 11) | ((g8 >> 2) << 5) | (b8 >> 3)
+        }
+
+        val expected1 = expand555to565(31, 16, 1)
+        val expected2 = expand555to565(0, 31, 31)
+
+        var mismatches = 0
+        pixels.get((x, y)) match {
+          case Some((actual, _)) =>
+            if (actual != expected1) {
+              println(f"[lfb_rgb555] ($x,$y) MISMATCH: expected=0x$expected1%04X actual=0x$actual%04X")
+              mismatches += 1
+            }
+          case None =>
+            println(f"[lfb_rgb555] ($x,$y) MISSING"); mismatches += 1
+        }
+        pixels.get((x + 1, y)) match {
+          case Some((actual, _)) =>
+            if (actual != expected2) {
+              println(f"[lfb_rgb555] (${x + 1},$y) MISMATCH: expected=0x$expected2%04X actual=0x$actual%04X")
+              mismatches += 1
+            }
+          case None =>
+            println(f"[lfb_rgb555] (${x + 1},$y) MISSING"); mismatches += 1
+        }
+        assert(mismatches == 0, s"[lfb_rgb555] $mismatches pixel mismatches")
+        println(f"[lfb_rgb555] PASS: px0=0x$expected1%04X px1=0x$expected2%04X")
+        writtenAddrs.clear()
+      }
+
+      // ----------------------------------------------------------------
+      // Sub-case 6: ARGB8888 with rgbaLanes swizzle
+      // ----------------------------------------------------------------
+      {
+        // Test all 4 lane orderings with the same 32-bit input word
+        // Input: 0xAABBCCDD (bytes: AA=31:24, BB=23:16, CC=15:8, DD=7:0)
+        val testWord = 0xAABBCCDDL
+        val y = 60
+
+        val laneExpected = Seq(
+          // (lanes, expectedR, expectedG, expectedB)
+          (0, 0xBB, 0xCC, 0xDD), // ARGB: R=[23:16], G=[15:8], B=[7:0]
+          (1, 0xDD, 0xCC, 0xBB), // ABGR: R=[7:0], G=[15:8], B=[23:16]
+          (2, 0xAA, 0xBB, 0xCC), // RGBA: R=[31:24], G=[23:16], B=[15:8]
+          (3, 0xCC, 0xBB, 0xAA)  // BGRA: R=[15:8], G=[23:16], B=[31:24]
+        )
+
+        var mismatches = 0
+        for ((lanes, expR, expG, expB) <- laneExpected) {
+          val x = 10 + lanes * 2
+          // lfbMode: format=5 (ARGB8888), rgbaLanes in bits[10:9]
+          val lfbMode = 5 | (lanes << 9)
+          writeReg(regDriver, REG_LFBMODE, lfbMode)
+          writeReg(regDriver, REG_FBZMODE, 1 << 9)
+          dut.clockDomain.waitSampling(50)
+
+          val addr = (y << 12) | (x << 2)
+          lfbDriver.write(BigInt(testWord & 0xffffffffL), BigInt(addr))
+          dut.clockDomain.waitSampling(50)
+
+          val pixels = collectPixels(fbMemory, writtenAddrs, 0)
+          val expectedRgb = toRgb565(expR, expG, expB)
+          pixels.get((x, y)) match {
+            case Some((actual, _)) =>
+              if (actual != expectedRgb) {
+                println(f"[lfb_rgba_lanes] lanes=$lanes ($x,$y) MISMATCH: expected=0x$expectedRgb%04X actual=0x$actual%04X")
+                mismatches += 1
+              }
+            case None =>
+              println(f"[lfb_rgba_lanes] lanes=$lanes ($x,$y) MISSING"); mismatches += 1
+          }
+          writtenAddrs.clear()
+        }
+        assert(mismatches == 0, s"[lfb_rgba_lanes] $mismatches mismatches")
+        println("[lfb_rgba_lanes] PASS: all 4 lane orderings verified")
+      }
+
+      // ----------------------------------------------------------------
+      // Sub-case 7: ARGB8888 with dithering enabled
+      // ----------------------------------------------------------------
+      {
+        // format=5 (ARGB8888), lanes=0
+        writeReg(regDriver, REG_LFBMODE, 5)
+        // fbzMode: RGB write mask (bit 9) + dithering enabled (bit 8) + 4x4 dither (bit 11=0)
+        writeReg(regDriver, REG_FBZMODE, (1 << 9) | (1 << 8))
+        dut.clockDomain.waitSampling(50)
+
+        // Write a pixel with "fractional" color values (not aligned to 5/6 bit boundaries)
+        // R=0x84 (132), G=0x84 (132), B=0x84 (132) at position (0,0)
+        // Without dither: R=132>>3=16, G=132>>2=33, B=132>>3=16 → 0x8430
+        // With 4x4 dither at (0,0): threshold=bayer4x4[0][0]=15 (vertically flipped)
+        //   R: frac=132&7=4, scaled=4*2=8, 8<15 → no add → R=16
+        //   G: frac=132&3=0, scaled=0*4=0, 0<15 → no add → G=33
+        //   B: frac=132&7=4, scaled=4*2=8, 8<15 → no add → B=16
+        // So dithered output at (0,0) = same as undithered = 0x8430
+        // At (1,0): threshold=bayer4x4[0][1]=7
+        //   R: frac=4, scaled=8, 8>7 → +1 → R=17
+        //   G: frac=0, scaled=0, 0<7 → no add → G=33
+        //   B: frac=4, scaled=8, 8>7 → +1 → B=17
+        // Dithered at (1,0) = R=17, G=33, B=17 → (17<<11)|(33<<5)|17 = 0x8C31
+        val y = 70
+        val argb = 0xFF848484L
+
+        // Write pixel at (0,70)
+        val addr0 = (y << 12) | (0 << 2)
+        lfbDriver.write(BigInt(argb & 0xffffffffL), BigInt(addr0))
+        dut.clockDomain.waitSampling(50)
+
+        // Write pixel at (1,70)
+        val addr1 = (y << 12) | (1 << 2)
+        lfbDriver.write(BigInt(argb & 0xffffffffL), BigInt(addr1))
+        dut.clockDomain.waitSampling(50)
+
+        val pixels = collectPixels(fbMemory, writtenAddrs, 0)
+
+        val noDither = toRgb565(0x84, 0x84, 0x84) // 0x8430
+        val withDither = ((17 << 11) | (33 << 5) | 17) // 0x8C31
+
+        var mismatches = 0
+        pixels.get((0, y)) match {
+          case Some((actual, _)) =>
+            if (actual != noDither) {
+              println(f"[lfb_dither] (0,$y) MISMATCH: expected=0x$noDither%04X actual=0x$actual%04X")
+              mismatches += 1
+            }
+          case None => println(f"[lfb_dither] (0,$y) MISSING"); mismatches += 1
+        }
+        pixels.get((1, y)) match {
+          case Some((actual, _)) =>
+            if (actual != withDither) {
+              println(f"[lfb_dither] (1,$y) MISMATCH: expected=0x$withDither%04X actual=0x$actual%04X")
+              mismatches += 1
+            }
+          case None => println(f"[lfb_dither] (1,$y) MISSING"); mismatches += 1
+        }
+        assert(mismatches == 0, s"[lfb_dither] $mismatches mismatches")
+        println(f"[lfb_dither] PASS: (0,$y)=0x$noDither%04X (1,$y)=0x$withDither%04X")
+        writtenAddrs.clear()
+      }
+
+      // ----------------------------------------------------------------
+      // Sub-case 8: Word swap and byte swizzle
+      // ----------------------------------------------------------------
+      {
+        // RGB565 (format 0) with wordSwapWrites=1 (bit 11)
+        // Input: 0xAAAA_5555 → after word swap → 0x5555_AAAA
+        // So lo16=0xAAAA, hi16=0x5555
+        val y = 80
+        val x = 30
+
+        // Word swap test
+        val lfbModeWordSwap = 0 | (1 << 11) // format 0, wordSwapWrites=1
+        writeReg(regDriver, REG_LFBMODE, lfbModeWordSwap)
+        writeReg(regDriver, REG_FBZMODE, 1 << 9)
+        dut.clockDomain.waitSampling(50)
+
+        val inputWord = 0xAAAA5555L
+        val addr = (y << 11) | (x << 1)
+        lfbDriver.write(BigInt(inputWord & 0xffffffffL), BigInt(addr))
+        dut.clockDomain.waitSampling(100)
+
+        val pixels = collectPixels(fbMemory, writtenAddrs, 0)
+
+        // After word swap: data becomes 0x5555AAAA
+        // pixel 0 (lo16) = 0xAAAA, pixel 1 (hi16) = 0x5555
+        pixels.get((x, y)) match {
+          case Some((actual, _)) =>
+            assert(actual == 0xAAAA, f"[lfb_wordswap] px0: expected=0xAAAA actual=0x$actual%04X")
+          case None => fail(s"[lfb_wordswap] ($x,$y) MISSING")
+        }
+        pixels.get((x + 1, y)) match {
+          case Some((actual, _)) =>
+            assert(actual == 0x5555, f"[lfb_wordswap] px1: expected=0x5555 actual=0x$actual%04X")
+          case None => fail(s"[lfb_wordswap] (${x + 1},$y) MISSING")
+        }
+        println("[lfb_wordswap] PASS: word swap verified")
+        writtenAddrs.clear()
+
+        // Byte swizzle test
+        // RGB565 format 0 with byteSwizzleWrites=1 (bit 12)
+        // Input: 0x11223344 → after byte swizzle → 0x44332211
+        // lo16=0x2211, hi16=0x4433
+        val lfbModeByteSwizzle = 0 | (1 << 12) // format 0, byteSwizzleWrites=1
+        writeReg(regDriver, REG_LFBMODE, lfbModeByteSwizzle)
+        dut.clockDomain.waitSampling(50)
+
+        val y2 = 81
+        val addr2 = (y2 << 11) | (x << 1)
+        lfbDriver.write(BigInt(0x11223344L), BigInt(addr2))
+        dut.clockDomain.waitSampling(100)
+
+        val pixels2 = collectPixels(fbMemory, writtenAddrs, 0)
+
+        // After byte swizzle: 0x11223344 → 0x44332211
+        // lo16=0x2211, hi16=0x4433
+        pixels2.get((x, y2)) match {
+          case Some((actual, _)) =>
+            assert(actual == 0x2211, f"[lfb_byteswizzle] px0: expected=0x2211 actual=0x$actual%04X")
+          case None => fail(s"[lfb_byteswizzle] ($x,$y2) MISSING")
+        }
+        pixels2.get((x + 1, y2)) match {
+          case Some((actual, _)) =>
+            assert(actual == 0x4433, f"[lfb_byteswizzle] px1: expected=0x4433 actual=0x$actual%04X")
+          case None => fail(s"[lfb_byteswizzle] (${x + 1},$y2) MISSING")
+        }
+        println("[lfb_byteswizzle] PASS: byte swizzle verified")
+        writtenAddrs.clear()
+      }
+
+      // ----------------------------------------------------------------
+      // Sub-case 9: enableAlphaPlanes - zaColor written as aux for color-only format
+      // ----------------------------------------------------------------
+      {
+        // ARGB8888 format (5), enableAlphaPlanes=1 (fbzMode bit 18)
+        writeReg(regDriver, REG_LFBMODE, 5)
+        // fbzMode: RGB mask (bit 9) + aux mask (bit 10) + enableAlphaPlanes (bit 18)
+        writeReg(regDriver, REG_FBZMODE, (1 << 9) | (1 << 10) | (1 << 18))
+        // zaColor low 16 bits = 0xBEEF
+        writeReg(regDriver, REG_ZACOLOR, 0xBEEFL)
+        dut.clockDomain.waitSampling(50)
+
+        val y = 90
+        val x = 40
+        val addr = (y << 12) | (x << 2)
+        lfbDriver.write(BigInt(0xFF804020L), BigInt(addr)) // ARGB
+        dut.clockDomain.waitSampling(100)
+
+        val pixels = collectPixels(fbMemory, writtenAddrs, 0)
+
+        pixels.get((x, y)) match {
+          case Some((actualRgb, actualAux)) =>
+            val expectedRgb = toRgb565(0x80, 0x40, 0x20)
+            assert(actualRgb == expectedRgb,
+              f"[lfb_alpha_planes] color: expected=0x$expectedRgb%04X actual=0x$actualRgb%04X")
+            assert(actualAux == 0xBEEF,
+              f"[lfb_alpha_planes] aux: expected=0xBEEF actual=0x$actualAux%04X")
+            println(f"[lfb_alpha_planes] PASS: color=0x$actualRgb%04X aux=0x$actualAux%04X")
+          case None =>
+            fail(s"[lfb_alpha_planes] pixel ($x,$y) MISSING")
+        }
+        writtenAddrs.clear()
+      }
+
+      // ----------------------------------------------------------------
+      // Sub-case 10: Depth+ARGB1555 format (14) - verify 555 expansion + depth
+      // ----------------------------------------------------------------
+      {
+        val lfbMode = 14
+        writeReg(regDriver, REG_LFBMODE, lfbMode)
+        writeReg(regDriver, REG_FBZMODE, (1 << 9) | (1 << 10))
+        dut.clockDomain.waitSampling(50)
+
+        val y = 100
+        val x = 50
+        // lo16: ARGB1555 = 1_11111_00000_10101 = 0xFC15 (R=31, G=0, B=21)
+        val px1555 = (1 << 15) | (31 << 10) | (0 << 5) | 21
+        val depth = 0xABCD
+        val addr = (y << 11) | (x << 1)
+        val data = (depth << 16) | px1555
+        lfbDriver.write(BigInt(data.toLong & 0xffffffffL), BigInt(addr))
+
+        dut.clockDomain.waitSampling(100)
+        val pixels = collectPixels(fbMemory, writtenAddrs, 0)
+
+        // 555 expand: R=31→(31<<3)|(31>>2)=248|7=255→>>3=31
+        //             G=0→0→>>2=0
+        //             B=21→(21<<3)|(21>>2)=168|5=173→>>3=21
+        val expectedRgb = (31 << 11) | (0 << 5) | 21
+        pixels.get((x, y)) match {
+          case Some((actualRgb, actualDepth)) =>
+            assert(actualRgb == expectedRgb,
+              f"[lfb_depth_argb1555] color: expected=0x$expectedRgb%04X actual=0x$actualRgb%04X")
+            assert(actualDepth == 0xABCD,
+              f"[lfb_depth_argb1555] depth: expected=0xABCD actual=0x$actualDepth%04X")
+            println(f"[lfb_depth_argb1555] PASS: color=0x$actualRgb%04X depth=0x$actualDepth%04X")
+          case None => fail(s"[lfb_depth_argb1555] ($x,$y) MISSING")
+        }
+        writtenAddrs.clear()
+      }
+
+      println("[lfb_write] PASS: all LFB sub-cases passed")
     }
   }
 }

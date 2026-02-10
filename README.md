@@ -62,9 +62,14 @@ SpinalHDL implementation of the 3dfx Voodoo Graphics GPU.
   - [x] RGB write mask
   - [x] Aux write mask
 - Linear Frame Buffer (LFB)
-  - [ ] Direct CPU writes
-  - [ ] Pixel format conversion
-  - [ ] Pipeline routing option
+  - [x] Direct CPU writes (bypass mode, all write formats)
+  - [x] Pixel format conversion (RGB565, RGB555, ARGB1555, XRGB8888, ARGB8888, Depth+color, Depth-only)
+  - [x] Dual-pixel (16-bit formats) and single-pixel (32-bit formats) modes
+  - [x] RGBA lane swizzle (ARGB, ABGR, RGBA, BGRA)
+  - [x] Word swap and byte swizzle
+  - [x] Dithering support
+  - [ ] Pipeline routing option (pixelPipelineEnable=1)
+  - [ ] LFB reads
 - Commands
   - [x] triangleCMD / ftriangleCMD
   - [x] fastfillCMD (screen clear via clip rectangle, color1/zaColor, with dithering)
@@ -127,18 +132,6 @@ SpinalHDL implementation of the 3dfx Voodoo Graphics GPU.
 - [ ] Gamma correction CLUT (clutData)
 - [ ] DAC programming (dacData)
 - vRetrace is currently an external input (no internal generation)
-
-### Integration Tests (18 passing)
-
-Pixel-for-pixel verification against a Scala reference model:
-
-- Flat shading, Gouraud shading, textured triangles
-- 9 texture format coverage (RGB332, A8, I8, AI44, ARGB8332, RGB565, ARGB1555, ARGB4444, AI88)
-- Texture wrap modes, LOD selection
-- Color combine (12 sub-cases), dithering, chroma key
-- Alpha test, fog (Z-based), depth test, alpha blending
-- Fastfill, swap buffer (immediate + vsync)
-- Perspective correction (constant W, varying W)
 
 ## Scala CLI Commands
 

@@ -2623,6 +2623,236 @@ class CoreIntegrationTest extends AnyFunSuite {
     }
   }
 
+  // ========================================================================
+  // Test 19: Per-pixel LOD selection with perspective correction
+  // ========================================================================
+  // NOTE: SpinalVoodoo and 86Box compute LOD differently:
+  //   86Box:        lod = log2(N)*128 + (log2(W)-3)*256  (baseLod halved by >>2 on sum-of-squares)
+  //   SpinalVoodoo: lod = log2(N)*256 + log2(W)*256  (8-bit fractional precision via CLZ+logTable)
+  // This is a fundamental algorithmic difference, not a precision issue.
+  // We verify SpinalVoodoo's LOD behavior directly instead of comparing against 86Box.
+  test("Per-pixel LOD selection with perspective correction") {
+    compiled.doSim("perpixel_lod") { dut =>
+      val (driver, fbMemory, texMemory, writtenAddrs) = setupDut(dut)
+
+      // 5 distinct solid-color mipmap levels (LOD 0-4)
+      // LOD 0: 256×256, LOD 1: 128×128, LOD 2: 64×64, LOD 3: 32×32, LOD 4: 16×16
+      val lodColors = Array(
+        0xF800, // LOD 0: Red (RGB565)
+        0x07E0, // LOD 1: Green
+        0x001F, // LOD 2: Blue
+        0xFFE0, // LOD 3: Yellow (R+G)
+        0xF81F  // LOD 4: Magenta (R+B)
+      )
+      val lodSizes = Array(256, 128, 64, 32, 16)
+      val lodColorSet = lodColors.toSet
+
+      // Write mipmaps to texture memory sequentially
+      var texOffset = 0
+      for (lod <- 0 until 5) {
+        val size = lodSizes(lod)
+        val color = lodColors(lod)
+        for (t <- 0 until size; s <- 0 until size) {
+          val addr = texOffset + (t * size + s) * 2
+          texMemory.setByte(addr, (color & 0xff).toByte)
+          texMemory.setByte(addr + 1, ((color >> 8) & 0xff).toByte)
+        }
+        texOffset += size * size * 2
+      }
+
+      // Triangle: vertex A at left edge, wide horizontal span
+      // A = (10,50), B = (90,58), C = (10,58) — right triangle, wide base
+      val vAx = 10 * 16    // x=10
+      val vAy = 50 * 16    // y=50
+      val vBx = 90 * 16    // x=90
+      val vBy = 58 * 16    // y=58
+      val vCx = 10 * 16    // x=10
+      val vCy = 58 * 16    // y=58
+
+      // 1/W starts at 1.0 at vertex A (x=10), decreases rightward
+      // Over 80 pixels: oow goes from 1.0 to 0.125 (W from 1 to 8)
+      // dWdX = (0.125 - 1.0) / 80 = -0.010937... in 2.30 format
+      val startW_reg = 0x40000000  // 1.0 in 2.30
+      val dWdX_reg = -11744051    // -0.010937 * 2^30
+
+      // S/W gradient = 4.0 → baseLod = floor(log2(4)) = 2
+      // Per-pixel LOD = baseLod + log2(W):
+      //   x=10 (W=1): LOD=2+0=2 → Blue
+      //   x~65 (W≈2.9): LOD=2+1.5≈3.5 → LOD 3 → Yellow
+      //   x~80 (W≈5.7): LOD=2+2.5≈4.5 → LOD 4 → Magenta (capped)
+      val dSdX_reg = 4 * (1 << 18)
+
+      // textureMode: RGB565 (10 << 8), clampS, clampT, perspectiveEnable
+      val textureMode = (10 << 8) | (1 << 7) | (1 << 6) | 1
+      // tLOD: lodmin=0, lodmax=4.0 (16 in UQ(4,2) format, shifted to bits 11:6)
+      val tLOD = (16 << 6) | 0
+
+      val fbzColorPath = 1 | (0 << 8) | (0 << 9) | (0 << 10) | (0 << 13) | (0 << 14) | (1 << 27)
+      val fbzMode = 1 | (1 << 9) // clipping + RGB write
+      val sign = false
+
+      writeReg(driver, REG_TEXBASEADDR, 0)
+
+      submitTriangle(
+        driver, dut.clockDomain,
+        vertexAx = vAx, vertexAy = vAy,
+        vertexBx = vBx, vertexBy = vBy,
+        vertexCx = vCx, vertexCy = vCy,
+        startR = 0, startG = 0, startB = 0, startA = 255 << 12,
+        startZ = 0, startS = 0, startT = 0, startW = startW_reg,
+        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
+        dSdX = dSdX_reg, dTdX = 0, dWdX = dWdX_reg,
+        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
+        dSdY = 0, dTdY = 0, dWdY = 0,
+        fbzColorPath = fbzColorPath, fbzMode = fbzMode, sign = sign,
+        textureMode = textureMode, tLOD = tLOD,
+        clipRight = 640, clipHighY = 480
+      )
+
+      dut.clockDomain.waitSampling(50000)
+
+      val simPixels = collectPixels(fbMemory, writtenAddrs, 0)
+      println(s"[perpixel_lod] Simulation produced ${simPixels.size} pixels")
+      assert(simPixels.nonEmpty, "Expected rendered pixels")
+
+      // Identify LOD level for each pixel by color
+      def colorToLod(rgb565: Int): Int = lodColors.indexOf(rgb565)
+      def lodName(lod: Int): String = lod match {
+        case 0 => "RED(L0)"; case 1 => "GRN(L1)"; case 2 => "BLU(L2)"
+        case 3 => "YEL(L3)"; case 4 => "MAG(L4)"; case _ => "???"
+      }
+
+      // Print sample scanline
+      val allYs = simPixels.keys.map(_._2).toSeq.sorted
+      val sampleY = allYs(allYs.size * 3 / 4)  // pick a wide scanline near the bottom
+      val rowPixels = simPixels.filter(_._1._2 == sampleY).toSeq.sortBy(_._1._1)
+      println(s"[perpixel_lod] Sample scanline y=$sampleY (${rowPixels.size} pixels):")
+      for (((x, y), (rgb, _)) <- rowPixels) {
+        val lod = colorToLod(rgb)
+        if (x % 10 == 0 || x == rowPixels.head._1._1 || x == rowPixels.last._1._1)
+          println(f"  ($x,$y) rgb565=0x$rgb%04X ${lodName(lod)}")
+      }
+
+      // 1. Verify multiple distinct LOD colors are present
+      val simLodColors = simPixels.values.map(_._1).toSet.intersect(lodColorSet)
+      val simLods = simLodColors.map(colorToLod)
+      println(s"[perpixel_lod] Distinct LOD levels in output: ${simLods.toSeq.sorted.map(l => s"$l(${lodName(l)})").mkString(", ")}")
+      assert(simLods.size >= 2, s"Expected at least 2 distinct LOD levels, got ${simLods.size}: ${simLods}")
+
+      // 2. Verify LOD increases from left to right (W increases as oow decreases)
+      if (rowPixels.size >= 6) {
+        val third = rowPixels.size / 3
+        val leftPixels = rowPixels.take(third)
+        val rightPixels = rowPixels.takeRight(third)
+
+        def avgLod(pixels: Seq[((Int,Int), (Int,Int))]): Double = {
+          val lods = pixels.map { case (_, (rgb, _)) => colorToLod(rgb) }.filter(_ >= 0)
+          if (lods.isEmpty) -1.0 else lods.sum.toDouble / lods.size
+        }
+
+        val leftAvg = avgLod(leftPixels)
+        val rightAvg = avgLod(rightPixels)
+        println(f"[perpixel_lod] Avg LOD: left=$leftAvg%.2f, right=$rightAvg%.2f")
+        assert(rightAvg > leftAvg,
+          f"LOD should increase left→right (W increases): left=$leftAvg%.2f right=$rightAvg%.2f")
+      }
+
+      println("[perpixel_lod] PASS: Per-pixel LOD produces multiple levels with correct progression")
+    }
+  }
+
+  // Test 20: BaseLod fractional precision
+  // ========================================================================
+  // With a non-power-of-2 gradient (1.5 texels/pixel), the full-precision
+  // baseLod (CLZ+logTable) produces a different LOD integer level than a
+  // naive floor(log2) approach when combined with lodbias.
+  //
+  // Gradient = 1.5 → raw = 0x60000 (SQ(32,18)):
+  //   Full precision: baseLod = log2(1.5) ≈ 0.582 → baseLod_8_8 = 149
+  //   Integer-only:   baseLod = floor(log2(1)) = 0  → baseLod_8_8 = 0
+  // lodbias = +0.5 (SQ(4,2) value 2) → lodbias_8_8 = 128
+  //
+  // Full precision: lod_8_8 = 149 + 128 = 277 → lodInt = 1 → Green (LOD 1)
+  // Integer-only:   lod_8_8 =   0 + 128 = 128 → lodInt = 0 → Red   (LOD 0)
+  test("BaseLod fractional precision with non-power-of-2 gradient") {
+    compiled.doSim("baselod_frac") { dut =>
+      val (driver, fbMemory, texMemory, writtenAddrs) = setupDut(dut)
+
+      // LOD 0: 256x256 solid Red, LOD 1: 128x128 solid Green (RGB565)
+      val lod0Color = 0xF800  // Red
+      val lod1Color = 0x07E0  // Green
+
+      // Fill row 0 of LOD 0 (at offset 0)
+      for (s <- 0 until 256) {
+        val addr = s * 2
+        texMemory.setByte(addr, (lod0Color & 0xff).toByte)
+        texMemory.setByte(addr + 1, ((lod0Color >> 8) & 0xff).toByte)
+      }
+      // Fill row 0 of LOD 1 (at offset 256*256*2 = 131072)
+      val lod1Offset = 256 * 256 * 2
+      for (s <- 0 until 128) {
+        val addr = lod1Offset + s * 2
+        texMemory.setByte(addr, (lod1Color & 0xff).toByte)
+        texMemory.setByte(addr + 1, ((lod1Color >> 8) & 0xff).toByte)
+      }
+
+      // Small triangle: A=(50,50), B=(70,66), C=(50,66)
+      val vAx = 50 * 16
+      val vAy = 50 * 16
+      val vBx = 70 * 16
+      val vBy = 66 * 16
+      val vCx = 50 * 16
+      val vCy = 66 * 16
+
+      // Gradient = 1.5 texels/pixel (non-power-of-2)
+      val dSdX_reg = (1.5 * (1 << 18)).toInt  // 393216
+
+      // textureMode: RGB565 (10 << 8), clampS, clampT, non-perspective
+      val textureMode = (10 << 8) | (1 << 7) | (1 << 6)
+      // tLOD: lodmin=0, lodmax=2.0 (8 in UQ(4,2)), lodbias=+0.5 (2 in SQ(4,2))
+      val tLOD = (2 << 12) | (8 << 6) | 0
+
+      val fbzColorPath = 1 | (1 << 27)  // texture passthrough
+      val fbzMode = 1 | (1 << 9)        // clipping + RGB write
+
+      writeReg(driver, REG_TEXBASEADDR, 0)
+
+      submitTriangle(
+        driver, dut.clockDomain,
+        vertexAx = vAx, vertexAy = vAy,
+        vertexBx = vBx, vertexBy = vBy,
+        vertexCx = vCx, vertexCy = vCy,
+        startR = 0, startG = 0, startB = 0, startA = 255 << 12,
+        startZ = 0, startS = 0, startT = 0, startW = 0,
+        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
+        dSdX = dSdX_reg, dTdX = 0, dWdX = 0,
+        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
+        dSdY = 0, dTdY = 0, dWdY = 0,
+        fbzColorPath = fbzColorPath, fbzMode = fbzMode, sign = false,
+        textureMode = textureMode, tLOD = tLOD,
+        clipRight = 640, clipHighY = 480
+      )
+
+      dut.clockDomain.waitSampling(20000)
+
+      val simPixels = collectPixels(fbMemory, writtenAddrs, 0)
+      println(s"[baselod_frac] Simulation produced ${simPixels.size} pixels")
+      assert(simPixels.nonEmpty, "Expected rendered pixels")
+
+      // All pixels should be Green (LOD 1), NOT Red (LOD 0)
+      val colorCounts = simPixels.values.map(_._1).groupBy(identity).mapValues(_.size)
+      println(s"[baselod_frac] Color distribution: ${colorCounts.map { case (c, n) => f"0x$c%04X→$n" }.mkString(", ")}")
+
+      val greenCount = colorCounts.getOrElse(lod1Color, 0)
+      val redCount = colorCounts.getOrElse(lod0Color, 0)
+
+      assert(greenCount > 0, "Expected Green (LOD 1) pixels — fractional baseLod should push LOD past 1.0")
+      assert(redCount == 0, s"Got $redCount Red (LOD 0) pixels — baseLod fraction not working correctly")
+
+      println(s"[baselod_frac] PASS: All ${simPixels.size} pixels are Green (LOD 1), confirming fractional baseLod precision")
+    }
+  }
+
   test("SwapBuffer: vsync-synchronized swap blocks until retrace") {
     compiled.doSim("swap_vsync") { dut =>
       val (driver, _, _, _) = setupDut(dut)

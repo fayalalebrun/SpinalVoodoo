@@ -79,9 +79,40 @@ case class Tmu(c: voodoo.Config) extends Component {
     recipTable(i) := U(scala.math.round((1 << 24).toDouble / (256.0 + i)).toLong, 17 bits)
   }
 
+  // Log2 mantissa table: 256 entries, 8-bit values (from 86Box vid_voodoo_render.c)
+  // Maps normalized mantissa fraction to sub-integer log2 value
+  val logTableValues: Array[Int] = Array(
+    0x00, 0x01, 0x02, 0x04, 0x05, 0x07, 0x08, 0x09, 0x0b, 0x0c, 0x0e, 0x0f, 0x10, 0x12, 0x13, 0x15,
+    0x16, 0x17, 0x19, 0x1a, 0x1b, 0x1d, 0x1e, 0x1f, 0x21, 0x22, 0x23, 0x25, 0x26, 0x27, 0x28, 0x2a,
+    0x2b, 0x2c, 0x2e, 0x2f, 0x30, 0x31, 0x33, 0x34, 0x35, 0x36, 0x38, 0x39, 0x3a, 0x3b, 0x3d, 0x3e,
+    0x3f, 0x40, 0x41, 0x43, 0x44, 0x45, 0x46, 0x47, 0x49, 0x4a, 0x4b, 0x4c, 0x4d, 0x4e, 0x50, 0x51,
+    0x52, 0x53, 0x54, 0x55, 0x57, 0x58, 0x59, 0x5a, 0x5b, 0x5c, 0x5d, 0x5e, 0x60, 0x61, 0x62, 0x63,
+    0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6a, 0x6c, 0x6d, 0x6e, 0x6f, 0x70, 0x71, 0x72, 0x73, 0x74,
+    0x75, 0x76, 0x77, 0x78, 0x79, 0x7a, 0x7b, 0x7c, 0x7d, 0x7e, 0x7f, 0x80, 0x81, 0x83, 0x84, 0x85,
+    0x86, 0x87, 0x88, 0x89, 0x8a, 0x8b, 0x8c, 0x8c, 0x8d, 0x8e, 0x8f, 0x90, 0x91, 0x92, 0x93, 0x94,
+    0x95, 0x96, 0x97, 0x98, 0x99, 0x9a, 0x9b, 0x9c, 0x9d, 0x9e, 0x9f, 0xa0, 0xa1, 0xa2, 0xa2, 0xa3,
+    0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xab, 0xac, 0xad, 0xad, 0xae, 0xaf, 0xb0, 0xb1, 0xb2,
+    0xb3, 0xb4, 0xb5, 0xb5, 0xb6, 0xb7, 0xb8, 0xb9, 0xba, 0xbb, 0xbc, 0xbc, 0xbd, 0xbe, 0xbf, 0xc0,
+    0xc1, 0xc2, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7, 0xc8, 0xc8, 0xc9, 0xca, 0xcb, 0xcc, 0xcd, 0xcd,
+    0xce, 0xcf, 0xd0, 0xd1, 0xd1, 0xd2, 0xd3, 0xd4, 0xd5, 0xd6, 0xd6, 0xd7, 0xd8, 0xd9, 0xda, 0xda,
+    0xdb, 0xdc, 0xdd, 0xde, 0xde, 0xdf, 0xe0, 0xe1, 0xe1, 0xe2, 0xe3, 0xe4, 0xe5, 0xe5, 0xe6, 0xe7,
+    0xe8, 0xe8, 0xe9, 0xea, 0xeb, 0xeb, 0xec, 0xed, 0xee, 0xef, 0xef, 0xf0, 0xf1, 0xf2, 0xf2, 0xf3,
+    0xf4, 0xf5, 0xf5, 0xf6, 0xf7, 0xf7, 0xf8, 0xf9, 0xfa, 0xfa, 0xfb, 0xfc, 0xfd, 0xfd, 0xfe, 0xff
+  )
+  val logTable = Vec(UInt(8 bits), 256)
+  for (i <- 0 until 256) {
+    logTable(i) := U(logTableValues(i), 8 bits)
+  }
+
   // Compute perspective-corrected integer texel coordinates
   val sInt = SInt(14 bits)
   val tInt = SInt(14 bits)
+
+  // Per-pixel LOD adjustment for perspective correction
+  // log2(W) = log2(2^30 / oow_raw) = 30 - log2(oow_raw)
+  // adjustment_8_8 = ((30 - msbPos) << 8) - logtable[frac]
+  val perspLodAdjust = SInt(16 bits)
+  perspLodAdjust := S(0, 16 bits)
 
   when(!texMode.perspectiveEnable) {
     // Non-perspective: sow/tow ARE the S/T coords, extract integer part
@@ -108,6 +139,16 @@ case class Tmu(c: voodoo.Config) extends Component {
     // Handle oow <= 0 (degenerate): reciprocal = 0
     val validOow = !oowRaw.msb && (absOow =/= 0)
     val safeInterp = validOow ? interp | U(0, 17 bits)
+
+    // Per-pixel LOD adjustment: log2(W) = 30 - log2(oow_raw)
+    // adjustment = ((30 - msbPos) << 8) - logTable[index]
+    when(validOow) {
+      val adjInt = (U(30, 6 bits) - msbPos).resize(8 bits)   // UInt, 0-30
+      val logFrac = logTable(index)                            // UInt(8 bits)
+      // adjInt*256 - logFrac, as signed 16-bit
+      perspLodAdjust := ((False ## adjInt ## U(0, 8 bits)).asSInt
+                       - (False ## U(0, 8 bits) ## logFrac).asSInt).resize(16 bits)
+    }
 
     // Multiply: product = sow_raw * interp (signed × unsigned)
     val sowRaw = sow.raw.asSInt                           // SInt(32 bits)
@@ -150,43 +191,56 @@ case class Tmu(c: voodoo.Config) extends Component {
   val maxGradX = absDSdX.max(absDTdX)
   val maxGradY = absDSdY.max(absDTdY)
   val maxGrad = maxGradX.max(maxGradY)
-  val maxGradInt = maxGrad.floor(0).asUInt.resize(14 bits)
+  // Full-precision baseLod using CLZ + logTable on raw 32-bit gradient value
+  // LOD = log2(gradient_texels_per_pixel) = log2(raw / 2^18) = log2(raw) - 18
+  // baseLod_8_8 = ((msbPos - 18) << 8) + logTable[mantissa]  (8.8 fixed-point)
+  val maxGradRaw = maxGrad.raw.asUInt.resize(32 bits)
 
-  val lodRaw = SInt(6 bits)
-  when(maxGradInt === 0) {
-    lodRaw := S(-18)
+  val baseLod_8_8 = SInt(16 bits)
+  when(maxGradRaw === 0) {
+    baseLod_8_8 := S(-18 * 256, 16 bits)
   }.otherwise {
-    val msbPos = UInt(4 bits)
-    msbPos := 0
-    for (i <- 0 until 14) {
-      when(maxGradInt(i)) {
-        msbPos := i
-      }
-    }
-    lodRaw := msbPos.asSInt.resize(6 bits)
+    val gradClz = clz32(maxGradRaw)
+    val gradMsbPos = (U(31, 6 bits) - gradClz).resize(6 bits)
+    val gradNorm = (maxGradRaw |<< gradClz).resize(32 bits)
+    val gradIndex = gradNorm(30 downto 23)  // 8-bit logTable index
+
+    // Integer part: msbPos - 18 (range -18..+13)
+    val lodIntPart = ((False ## gradMsbPos).asSInt.resize(8 bits) - S(18, 8 bits)).resize(8 bits)
+    // Fractional part from logTable (0-255)
+    val lodFracPart = logTable(gradIndex)
+    // Combine: 8-bit signed integer || 8-bit unsigned fraction = 16-bit 8.8 format
+    baseLod_8_8 := (lodIntPart.asBits ## lodFracPart.asBits).asSInt
   }
 
-  val lodBiasInt = tLOD.lodbias.asSInt >> 2
-  val lodWithBias = lodRaw + lodBiasInt
-  val lodMinInt = (tLOD.lodmin >> 2).asSInt.resize(6 bits)
-  val lodMaxInt = (tLOD.lodmax >> 2).asSInt.resize(6 bits)
+  // 8.8 fixed-point LOD pipeline
+  val lodbias_8_8 = (tLOD.lodbias.asSInt << 6).resize(16 bits)    // 4.2 → 8.8
+  val lod_8_8 = baseLod_8_8 + perspLodAdjust + lodbias_8_8        // SInt(16)
 
-  val lodClamped = SInt(6 bits)
-  when(lodWithBias < lodMinInt) {
-    lodClamped := lodMinInt
-  }.elsewhen(lodWithBias > lodMaxInt) {
-    lodClamped := lodMaxInt
+  // Clamp bounds in 8.8 format: lodmin/lodmax are in 4.2 format, shift <<6 for 8.8
+  val lodMin_8_8 = (tLOD.lodmin << 6).resize(12 bits)             // UInt(12)
+  val lodMax_8_8_raw = (tLOD.lodmax << 6).resize(12 bits)
+  val lodMax_8_8 = Mux(lodMax_8_8_raw > U(0x800, 12 bits), U(0x800, 12 bits), lodMax_8_8_raw)
+
+  // Clamp lod_8_8 to [lodMin_8_8, lodMax_8_8]
+  val lodClamped_8_8 = SInt(16 bits)
+  when(lod_8_8 < (False ## lodMin_8_8).asSInt.resize(16 bits)) {
+    lodClamped_8_8 := (False ## lodMin_8_8).asSInt.resize(16 bits)
+  }.elsewhen(lod_8_8 > (False ## lodMax_8_8).asSInt.resize(16 bits)) {
+    lodClamped_8_8 := (False ## lodMax_8_8).asSInt.resize(16 bits)
   }.otherwise {
-    lodClamped := lodWithBias
+    lodClamped_8_8 := lod_8_8
   }
 
+  // Extract integer LOD level: lodClamped_8_8 >> 8, clamped to [0, 8]
+  val lodInt = (lodClamped_8_8 >> 8).resize(16 bits)
   val lodLevel = UInt(4 bits)
-  when(lodClamped < 0) {
+  when(lodInt < 0) {
     lodLevel := 0
-  }.elsewhen(lodClamped > 8) {
+  }.elsewhen(lodInt > 8) {
     lodLevel := 8
   }.otherwise {
-    lodLevel := lodClamped.asUInt.resize(4 bits)
+    lodLevel := lodInt.asUInt.resize(4 bits)
   }
 
   // Coordinate Wrapping/Clamping (sInt/tInt computed above in perspective correction)

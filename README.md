@@ -68,8 +68,8 @@ SpinalHDL implementation of the 3dfx Voodoo Graphics GPU.
   - [x] RGBA lane swizzle (ARGB, ABGR, RGBA, BGRA)
   - [x] Word swap and byte swizzle
   - [x] Dithering support
-  - [ ] Pipeline routing option (pixelPipelineEnable=1)
-  - [ ] LFB reads
+  - [x] Pipeline routing option (pixelPipelineEnable=1)
+  - [x] LFB reads
 - Commands
   - [x] triangleCMD / ftriangleCMD
   - [x] fastfillCMD (screen clear via clip rectangle, color1/zaColor, with dithering)

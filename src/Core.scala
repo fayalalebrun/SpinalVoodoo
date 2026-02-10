@@ -20,8 +20,11 @@ case class Core(c: Config) extends Component {
     // Framebuffer read bus (for depth test and alpha blend)
     val fbRead = master(Bmb(FramebufferAccess.bmbParams(c)))
 
-    // Linear frame buffer write bus
+    // Linear frame buffer bus (reads and writes)
     val lfbBus = slave(Bmb(Lfb.bmbParams(c)))
+
+    // LFB framebuffer read bus (for LFB read path)
+    val lfbFbRead = master(Bmb(Lfb.fbReadBmbParams(c)))
 
     // Status inputs (hardware state)
     // Note: pciFifoFree now comes from RegisterBank's internal FIFO
@@ -478,6 +481,7 @@ case class Core(c: Config) extends Component {
   // ========================================================================
   val lfb = Lfb(c)
   lfb.io.bus <> io.lfbBus
+  lfb.io.pixelPipelineEnable := regBank.renderConfig.lfbMode.pixelPipelineEnable
   lfb.io.writeFormat := regBank.renderConfig.lfbMode.writeFormat
   lfb.io.rgbaLanes := regBank.renderConfig.lfbMode.rgbaLanes
   lfb.io.wordSwapWrites := regBank.renderConfig.lfbMode.wordSwapWrites
@@ -486,6 +490,11 @@ case class Core(c: Config) extends Component {
   lfb.io.ditherAlgorithm := regBank.renderConfig.fbzMode.ditherAlgorithm
   lfb.io.zaColor := regBank.renderConfig.zaColor
   lfb.io.enableAlphaPlanes := regBank.renderConfig.fbzMode.enableAlphaPlanes
+  lfb.io.readBufferSelect := regBank.renderConfig.lfbMode.readBufferSelect
+  lfb.io.wordSwapReads := regBank.renderConfig.lfbMode.wordSwapReads
+  lfb.io.byteSwizzleReads := regBank.renderConfig.lfbMode.byteSwizzleReads
+  lfb.io.fbReadBus <> io.lfbFbRead
+  lfb.io.fbBaseAddr := io.fbBaseAddr
 
   // ========================================================================
   // Color Combine Unit
@@ -646,7 +655,10 @@ case class Core(c: Config) extends Component {
   fog.io.fogMode := regBank.renderConfig.fogMode
   fog.io.fogColor := regBank.renderConfig.fogColor
   fog.io.fogTable := fogTableVec
-  fog.io.input << colorCombine.io.output
+  // Arbiter: CC output (priority) and LFB pipeline output feed into Fog
+  fog.io.input << StreamArbiterFactory.lowerFirst.on(
+    Seq(colorCombine.io.output, lfb.io.pipelineOutput)
+  )
 
   // Alpha test: discard pixels that fail alpha comparison
   val alphaBits = regBank.renderConfig.alphaMode

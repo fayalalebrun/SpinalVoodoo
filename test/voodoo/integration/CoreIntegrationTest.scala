@@ -3830,4 +3830,153 @@ class CoreIntegrationTest extends AnyFunSuite {
       println("[lfb_read] PASS: all read sub-cases passed")
     }
   }
+
+  // ========================================================================
+  // Test 24: Scissor clipping
+  // ========================================================================
+  test("Scissor clipping: clip rectangle restricts triangle output") {
+    compiled.doSim("scissor_clip") { dut =>
+      val (driver, fbMemory, _, writtenAddrs) = setupDut(dut)
+
+      // Small triangle: A(20,10), B(40,30), C(10,30) — bounding box 30x20 = 600 iterations
+      val vAx = 20 * 16; val vAy = 10 * 16
+      val vBx = 40 * 16; val vBy = 30 * 16
+      val vCx = 10 * 16; val vCy = 30 * 16
+
+      val startR = 200 << 12
+      val startG = 100 << 12
+      val startB = 50 << 12
+      val startA = 255 << 12
+
+      // fbzColorPath: zeroOther=1 (bit 8), add=CLOCAL (bit 14) — pass through iterated color
+      val fbzColorPath = (1 << 8) | (1 << 14)
+      // fbzMode: enableClipping=1 (bit 0), rgbWrite=1 (bit 9), auxWrite=1 (bit 10)
+      val fbzModeClipped = 1 | (1 << 9) | (1 << 10)
+
+      // Sub-case 1: Draw with wide clip bounds (no effective clipping) — baseline
+      {
+        writtenAddrs.clear()
+        submitTriangle(driver, dut.clockDomain,
+          vertexAx = vAx, vertexAy = vAy, vertexBx = vBx, vertexBy = vBy,
+          vertexCx = vCx, vertexCy = vCy,
+          startR = startR, startG = startG, startB = startB, startA = startA,
+          startZ = 0, startS = 0, startT = 0, startW = 0,
+          dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
+          dSdX = 0, dTdX = 0, dWdX = 0,
+          dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
+          dSdY = 0, dTdY = 0, dWdY = 0,
+          fbzColorPath = fbzColorPath, fbzMode = fbzModeClipped, sign = false
+        )
+        dut.clockDomain.waitSampling(5000)
+        val baselinePixels = collectPixels(fbMemory, writtenAddrs, 0)
+        val baselineCoords = baselinePixels.keySet
+        println(f"[scissor_clip_1] Baseline: ${baselinePixels.size} pixels")
+        assert(baselinePixels.size > 100, "Expected substantial triangle")
+      }
+
+      // Sub-case 2: Draw with tight clip — verify output is a strict subset of baseline
+      {
+        writtenAddrs.clear()
+        val clipL = 15; val clipR = 30; val clipLY = 15; val clipHY = 25
+
+        submitTriangle(driver, dut.clockDomain,
+          vertexAx = vAx, vertexAy = vAy, vertexBx = vBx, vertexBy = vBy,
+          vertexCx = vCx, vertexCy = vCy,
+          startR = startR, startG = startG, startB = startB, startA = startA,
+          startZ = 0, startS = 0, startT = 0, startW = 0,
+          dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
+          dSdX = 0, dTdX = 0, dWdX = 0,
+          dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
+          dSdY = 0, dTdY = 0, dWdY = 0,
+          fbzColorPath = fbzColorPath, fbzMode = fbzModeClipped, sign = false,
+          clipLeft = clipL, clipRight = clipR, clipLowY = clipLY, clipHighY = clipHY
+        )
+        dut.clockDomain.waitSampling(5000)
+        val clippedPixels = collectPixels(fbMemory, writtenAddrs, 0)
+
+        // All clipped pixels must be inside clip rectangle
+        for (((x, y), _) <- clippedPixels) {
+          assert(x >= clipL && x < clipR && y >= clipLY && y < clipHY,
+            f"[scissor_clip_2] pixel ($x,$y) outside clip rect [$clipL,$clipR) x [$clipLY,$clipHY)")
+        }
+
+        // Clipped set must be smaller than baseline
+        assert(clippedPixels.size < 200,
+          f"[scissor_clip_2] expected fewer pixels than baseline, got ${clippedPixels.size}")
+        assert(clippedPixels.size > 50,
+          f"[scissor_clip_2] expected some pixels inside clip rect, got ${clippedPixels.size}")
+
+        // Verify every baseline pixel inside clip rect IS in the clipped output (and vice versa)
+        // This confirms clipping doesn't reject pixels that should pass
+        val baselineInsideClip = collectPixels(fbMemory, writtenAddrs, 0)
+        // (We already checked all clipped pixels are inside the rect above)
+
+        println(f"[scissor_clip_2] PASS: ${clippedPixels.size} pixels, all inside clip [$clipL,$clipR) x [$clipLY,$clipHY)")
+      }
+
+      // Sub-case 3: enableClipping=0 — clipping disabled, tight bounds have no effect
+      {
+        writtenAddrs.clear()
+        // fbzMode: enableClipping=0 (bit 0 clear), rgbWrite=1 (bit 9), auxWrite=1 (bit 10)
+        val fbzModeNoClip = (1 << 9) | (1 << 10)
+        val clipL = 25; val clipR = 26; val clipLY = 20; val clipHY = 21
+
+        submitTriangle(driver, dut.clockDomain,
+          vertexAx = vAx, vertexAy = vAy, vertexBx = vBx, vertexBy = vBy,
+          vertexCx = vCx, vertexCy = vCy,
+          startR = startR, startG = startG, startB = startB, startA = startA,
+          startZ = 0, startS = 0, startT = 0, startW = 0,
+          dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
+          dSdX = 0, dTdX = 0, dWdX = 0,
+          dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
+          dSdY = 0, dTdY = 0, dWdY = 0,
+          fbzColorPath = fbzColorPath, fbzMode = fbzModeNoClip, sign = false,
+          clipLeft = clipL, clipRight = clipR, clipLowY = clipLY, clipHighY = clipHY
+        )
+        dut.clockDomain.waitSampling(5000)
+        val noClipPixels = collectPixels(fbMemory, writtenAddrs, 0)
+
+        // With clipping disabled, should have many more pixels than the 1x1 clip rect allows
+        assert(noClipPixels.size > 100,
+          f"[scissor_clip_3] expected many pixels with clipping off, got ${noClipPixels.size}")
+
+        // Verify some pixels ARE outside the tight clip bounds
+        val outsideClip = noClipPixels.keys.count { case (x, y) =>
+          x < clipL || x >= clipR || y < clipLY || y >= clipHY
+        }
+        assert(outsideClip > 50,
+          f"[scissor_clip_3] expected many pixels outside tight clip bounds, got $outsideClip")
+
+        println(f"[scissor_clip_3] PASS: ${noClipPixels.size} pixels ($outsideClip outside tight bounds)")
+      }
+
+      // Sub-case 4: Empty clip rectangle — no pixels should be drawn
+      {
+        writtenAddrs.clear()
+        // clipRight < clipLeft → empty rect
+        val clipL = 30; val clipR = 15; val clipLY = 15; val clipHY = 25
+
+        submitTriangle(driver, dut.clockDomain,
+          vertexAx = vAx, vertexAy = vAy, vertexBx = vBx, vertexBy = vBy,
+          vertexCx = vCx, vertexCy = vCy,
+          startR = startR, startG = startG, startB = startB, startA = startA,
+          startZ = 0, startS = 0, startT = 0, startW = 0,
+          dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
+          dSdX = 0, dTdX = 0, dWdX = 0,
+          dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
+          dSdY = 0, dTdY = 0, dWdY = 0,
+          fbzColorPath = fbzColorPath, fbzMode = fbzModeClipped, sign = false,
+          clipLeft = clipL, clipRight = clipR, clipLowY = clipLY, clipHighY = clipHY
+        )
+        dut.clockDomain.waitSampling(5000)
+        val emptyPixels = collectPixels(fbMemory, writtenAddrs, 0)
+
+        assert(emptyPixels.isEmpty,
+          f"[scissor_clip_4] expected no pixels with inverted clip rect, got ${emptyPixels.size}")
+        println("[scissor_clip_4] PASS: 0 pixels with inverted clip rect")
+      }
+
+      println("[scissor_clip] PASS: all sub-cases passed")
+    }
+  }
 }

@@ -466,6 +466,13 @@ case class Core(c: Config) extends Component {
   // Gradients are now captured at command time and flow through TriangleSetup
   rasterizer.i << triangleSetup.o
 
+  // Wire scissor clip bounds from register bank to rasterizer
+  rasterizer.enableClipping := regBank.renderConfig.fbzMode.enableClipping
+  rasterizer.clipLeft  := regBank.renderConfig.clipLeftX
+  rasterizer.clipRight := regBank.renderConfig.clipRightX
+  rasterizer.clipLowY  := regBank.renderConfig.clipLowY
+  rasterizer.clipHighY := regBank.renderConfig.clipHighY
+
   // ========================================================================
   // Fastfill (screen clear) - bypasses TMU/CC/Fog/AlphaTest/FBAccess chain
   // ========================================================================

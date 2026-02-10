@@ -8,6 +8,13 @@ case class Rasterizer(c: Config) extends Component {
   val i = slave Stream (TriangleSetup.Output(c))
   val o = master Stream (Rasterizer.Output(c))
 
+  // Scissor clip inputs
+  val enableClipping = in Bool ()
+  val clipLeft  = in UInt (10 bits)
+  val clipRight = in UInt (10 bits)
+  val clipLowY  = in UInt (10 bits)
+  val clipHighY = in UInt (10 bits)
+
   val streamWhileResult = StreamWhile(
     i,
     stateType = HardType(Rasterizer.State(c)),
@@ -42,11 +49,23 @@ case class Rasterizer(c: Config) extends Component {
 
       // Output current state with inside flag
       // Round coordinates to integers (exp=0 means round to whole numbers)
-      output.data.coords(0) := state.coords(0).floor(0).asSInt
-      output.data.coords(1) := state.coords(1).floor(0).asSInt
+      val intX = state.coords(0).floor(0).asSInt
+      val intY = state.coords(1).floor(0).asSInt
+      output.data.coords(0) := intX
+      output.data.coords(1) := intY
       output.data.grads := state.grads
       output.data.config := state.input.config // Pass through per-triangle config
-      output.insideTriangle := insideTriangle
+
+      // Scissor clip test: inclusive of left/lowY, exclusive of right/highY
+      // Widen UInt(10) clip bounds to SInt for comparison with signed coords
+      val clipLeftS  = clipLeft.resize(c.vertexFormat.nonFraction bits).asSInt
+      val clipRightS = clipRight.resize(c.vertexFormat.nonFraction bits).asSInt
+      val clipLowYS  = clipLowY.resize(c.vertexFormat.nonFraction bits).asSInt
+      val clipHighYS = clipHighY.resize(c.vertexFormat.nonFraction bits).asSInt
+      val insideClip = (intX >= clipLeftS) && (intX < clipRightS) &&
+                       (intY >= clipLowYS) && (intY < clipHighYS)
+
+      output.insideTriangle := insideTriangle && (!enableClipping || insideClip)
 
       // Compute next state
       val next = cloneOf(state)

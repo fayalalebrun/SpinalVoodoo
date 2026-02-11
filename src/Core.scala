@@ -96,6 +96,23 @@ case class Core(c: Config) extends Component {
   io.swapsPending := swapBuffer.io.swapsPending
 
   // ========================================================================
+  // Draw buffer selection (double-buffering)
+  // ========================================================================
+  // fbiInit2[20:11] = buffer offset in 4KB units
+  val bufferOffsetBytes = regBank.init.fbiInit2_bufferOffset.resize(c.addressWidth.value bits) |<< 12
+  val buffer0Base = io.fbBaseAddr
+  val buffer1Base = io.fbBaseAddr + bufferOffsetBytes
+  val frontBufferBase = swapBuffer.io.swapCount(0) ? buffer1Base | buffer0Base
+  val backBufferBase  = swapBuffer.io.swapCount(0) ? buffer0Base | buffer1Base
+
+  // Triangle/fastfill draw target: fbzMode[15:14] drawBuffer (0=front, 1=back)
+  val drawBufferBase = regBank.renderConfig.fbzMode.drawBuffer(0) ? backBufferBase | frontBufferBase
+
+  // LFB buffer bases: lfbMode[5:4] writeBufferSelect, lfbMode[7:6] readBufferSelect
+  val lfbWriteBufferBase = regBank.renderConfig.lfbMode.writeBufferSelect(0) ? backBufferBase | frontBufferBase
+  val lfbReadBufferBase  = regBank.renderConfig.lfbMode.readBufferSelect(0) ? backBufferBase | frontBufferBase
+
+  // ========================================================================
   // Float to Fixed-Point Conversion for fTriangleCMD
   // ========================================================================
   // Convert float registers to fixed-point using Fpxx2AFix
@@ -501,7 +518,8 @@ case class Core(c: Config) extends Component {
   lfb.io.wordSwapReads := regBank.renderConfig.lfbMode.wordSwapReads
   lfb.io.byteSwizzleReads := regBank.renderConfig.lfbMode.byteSwizzleReads
   lfb.io.fbReadBus <> io.lfbFbRead
-  lfb.io.fbBaseAddr := io.fbBaseAddr
+  lfb.io.fbWriteBaseAddr := lfbWriteBufferBase
+  lfb.io.fbReadBaseAddr := lfbReadBufferBase
 
   // ========================================================================
   // Color Combine Unit
@@ -708,7 +726,7 @@ case class Core(c: Config) extends Component {
   val fbAccess = FramebufferAccess(c)
   fbAccess.io.input << afterAlphaTest
   fbAccess.io.fbRead <> io.fbRead
-  fbAccess.io.fbBaseAddr := io.fbBaseAddr
+  fbAccess.io.fbBaseAddr := drawBufferBase
 
   // Wire fbzMode fields
   fbAccess.io.enableDepthBuffer := regBank.renderConfig.fbzMode.enableDepthBuffer
@@ -756,6 +774,7 @@ case class Core(c: Config) extends Component {
     out.toFb := fbWord
     out.rgbWrite := in.rgbWrite
     out.auxWrite := in.auxWrite
+    out.fbBaseAddr := drawBufferBase
     out
   }
 
@@ -795,6 +814,7 @@ case class Core(c: Config) extends Component {
     out.toFb := fbWord
     out.rgbWrite := regBank.renderConfig.fbzMode.rgbBufferMask
     out.auxWrite := regBank.renderConfig.fbzMode.auxBufferMask
+    out.fbBaseAddr := drawBufferBase
     out
   }
 
@@ -802,8 +822,6 @@ case class Core(c: Config) extends Component {
   write.i.fromPipeline << StreamArbiterFactory.lowerFirst.on(
     Seq(fastfillWriteInput, triangleWriteInput, lfb.io.writeOutput)
   )
-
-  write.i.fbBaseAddr := io.fbBaseAddr
 
   // Connect framebuffer write bus
   write.o.fbWrite <> io.fbWrite

@@ -12,6 +12,7 @@ class WriteTest extends AnyFunSuite {
   def setupDut(dut: Write): Unit = {
     dut.clockDomain.forkStimulus(period = 10)
     dut.i.fromPipeline.valid #= false
+    dut.i.fromPipeline.fbBaseAddr #= 0
     dut.o.fbWrite.rsp.valid #= false
     dut.clockDomain.waitSampling()
   }
@@ -22,7 +23,8 @@ class WriteTest extends AnyFunSuite {
       r: Int,
       g: Int,
       b: Int,
-      depthAlpha: Int = 0xffff
+      depthAlpha: Int = 0xffff,
+      fbBaseAddr: Long = 0
   )
 
   def sendPixel(dut: Write, pixel: PixelWrite): Unit = {
@@ -33,6 +35,9 @@ class WriteTest extends AnyFunSuite {
     dut.i.fromPipeline.toFb.color.g #= pixel.g
     dut.i.fromPipeline.toFb.color.b #= pixel.b
     dut.i.fromPipeline.toFb.depthAlpha #= pixel.depthAlpha
+    dut.i.fromPipeline.rgbWrite #= true
+    dut.i.fromPipeline.auxWrite #= true
+    dut.i.fromPipeline.fbBaseAddr #= pixel.fbBaseAddr
     dut.clockDomain.waitSampling()
   }
 
@@ -76,10 +81,9 @@ class WriteTest extends AnyFunSuite {
     SimConfig.withIVerilog.withWave.compile(Write(config)).doSim { dut =>
       setupDut(dut)
 
-      val fbBaseAddr = 0x1000000
-      dut.i.fbBaseAddr #= fbBaseAddr
+      val fbBaseAddr = 0x1000000L
 
-      val pixel = PixelWrite(x = 10, y = 5, r = 0x1f, g = 0x3f, b = 0x1f)
+      val pixel = PixelWrite(x = 10, y = 5, r = 0x1f, g = 0x3f, b = 0x1f, fbBaseAddr = fbBaseAddr)
       sendPixel(dut, pixel)
 
       assert(dut.o.fbWrite.cmd.valid.toBoolean, "BMB cmd should be valid")
@@ -105,8 +109,6 @@ class WriteTest extends AnyFunSuite {
 
     SimConfig.withIVerilog.withWave.compile(Write(config)).doSim { dut =>
       setupDut(dut)
-      dut.i.fbBaseAddr #= 0x2000000
-
       // cmd should not be valid when input is invalid
       assert(
         !dut.o.fbWrite.cmd.valid.toBoolean,
@@ -127,8 +129,6 @@ class WriteTest extends AnyFunSuite {
 
     SimConfig.withIVerilog.withWave.compile(Write(config)).doSim { dut =>
       setupDut(dut)
-      dut.i.fbBaseAddr #= 0x100000
-
       val pixel = PixelWrite(x = 100, y = 50, r = 0x15, g = 0x2a, b = 0x0f, depthAlpha = 0xabcd)
       sendPixel(dut, pixel)
 
@@ -150,8 +150,6 @@ class WriteTest extends AnyFunSuite {
 
     SimConfig.withIVerilog.withWave.compile(Write(config)).doSim { dut =>
       setupDut(dut)
-      dut.i.fbBaseAddr #= 0x200000
-
       val pixels = Seq(
         PixelWrite(0, 0, 0x1f, 0x00, 0x00),
         PixelWrite(1, 0, 0x00, 0x3f, 0x00),
@@ -180,9 +178,7 @@ class WriteTest extends AnyFunSuite {
 
     SimConfig.withIVerilog.withWave.compile(Write(config)).doSim { dut =>
       setupDut(dut)
-      dut.i.fbBaseAddr #= 0x300000
-
-      val pixel = PixelWrite(50, 50, 0x10, 0x20, 0x10, 0x8000)
+      val pixel = PixelWrite(50, 50, 0x10, 0x20, 0x10, 0x8000, fbBaseAddr = 0x300000)
       dut.o.fbWrite.cmd.ready #= false
       sendPixel(dut, pixel)
 
@@ -210,13 +206,12 @@ class WriteTest extends AnyFunSuite {
     SimConfig.withIVerilog.withWave.compile(Write(config)).doSim { dut =>
       setupDut(dut)
 
-      val fbBaseAddr = 0x1000000
-      dut.i.fbBaseAddr #= fbBaseAddr
+      val fbBaseAddr = 0x1000000L
 
       val testCoords = Seq((0, 0), (127, 0), (0, 127), (127, 127), (64, 64))
 
       for ((x, y) <- testCoords) {
-        sendPixel(dut, PixelWrite(x, y, 0, 0, 0, 0))
+        sendPixel(dut, PixelWrite(x, y, 0, 0, 0, 0, fbBaseAddr = fbBaseAddr))
 
         val expectedAddr = calculateExpectedAddress(config, fbBaseAddr, x, y)
         val actualAddr = dut.o.fbWrite.cmd.address.toInt
@@ -249,12 +244,10 @@ class WriteTest extends AnyFunSuite {
         withStall = false
       )
 
-      dut.i.fbBaseAddr #= fbBaseAddr
-
       val testPixels = Seq(
-        PixelWrite(10, 20, 0x1f, 0x00, 0x00, 0x1234),
-        PixelWrite(11, 20, 0x00, 0x3f, 0x00, 0x5678),
-        PixelWrite(12, 20, 0x00, 0x00, 0x1f, 0x9abc)
+        PixelWrite(10, 20, 0x1f, 0x00, 0x00, 0x1234, fbBaseAddr = fbBaseAddr),
+        PixelWrite(11, 20, 0x00, 0x3f, 0x00, 0x5678, fbBaseAddr = fbBaseAddr),
+        PixelWrite(12, 20, 0x00, 0x00, 0x1f, 0x9abc, fbBaseAddr = fbBaseAddr)
       )
 
       for (pixel <- testPixels) {

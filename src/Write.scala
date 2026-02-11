@@ -7,7 +7,6 @@ import spinal.lib.bus.bmb._
 case class Write(c: Config) extends Component {
   val i = new Bundle {
     val fromPipeline = slave Stream (Write.Input(c))
-    val fbBaseAddr = in UInt (c.addressWidth)
   }
 
   val o = new Bundle {
@@ -17,7 +16,7 @@ case class Write(c: Config) extends Component {
   o.fbWrite.cmd.translateFrom(i.fromPipeline) { (out, in) =>
     val pixelFlat = (in.coords(1) * c.fbPixelStride + in.coords(0)).asUInt
 
-    out.fragment.address := (i.fbBaseAddr + (pixelFlat << 2)).resized
+    out.fragment.address := (in.fbBaseAddr + (pixelFlat << 2)).resized
     out.fragment.data := in.toFb.asBits.resized
     out.fragment.opcode := Bmb.Cmd.Opcode.WRITE
     out.fragment.length := 3 // 4 bytes - 1
@@ -38,6 +37,7 @@ object Write {
     val toFb = FbWord()
     val rgbWrite = Bool()
     val auxWrite = Bool()
+    val fbBaseAddr = UInt(c.addressWidth)
   }
 
   case class FbWord() extends Bundle {

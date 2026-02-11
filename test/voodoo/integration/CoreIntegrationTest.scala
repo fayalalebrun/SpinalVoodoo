@@ -66,6 +66,7 @@ class CoreIntegrationTest extends AnyFunSuite {
   val REG_FASTFILL_CMD = 0x124
   val REG_SWAPBUFFER_CMD = 0x128
   val REG_FBIINIT1 = 0x214
+  val REG_FBIINIT2 = 0x218
   val REG_TEXTUREMODE = 0x300
   val REG_TLOD = 0x304
   val REG_TEXBASEADDR = 0x30c
@@ -4101,6 +4102,143 @@ class CoreIntegrationTest extends AnyFunSuite {
       }
 
       println("[y_origin] PASS: all sub-cases passed")
+    }
+  }
+
+  // ========================================================================
+  // Test 26: Draw buffer selection (double-buffering)
+  // ========================================================================
+  test("Draw buffer selection") {
+    compiled.doSim("draw_buffer") { dut =>
+      val (driver, fbMemory, _, writtenAddrs) = setupDut(dut)
+
+      // Buffer offset = 128 * 4096 = 0x80000 bytes
+      val bufferOffset = 128
+      val bufferOffsetBytes = bufferOffset * 4096L // 0x80000
+
+      // Write fbiInit2: bufferOffset at bits [20:11]
+      writeReg(driver, REG_FBIINIT2, bufferOffset.toLong << 11)
+      dut.clockDomain.waitSampling(5)
+
+      // Small triangle: A(10,10), B(15,15), C(5,15) in 12.4 format
+      val vAx = 10 * 16; val vAy = 10 * 16
+      val vBx = 15 * 16; val vBy = 15 * 16
+      val vCx = 5 * 16;  val vCy = 15 * 16
+
+      // Constant green: startG = 200<<12
+      val startG = 200 << 12
+
+      // fbzColorPath: zeroOther=1, add=CLOCAL
+      val fbzColorPath = (1 << 8) | (1 << 14)
+
+      // Sub-case 1: Draw to back buffer (drawBuffer=1)
+      // swapCount=0 so back=buffer1 at offset 0x80000
+      {
+        // fbzMode: clipping=1, rgbWrite=1, drawBuffer=1 (bits [15:14])
+        val fbzMode = 1 | (1 << 9) | (1 << 14)
+
+        submitTriangle(driver, dut.clockDomain,
+          vAx, vAy, vBx, vBy, vCx, vCy,
+          0, startG, 0, 0, 0, 0, 0, 0, // startR,G,B,A,Z,S,T,W
+          0, 0, 0, 0, 0, 0, 0, 0, // dX gradients
+          0, 0, 0, 0, 0, 0, 0, 0, // dY gradients
+          fbzColorPath, fbzMode, sign = false)
+        dut.clockDomain.waitSampling(5000)
+
+        // Pixels should be in buffer1 (base = 0x80000)
+        val backPixels = collectPixels(fbMemory, writtenAddrs, bufferOffsetBytes)
+        val frontPixels = collectPixels(fbMemory, writtenAddrs, 0)
+
+        assert(backPixels.nonEmpty, "[draw_buffer_1] Expected pixels in back buffer")
+        // All written addresses should be >= 0x80000
+        val anyInFront = writtenAddrs.exists(_ < bufferOffsetBytes)
+        assert(!anyInFront, "[draw_buffer_1] No pixels should be in front buffer region")
+
+        println(f"[draw_buffer_1] PASS: ${backPixels.size} pixels in back buffer (offset 0x${bufferOffsetBytes}%X)")
+      }
+
+      // Sub-case 2: Draw to front buffer (drawBuffer=0)
+      {
+        writtenAddrs.clear()
+
+        val fbzMode = 1 | (1 << 9) // drawBuffer=0 (front)
+
+        submitTriangle(driver, dut.clockDomain,
+          vAx, vAy, vBx, vBy, vCx, vCy,
+          0, startG, 0, 0, 0, 0, 0, 0,
+          0, 0, 0, 0, 0, 0, 0, 0,
+          0, 0, 0, 0, 0, 0, 0, 0,
+          fbzColorPath, fbzMode, sign = false)
+        dut.clockDomain.waitSampling(5000)
+
+        val frontPixels = collectPixels(fbMemory, writtenAddrs, 0)
+        val anyInBack = writtenAddrs.exists(_ >= bufferOffsetBytes)
+        assert(!anyInBack, "[draw_buffer_2] No pixels should be in back buffer region")
+        assert(frontPixels.nonEmpty, "[draw_buffer_2] Expected pixels in front buffer")
+
+        println(f"[draw_buffer_2] PASS: ${frontPixels.size} pixels in front buffer")
+      }
+
+      // Sub-case 3: Swap then draw to back buffer
+      // After swap, swapCount=1: front=buffer1, back=buffer0
+      // drawBuffer=1 (back) → should write to buffer0
+      {
+        writtenAddrs.clear()
+
+        // Trigger swap (immediate mode: vsyncEnable=0)
+        writeReg(driver, REG_SWAPBUFFER_CMD, 0)
+        dut.clockDomain.waitSampling(100)
+
+        val fbzMode = 1 | (1 << 9) | (1 << 14) // drawBuffer=1 (back)
+
+        submitTriangle(driver, dut.clockDomain,
+          vAx, vAy, vBx, vBy, vCx, vCy,
+          0, startG, 0, 0, 0, 0, 0, 0,
+          0, 0, 0, 0, 0, 0, 0, 0,
+          0, 0, 0, 0, 0, 0, 0, 0,
+          fbzColorPath, fbzMode, sign = false)
+        dut.clockDomain.waitSampling(5000)
+
+        // After swap: back=buffer0, so pixels should be at offset 0
+        val anyInBack1 = writtenAddrs.exists(_ >= bufferOffsetBytes)
+        assert(!anyInBack1, "[draw_buffer_3] After swap, back=buffer0; no pixels should be at buffer1 offset")
+        val pixels = collectPixels(fbMemory, writtenAddrs, 0)
+        assert(pixels.nonEmpty, "[draw_buffer_3] Expected pixels in buffer0 (back after swap)")
+
+        println(f"[draw_buffer_3] PASS: ${pixels.size} pixels in buffer0 (back after swap)")
+      }
+
+      // Sub-case 4: LFB write to back buffer
+      // swapCount still 1: front=buffer1, back=buffer0
+      // writeBufferSelect=1 (back) → buffer0
+      {
+        writtenAddrs.clear()
+
+        // Create LFB driver
+        val lfbDriver = new BmbDriver(dut.io.lfbBus, dut.clockDomain)
+
+        // lfbMode: format=0 (RGB565), writeBufferSelect=1 (back), bypass mode
+        val lfbMode = 0 | (1 << 4) // writeBufferSelect=1 at bits [5:4]
+        writeReg(driver, REG_LFBMODE, lfbMode)
+        writeReg(driver, REG_FBZMODE, 1 | (1 << 9)) // clipping + rgbWrite
+        dut.clockDomain.waitSampling(50)
+
+        // Write a pixel at (20, 30) via LFB: 16-bit stride addr = (30 << 11) | (20 << 1)
+        val lfbAddr = (30 << 11) | (20 << 1)
+        val rgb565 = 0x07E0 // green
+        lfbDriver.write(BigInt(rgb565 | (rgb565 << 16)), BigInt(lfbAddr))
+        dut.clockDomain.waitSampling(500)
+
+        // After swap swapCount=1: back=buffer0, so LFB back writes go to offset 0
+        val pixels = collectPixels(fbMemory, writtenAddrs, 0)
+        assert(pixels.nonEmpty, "[draw_buffer_4] Expected LFB pixels in back buffer")
+        val anyAtBuffer1 = writtenAddrs.exists(_ >= bufferOffsetBytes)
+        assert(!anyAtBuffer1, "[draw_buffer_4] LFB pixels should be in buffer0 (back after swap)")
+
+        println(f"[draw_buffer_4] PASS: ${pixels.size} LFB pixels in back buffer (buffer0)")
+      }
+
+      println("[draw_buffer] PASS: all sub-cases passed")
     }
   }
 }

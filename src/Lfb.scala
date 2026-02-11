@@ -45,7 +45,8 @@ case class Lfb(c: Config) extends Component {
 
     // Framebuffer read bus (for LFB reads)
     val fbReadBus = master(Bmb(Lfb.fbReadBmbParams(c)))
-    val fbBaseAddr = in UInt (c.addressWidth)
+    val fbWriteBaseAddr = in UInt (c.addressWidth)
+    val fbReadBaseAddr = in UInt (c.addressWidth)
   }
 
   // Capture BMB command data
@@ -306,6 +307,7 @@ case class Lfb(c: Config) extends Component {
   writeInput.toFb.depthAlpha := decodedDepth
   writeInput.rgbWrite := decodedRgbWrite
   writeInput.auxWrite := decodedAuxWrite
+  writeInput.fbBaseAddr := io.fbWriteBaseAddr
 
   // ========================================================================
   // Pipeline mode: ColorCombine.Output
@@ -374,7 +376,7 @@ case class Lfb(c: Config) extends Component {
     val rx = (cmdAddr >> 1).resize(10 bits)
     val ry = (cmdAddr >> 11).resize(10 bits)
     val pixelFlat1 = (ry.resize(20 bits) * c.fbPixelStride + rx.resize(20 bits))
-    fbReadAddr := (io.fbBaseAddr + (pixelFlat1 << 2).resize(c.addressWidth.value bits)).resized
+    fbReadAddr := (io.fbReadBaseAddr + (pixelFlat1 << 2).resize(c.addressWidth.value bits)).resized
     fbReadCmdPending := True
   }
 
@@ -388,7 +390,7 @@ case class Lfb(c: Config) extends Component {
       state := stateRfetch2
       // Set up address for second read (x+1)
       val pixelFlat2 = (readPixelY.resize(20 bits) * c.fbPixelStride + (readPixelX + 1).resize(20 bits))
-      fbReadAddr := (io.fbBaseAddr + (pixelFlat2 << 2).resize(c.addressWidth.value bits)).resized
+      fbReadAddr := (io.fbReadBaseAddr + (pixelFlat2 << 2).resize(c.addressWidth.value bits)).resized
       fbReadCmdPending := True
     }
   }

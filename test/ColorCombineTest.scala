@@ -245,24 +245,27 @@ class ColorCombineTest extends AnyFunSuite {
 
       // Set up: c_other = iterated, c_local = color0
       // With sub_clocal: c_other - c_local
-      // With mselect=ZERO and reverseBlend=true: factor=0 (pass through zero), multiply gives 0
+      // With mselect=ZERO and reverseBlend=true: factor passes through as 0, then +1 unconditional
+      //   → factor = 1/256 (not exactly zero, due to Voodoo1's 1..256 factor range)
       // With add=CLOCAL, add back c_local
-      // So result should be c_local (color0)
+      // Result: (iter - color0) * (1/256) + color0 ≈ color0, with -1 truncation per channel
+      //   R: (-72 * 1) / 256 + 200 = 199.71875 → 199
+      //   G: (-86 * 1) / 256 + 150 = 149.664  → 149
+      //   B: (-68 * 1) / 256 + 100 = 99.734   → 99
       dut.io.input.payload.config.rgbSel #= ColorCombine.RgbSel.ITERATED
       dut.io.input.payload.config.localSelect #= ColorCombine.LocalSel.COLOR0
       dut.io.input.payload.config.subClocal #= true
       dut.io.input.payload.config.mselect #= ColorCombine.MSelect.ZERO
-      dut.io.input.payload.config.reverseBlend #= true // pass through factor (zero stays zero)
+      dut.io.input.payload.config.reverseBlend #= true // pass through factor (0 + 1 = 1/256)
       dut.io.input.payload.config.add #= ColorCombine.AddMode.CLOCAL
 
       val (r, g, b, a) = sendAndReceive(dut)
 
       println(s"Subtract and add local: R=$r, G=$g, B=$b, A=$a")
 
-      // (iter - color0) * 0 + color0 = color0 = (200, 150, 100)
-      assert(r == 200, s"Expected R=200, got $r")
-      assert(g == 150, s"Expected G=150, got $g")
-      assert(b == 100, s"Expected B=100, got $b")
+      assert(r == 199, s"Expected R=199, got $r")
+      assert(g == 149, s"Expected G=149, got $g")
+      assert(b == 99, s"Expected B=99, got $b")
     }
   }
 

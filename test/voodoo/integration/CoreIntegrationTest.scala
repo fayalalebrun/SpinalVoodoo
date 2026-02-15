@@ -6480,4 +6480,189 @@ class CoreIntegrationTest extends AnyFunSuite {
       println("[Palette] PASS: all sub-cases passed")
     }
   }
+
+  // ========================================================================
+  // Test 30: Parameter adjustment (FBZ_PARAM_ADJUST)
+  // ========================================================================
+  test("Parameter adjustment (FBZ_PARAM_ADJUST)") {
+    compiled.doSim("param_adjust") { dut =>
+      val (driver, fbMemory, _, writtenAddrs) = setupDut(dut)
+
+      // fbzColorPath: zero_other + add_clocal (= iterated color passthrough) + FBZ_PARAM_ADJUST
+      val fbzColorPathBase = (1 << 8) | (1 << 14)
+      val fbzMode = 1 | (1 << 9) // enable rendering + RGB write mask
+
+      // Helper to run a sub-case
+      def runSubCase(
+          name: String,
+          vAx: Int,
+          vAy: Int,
+          dRdX: Int,
+          dRdY: Int,
+          dGdX: Int,
+          dGdY: Int,
+          dBdX: Int,
+          dBdY: Int,
+          colorTolerance: Int = 0
+      ): Unit = {
+        writtenAddrs.clear()
+
+        val vBx = (vAx / 16 + 80) * 16 // B = A + (80, 120) in pixels
+        val vBy = (vAy / 16 + 120) * 16
+        val vCx = (vAx / 16 - 80) * 16 // C = A + (-80, 120) in pixels
+        val vCy = vBy
+
+        val startR = 100 << 12
+        val startG = 50 << 12
+        val startB = 25 << 12
+        val startA = 255 << 12
+
+        val fbzColorPath = fbzColorPathBase | (1 << 26) // enable FBZ_PARAM_ADJUST
+
+        submitTriangle(
+          driver,
+          dut.clockDomain,
+          vertexAx = vAx,
+          vertexAy = vAy,
+          vertexBx = vBx,
+          vertexBy = vBy,
+          vertexCx = vCx,
+          vertexCy = vCy,
+          startR = startR,
+          startG = startG,
+          startB = startB,
+          startA = startA,
+          startZ = 0,
+          startS = 0,
+          startT = 0,
+          startW = 0,
+          dRdX = dRdX,
+          dGdX = dGdX,
+          dBdX = dBdX,
+          dAdX = 0,
+          dZdX = 0,
+          dSdX = 0,
+          dTdX = 0,
+          dWdX = 0,
+          dRdY = dRdY,
+          dGdY = dGdY,
+          dBdY = dBdY,
+          dAdY = 0,
+          dZdY = 0,
+          dSdY = 0,
+          dTdY = 0,
+          dWdY = 0,
+          fbzColorPath = fbzColorPath,
+          fbzMode = fbzMode,
+          sign = false,
+          clipRight = 640,
+          clipHighY = 480
+        )
+
+        dut.clockDomain.waitSampling(200000)
+
+        val simPixels = collectPixels(fbMemory, writtenAddrs, 0)
+        println(s"[param_adjust/$name] Simulation produced ${simPixels.size} pixels")
+
+        val refParams = VoodooReference.fromRegisterValues(
+          vertexAx = vAx,
+          vertexAy = vAy,
+          vertexBx = vBx,
+          vertexBy = vBy,
+          vertexCx = vCx,
+          vertexCy = vCy,
+          startR = startR,
+          startG = startG,
+          startB = startB,
+          startA = startA,
+          startZ = 0,
+          startS = 0,
+          startT = 0,
+          startW = 0,
+          dRdX = dRdX,
+          dGdX = dGdX,
+          dBdX = dBdX,
+          dAdX = 0,
+          dZdX = 0,
+          dSdX = 0,
+          dTdX = 0,
+          dWdX = 0,
+          dRdY = dRdY,
+          dGdY = dGdY,
+          dBdY = dBdY,
+          dAdY = 0,
+          dZdY = 0,
+          dSdY = 0,
+          dTdY = 0,
+          dWdY = 0,
+          fbzColorPath = fbzColorPath,
+          fbzMode = fbzMode,
+          sign = false,
+          clipRight = 640,
+          clipHighY = 480
+        )
+        val refPixels = VoodooReference.voodooTriangle(refParams)
+        println(s"[param_adjust/$name] Reference produced ${refPixels.size} pixels")
+
+        comparePixelsFuzzy(
+          refPixels,
+          simPixels,
+          s"param_adjust/$name",
+          colorTolerance = colorTolerance
+        )
+      }
+
+      // Sub-case 1: Integer vertex (dxSub=8, dySub=8)
+      // Vertex A at (160.0, 80.0) = (160*16, 80*16) in 12.4 format
+      // fracAx=0 → dxSub=8, fracAy=0 → dySub=8
+      // Same pixel set as existing Gouraud test, but with half-pixel correction
+      runSubCase(
+        "integer_vertex",
+        vAx = 160 * 16,
+        vAy = 80 * 16,
+        dRdX = 2 << 12,
+        dRdY = 1 << 12,
+        dGdX = 1 << 12,
+        dGdY = 0,
+        dBdX = 0,
+        dBdY = 2 << 12
+      )
+
+      // Sub-case 2: Fractional vertex with X+Y gradients
+      // Vertex A at (160.375, 80.75) = (160*16+6, 80*16+12) in 12.4 format
+      // fracAx=6 → dxSub=2, fracAy=12 → dySub=12
+      // Fractional vertices cause minor rasterizer differences (1 LSB tolerance)
+      runSubCase(
+        "fractional_xy",
+        vAx = 160 * 16 + 6,
+        vAy = 80 * 16 + 12,
+        dRdX = 4 << 12,
+        dRdY = 2 << 12,
+        dGdX = 0,
+        dGdY = 3 << 12,
+        dBdX = 2 << 12,
+        dBdY = 0,
+        colorTolerance = 1
+      )
+
+      // Sub-case 3: Half-pixel vertex (dxSub=0, dySub=8)
+      // Vertex A at (160.5, 80.0) = (160*16+8, 80*16) in 12.4 format
+      // fracAx=8 → dxSub=0, fracAy=0 → dySub=8
+      // Fractional X vertex causes minor rasterizer differences (1 LSB tolerance)
+      runSubCase(
+        "half_pixel",
+        vAx = 160 * 16 + 8,
+        vAy = 80 * 16,
+        dRdX = 3 << 12,
+        dRdY = 0,
+        dGdX = 0,
+        dGdY = 2 << 12,
+        dBdX = 1 << 12,
+        dBdY = 1 << 12,
+        colorTolerance = 1
+      )
+
+      println("[param_adjust] PASS: all sub-cases passed")
+    }
+  }
 }

@@ -82,6 +82,16 @@ case class TriangleSetup(c: Config) extends Component {
     }
     out.edgeStart := edgeStartVec
 
+    // Subpixel correction (FBZ_PARAM_ADJUST = fbzColorPath bit 26)
+    // When enabled, adjusts gradient start values for the sub-pixel offset of vertex A.
+    // dx_sub = (8 - fracAx) mod 16, dy_sub = (8 - fracAy) mod 16
+    // correction = (dx_sub * dGrad_dX + dy_sub * dGrad_dY) >> 4
+    val paramAdjust = input.config.fbzColorPath(26)
+    val fracAx = tri(0)(0).raw(3 downto 0).asUInt // 4-bit fractional part of vertex A x
+    val dxSubRaw = (U(8, 5 bits) - fracAx.resize(5 bits))(3 downto 0) // (8 - frac) mod 16
+    val fracAy = tri(0)(1).raw(3 downto 0).asUInt
+    val dySubRaw = (U(8, 5 bits) - fracAy.resize(5 bits))(3 downto 0)
+
     // Adjust gradient start values for origin shift from bbox corner to vertex A
     // 86Box uses vertex A as gradient origin; SpinalVoodoo rasterizer starts at (xmin, ymin)
     // adjustedStart = start + (xmin - Ax) * dX + (ymin - Ay) * dY
@@ -101,7 +111,23 @@ case class TriangleSetup(c: Config) extends Component {
 
     out.grads.all.zip(input.grads.all).zip(gradFormats).foreach { case ((outG, inG), fmt) =>
       outG.d := inG.d // pass through per-pixel gradients unchanged
-      outG.start := (inG.start + dx * inG.d(0) + dy * inG.d(1)).fixTo(fmt)
+
+      // Subpixel correction: (dxSub * dX_raw + dySub * dY_raw) >> 4
+      val dxGrad = inG.d(0).raw.asSInt
+      val dyGrad = inG.d(1).raw.asSInt
+      val dxSubS = (False ## dxSubRaw).asSInt // 5-bit signed (0-15)
+      val dySubS = (False ## dySubRaw).asSInt
+      val corrRaw = (dxSubS * dxGrad + dySubS * dyGrad) >> 4
+
+      // Conditionally apply: wrapping add to match 86Box trunc32 behavior
+      val startRaw = inG.start.raw.asSInt
+      val N = startRaw.getWidth
+      val correctedRaw = (startRaw + corrRaw.resize(N))(N - 1 downto 0)
+      val adjustedStart = cloneOf(inG.start)
+      adjustedStart.raw := Mux(paramAdjust, correctedRaw.asBits, inG.start.raw)
+
+      // Then apply origin shift (xmin-Ax, ymin-Ay)
+      outG.start := (adjustedStart + dx * inG.d(0) + dy * inG.d(1)).fixTo(fmt)
     }
 
     out.config := input.config

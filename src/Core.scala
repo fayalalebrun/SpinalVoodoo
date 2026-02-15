@@ -99,18 +99,21 @@ case class Core(c: Config) extends Component {
   // Draw buffer selection (double-buffering)
   // ========================================================================
   // fbiInit2[20:11] = buffer offset in 4KB units
-  val bufferOffsetBytes = regBank.init.fbiInit2_bufferOffset.resize(c.addressWidth.value bits) |<< 12
+  val bufferOffsetBytes =
+    regBank.init.fbiInit2_bufferOffset.resize(c.addressWidth.value bits) |<< 12
   val buffer0Base = io.fbBaseAddr
   val buffer1Base = io.fbBaseAddr + bufferOffsetBytes
   val frontBufferBase = swapBuffer.io.swapCount(0) ? buffer1Base | buffer0Base
-  val backBufferBase  = swapBuffer.io.swapCount(0) ? buffer0Base | buffer1Base
+  val backBufferBase = swapBuffer.io.swapCount(0) ? buffer0Base | buffer1Base
 
   // Triangle/fastfill draw target: fbzMode[15:14] drawBuffer (0=front, 1=back)
   val drawBufferBase = regBank.renderConfig.fbzMode.drawBuffer(0) ? backBufferBase | frontBufferBase
 
   // LFB buffer bases: lfbMode[5:4] writeBufferSelect, lfbMode[7:6] readBufferSelect
-  val lfbWriteBufferBase = regBank.renderConfig.lfbMode.writeBufferSelect(0) ? backBufferBase | frontBufferBase
-  val lfbReadBufferBase  = regBank.renderConfig.lfbMode.readBufferSelect(0) ? backBufferBase | frontBufferBase
+  val lfbWriteBufferBase =
+    regBank.renderConfig.lfbMode.writeBufferSelect(0) ? backBufferBase | frontBufferBase
+  val lfbReadBufferBase =
+    regBank.renderConfig.lfbMode.readBufferSelect(0) ? backBufferBase | frontBufferBase
 
   // ========================================================================
   // Float to Fixed-Point Conversion for fTriangleCMD
@@ -485,9 +488,9 @@ case class Core(c: Config) extends Component {
 
   // Wire scissor clip bounds from register bank to rasterizer
   rasterizer.enableClipping := regBank.renderConfig.fbzMode.enableClipping
-  rasterizer.clipLeft  := regBank.renderConfig.clipLeftX
+  rasterizer.clipLeft := regBank.renderConfig.clipLeftX
   rasterizer.clipRight := regBank.renderConfig.clipRightX
-  rasterizer.clipLowY  := regBank.renderConfig.clipLowY
+  rasterizer.clipLowY := regBank.renderConfig.clipLowY
   rasterizer.clipHighY := regBank.renderConfig.clipHighY
 
   // ========================================================================
@@ -495,9 +498,9 @@ case class Core(c: Config) extends Component {
   // ========================================================================
   val fastfill = Fastfill(c)
   fastfill.i << regBank.commands.fastfillCmd
-  fastfill.clipLeft  := regBank.renderConfig.clipLeftX
+  fastfill.clipLeft := regBank.renderConfig.clipLeftX
   fastfill.clipRight := regBank.renderConfig.clipRightX
-  fastfill.clipLowY  := regBank.renderConfig.clipLowY
+  fastfill.clipLowY := regBank.renderConfig.clipLowY
   fastfill.clipHighY := regBank.renderConfig.clipHighY
 
   // ========================================================================
@@ -578,7 +581,8 @@ case class Core(c: Config) extends Component {
     val result = cloneOf(out)
     result := out
     when(yOriginEnable) {
-      result.coords(1) := yOriginSwapValue.resize(c.vertexFormat.nonFraction bits).asSInt - out.coords(1)
+      result.coords(1) := yOriginSwapValue.resize(c.vertexFormat.nonFraction bits).asSInt - out
+        .coords(1)
     }
     result
   }
@@ -592,7 +596,6 @@ case class Core(c: Config) extends Component {
 
   // Connect fork path 1 to TMU
   tmu.io.input.translateFrom(rasterFork._1) { (out, in) =>
-    out.coords := in.coords
     out.s := in.grads.sGrad // TMU's S/W coordinate (interpolated value from rasterizer)
     out.t := in.grads.tGrad // TMU's T/W coordinate (interpolated value from rasterizer)
     out.w := in.grads.wGrad // Shared 1/W (interpolated value from rasterizer)
@@ -622,8 +625,8 @@ case class Core(c: Config) extends Component {
   val texColor = tmuJoined.payload._1.texture
   val textureEnabled = tmuJoined.payload._2.config.fbzColorPath(27)
   val chromaKill = regBank.renderConfig.fbzMode.enableChromaKey &&
-                   textureEnabled &&
-                   texColor.r === ckR && texColor.g === ckG && texColor.b === ckB
+    textureEnabled &&
+    texColor.r === ckR && texColor.g === ckG && texColor.b === ckB
   val afterChromaKey = tmuJoined.throwWhen(chromaKill)
 
   // Connect TMU joined output to ColorCombine
@@ -631,7 +634,7 @@ case class Core(c: Config) extends Component {
     val tmuOut = payload._1
     val rasterOut = payload._2 // Original rasterizer output
 
-    out.coords := tmuOut.coords
+    out.coords := rasterOut.coords
 
     // Convert interpolated color values from 12.12 fixed-point to 8-bit unsigned
     // Use interpolated values from rasterizer output (properly synchronized)
@@ -685,8 +688,8 @@ case class Core(c: Config) extends Component {
   // Build fog table Vec from register bank entries
   val fogTableVec = Vec(regBank.fogTable.fogTable.map { case (dfog, fog) =>
     val entry = Bits(16 bits)
-    entry(15 downto 8) := dfog  // signed delta
-    entry(7 downto 0) := fog    // unsigned value
+    entry(15 downto 8) := dfog // signed delta
+    entry(7 downto 0) := fog // unsigned value
     entry
   })
 
@@ -707,14 +710,14 @@ case class Core(c: Config) extends Component {
   val srcAlpha = fog.io.output.payload.alpha
 
   val alphaPassed = alphaFunc.mux(
-    0 -> False,                        // NEVER
-    1 -> (srcAlpha < alphaRef),        // LESS
-    2 -> (srcAlpha === alphaRef),      // EQUAL
-    3 -> (srcAlpha <= alphaRef),       // LEQUAL
-    4 -> (srcAlpha > alphaRef),        // GREATER
-    5 -> (srcAlpha =/= alphaRef),      // NOTEQUAL
-    6 -> (srcAlpha >= alphaRef),       // GEQUAL
-    7 -> True                          // ALWAYS
+    0 -> False, // NEVER
+    1 -> (srcAlpha < alphaRef), // LESS
+    2 -> (srcAlpha === alphaRef), // EQUAL
+    3 -> (srcAlpha <= alphaRef), // LEQUAL
+    4 -> (srcAlpha > alphaRef), // GREATER
+    5 -> (srcAlpha =/= alphaRef), // NOTEQUAL
+    6 -> (srcAlpha >= alphaRef), // GEQUAL
+    7 -> True // ALWAYS
   )
 
   val alphaKill = alphaTestEnable && !alphaPassed
@@ -730,19 +733,19 @@ case class Core(c: Config) extends Component {
 
   // Wire fbzMode fields
   fbAccess.io.enableDepthBuffer := regBank.renderConfig.fbzMode.enableDepthBuffer
-  fbAccess.io.depthFunction     := regBank.renderConfig.fbzMode.depthFunction
-  fbAccess.io.wBufferSelect     := regBank.renderConfig.fbzMode.wBufferSelect
-  fbAccess.io.enableDepthBias   := regBank.renderConfig.fbzMode.enableDepthBias
+  fbAccess.io.depthFunction := regBank.renderConfig.fbzMode.depthFunction
+  fbAccess.io.wBufferSelect := regBank.renderConfig.fbzMode.wBufferSelect
+  fbAccess.io.enableDepthBias := regBank.renderConfig.fbzMode.enableDepthBias
   fbAccess.io.depthSourceSelect := regBank.renderConfig.fbzMode.depthSourceSelect
-  fbAccess.io.rgbBufferMask     := regBank.renderConfig.fbzMode.rgbBufferMask
-  fbAccess.io.auxBufferMask     := regBank.renderConfig.fbzMode.auxBufferMask
+  fbAccess.io.rgbBufferMask := regBank.renderConfig.fbzMode.rgbBufferMask
+  fbAccess.io.auxBufferMask := regBank.renderConfig.fbzMode.auxBufferMask
   fbAccess.io.enableAlphaPlanes := regBank.renderConfig.fbzMode.enableAlphaPlanes
 
   // Wire alphaMode fields
   fbAccess.io.alphaBlendEnable := regBank.renderConfig.alphaMode(4)
-  fbAccess.io.srcBlendFunc     := regBank.renderConfig.alphaMode(11 downto 8).asUInt
-  fbAccess.io.dstBlendFunc     := regBank.renderConfig.alphaMode(15 downto 12).asUInt
-  fbAccess.io.zaColor          := regBank.renderConfig.zaColor
+  fbAccess.io.srcBlendFunc := regBank.renderConfig.alphaMode(11 downto 8).asUInt
+  fbAccess.io.dstBlendFunc := regBank.renderConfig.alphaMode(15 downto 12).asUInt
+  fbAccess.io.zaColor := regBank.renderConfig.zaColor
 
   // ========================================================================
   // Triangle → Write path (from FramebufferAccess output)
@@ -786,7 +789,9 @@ case class Core(c: Config) extends Component {
     val out = Write.Input(c)
     out.coords := in.coords
     when(yOriginEnable) {
-      out.coords(1) := yOriginSwapValue.resize(c.vertexFormat.nonFraction bits).asSInt - in.coords(1)
+      out.coords(1) := yOriginSwapValue.resize(c.vertexFormat.nonFraction bits).asSInt - in.coords(
+        1
+      )
     }
 
     // Extract R/G/B from color1 register (bits 23:16, 15:8, 7:0)

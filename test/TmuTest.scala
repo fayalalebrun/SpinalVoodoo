@@ -28,10 +28,6 @@ class TmuTest extends AnyFunSuite {
 
   // Helper to set default input values
   def setDefaultInput(dut: Tmu): Unit = {
-    // Coordinates
-    dut.io.input.payload.coords(0) #= 100
-    dut.io.input.payload.coords(1) #= 200
-
     // Texture coordinates (0,0) - these are S/W and T/W
     dut.io.input.payload.s #= 0.0
     dut.io.input.payload.t #= 0.0
@@ -72,44 +68,6 @@ class TmuTest extends AnyFunSuite {
 
   // Pipeline has 5 nodes (n0-n4), so 4 stages of latency
   val maxPipelineLatency = 20
-
-  test("TMU passes coordinates through") {
-    SimConfig.withIVerilog.withWave.compile(Tmu(config)).doSim { dut =>
-      setupDut(dut)
-      setDefaultInput(dut)
-
-      // Set specific coordinates
-      dut.io.input.payload.coords(0) #= 123
-      dut.io.input.payload.coords(1) #= 456
-
-      dut.io.input.valid #= true
-
-      // Handle memory transactions and wait for output
-      var cycles = 0
-      while (!dut.io.output.valid.toBoolean && cycles < maxPipelineLatency) {
-        // Respond to texture read requests
-        if (dut.io.texRead.cmd.valid.toBoolean) {
-          dut.io.texRead.cmd.ready #= true
-          dut.io.texRead.rsp.valid #= true
-          dut.io.texRead.rsp.fragment.data #= 0xffff // White texel (RGB565)
-          dut.io.texRead.rsp.last #= true
-        } else {
-          dut.io.texRead.cmd.ready #= false
-          dut.io.texRead.rsp.valid #= false
-        }
-        dut.clockDomain.waitSampling()
-        cycles += 1
-      }
-
-      assert(dut.io.output.valid.toBoolean, s"Expected output to be valid (waited $cycles cycles)")
-      assert(dut.io.output.payload.coords(0).toInt == 123, "X coordinate should pass through")
-      assert(dut.io.output.payload.coords(1).toInt == 456, "Y coordinate should pass through")
-
-      println(
-        s"Coordinates: x=${dut.io.output.payload.coords(0).toInt}, y=${dut.io.output.payload.coords(1).toInt}"
-      )
-    }
-  }
 
   test("TMU converts RGB565 white to RGB888") {
     SimConfig.withIVerilog.withWave.compile(Tmu(config)).doSim { dut =>

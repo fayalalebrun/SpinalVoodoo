@@ -76,29 +76,53 @@ class CoreIntegrationTest extends AnyFunSuite {
   // ========================================================================
   case class TexFormatInfo(
       name: String,
-      hwFormat: Int,   // textureMode[11:8] for SpinalVoodoo hardware
-      refFormat: Int,  // decodeTexel() format code (86Box convention)
-      bpp: Int,        // bytes per texel (1 or 2)
-      encode: (Int, Int, Int, Int) => Int  // (R8, G8, B8, A8) => raw texel
+      hwFormat: Int, // textureMode[11:8] for SpinalVoodoo hardware
+      refFormat: Int, // decodeTexel() format code (86Box convention)
+      bpp: Int, // bytes per texel (1 or 2)
+      encode: (Int, Int, Int, Int) => Int // (R8, G8, B8, A8) => raw texel
   )
 
   val allFormats: Seq[TexFormatInfo] = Seq(
-    TexFormatInfo("RGB332", 0, 0x0, 1, (r, g, b, _) =>
-      ((r >> 5) << 5) | ((g >> 5) << 2) | (b >> 6)),
+    TexFormatInfo(
+      "RGB332",
+      0,
+      0x0,
+      1,
+      (r, g, b, _) => ((r >> 5) << 5) | ((g >> 5) << 2) | (b >> 6)
+    ),
     TexFormatInfo("A8", 2, 0x2, 1, (_, _, _, a) => a),
-    TexFormatInfo("I8", 3, 0x3, 1, (r, _, _, _) => r),  // intensity = R channel
-    TexFormatInfo("AI44", 4, 0x4, 1, (r, _, _, a) =>
-      ((a >> 4) << 4) | (r >> 4)),  // A4:I4
-    TexFormatInfo("ARGB8332", 8, 0x8, 2, (r, g, b, a) =>
-      (a << 8) | ((r >> 5) << 5) | ((g >> 5) << 2) | (b >> 6)),
-    TexFormatInfo("RGB565", 10, 0xa, 2, (r, g, b, _) =>
-      ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)),
-    TexFormatInfo("ARGB1555", 11, 0xb, 2, (r, g, b, a) =>
-      ((if (a >= 128) 1 else 0) << 15) | ((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3)),
-    TexFormatInfo("ARGB4444", 12, 0xc, 2, (r, g, b, a) =>
-      ((a >> 4) << 12) | ((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4)),
-    TexFormatInfo("AI88", 13, 0xd, 2, (r, _, _, a) =>
-      (a << 8) | r)  // A8:I8, intensity = R channel
+    TexFormatInfo("I8", 3, 0x3, 1, (r, _, _, _) => r), // intensity = R channel
+    TexFormatInfo("AI44", 4, 0x4, 1, (r, _, _, a) => ((a >> 4) << 4) | (r >> 4)), // A4:I4
+    TexFormatInfo(
+      "ARGB8332",
+      8,
+      0x8,
+      2,
+      (r, g, b, a) => (a << 8) | ((r >> 5) << 5) | ((g >> 5) << 2) | (b >> 6)
+    ),
+    TexFormatInfo(
+      "RGB565",
+      10,
+      0xa,
+      2,
+      (r, g, b, _) => ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)
+    ),
+    TexFormatInfo(
+      "ARGB1555",
+      11,
+      0xb,
+      2,
+      (r, g, b, a) =>
+        ((if (a >= 128) 1 else 0) << 15) | ((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3)
+    ),
+    TexFormatInfo(
+      "ARGB4444",
+      12,
+      0xc,
+      2,
+      (r, g, b, a) => ((a >> 4) << 12) | ((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4)
+    ),
+    TexFormatInfo("AI88", 13, 0xd, 2, (r, _, _, a) => (a << 8) | r) // A8:I8, intensity = R channel
   )
 
   // ========================================================================
@@ -321,15 +345,15 @@ class CoreIntegrationTest extends AnyFunSuite {
     // Find sim pixels with no nearby ref pixel
     val unmatchedSim = simSet.filter { case (x, y) =>
       !(-spatialTolerance to spatialTolerance).exists(dx =>
-        (-spatialTolerance to spatialTolerance).exists(dy =>
-          refSet.contains((x + dx, y + dy))))
+        (-spatialTolerance to spatialTolerance).exists(dy => refSet.contains((x + dx, y + dy)))
+      )
     }
 
     // Find ref pixels with no nearby sim pixel
     val unmatchedRef = refSet.filter { case (x, y) =>
       !(-spatialTolerance to spatialTolerance).exists(dx =>
-        (-spatialTolerance to spatialTolerance).exists(dy =>
-          simSet.contains((x + dx, y + dy))))
+        (-spatialTolerance to spatialTolerance).exists(dy => simSet.contains((x + dx, y + dy)))
+      )
     }
 
     // For exact-match pixels, check color values
@@ -346,9 +370,11 @@ class CoreIntegrationTest extends AnyFunSuite {
           val refR = (refRgb >> 11) & 0x1f; val simR = (simRgb >> 11) & 0x1f
           val refG = (refRgb >> 5) & 0x3f; val simG = (simRgb >> 5) & 0x3f
           val refB = refRgb & 0x1f; val simB = simRgb & 0x1f
-          if (scala.math.abs(refR - simR) > colorTolerance ||
-              scala.math.abs(refG - simG) > colorTolerance ||
-              scala.math.abs(refB - simB) > colorTolerance)
+          if (
+            scala.math.abs(refR - simR) > colorTolerance ||
+            scala.math.abs(refG - simG) > colorTolerance ||
+            scala.math.abs(refB - simB) > colorTolerance
+          )
             colorMismatches += f"($testName) (${xy._1},${xy._2}) color: ref=0x$refRgb%04X sim=0x$simRgb%04X"
         }
       }
@@ -357,7 +383,9 @@ class CoreIntegrationTest extends AnyFunSuite {
     // Report
     val edgeDiffs = unmatchedSim.size + unmatchedRef.size
     if (edgeDiffs > 0) {
-      println(f"[$testName] Edge differences: ${unmatchedSim.size} sim-only, ${unmatchedRef.size} ref-only (spatial tolerance=$spatialTolerance)")
+      println(
+        f"[$testName] Edge differences: ${unmatchedSim.size} sim-only, ${unmatchedRef.size} ref-only (spatial tolerance=$spatialTolerance)"
+      )
       if (unmatchedSim.size <= 10)
         unmatchedSim.toSeq.sorted.foreach { case (x, y) => println(f"  sim-only: ($x,$y)") }
       if (unmatchedRef.size <= 10)
@@ -368,12 +396,19 @@ class CoreIntegrationTest extends AnyFunSuite {
       colorMismatches.take(20).foreach(println)
     }
 
-    println(f"[$testName] Summary: ref=${ref.size} sim=${sim.size} edgeDiffs=$edgeDiffs colorMismatches=${colorMismatches.size}")
+    println(
+      f"[$testName] Summary: ref=${ref.size} sim=${sim.size} edgeDiffs=$edgeDiffs colorMismatches=${colorMismatches.size}"
+    )
 
-    assert(unmatchedSim.isEmpty && unmatchedRef.isEmpty,
-      s"$testName: $edgeDiffs unmatched edge pixels (${unmatchedSim.size} sim-only, ${unmatchedRef.size} ref-only)")
+    assert(
+      unmatchedSim.isEmpty && unmatchedRef.isEmpty,
+      s"$testName: $edgeDiffs unmatched edge pixels (${unmatchedSim.size} sim-only, ${unmatchedRef.size} ref-only)"
+    )
     if (checkColor)
-      assert(colorMismatches.isEmpty, s"$testName: ${colorMismatches.size} color mismatches (see above)")
+      assert(
+        colorMismatches.isEmpty,
+        s"$testName: ${colorMismatches.size} color mismatches (see above)"
+      )
   }
 
   // ========================================================================
@@ -987,16 +1022,16 @@ class CoreIntegrationTest extends AnyFunSuite {
       val targetA = 255
 
       // fbzColorPath: texture passthrough (same as existing textured test)
-      val fbzColorPath = 1 |       // rgbSel=1 (TREX/texture)
-        (0 << 2) |                  // a_sel=0 (iterated A)
-        (0 << 8) |                  // zero_other=0
-        (0 << 9) |                  // sub_clocal=0
-        (0 << 10) |                 // mselect=0 (ZERO)
-        (0 << 13) |                 // reverse_blend=0 (factor inverted: 0→0xff→+1=256)
-        (0 << 14) |                 // add=0
-        (1 << 27)                   // texture_enable
+      val fbzColorPath = 1 | // rgbSel=1 (TREX/texture)
+        (0 << 2) | // a_sel=0 (iterated A)
+        (0 << 8) | // zero_other=0
+        (0 << 9) | // sub_clocal=0
+        (0 << 10) | // mselect=0 (ZERO)
+        (0 << 13) | // reverse_blend=0 (factor inverted: 0→0xff→+1=256)
+        (0 << 14) | // add=0
+        (1 << 27) // texture_enable
 
-      val fbzMode = 1 | (1 << 9)   // clipping + RGB write
+      val fbzMode = 1 | (1 << 9) // clipping + RGB write
       val sign = false
 
       for (fmt <- allFormats) {
@@ -1021,19 +1056,45 @@ class CoreIntegrationTest extends AnyFunSuite {
         writeReg(driver, REG_TEXBASEADDR, 0)
 
         submitTriangle(
-          driver, dut.clockDomain,
-          vertexAx = vAx, vertexAy = vAy,
-          vertexBx = vBx, vertexBy = vBy,
-          vertexCx = vCx, vertexCy = vCy,
-          startR = 0, startG = 0, startB = 0, startA = 255 << 12,
-          startZ = 0, startS = startS_reg, startT = startT_reg, startW = 0,
-          dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
-          dSdX = 0, dTdX = 0, dWdX = 0,
-          dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
-          dSdY = 0, dTdY = 0, dWdY = 0,
-          fbzColorPath = fbzColorPath, fbzMode = fbzMode, sign = sign,
-          textureMode = textureMode, tLOD = 0,
-          clipRight = 640, clipHighY = 480
+          driver,
+          dut.clockDomain,
+          vertexAx = vAx,
+          vertexAy = vAy,
+          vertexBx = vBx,
+          vertexBy = vBy,
+          vertexCx = vCx,
+          vertexCy = vCy,
+          startR = 0,
+          startG = 0,
+          startB = 0,
+          startA = 255 << 12,
+          startZ = 0,
+          startS = startS_reg,
+          startT = startT_reg,
+          startW = 0,
+          dRdX = 0,
+          dGdX = 0,
+          dBdX = 0,
+          dAdX = 0,
+          dZdX = 0,
+          dSdX = 0,
+          dTdX = 0,
+          dWdX = 0,
+          dRdY = 0,
+          dGdY = 0,
+          dBdY = 0,
+          dAdY = 0,
+          dZdY = 0,
+          dSdY = 0,
+          dTdY = 0,
+          dWdY = 0,
+          fbzColorPath = fbzColorPath,
+          fbzMode = fbzMode,
+          sign = sign,
+          textureMode = textureMode,
+          tLOD = 0,
+          clipRight = 640,
+          clipHighY = 480
         )
 
         dut.clockDomain.waitSampling(20000)
@@ -1042,31 +1103,56 @@ class CoreIntegrationTest extends AnyFunSuite {
 
         // Build reference: single texel at (0,0), all coords clamp to it
         val decoded = VoodooReference.decodeTexel(rawTexel, fmt.refFormat)
-        val refTexData = Array(decoded)  // 1-element array for texel (0,0)
+        val refTexData = Array(decoded) // 1-element array for texel (0,0)
 
         val texDataPerLod = Array.fill(9)(Array.empty[Int])
         texDataPerLod(0) = refTexData
         val texWMaskPerLod = Array.fill(9)(0)
-        texWMaskPerLod(0) = 255  // LOD 0: 256x256
+        texWMaskPerLod(0) = 255 // LOD 0: 256x256
         val texHMaskPerLod = Array.fill(9)(0)
         texHMaskPerLod(0) = 255
         val texShiftPerLod = Array.fill(9)(0)
-        texShiftPerLod(0) = 8  // tex_shift = 8 - lod, lod=0
+        texShiftPerLod(0) = 8 // tex_shift = 8 - lod, lod=0
         val texLodPerLod = Array.fill(9)(0)
 
         val refParams = VoodooReference.fromRegisterValues(
-          vertexAx = vAx, vertexAy = vAy,
-          vertexBx = vBx, vertexBy = vBy,
-          vertexCx = vCx, vertexCy = vCy,
-          startR = 0, startG = 0, startB = 0, startA = 255 << 12,
-          startZ = 0, startS = startS_reg, startT = startT_reg, startW = 0,
-          dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
-          dSdX = 0, dTdX = 0, dWdX = 0,
-          dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
-          dSdY = 0, dTdY = 0, dWdY = 0,
-          fbzColorPath = fbzColorPath, fbzMode = fbzMode, sign = sign,
-          textureMode = textureMode, tLOD = 0,
-          clipRight = 640, clipHighY = 480,
+          vertexAx = vAx,
+          vertexAy = vAy,
+          vertexBx = vBx,
+          vertexBy = vBy,
+          vertexCx = vCx,
+          vertexCy = vCy,
+          startR = 0,
+          startG = 0,
+          startB = 0,
+          startA = 255 << 12,
+          startZ = 0,
+          startS = startS_reg,
+          startT = startT_reg,
+          startW = 0,
+          dRdX = 0,
+          dGdX = 0,
+          dBdX = 0,
+          dAdX = 0,
+          dZdX = 0,
+          dSdX = 0,
+          dTdX = 0,
+          dWdX = 0,
+          dRdY = 0,
+          dGdY = 0,
+          dBdY = 0,
+          dAdY = 0,
+          dZdY = 0,
+          dSdY = 0,
+          dTdY = 0,
+          dWdY = 0,
+          fbzColorPath = fbzColorPath,
+          fbzMode = fbzMode,
+          sign = sign,
+          textureMode = textureMode,
+          tLOD = 0,
+          clipRight = 640,
+          clipHighY = 480,
           texData = texDataPerLod,
           texWMask = texWMaskPerLod,
           texHMask = texHMaskPerLod,
@@ -1075,7 +1161,9 @@ class CoreIntegrationTest extends AnyFunSuite {
         )
 
         val refPixels = VoodooReference.voodooTriangle(refParams)
-        println(f"[format_coverage/${fmt.name}] sim=${simPixels.size} ref=${refPixels.size} rawTexel=0x${rawTexel}%04X")
+        println(
+          f"[format_coverage/${fmt.name}] sim=${simPixels.size} ref=${refPixels.size} rawTexel=0x${rawTexel}%04X"
+        )
 
         comparePixelsFuzzy(refPixels, simPixels, s"format_coverage/${fmt.name}")
       }
@@ -1091,20 +1179,20 @@ class CoreIntegrationTest extends AnyFunSuite {
 
       // Use RGB565 format at LOD 0 (256x256)
       // Populate texture: columns 0-127 = red, columns 128-255 = blue
-      val red565: Int = 0xF800   // pure red in RGB565
-      val blue565: Int = 0x001F  // pure blue in RGB565
+      val red565: Int = 0xf800 // pure red in RGB565
+      val blue565: Int = 0x001f // pure blue in RGB565
 
       // Write texels for rows 0-3, columns 0-10 and 248-255 (the only ones accessed)
       for (row <- 0 until 4) {
         for (col <- 0 until 11) {
           val addr = (row * 256 + col) * 2
-          val texel = red565  // columns 0-127 → red
+          val texel = red565 // columns 0-127 → red
           texMemory.setByte(addr, (texel & 0xff).toByte)
           texMemory.setByte(addr + 1, ((texel >> 8) & 0xff).toByte)
         }
         for (col <- 248 until 256) {
           val addr = (row * 256 + col) * 2
-          val texel = blue565  // columns 128-255 → blue
+          val texel = blue565 // columns 128-255 → blue
           texMemory.setByte(addr, (texel & 0xff).toByte)
           texMemory.setByte(addr + 1, ((texel >> 8) & 0xff).toByte)
         }
@@ -1127,14 +1215,15 @@ class CoreIntegrationTest extends AnyFunSuite {
       val dTdY_reg = 0
 
       // fbzColorPath: texture passthrough
-      val fbzColorPath = 1 | (1 << 27)  // rgbSel=1 (texture), texture_enable
-      val fbzMode = 1 | (1 << 9)        // clipping + RGB write
+      val fbzColorPath = 1 | (1 << 27) // rgbSel=1 (texture), texture_enable
+      val fbzMode = 1 | (1 << 9) // clipping + RGB write
 
       // Build reference texture data: pre-decoded 256x256 (only need accessed region)
       val refTexData256 = new Array[Int](256 * 256)
       for (row <- 0 until 256; col <- 0 until 256) {
         val raw = if (col < 128) red565 else blue565
-        refTexData256(col + row * 256) = VoodooReference.decodeTexel(raw, 0xa) // 0xa = RGB565 ref code
+        refTexData256(col + row * 256) =
+          VoodooReference.decodeTexel(raw, 0xa) // 0xa = RGB565 ref code
       }
 
       val texDataPerLod = Array.fill(9)(Array.empty[Int])
@@ -1144,30 +1233,56 @@ class CoreIntegrationTest extends AnyFunSuite {
       val texHMaskPerLod = Array.fill(9)(0)
       texHMaskPerLod(0) = 255
       val texShiftPerLod = Array.fill(9)(0)
-      texShiftPerLod(0) = 8  // tex_shift = 8 - lod, lod=0
+      texShiftPerLod(0) = 8 // tex_shift = 8 - lod, lod=0
       val texLodPerLod = Array.fill(9)(0)
 
       // --- Sub-test A: wrap mode (clampS=0, clampT=1) ---
       writtenAddrs.clear()
 
-      val textureModeWrap = (10 << 8) | (1 << 7)  // RGB565, clampT only
+      val textureModeWrap = (10 << 8) | (1 << 7) // RGB565, clampT only
 
       writeReg(driver, REG_TEXBASEADDR, 0)
 
       submitTriangle(
-        driver, dut.clockDomain,
-        vertexAx = vAx, vertexAy = vAy,
-        vertexBx = vBx, vertexBy = vBy,
-        vertexCx = vCx, vertexCy = vCy,
-        startR = 0, startG = 0, startB = 0, startA = 255 << 12,
-        startZ = 0, startS = startS_reg, startT = startT_reg, startW = 0,
-        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
-        dSdX = dSdX_reg, dTdX = dTdX_reg, dWdX = 0,
-        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
-        dSdY = dSdY_reg, dTdY = dTdY_reg, dWdY = 0,
-        fbzColorPath = fbzColorPath, fbzMode = fbzMode, sign = false,
-        textureMode = textureModeWrap, tLOD = 0,
-        clipRight = 640, clipHighY = 480
+        driver,
+        dut.clockDomain,
+        vertexAx = vAx,
+        vertexAy = vAy,
+        vertexBx = vBx,
+        vertexBy = vBy,
+        vertexCx = vCx,
+        vertexCy = vCy,
+        startR = 0,
+        startG = 0,
+        startB = 0,
+        startA = 255 << 12,
+        startZ = 0,
+        startS = startS_reg,
+        startT = startT_reg,
+        startW = 0,
+        dRdX = 0,
+        dGdX = 0,
+        dBdX = 0,
+        dAdX = 0,
+        dZdX = 0,
+        dSdX = dSdX_reg,
+        dTdX = dTdX_reg,
+        dWdX = 0,
+        dRdY = 0,
+        dGdY = 0,
+        dBdY = 0,
+        dAdY = 0,
+        dZdY = 0,
+        dSdY = dSdY_reg,
+        dTdY = dTdY_reg,
+        dWdY = 0,
+        fbzColorPath = fbzColorPath,
+        fbzMode = fbzMode,
+        sign = false,
+        textureMode = textureModeWrap,
+        tLOD = 0,
+        clipRight = 640,
+        clipHighY = 480
       )
 
       dut.clockDomain.waitSampling(20000)
@@ -1175,18 +1290,43 @@ class CoreIntegrationTest extends AnyFunSuite {
       val simPixelsWrap = collectPixels(fbMemory, writtenAddrs, 0)
 
       val refParamsWrap = VoodooReference.fromRegisterValues(
-        vertexAx = vAx, vertexAy = vAy,
-        vertexBx = vBx, vertexBy = vBy,
-        vertexCx = vCx, vertexCy = vCy,
-        startR = 0, startG = 0, startB = 0, startA = 255 << 12,
-        startZ = 0, startS = startS_reg, startT = startT_reg, startW = 0,
-        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
-        dSdX = dSdX_reg, dTdX = dTdX_reg, dWdX = 0,
-        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
-        dSdY = dSdY_reg, dTdY = dTdY_reg, dWdY = 0,
-        fbzColorPath = fbzColorPath, fbzMode = fbzMode, sign = false,
-        textureMode = textureModeWrap, tLOD = 0,
-        clipRight = 640, clipHighY = 480,
+        vertexAx = vAx,
+        vertexAy = vAy,
+        vertexBx = vBx,
+        vertexBy = vBy,
+        vertexCx = vCx,
+        vertexCy = vCy,
+        startR = 0,
+        startG = 0,
+        startB = 0,
+        startA = 255 << 12,
+        startZ = 0,
+        startS = startS_reg,
+        startT = startT_reg,
+        startW = 0,
+        dRdX = 0,
+        dGdX = 0,
+        dBdX = 0,
+        dAdX = 0,
+        dZdX = 0,
+        dSdX = dSdX_reg,
+        dTdX = dTdX_reg,
+        dWdX = 0,
+        dRdY = 0,
+        dGdY = 0,
+        dBdY = 0,
+        dAdY = 0,
+        dZdY = 0,
+        dSdY = dSdY_reg,
+        dTdY = dTdY_reg,
+        dWdY = 0,
+        fbzColorPath = fbzColorPath,
+        fbzMode = fbzMode,
+        sign = false,
+        textureMode = textureModeWrap,
+        tLOD = 0,
+        clipRight = 640,
+        clipHighY = 480,
         texData = texDataPerLod,
         texWMask = texWMaskPerLod,
         texHMask = texHMaskPerLod,
@@ -1202,24 +1342,50 @@ class CoreIntegrationTest extends AnyFunSuite {
       // --- Sub-test B: clamp mode (clampS=1, clampT=1) ---
       writtenAddrs.clear()
 
-      val textureModeClamp = (10 << 8) | (1 << 6) | (1 << 7)  // RGB565, clampS+clampT
+      val textureModeClamp = (10 << 8) | (1 << 6) | (1 << 7) // RGB565, clampS+clampT
 
       writeReg(driver, REG_TEXBASEADDR, 0)
 
       submitTriangle(
-        driver, dut.clockDomain,
-        vertexAx = vAx, vertexAy = vAy,
-        vertexBx = vBx, vertexBy = vBy,
-        vertexCx = vCx, vertexCy = vCy,
-        startR = 0, startG = 0, startB = 0, startA = 255 << 12,
-        startZ = 0, startS = startS_reg, startT = startT_reg, startW = 0,
-        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
-        dSdX = dSdX_reg, dTdX = dTdX_reg, dWdX = 0,
-        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
-        dSdY = dSdY_reg, dTdY = dTdY_reg, dWdY = 0,
-        fbzColorPath = fbzColorPath, fbzMode = fbzMode, sign = false,
-        textureMode = textureModeClamp, tLOD = 0,
-        clipRight = 640, clipHighY = 480
+        driver,
+        dut.clockDomain,
+        vertexAx = vAx,
+        vertexAy = vAy,
+        vertexBx = vBx,
+        vertexBy = vBy,
+        vertexCx = vCx,
+        vertexCy = vCy,
+        startR = 0,
+        startG = 0,
+        startB = 0,
+        startA = 255 << 12,
+        startZ = 0,
+        startS = startS_reg,
+        startT = startT_reg,
+        startW = 0,
+        dRdX = 0,
+        dGdX = 0,
+        dBdX = 0,
+        dAdX = 0,
+        dZdX = 0,
+        dSdX = dSdX_reg,
+        dTdX = dTdX_reg,
+        dWdX = 0,
+        dRdY = 0,
+        dGdY = 0,
+        dBdY = 0,
+        dAdY = 0,
+        dZdY = 0,
+        dSdY = dSdY_reg,
+        dTdY = dTdY_reg,
+        dWdY = 0,
+        fbzColorPath = fbzColorPath,
+        fbzMode = fbzMode,
+        sign = false,
+        textureMode = textureModeClamp,
+        tLOD = 0,
+        clipRight = 640,
+        clipHighY = 480
       )
 
       dut.clockDomain.waitSampling(20000)
@@ -1227,18 +1393,43 @@ class CoreIntegrationTest extends AnyFunSuite {
       val simPixelsClamp = collectPixels(fbMemory, writtenAddrs, 0)
 
       val refParamsClamp = VoodooReference.fromRegisterValues(
-        vertexAx = vAx, vertexAy = vAy,
-        vertexBx = vBx, vertexBy = vBy,
-        vertexCx = vCx, vertexCy = vCy,
-        startR = 0, startG = 0, startB = 0, startA = 255 << 12,
-        startZ = 0, startS = startS_reg, startT = startT_reg, startW = 0,
-        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
-        dSdX = dSdX_reg, dTdX = dTdX_reg, dWdX = 0,
-        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
-        dSdY = dSdY_reg, dTdY = dTdY_reg, dWdY = 0,
-        fbzColorPath = fbzColorPath, fbzMode = fbzMode, sign = false,
-        textureMode = textureModeClamp, tLOD = 0,
-        clipRight = 640, clipHighY = 480,
+        vertexAx = vAx,
+        vertexAy = vAy,
+        vertexBx = vBx,
+        vertexBy = vBy,
+        vertexCx = vCx,
+        vertexCy = vCy,
+        startR = 0,
+        startG = 0,
+        startB = 0,
+        startA = 255 << 12,
+        startZ = 0,
+        startS = startS_reg,
+        startT = startT_reg,
+        startW = 0,
+        dRdX = 0,
+        dGdX = 0,
+        dBdX = 0,
+        dAdX = 0,
+        dZdX = 0,
+        dSdX = dSdX_reg,
+        dTdX = dTdX_reg,
+        dWdX = 0,
+        dRdY = 0,
+        dGdY = 0,
+        dBdY = 0,
+        dAdY = 0,
+        dZdY = 0,
+        dSdY = dSdY_reg,
+        dTdY = dTdY_reg,
+        dWdY = 0,
+        fbzColorPath = fbzColorPath,
+        fbzMode = fbzMode,
+        sign = false,
+        textureMode = textureModeClamp,
+        tLOD = 0,
+        clipRight = 640,
+        clipHighY = 480,
         texData = texDataPerLod,
         texWMask = texWMaskPerLod,
         texHMask = texHMaskPerLod,
@@ -1261,9 +1452,9 @@ class CoreIntegrationTest extends AnyFunSuite {
       val (driver, fbMemory, texMemory, writtenAddrs) = setupDut(dut)
 
       // ARGB4444 texels for 3 LOD levels: red, green, blue
-      val redTexel: Int = 0xFF00    // A=F R=F G=0 B=0
-      val greenTexel: Int = 0xF0F0  // A=F R=0 G=F B=0
-      val blueTexel: Int = 0xF00F   // A=F R=0 G=0 B=F
+      val redTexel: Int = 0xff00 // A=F R=F G=0 B=0
+      val greenTexel: Int = 0xf0f0 // A=F R=0 G=F B=0
+      val blueTexel: Int = 0xf00f // A=F R=0 G=0 B=F
 
       // Memory layout (ARGB4444 = 2 bytes/texel):
       // LOD 0 base: offset 0      (256x256 = 131072 bytes)
@@ -1271,7 +1462,7 @@ class CoreIntegrationTest extends AnyFunSuite {
       // LOD 2 base: offset 163840 (64x64 = 16384 bytes)
       val lod0Base = 0
       val lod1Base = 131072
-      val lod2Base = lod1Base + 32768  // 163840
+      val lod2Base = lod1Base + 32768 // 163840
 
       // Write texel (0,0) at each LOD base
       texMemory.setByte(lod0Base, (redTexel & 0xff).toByte)
@@ -1299,9 +1490,9 @@ class CoreIntegrationTest extends AnyFunSuite {
       // LOD configs: lodmin=lodmax=N*4 forces LOD level N
       // tLOD register format: bits[5:0]=lodmin, bits[11:6]=lodmax
       val lodConfigs = Seq(
-        ("LOD0", 0, redTexel),       // lodmin=0, lodmax=0
-        ("LOD1", (4 << 6) | 4, greenTexel),  // lodmin=4, lodmax=4
-        ("LOD2", (8 << 6) | 8, blueTexel)    // lodmin=8, lodmax=8
+        ("LOD0", 0, redTexel), // lodmin=0, lodmax=0
+        ("LOD1", (4 << 6) | 4, greenTexel), // lodmin=4, lodmax=4
+        ("LOD2", (8 << 6) | 8, blueTexel) // lodmin=8, lodmax=8
       )
 
       for ((lodName, tLOD, expectedTexel) <- lodConfigs) {
@@ -1310,19 +1501,45 @@ class CoreIntegrationTest extends AnyFunSuite {
         writeReg(driver, REG_TEXBASEADDR, 0)
 
         submitTriangle(
-          driver, dut.clockDomain,
-          vertexAx = vAx, vertexAy = vAy,
-          vertexBx = vBx, vertexBy = vBy,
-          vertexCx = vCx, vertexCy = vCy,
-          startR = 0, startG = 0, startB = 0, startA = 255 << 12,
-          startZ = 0, startS = 0, startT = 0, startW = 0,
-          dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
-          dSdX = 0, dTdX = 0, dWdX = 0,
-          dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
-          dSdY = 0, dTdY = 0, dWdY = 0,
-          fbzColorPath = fbzColorPath, fbzMode = fbzMode, sign = false,
-          textureMode = textureMode, tLOD = tLOD,
-          clipRight = 640, clipHighY = 480
+          driver,
+          dut.clockDomain,
+          vertexAx = vAx,
+          vertexAy = vAy,
+          vertexBx = vBx,
+          vertexBy = vBy,
+          vertexCx = vCx,
+          vertexCy = vCy,
+          startR = 0,
+          startG = 0,
+          startB = 0,
+          startA = 255 << 12,
+          startZ = 0,
+          startS = 0,
+          startT = 0,
+          startW = 0,
+          dRdX = 0,
+          dGdX = 0,
+          dBdX = 0,
+          dAdX = 0,
+          dZdX = 0,
+          dSdX = 0,
+          dTdX = 0,
+          dWdX = 0,
+          dRdY = 0,
+          dGdY = 0,
+          dBdY = 0,
+          dAdY = 0,
+          dZdY = 0,
+          dSdY = 0,
+          dTdY = 0,
+          dWdY = 0,
+          fbzColorPath = fbzColorPath,
+          fbzMode = fbzMode,
+          sign = false,
+          textureMode = textureMode,
+          tLOD = tLOD,
+          clipRight = 640,
+          clipHighY = 480
         )
 
         dut.clockDomain.waitSampling(20000)
@@ -1348,7 +1565,7 @@ class CoreIntegrationTest extends AnyFunSuite {
             case 2 => VoodooReference.decodeTexel(blueTexel, 0xc)
           }
           val dim = 256 >> lod
-          texDataPerLod(lod) = Array.fill(1)(texel)  // Only texel (0,0)
+          texDataPerLod(lod) = Array.fill(1)(texel) // Only texel (0,0)
           texWMaskPerLod(lod) = dim - 1
           texHMaskPerLod(lod) = dim - 1
           texShiftPerLod(lod) = 8 - lod
@@ -1356,18 +1573,43 @@ class CoreIntegrationTest extends AnyFunSuite {
         }
 
         val refParams = VoodooReference.fromRegisterValues(
-          vertexAx = vAx, vertexAy = vAy,
-          vertexBx = vBx, vertexBy = vBy,
-          vertexCx = vCx, vertexCy = vCy,
-          startR = 0, startG = 0, startB = 0, startA = 255 << 12,
-          startZ = 0, startS = 0, startT = 0, startW = 0,
-          dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
-          dSdX = 0, dTdX = 0, dWdX = 0,
-          dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
-          dSdY = 0, dTdY = 0, dWdY = 0,
-          fbzColorPath = fbzColorPath, fbzMode = fbzMode, sign = false,
-          textureMode = textureMode, tLOD = tLOD,
-          clipRight = 640, clipHighY = 480,
+          vertexAx = vAx,
+          vertexAy = vAy,
+          vertexBx = vBx,
+          vertexBy = vBy,
+          vertexCx = vCx,
+          vertexCy = vCy,
+          startR = 0,
+          startG = 0,
+          startB = 0,
+          startA = 255 << 12,
+          startZ = 0,
+          startS = 0,
+          startT = 0,
+          startW = 0,
+          dRdX = 0,
+          dGdX = 0,
+          dBdX = 0,
+          dAdX = 0,
+          dZdX = 0,
+          dSdX = 0,
+          dTdX = 0,
+          dWdX = 0,
+          dRdY = 0,
+          dGdY = 0,
+          dBdY = 0,
+          dAdY = 0,
+          dZdY = 0,
+          dSdY = 0,
+          dTdY = 0,
+          dWdY = 0,
+          fbzColorPath = fbzColorPath,
+          fbzMode = fbzMode,
+          sign = false,
+          textureMode = textureMode,
+          tLOD = tLOD,
+          clipRight = 640,
+          clipHighY = 480,
           texData = texDataPerLod,
           texWMask = texWMaskPerLod,
           texHMask = texHMaskPerLod,
@@ -1410,8 +1652,8 @@ class CoreIntegrationTest extends AnyFunSuite {
       val dGdX = 1 << 11
 
       // ---- Shared constant colors ----
-      val color0 = 0xC0304050 // A=0xC0, R=0x30, G=0x40, B=0x50
-      val color1 = 0xA0102060 // A=0xA0, R=0x10, G=0x20, B=0x60
+      val color0 = 0xc0304050 // A=0xC0, R=0x30, G=0x40, B=0x50
+      val color1 = 0xa0102060 // A=0xA0, R=0x10, G=0x20, B=0x60
 
       // ---- 4x4 ARGB4444 texture ----
       // Texels with varied colors; some with alpha >= 0x80 for localSelectOverride
@@ -1421,13 +1663,13 @@ class CoreIntegrationTest extends AnyFunSuite {
       // Row 1: same pattern shifted
       val texels = Array(
         // Row 0
-        0xFF00, 0xEA53, 0x65A7, 0x30FF,
+        0xff00, 0xea53, 0x65a7, 0x30ff,
         // Row 1
-        0xF880, 0xD964, 0x74B8, 0x21EE,
+        0xf880, 0xd964, 0x74b8, 0x21ee,
         // Row 2
-        0xE770, 0xCA75, 0x83C9, 0x12DD,
+        0xe770, 0xca75, 0x83c9, 0x12dd,
         // Row 3
-        0xD660, 0xBB86, 0x92DA, 0x03CC
+        0xd660, 0xbb86, 0x92da, 0x03cc
       )
 
       for (t <- 0 until texHeight; s <- 0 until texWidth) {
@@ -1466,35 +1708,43 @@ class CoreIntegrationTest extends AnyFunSuite {
 
       // ---- fbzColorPath bit-field constructors ----
       def mkFbzCP(
-          rgbSel: Int = 0, alphaSel: Int = 0,
-          localSelect: Int = 0, alphaLocalSel: Int = 0,
+          rgbSel: Int = 0,
+          alphaSel: Int = 0,
+          localSelect: Int = 0,
+          alphaLocalSel: Int = 0,
           localSelectOverride: Int = 0,
-          zeroOther: Int = 0, subClocal: Int = 0,
-          mselect: Int = 0, reverseBlend: Int = 0,
-          add: Int = 0, invertOutput: Int = 0,
-          alphaZeroOther: Int = 0, alphaSubClocal: Int = 0,
-          alphaMselect: Int = 0, alphaReverseBlend: Int = 0,
-          alphaAdd: Int = 0, alphaInvertOutput: Int = 0,
+          zeroOther: Int = 0,
+          subClocal: Int = 0,
+          mselect: Int = 0,
+          reverseBlend: Int = 0,
+          add: Int = 0,
+          invertOutput: Int = 0,
+          alphaZeroOther: Int = 0,
+          alphaSubClocal: Int = 0,
+          alphaMselect: Int = 0,
+          alphaReverseBlend: Int = 0,
+          alphaAdd: Int = 0,
+          alphaInvertOutput: Int = 0,
           textureEnable: Int = 1
       ): Int = {
         (rgbSel & 3) |
-        ((alphaSel & 3) << 2) |
-        ((localSelect & 1) << 4) |
-        ((alphaLocalSel & 3) << 5) |
-        ((localSelectOverride & 1) << 7) |
-        ((zeroOther & 1) << 8) |
-        ((subClocal & 1) << 9) |
-        ((mselect & 7) << 10) |
-        ((reverseBlend & 1) << 13) |
-        ((add & 3) << 14) |
-        ((invertOutput & 1) << 16) |
-        ((alphaZeroOther & 1) << 17) |
-        ((alphaSubClocal & 1) << 18) |
-        ((alphaMselect & 7) << 19) |
-        ((alphaReverseBlend & 1) << 22) |
-        ((alphaAdd & 3) << 23) |
-        ((alphaInvertOutput & 1) << 25) |
-        ((textureEnable & 1) << 27)
+          ((alphaSel & 3) << 2) |
+          ((localSelect & 1) << 4) |
+          ((alphaLocalSel & 3) << 5) |
+          ((localSelectOverride & 1) << 7) |
+          ((zeroOther & 1) << 8) |
+          ((subClocal & 1) << 9) |
+          ((mselect & 7) << 10) |
+          ((reverseBlend & 1) << 13) |
+          ((add & 3) << 14) |
+          ((invertOutput & 1) << 16) |
+          ((alphaZeroOther & 1) << 17) |
+          ((alphaSubClocal & 1) << 18) |
+          ((alphaMselect & 7) << 19) |
+          ((alphaReverseBlend & 1) << 22) |
+          ((alphaAdd & 3) << 23) |
+          ((alphaInvertOutput & 1) << 25) |
+          ((textureEnable & 1) << 27)
       }
 
       // ---- Test case table: (name, fbzColorPath, fbzMode) ----
@@ -1503,79 +1753,82 @@ class CoreIntegrationTest extends AnyFunSuite {
       val testCases: Seq[(String, Int, Int)] = Seq(
         // 1. mselect_clocal: tex * clocal/256
         //    rgbSel=TEX(1), mselect=CLOCAL(1), reverseBlend=1 (passthrough)
-        ("mselect_clocal",
-          mkFbzCP(rgbSel = 1, mselect = 1, reverseBlend = 1),
-          baseFbzMode),
+        ("mselect_clocal", mkFbzCP(rgbSel = 1, mselect = 1, reverseBlend = 1), baseFbzMode),
 
         // 2. mselect_alocal: tex * alocal/256
         //    rgbSel=TEX(1), mselect=ALOCAL(3), reverseBlend=1
-        ("mselect_alocal",
-          mkFbzCP(rgbSel = 1, mselect = 3, reverseBlend = 1),
-          baseFbzMode),
+        ("mselect_alocal", mkFbzCP(rgbSel = 1, mselect = 3, reverseBlend = 1), baseFbzMode),
 
         // 3. mselect_texalpha: iter * texA/256 + clocal
         //    rgbSel=ITER(0), mselect=TEX_ALPHA(4), reverseBlend=1, add=CLOCAL(1)
-        ("mselect_texalpha",
+        (
+          "mselect_texalpha",
           mkFbzCP(rgbSel = 0, mselect = 4, reverseBlend = 1, add = 1),
-          baseFbzMode),
+          baseFbzMode
+        ),
 
         // 4. mselect_texrgb: iter * texRGB/256
         //    rgbSel=ITER(0), mselect=TEX_RGB(5), reverseBlend=1
         //    Note: here we use zeroOther=0 so src = cother = iter, then multiply
         //    but actually: src = cother - (subClocal? clocal:0) * factor
         //    With zeroOther=0, subClocal=0: src=cother=iter; src*factor>>8
-        ("mselect_texrgb",
-          mkFbzCP(rgbSel = 0, mselect = 5, reverseBlend = 1),
-          baseFbzMode),
+        ("mselect_texrgb", mkFbzCP(rgbSel = 0, mselect = 5, reverseBlend = 1), baseFbzMode),
 
         // 5. sub_clocal: tex - clocal, factor=256 (msel=0, reverseBlend=0 → ~0+1=256)
         //    rgbSel=TEX(1), subClocal=1, mselect=ZERO(0), reverseBlend=0
-        ("sub_clocal",
+        (
+          "sub_clocal",
           mkFbzCP(rgbSel = 1, subClocal = 1, mselect = 0, reverseBlend = 0),
-          baseFbzMode),
+          baseFbzMode
+        ),
 
         // 6. add_alocal: tex * 256/256 + alocal
         //    rgbSel=TEX(1), mselect=ZERO(0), reverseBlend=0, add=ALOCAL(2)
-        ("add_alocal",
-          mkFbzCP(rgbSel = 1, mselect = 0, reverseBlend = 0, add = 2),
-          baseFbzMode),
+        ("add_alocal", mkFbzCP(rgbSel = 1, mselect = 0, reverseBlend = 0, add = 2), baseFbzMode),
 
         // 7. invert_output: ~(clocal) = ~(iter clamped)
         //    zeroOther=1, add=CLOCAL(1), invertOutput=1
-        ("invert_output",
-          mkFbzCP(zeroOther = 1, add = 1, invertOutput = 1),
-          baseFbzMode),
+        ("invert_output", mkFbzCP(zeroOther = 1, add = 1, invertOutput = 1), baseFbzMode),
 
         // 8. rgb_sel_color1: color1 * 256/256 (passthrough)
         //    rgbSel=COLOR1(2), mselect=ZERO(0), reverseBlend=0
-        ("rgb_sel_color1",
-          mkFbzCP(rgbSel = 2, mselect = 0, reverseBlend = 0),
-          baseFbzMode),
+        ("rgb_sel_color1", mkFbzCP(rgbSel = 2, mselect = 0, reverseBlend = 0), baseFbzMode),
 
         // 9. local_sel_color0: output = color0 (zeroOther=1, add=CLOCAL(1), localSelect=1)
-        ("local_sel_color0",
-          mkFbzCP(zeroOther = 1, add = 1, localSelect = 1),
-          baseFbzMode),
+        ("local_sel_color0", mkFbzCP(zeroOther = 1, add = 1, localSelect = 1), baseFbzMode),
 
         // 10. local_sel_override: localSelectOverride=1 → clocal = color0 when texA>=0x80, else iter
         //     zeroOther=1, add=CLOCAL(1), localSelectOverride=1
-        ("local_sel_override",
+        (
+          "local_sel_override",
           mkFbzCP(zeroOther = 1, add = 1, localSelectOverride = 1),
-          baseFbzMode),
+          baseFbzMode
+        ),
 
         // 11. alpha_path: exercise alpha combine separately
         //     alphaSel=TEX(1), alphaLocalSel=COLOR0(1), alphaMselect=ALOCAL(3), alphaReverseBlend=1
         //     RGB path: texture passthrough (rgbSel=1, msel=0, revBlend=0 → factor=256)
-        ("alpha_path",
-          mkFbzCP(rgbSel = 1, mselect = 0, reverseBlend = 0,
-                  alphaSel = 1, alphaLocalSel = 1, alphaMselect = 3, alphaReverseBlend = 1),
-          baseFbzMode),
+        (
+          "alpha_path",
+          mkFbzCP(
+            rgbSel = 1,
+            mselect = 0,
+            reverseBlend = 0,
+            alphaSel = 1,
+            alphaLocalSel = 1,
+            alphaMselect = 3,
+            alphaReverseBlend = 1
+          ),
+          baseFbzMode
+        ),
 
         // 12. alpha_planes: fbzMode bit 18 → alpha written instead of depth
         //     Simple texture passthrough, but fbzMode has bit 18 set and depth write enabled
-        ("alpha_planes",
+        (
+          "alpha_planes",
           mkFbzCP(rgbSel = 1, mselect = 0, reverseBlend = 0),
-          baseFbzMode | (1 << 10) | (1 << 18)) // aux write mask + alpha planes
+          baseFbzMode | (1 << 10) | (1 << 18)
+        ) // aux write mask + alpha planes
       )
 
       for ((name, fbzColorPath, fbzMode) <- testCases) {
@@ -1583,20 +1836,47 @@ class CoreIntegrationTest extends AnyFunSuite {
         writeReg(driver, REG_TEXBASEADDR, 0)
 
         submitTriangle(
-          driver, dut.clockDomain,
-          vertexAx = vAx, vertexAy = vAy,
-          vertexBx = vBx, vertexBy = vBy,
-          vertexCx = vCx, vertexCy = vCy,
-          startR = startR, startG = startG, startB = startB, startA = startA,
-          startZ = 0, startS = startS_reg, startT = startT_reg, startW = 0,
-          dRdX = dRdX, dGdX = dGdX, dBdX = 0, dAdX = 0, dZdX = 0,
-          dSdX = dSdX_reg, dTdX = dTdX_reg, dWdX = 0,
-          dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
-          dSdY = dSdY_reg, dTdY = dTdY_reg, dWdY = 0,
-          fbzColorPath = fbzColorPath, fbzMode = fbzMode, sign = false,
-          textureMode = textureMode, tLOD = 0,
-          color0 = color0, color1 = color1,
-          clipRight = 640, clipHighY = 480
+          driver,
+          dut.clockDomain,
+          vertexAx = vAx,
+          vertexAy = vAy,
+          vertexBx = vBx,
+          vertexBy = vBy,
+          vertexCx = vCx,
+          vertexCy = vCy,
+          startR = startR,
+          startG = startG,
+          startB = startB,
+          startA = startA,
+          startZ = 0,
+          startS = startS_reg,
+          startT = startT_reg,
+          startW = 0,
+          dRdX = dRdX,
+          dGdX = dGdX,
+          dBdX = 0,
+          dAdX = 0,
+          dZdX = 0,
+          dSdX = dSdX_reg,
+          dTdX = dTdX_reg,
+          dWdX = 0,
+          dRdY = 0,
+          dGdY = 0,
+          dBdY = 0,
+          dAdY = 0,
+          dZdY = 0,
+          dSdY = dSdY_reg,
+          dTdY = dTdY_reg,
+          dWdY = 0,
+          fbzColorPath = fbzColorPath,
+          fbzMode = fbzMode,
+          sign = false,
+          textureMode = textureMode,
+          tLOD = 0,
+          color0 = color0,
+          color1 = color1,
+          clipRight = 640,
+          clipHighY = 480
         )
 
         dut.clockDomain.waitSampling(200000)
@@ -1604,19 +1884,45 @@ class CoreIntegrationTest extends AnyFunSuite {
         val simPixels = collectPixels(fbMemory, writtenAddrs, 0)
 
         val refParams = VoodooReference.fromRegisterValues(
-          vertexAx = vAx, vertexAy = vAy,
-          vertexBx = vBx, vertexBy = vBy,
-          vertexCx = vCx, vertexCy = vCy,
-          startR = startR, startG = startG, startB = startB, startA = startA,
-          startZ = 0, startS = startS_reg, startT = startT_reg, startW = 0,
-          dRdX = dRdX, dGdX = dGdX, dBdX = 0, dAdX = 0, dZdX = 0,
-          dSdX = dSdX_reg, dTdX = dTdX_reg, dWdX = 0,
-          dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
-          dSdY = dSdY_reg, dTdY = dTdY_reg, dWdY = 0,
-          fbzColorPath = fbzColorPath, fbzMode = fbzMode, sign = false,
-          textureMode = textureMode, tLOD = 0,
-          color0 = color0, color1 = color1,
-          clipRight = 640, clipHighY = 480,
+          vertexAx = vAx,
+          vertexAy = vAy,
+          vertexBx = vBx,
+          vertexBy = vBy,
+          vertexCx = vCx,
+          vertexCy = vCy,
+          startR = startR,
+          startG = startG,
+          startB = startB,
+          startA = startA,
+          startZ = 0,
+          startS = startS_reg,
+          startT = startT_reg,
+          startW = 0,
+          dRdX = dRdX,
+          dGdX = dGdX,
+          dBdX = 0,
+          dAdX = 0,
+          dZdX = 0,
+          dSdX = dSdX_reg,
+          dTdX = dTdX_reg,
+          dWdX = 0,
+          dRdY = 0,
+          dGdY = 0,
+          dBdY = 0,
+          dAdY = 0,
+          dZdY = 0,
+          dSdY = dSdY_reg,
+          dTdY = dTdY_reg,
+          dWdY = 0,
+          fbzColorPath = fbzColorPath,
+          fbzMode = fbzMode,
+          sign = false,
+          textureMode = textureMode,
+          tLOD = 0,
+          color0 = color0,
+          color1 = color1,
+          clipRight = 640,
+          clipHighY = 480,
           texData = texDataPerLod,
           texWMask = texWMaskPerLod,
           texHMask = texHMaskPerLod,
@@ -1636,13 +1942,20 @@ class CoreIntegrationTest extends AnyFunSuite {
           // without alpha planes the depth16 field would be 0.
           // With alpha planes, it should contain the alpha value (non-zero).
           val nonZeroAlpha = simPixels.values.count(_._2 != 0)
-          println(s"[cc_modes/$name] pixels with non-zero alpha field: $nonZeroAlpha / ${simPixels.size}")
-          assert(nonZeroAlpha > 0, s"$name: expected non-zero alpha in depth16 field with alpha planes enabled")
+          println(
+            s"[cc_modes/$name] pixels with non-zero alpha field: $nonZeroAlpha / ${simPixels.size}"
+          )
+          assert(
+            nonZeroAlpha > 0,
+            s"$name: expected non-zero alpha in depth16 field with alpha planes enabled"
+          )
 
           // The CC alpha path is default (iter alpha passthrough): alpha = CLAMP(ia >> 12)
           // startA = 200<<12, dAdX=0 → alpha should be 200=0xC8, zero-extended to 16 bits = 0x00C8
           val alphaValues = simPixels.values.map(_._2).toSet
-          println(s"[cc_modes/$name] unique alpha values: ${alphaValues.toSeq.sorted.map(v => f"0x$v%04X").mkString(", ")}")
+          println(
+            s"[cc_modes/$name] unique alpha values: ${alphaValues.toSeq.sorted.map(v => f"0x$v%04X").mkString(", ")}"
+          )
         } else {
           comparePixelsFuzzy(refPixels, simPixels, s"cc_modes/$name")
         }
@@ -1670,8 +1983,8 @@ class CoreIntegrationTest extends AnyFunSuite {
       val startG = 50 << 12
       val startB = 0
       val startA = 255 << 12
-      val dRdX = 1 << 12  // +1 red per pixel in X
-      val dBdX = 1 << 12  // +1 blue per pixel in X
+      val dRdX = 1 << 12 // +1 red per pixel in X
+      val dBdX = 1 << 12 // +1 blue per pixel in X
 
       // fbzColorPath: zero_other + add_clocal (iterated color passthrough)
       val fbzColorPath = (1 << 8) | (1 << 14)
@@ -1688,18 +2001,43 @@ class CoreIntegrationTest extends AnyFunSuite {
         writtenAddrs.clear()
 
         submitTriangle(
-          driver, dut.clockDomain,
-          vertexAx = vAx, vertexAy = vAy,
-          vertexBx = vBx, vertexBy = vBy,
-          vertexCx = vCx, vertexCy = vCy,
-          startR = startR, startG = startG, startB = startB, startA = startA,
-          startZ = 0, startS = 0, startT = 0, startW = 0,
-          dRdX = dRdX, dGdX = 0, dBdX = dBdX, dAdX = 0, dZdX = 0,
-          dSdX = 0, dTdX = 0, dWdX = 0,
-          dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
-          dSdY = 0, dTdY = 0, dWdY = 0,
-          fbzColorPath = fbzColorPath, fbzMode = fbzMode, sign = sign,
-          clipRight = 640, clipHighY = 480
+          driver,
+          dut.clockDomain,
+          vertexAx = vAx,
+          vertexAy = vAy,
+          vertexBx = vBx,
+          vertexBy = vBy,
+          vertexCx = vCx,
+          vertexCy = vCy,
+          startR = startR,
+          startG = startG,
+          startB = startB,
+          startA = startA,
+          startZ = 0,
+          startS = 0,
+          startT = 0,
+          startW = 0,
+          dRdX = dRdX,
+          dGdX = 0,
+          dBdX = dBdX,
+          dAdX = 0,
+          dZdX = 0,
+          dSdX = 0,
+          dTdX = 0,
+          dWdX = 0,
+          dRdY = 0,
+          dGdY = 0,
+          dBdY = 0,
+          dAdY = 0,
+          dZdY = 0,
+          dSdY = 0,
+          dTdY = 0,
+          dWdY = 0,
+          fbzColorPath = fbzColorPath,
+          fbzMode = fbzMode,
+          sign = sign,
+          clipRight = 640,
+          clipHighY = 480
         )
 
         dut.clockDomain.waitSampling(200000)
@@ -1708,17 +2046,41 @@ class CoreIntegrationTest extends AnyFunSuite {
         println(s"[dithering/$name] Simulation produced ${simPixels.size} pixels")
 
         val refParams = VoodooReference.fromRegisterValues(
-          vertexAx = vAx, vertexAy = vAy,
-          vertexBx = vBx, vertexBy = vBy,
-          vertexCx = vCx, vertexCy = vCy,
-          startR = startR, startG = startG, startB = startB, startA = startA,
-          startZ = 0, startS = 0, startT = 0, startW = 0,
-          dRdX = dRdX, dGdX = 0, dBdX = dBdX, dAdX = 0, dZdX = 0,
-          dSdX = 0, dTdX = 0, dWdX = 0,
-          dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
-          dSdY = 0, dTdY = 0, dWdY = 0,
-          fbzColorPath = fbzColorPath, fbzMode = fbzMode, sign = sign,
-          clipRight = 640, clipHighY = 480
+          vertexAx = vAx,
+          vertexAy = vAy,
+          vertexBx = vBx,
+          vertexBy = vBy,
+          vertexCx = vCx,
+          vertexCy = vCy,
+          startR = startR,
+          startG = startG,
+          startB = startB,
+          startA = startA,
+          startZ = 0,
+          startS = 0,
+          startT = 0,
+          startW = 0,
+          dRdX = dRdX,
+          dGdX = 0,
+          dBdX = dBdX,
+          dAdX = 0,
+          dZdX = 0,
+          dSdX = 0,
+          dTdX = 0,
+          dWdX = 0,
+          dRdY = 0,
+          dGdY = 0,
+          dBdY = 0,
+          dAdY = 0,
+          dZdY = 0,
+          dSdY = 0,
+          dTdY = 0,
+          dWdY = 0,
+          fbzColorPath = fbzColorPath,
+          fbzMode = fbzMode,
+          sign = sign,
+          clipRight = 640,
+          clipHighY = 480
         )
         val refPixels = VoodooReference.voodooTriangle(refParams)
         println(s"[dithering/$name] Reference produced ${refPixels.size} pixels")
@@ -1738,11 +2100,11 @@ class CoreIntegrationTest extends AnyFunSuite {
       // LOD 0 = 256x256 texture with RGB565 format
       // Columns 0-127: red (0xF800) — matches chroma key
       // Columns 128-255: green (0x07E0) — does NOT match chroma key
-      val red565 = 0xF800   // R=31,G=0,B=0 → decoded R=0xFF,G=0x00,B=0x00
-      val green565 = 0x07E0 // R=0,G=63,B=0 → decoded R=0x00,G=0xFF,B=0x00
+      val red565 = 0xf800 // R=31,G=0,B=0 → decoded R=0xFF,G=0x00,B=0x00
+      val green565 = 0x07e0 // R=0,G=63,B=0 → decoded R=0x00,G=0xFF,B=0x00
 
       // Chroma key = pure red (matches decoded red565)
-      val chromaKeyColor = 0x00FF0000
+      val chromaKeyColor = 0x00ff0000
 
       // Write texture row 0, columns 0-255 (T=0 for all pixels since dTdX=dTdY=0)
       for (row <- 0 until 1; col <- 0 until 256) {
@@ -1784,12 +2146,12 @@ class CoreIntegrationTest extends AnyFunSuite {
       val tLOD = 0
 
       // fbzColorPath: texture passthrough + textureEnable
-      val fbzColorPath = 1 |       // rgbSel=1 (TREX/texture)
-        (0 << 8) |                  // zero_other=0
-        (0 << 10) |                 // mselect=0 (ZERO)
-        (0 << 13) |                 // reverse_blend=0 (factor=256)
-        (0 << 14) |                 // add=0
-        (1 << 27)                   // texture_enable
+      val fbzColorPath = 1 | // rgbSel=1 (TREX/texture)
+        (0 << 8) | // zero_other=0
+        (0 << 10) | // mselect=0 (ZERO)
+        (0 << 13) | // reverse_blend=0 (factor=256)
+        (0 << 14) | // add=0
+        (1 << 27) // texture_enable
 
       // fbzMode: clipping + chroma key + RGB write
       val fbzMode = 1 | (1 << 1) | (1 << 9)
@@ -1797,20 +2159,46 @@ class CoreIntegrationTest extends AnyFunSuite {
       writeReg(driver, REG_TEXBASEADDR, 0)
 
       submitTriangle(
-        driver, dut.clockDomain,
-        vertexAx = vAx, vertexAy = vAy,
-        vertexBx = vBx, vertexBy = vBy,
-        vertexCx = vCx, vertexCy = vCy,
-        startR = 0, startG = 0, startB = 0, startA = 255 << 12,
-        startZ = 0, startS = startS_reg, startT = startT_reg, startW = 0,
-        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
-        dSdX = dSdX_reg, dTdX = dTdX_reg, dWdX = 0,
-        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
-        dSdY = dSdY_reg, dTdY = dTdY_reg, dWdY = 0,
-        fbzColorPath = fbzColorPath, fbzMode = fbzMode, sign = false,
-        textureMode = textureMode, tLOD = tLOD,
+        driver,
+        dut.clockDomain,
+        vertexAx = vAx,
+        vertexAy = vAy,
+        vertexBx = vBx,
+        vertexBy = vBy,
+        vertexCx = vCx,
+        vertexCy = vCy,
+        startR = 0,
+        startG = 0,
+        startB = 0,
+        startA = 255 << 12,
+        startZ = 0,
+        startS = startS_reg,
+        startT = startT_reg,
+        startW = 0,
+        dRdX = 0,
+        dGdX = 0,
+        dBdX = 0,
+        dAdX = 0,
+        dZdX = 0,
+        dSdX = dSdX_reg,
+        dTdX = dTdX_reg,
+        dWdX = 0,
+        dRdY = 0,
+        dGdY = 0,
+        dBdY = 0,
+        dAdY = 0,
+        dZdY = 0,
+        dSdY = dSdY_reg,
+        dTdY = dTdY_reg,
+        dWdY = 0,
+        fbzColorPath = fbzColorPath,
+        fbzMode = fbzMode,
+        sign = false,
+        textureMode = textureMode,
+        tLOD = tLOD,
         chromaKey = chromaKeyColor,
-        clipRight = 640, clipHighY = 480
+        clipRight = 640,
+        clipHighY = 480
       )
 
       dut.clockDomain.waitSampling(200000)
@@ -1830,19 +2218,44 @@ class CoreIntegrationTest extends AnyFunSuite {
       val texLodPerLod = Array.fill(9)(0)
 
       val refParams = VoodooReference.fromRegisterValues(
-        vertexAx = vAx, vertexAy = vAy,
-        vertexBx = vBx, vertexBy = vBy,
-        vertexCx = vCx, vertexCy = vCy,
-        startR = 0, startG = 0, startB = 0, startA = 255 << 12,
-        startZ = 0, startS = startS_reg, startT = startT_reg, startW = 0,
-        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
-        dSdX = dSdX_reg, dTdX = dTdX_reg, dWdX = 0,
-        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
-        dSdY = dSdY_reg, dTdY = dTdY_reg, dWdY = 0,
-        fbzColorPath = fbzColorPath, fbzMode = fbzMode, sign = false,
-        textureMode = textureMode, tLOD = tLOD,
+        vertexAx = vAx,
+        vertexAy = vAy,
+        vertexBx = vBx,
+        vertexBy = vBy,
+        vertexCx = vCx,
+        vertexCy = vCy,
+        startR = 0,
+        startG = 0,
+        startB = 0,
+        startA = 255 << 12,
+        startZ = 0,
+        startS = startS_reg,
+        startT = startT_reg,
+        startW = 0,
+        dRdX = 0,
+        dGdX = 0,
+        dBdX = 0,
+        dAdX = 0,
+        dZdX = 0,
+        dSdX = dSdX_reg,
+        dTdX = dTdX_reg,
+        dWdX = 0,
+        dRdY = 0,
+        dGdY = 0,
+        dBdY = 0,
+        dAdY = 0,
+        dZdY = 0,
+        dSdY = dSdY_reg,
+        dTdY = dTdY_reg,
+        dWdY = 0,
+        fbzColorPath = fbzColorPath,
+        fbzMode = fbzMode,
+        sign = false,
+        textureMode = textureMode,
+        tLOD = tLOD,
         chromaKey = chromaKeyColor,
-        clipRight = 640, clipHighY = 480,
+        clipRight = 640,
+        clipHighY = 480,
         texData = texDataPerLod,
         texWMask = texWMaskPerLod,
         texHMask = texHMaskPerLod,
@@ -1887,8 +2300,8 @@ class CoreIntegrationTest extends AnyFunSuite {
       // fbzColorPath: iterated color passthrough (zero_other + add_clocal)
       // Alpha: iterated alpha passthrough (alphaZeroOther + alphaAdd=ALOCAL)
       val fbzColorPath = (1 << 8) | (1 << 14) | // CCU: zero_other + add_clocal
-        (1 << 17) |                               // ACU: alpha_zero_other
-        (2 << 23)                                  // ACU: alpha_add=ALOCAL (2)
+        (1 << 17) | // ACU: alpha_zero_other
+        (2 << 23) // ACU: alpha_add=ALOCAL (2)
 
       // fbzMode: clipping + RGB write
       val fbzMode = 1 | (1 << 9)
@@ -1898,19 +2311,44 @@ class CoreIntegrationTest extends AnyFunSuite {
       val alphaMode = 1 | (4 << 1) | (0x80 << 24)
 
       submitTriangle(
-        driver, dut.clockDomain,
-        vertexAx = vAx, vertexAy = vAy,
-        vertexBx = vBx, vertexBy = vBy,
-        vertexCx = vCx, vertexCy = vCy,
-        startR = startR, startG = startG, startB = startB, startA = startA,
-        startZ = 0, startS = 0, startT = 0, startW = 0,
-        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = dAdX, dZdX = 0,
-        dSdX = 0, dTdX = 0, dWdX = 0,
-        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
-        dSdY = 0, dTdY = 0, dWdY = 0,
-        fbzColorPath = fbzColorPath, fbzMode = fbzMode, sign = false,
+        driver,
+        dut.clockDomain,
+        vertexAx = vAx,
+        vertexAy = vAy,
+        vertexBx = vBx,
+        vertexBy = vBy,
+        vertexCx = vCx,
+        vertexCy = vCy,
+        startR = startR,
+        startG = startG,
+        startB = startB,
+        startA = startA,
+        startZ = 0,
+        startS = 0,
+        startT = 0,
+        startW = 0,
+        dRdX = 0,
+        dGdX = 0,
+        dBdX = 0,
+        dAdX = dAdX,
+        dZdX = 0,
+        dSdX = 0,
+        dTdX = 0,
+        dWdX = 0,
+        dRdY = 0,
+        dGdY = 0,
+        dBdY = 0,
+        dAdY = 0,
+        dZdY = 0,
+        dSdY = 0,
+        dTdY = 0,
+        dWdY = 0,
+        fbzColorPath = fbzColorPath,
+        fbzMode = fbzMode,
+        sign = false,
         alphaMode = alphaMode,
-        clipRight = 640, clipHighY = 480
+        clipRight = 640,
+        clipHighY = 480
       )
 
       dut.clockDomain.waitSampling(200000)
@@ -1919,18 +2357,42 @@ class CoreIntegrationTest extends AnyFunSuite {
       println(s"[alpha_test] Simulation produced ${simPixels.size} pixels")
 
       val refParams = VoodooReference.fromRegisterValues(
-        vertexAx = vAx, vertexAy = vAy,
-        vertexBx = vBx, vertexBy = vBy,
-        vertexCx = vCx, vertexCy = vCy,
-        startR = startR, startG = startG, startB = startB, startA = startA,
-        startZ = 0, startS = 0, startT = 0, startW = 0,
-        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = dAdX, dZdX = 0,
-        dSdX = 0, dTdX = 0, dWdX = 0,
-        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
-        dSdY = 0, dTdY = 0, dWdY = 0,
-        fbzColorPath = fbzColorPath, fbzMode = fbzMode, sign = false,
+        vertexAx = vAx,
+        vertexAy = vAy,
+        vertexBx = vBx,
+        vertexBy = vBy,
+        vertexCx = vCx,
+        vertexCy = vCy,
+        startR = startR,
+        startG = startG,
+        startB = startB,
+        startA = startA,
+        startZ = 0,
+        startS = 0,
+        startT = 0,
+        startW = 0,
+        dRdX = 0,
+        dGdX = 0,
+        dBdX = 0,
+        dAdX = dAdX,
+        dZdX = 0,
+        dSdX = 0,
+        dTdX = 0,
+        dWdX = 0,
+        dRdY = 0,
+        dGdY = 0,
+        dBdY = 0,
+        dAdY = 0,
+        dZdY = 0,
+        dSdY = 0,
+        dTdY = 0,
+        dWdY = 0,
+        fbzColorPath = fbzColorPath,
+        fbzMode = fbzMode,
+        sign = false,
         alphaMode = alphaMode,
-        clipRight = 640, clipHighY = 480
+        clipRight = 640,
+        clipHighY = 480
       )
 
       val refPixels = VoodooReference.voodooTriangle(refParams)
@@ -1984,19 +2446,45 @@ class CoreIntegrationTest extends AnyFunSuite {
       val fbzMode = 1 | (1 << 9)
 
       submitTriangle(
-        driver, dut.clockDomain,
-        vertexAx = vAx, vertexAy = vAy,
-        vertexBx = vBx, vertexBy = vBy,
-        vertexCx = vCx, vertexCy = vCy,
-        startR = startR, startG = startG, startB = startB, startA = startA,
-        startZ = startZ, startS = 0, startT = 0, startW = 0,
-        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = dZdX,
-        dSdX = 0, dTdX = 0, dWdX = 0,
-        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
-        dSdY = 0, dTdY = 0, dWdY = 0,
-        fbzColorPath = fbzColorPath, fbzMode = fbzMode, sign = false,
-        fogMode = fogMode, fogColor = fogColor,
-        clipRight = 640, clipHighY = 480
+        driver,
+        dut.clockDomain,
+        vertexAx = vAx,
+        vertexAy = vAy,
+        vertexBx = vBx,
+        vertexBy = vBy,
+        vertexCx = vCx,
+        vertexCy = vCy,
+        startR = startR,
+        startG = startG,
+        startB = startB,
+        startA = startA,
+        startZ = startZ,
+        startS = 0,
+        startT = 0,
+        startW = 0,
+        dRdX = 0,
+        dGdX = 0,
+        dBdX = 0,
+        dAdX = 0,
+        dZdX = dZdX,
+        dSdX = 0,
+        dTdX = 0,
+        dWdX = 0,
+        dRdY = 0,
+        dGdY = 0,
+        dBdY = 0,
+        dAdY = 0,
+        dZdY = 0,
+        dSdY = 0,
+        dTdY = 0,
+        dWdY = 0,
+        fbzColorPath = fbzColorPath,
+        fbzMode = fbzMode,
+        sign = false,
+        fogMode = fogMode,
+        fogColor = fogColor,
+        clipRight = 640,
+        clipHighY = 480
       )
 
       dut.clockDomain.waitSampling(200000)
@@ -2005,18 +2493,43 @@ class CoreIntegrationTest extends AnyFunSuite {
       println(s"[fog_z_based] Simulation produced ${simPixels.size} pixels")
 
       val refParams = VoodooReference.fromRegisterValues(
-        vertexAx = vAx, vertexAy = vAy,
-        vertexBx = vBx, vertexBy = vBy,
-        vertexCx = vCx, vertexCy = vCy,
-        startR = startR, startG = startG, startB = startB, startA = startA,
-        startZ = startZ, startS = 0, startT = 0, startW = 0,
-        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = dZdX,
-        dSdX = 0, dTdX = 0, dWdX = 0,
-        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
-        dSdY = 0, dTdY = 0, dWdY = 0,
-        fbzColorPath = fbzColorPath, fbzMode = fbzMode, sign = false,
-        fogMode = fogMode, fogColor = fogColor,
-        clipRight = 640, clipHighY = 480
+        vertexAx = vAx,
+        vertexAy = vAy,
+        vertexBx = vBx,
+        vertexBy = vBy,
+        vertexCx = vCx,
+        vertexCy = vCy,
+        startR = startR,
+        startG = startG,
+        startB = startB,
+        startA = startA,
+        startZ = startZ,
+        startS = 0,
+        startT = 0,
+        startW = 0,
+        dRdX = 0,
+        dGdX = 0,
+        dBdX = 0,
+        dAdX = 0,
+        dZdX = dZdX,
+        dSdX = 0,
+        dTdX = 0,
+        dWdX = 0,
+        dRdY = 0,
+        dGdY = 0,
+        dBdY = 0,
+        dAdY = 0,
+        dZdY = 0,
+        dSdY = 0,
+        dTdY = 0,
+        dWdY = 0,
+        fbzColorPath = fbzColorPath,
+        fbzMode = fbzMode,
+        sign = false,
+        fogMode = fogMode,
+        fogColor = fogColor,
+        clipRight = 640,
+        clipHighY = 480
       )
 
       val refPixels = VoodooReference.voodooTriangle(refParams)
@@ -2044,7 +2557,7 @@ class CoreIntegrationTest extends AnyFunSuite {
       // Same vertices for both triangles (full overlap)
       val vAx = 100 * 16; val vAy = 50 * 16
       val vBx = 200 * 16; val vBy = 150 * 16
-      val vCx = 50 * 16;  val vCy = 150 * 16
+      val vCx = 50 * 16; val vCy = 150 * 16
 
       // Triangle 1: RED, Z=0x8000 (far), depth func = ALWAYS (establish depth)
       // fbzMode: clip(0) + depthEnable(4) + ALWAYS(5,6,7=111) + RGB write(9) + aux write(10)
@@ -2052,19 +2565,43 @@ class CoreIntegrationTest extends AnyFunSuite {
       val startZ1 = 0x8000 << 12 // Z = 0x8000 (far)
 
       submitTriangle(
-        driver, dut.clockDomain,
-        vertexAx = vAx, vertexAy = vAy,
-        vertexBx = vBx, vertexBy = vBy,
-        vertexCx = vCx, vertexCy = vCy,
-        startR = 255 << 12, startG = 0, startB = 0, startA = 255 << 12,
-        startZ = startZ1, startS = 0, startT = 0, startW = 0,
-        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
-        dSdX = 0, dTdX = 0, dWdX = 0,
-        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
-        dSdY = 0, dTdY = 0, dWdY = 0,
+        driver,
+        dut.clockDomain,
+        vertexAx = vAx,
+        vertexAy = vAy,
+        vertexBx = vBx,
+        vertexBy = vBy,
+        vertexCx = vCx,
+        vertexCy = vCy,
+        startR = 255 << 12,
+        startG = 0,
+        startB = 0,
+        startA = 255 << 12,
+        startZ = startZ1,
+        startS = 0,
+        startT = 0,
+        startW = 0,
+        dRdX = 0,
+        dGdX = 0,
+        dBdX = 0,
+        dAdX = 0,
+        dZdX = 0,
+        dSdX = 0,
+        dTdX = 0,
+        dWdX = 0,
+        dRdY = 0,
+        dGdY = 0,
+        dBdY = 0,
+        dAdY = 0,
+        dZdY = 0,
+        dSdY = 0,
+        dTdY = 0,
+        dWdY = 0,
         fbzColorPath = (1 << 8) | (1 << 14),
-        fbzMode = fbzMode1, sign = false,
-        clipRight = 640, clipHighY = 480
+        fbzMode = fbzMode1,
+        sign = false,
+        clipRight = 640,
+        clipHighY = 480
       )
 
       dut.clockDomain.waitSampling(200000)
@@ -2076,19 +2613,43 @@ class CoreIntegrationTest extends AnyFunSuite {
       val startZ2 = 0x1000 << 12 // Z = 0x1000 (near)
 
       submitTriangle(
-        driver, dut.clockDomain,
-        vertexAx = vAx, vertexAy = vAy,
-        vertexBx = vBx, vertexBy = vBy,
-        vertexCx = vCx, vertexCy = vCy,
-        startR = 0, startG = 0, startB = 255 << 12, startA = 255 << 12,
-        startZ = startZ2, startS = 0, startT = 0, startW = 0,
-        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
-        dSdX = 0, dTdX = 0, dWdX = 0,
-        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
-        dSdY = 0, dTdY = 0, dWdY = 0,
+        driver,
+        dut.clockDomain,
+        vertexAx = vAx,
+        vertexAy = vAy,
+        vertexBx = vBx,
+        vertexBy = vBy,
+        vertexCx = vCx,
+        vertexCy = vCy,
+        startR = 0,
+        startG = 0,
+        startB = 255 << 12,
+        startA = 255 << 12,
+        startZ = startZ2,
+        startS = 0,
+        startT = 0,
+        startW = 0,
+        dRdX = 0,
+        dGdX = 0,
+        dBdX = 0,
+        dAdX = 0,
+        dZdX = 0,
+        dSdX = 0,
+        dTdX = 0,
+        dWdX = 0,
+        dRdY = 0,
+        dGdY = 0,
+        dBdY = 0,
+        dAdY = 0,
+        dZdY = 0,
+        dSdY = 0,
+        dTdY = 0,
+        dWdY = 0,
         fbzColorPath = (1 << 8) | (1 << 14),
-        fbzMode = fbzMode2, sign = false,
-        clipRight = 640, clipHighY = 480
+        fbzMode = fbzMode2,
+        sign = false,
+        clipRight = 640,
+        clipHighY = 480
       )
 
       dut.clockDomain.waitSampling(200000)
@@ -2099,19 +2660,43 @@ class CoreIntegrationTest extends AnyFunSuite {
       val startZ3 = 0x4000 << 12 // Z = 0x4000 (between)
 
       submitTriangle(
-        driver, dut.clockDomain,
-        vertexAx = vAx, vertexAy = vAy,
-        vertexBx = vBx, vertexBy = vBy,
-        vertexCx = vCx, vertexCy = vCy,
-        startR = 0, startG = 255 << 12, startB = 0, startA = 255 << 12,
-        startZ = startZ3, startS = 0, startT = 0, startW = 0,
-        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
-        dSdX = 0, dTdX = 0, dWdX = 0,
-        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
-        dSdY = 0, dTdY = 0, dWdY = 0,
+        driver,
+        dut.clockDomain,
+        vertexAx = vAx,
+        vertexAy = vAy,
+        vertexBx = vBx,
+        vertexBy = vBy,
+        vertexCx = vCx,
+        vertexCy = vCy,
+        startR = 0,
+        startG = 255 << 12,
+        startB = 0,
+        startA = 255 << 12,
+        startZ = startZ3,
+        startS = 0,
+        startT = 0,
+        startW = 0,
+        dRdX = 0,
+        dGdX = 0,
+        dBdX = 0,
+        dAdX = 0,
+        dZdX = 0,
+        dSdX = 0,
+        dTdX = 0,
+        dWdX = 0,
+        dRdY = 0,
+        dGdY = 0,
+        dBdY = 0,
+        dAdY = 0,
+        dZdY = 0,
+        dSdY = 0,
+        dTdY = 0,
+        dWdY = 0,
         fbzColorPath = (1 << 8) | (1 << 14),
-        fbzMode = fbzMode2, sign = false,
-        clipRight = 640, clipHighY = 480
+        fbzMode = fbzMode2,
+        sign = false,
+        clipRight = 640,
+        clipHighY = 480
       )
 
       dut.clockDomain.waitSampling(200000)
@@ -2123,50 +2708,119 @@ class CoreIntegrationTest extends AnyFunSuite {
       val fb = scala.collection.mutable.Map.empty[(Int, Int), (Int, Int)]
 
       val refParams1 = VoodooReference.fromRegisterValues(
-        vertexAx = vAx, vertexAy = vAy,
-        vertexBx = vBx, vertexBy = vBy,
-        vertexCx = vCx, vertexCy = vCy,
-        startR = 255 << 12, startG = 0, startB = 0, startA = 255 << 12,
-        startZ = startZ1, startS = 0, startT = 0, startW = 0,
-        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
-        dSdX = 0, dTdX = 0, dWdX = 0,
-        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
-        dSdY = 0, dTdY = 0, dWdY = 0,
+        vertexAx = vAx,
+        vertexAy = vAy,
+        vertexBx = vBx,
+        vertexBy = vBy,
+        vertexCx = vCx,
+        vertexCy = vCy,
+        startR = 255 << 12,
+        startG = 0,
+        startB = 0,
+        startA = 255 << 12,
+        startZ = startZ1,
+        startS = 0,
+        startT = 0,
+        startW = 0,
+        dRdX = 0,
+        dGdX = 0,
+        dBdX = 0,
+        dAdX = 0,
+        dZdX = 0,
+        dSdX = 0,
+        dTdX = 0,
+        dWdX = 0,
+        dRdY = 0,
+        dGdY = 0,
+        dBdY = 0,
+        dAdY = 0,
+        dZdY = 0,
+        dSdY = 0,
+        dTdY = 0,
+        dWdY = 0,
         fbzColorPath = (1 << 8) | (1 << 14),
-        fbzMode = fbzMode1, sign = false,
-        clipRight = 640, clipHighY = 480
+        fbzMode = fbzMode1,
+        sign = false,
+        clipRight = 640,
+        clipHighY = 480
       )
       VoodooReference.voodooTriangle(refParams1, fb)
 
       val refParams2 = VoodooReference.fromRegisterValues(
-        vertexAx = vAx, vertexAy = vAy,
-        vertexBx = vBx, vertexBy = vBy,
-        vertexCx = vCx, vertexCy = vCy,
-        startR = 0, startG = 0, startB = 255 << 12, startA = 255 << 12,
-        startZ = startZ2, startS = 0, startT = 0, startW = 0,
-        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
-        dSdX = 0, dTdX = 0, dWdX = 0,
-        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
-        dSdY = 0, dTdY = 0, dWdY = 0,
+        vertexAx = vAx,
+        vertexAy = vAy,
+        vertexBx = vBx,
+        vertexBy = vBy,
+        vertexCx = vCx,
+        vertexCy = vCy,
+        startR = 0,
+        startG = 0,
+        startB = 255 << 12,
+        startA = 255 << 12,
+        startZ = startZ2,
+        startS = 0,
+        startT = 0,
+        startW = 0,
+        dRdX = 0,
+        dGdX = 0,
+        dBdX = 0,
+        dAdX = 0,
+        dZdX = 0,
+        dSdX = 0,
+        dTdX = 0,
+        dWdX = 0,
+        dRdY = 0,
+        dGdY = 0,
+        dBdY = 0,
+        dAdY = 0,
+        dZdY = 0,
+        dSdY = 0,
+        dTdY = 0,
+        dWdY = 0,
         fbzColorPath = (1 << 8) | (1 << 14),
-        fbzMode = fbzMode2, sign = false,
-        clipRight = 640, clipHighY = 480
+        fbzMode = fbzMode2,
+        sign = false,
+        clipRight = 640,
+        clipHighY = 480
       )
       VoodooReference.voodooTriangle(refParams2, fb)
 
       val refParams3 = VoodooReference.fromRegisterValues(
-        vertexAx = vAx, vertexAy = vAy,
-        vertexBx = vBx, vertexBy = vBy,
-        vertexCx = vCx, vertexCy = vCy,
-        startR = 0, startG = 255 << 12, startB = 0, startA = 255 << 12,
-        startZ = startZ3, startS = 0, startT = 0, startW = 0,
-        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
-        dSdX = 0, dTdX = 0, dWdX = 0,
-        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
-        dSdY = 0, dTdY = 0, dWdY = 0,
+        vertexAx = vAx,
+        vertexAy = vAy,
+        vertexBx = vBx,
+        vertexBy = vBy,
+        vertexCx = vCx,
+        vertexCy = vCy,
+        startR = 0,
+        startG = 255 << 12,
+        startB = 0,
+        startA = 255 << 12,
+        startZ = startZ3,
+        startS = 0,
+        startT = 0,
+        startW = 0,
+        dRdX = 0,
+        dGdX = 0,
+        dBdX = 0,
+        dAdX = 0,
+        dZdX = 0,
+        dSdX = 0,
+        dTdX = 0,
+        dWdX = 0,
+        dRdY = 0,
+        dGdY = 0,
+        dBdY = 0,
+        dAdY = 0,
+        dZdY = 0,
+        dSdY = 0,
+        dTdY = 0,
+        dWdY = 0,
         fbzColorPath = (1 << 8) | (1 << 14),
-        fbzMode = fbzMode2, sign = false,
-        clipRight = 640, clipHighY = 480
+        fbzMode = fbzMode2,
+        sign = false,
+        clipRight = 640,
+        clipHighY = 480
       )
       VoodooReference.voodooTriangle(refParams3, fb)
 
@@ -2199,25 +2853,49 @@ class CoreIntegrationTest extends AnyFunSuite {
       // Triangle 1: opaque RED, no blend, depth func ALWAYS
       val vAx = 100 * 16; val vAy = 50 * 16
       val vBx = 200 * 16; val vBy = 150 * 16
-      val vCx = 50 * 16;  val vCy = 150 * 16
+      val vCx = 50 * 16; val vCy = 150 * 16
 
       // fbzMode: clip(0) + depthEnable(4) + ALWAYS(5,6,7) + RGB write(9) + aux write(10)
       val fbzMode1 = 1 | (1 << 4) | (7 << 5) | (1 << 9) | (1 << 10)
 
       submitTriangle(
-        driver, dut.clockDomain,
-        vertexAx = vAx, vertexAy = vAy,
-        vertexBx = vBx, vertexBy = vBy,
-        vertexCx = vCx, vertexCy = vCy,
-        startR = 255 << 12, startG = 0, startB = 0, startA = 255 << 12,
-        startZ = 0, startS = 0, startT = 0, startW = 0,
-        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
-        dSdX = 0, dTdX = 0, dWdX = 0,
-        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
-        dSdY = 0, dTdY = 0, dWdY = 0,
+        driver,
+        dut.clockDomain,
+        vertexAx = vAx,
+        vertexAy = vAy,
+        vertexBx = vBx,
+        vertexBy = vBy,
+        vertexCx = vCx,
+        vertexCy = vCy,
+        startR = 255 << 12,
+        startG = 0,
+        startB = 0,
+        startA = 255 << 12,
+        startZ = 0,
+        startS = 0,
+        startT = 0,
+        startW = 0,
+        dRdX = 0,
+        dGdX = 0,
+        dBdX = 0,
+        dAdX = 0,
+        dZdX = 0,
+        dSdX = 0,
+        dTdX = 0,
+        dWdX = 0,
+        dRdY = 0,
+        dGdY = 0,
+        dBdY = 0,
+        dAdY = 0,
+        dZdY = 0,
+        dSdY = 0,
+        dTdY = 0,
+        dWdY = 0,
         fbzColorPath = (1 << 8) | (1 << 14), // zero_other + add_clocal
-        fbzMode = fbzMode1, sign = false,
-        clipRight = 640, clipHighY = 480
+        fbzMode = fbzMode1,
+        sign = false,
+        clipRight = 640,
+        clipHighY = 480
       )
 
       dut.clockDomain.waitSampling(200000)
@@ -2230,20 +2908,44 @@ class CoreIntegrationTest extends AnyFunSuite {
       val fbzMode2 = 1 | (1 << 4) | (7 << 5) | (1 << 9) | (1 << 10)
 
       submitTriangle(
-        driver, dut.clockDomain,
-        vertexAx = vAx, vertexAy = vAy,
-        vertexBx = vBx, vertexBy = vBy,
-        vertexCx = vCx, vertexCy = vCy,
-        startR = 0, startG = 0, startB = 255 << 12, startA = 128 << 12,
-        startZ = 0, startS = 0, startT = 0, startW = 0,
-        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
-        dSdX = 0, dTdX = 0, dWdX = 0,
-        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
-        dSdY = 0, dTdY = 0, dWdY = 0,
+        driver,
+        dut.clockDomain,
+        vertexAx = vAx,
+        vertexAy = vAy,
+        vertexBx = vBx,
+        vertexBy = vBy,
+        vertexCx = vCx,
+        vertexCy = vCy,
+        startR = 0,
+        startG = 0,
+        startB = 255 << 12,
+        startA = 128 << 12,
+        startZ = 0,
+        startS = 0,
+        startT = 0,
+        startW = 0,
+        dRdX = 0,
+        dGdX = 0,
+        dBdX = 0,
+        dAdX = 0,
+        dZdX = 0,
+        dSdX = 0,
+        dTdX = 0,
+        dWdX = 0,
+        dRdY = 0,
+        dGdY = 0,
+        dBdY = 0,
+        dAdY = 0,
+        dZdY = 0,
+        dSdY = 0,
+        dTdY = 0,
+        dWdY = 0,
         fbzColorPath = (1 << 8) | (1 << 14), // zero_other + add_clocal
-        fbzMode = fbzMode2, sign = false,
+        fbzMode = fbzMode2,
+        sign = false,
         alphaMode = alphaMode2,
-        clipRight = 640, clipHighY = 480
+        clipRight = 640,
+        clipHighY = 480
       )
 
       dut.clockDomain.waitSampling(200000)
@@ -2255,35 +2957,81 @@ class CoreIntegrationTest extends AnyFunSuite {
       val fb = scala.collection.mutable.Map.empty[(Int, Int), (Int, Int)]
 
       val refParams1 = VoodooReference.fromRegisterValues(
-        vertexAx = vAx, vertexAy = vAy,
-        vertexBx = vBx, vertexBy = vBy,
-        vertexCx = vCx, vertexCy = vCy,
-        startR = 255 << 12, startG = 0, startB = 0, startA = 255 << 12,
-        startZ = 0, startS = 0, startT = 0, startW = 0,
-        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
-        dSdX = 0, dTdX = 0, dWdX = 0,
-        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
-        dSdY = 0, dTdY = 0, dWdY = 0,
+        vertexAx = vAx,
+        vertexAy = vAy,
+        vertexBx = vBx,
+        vertexBy = vBy,
+        vertexCx = vCx,
+        vertexCy = vCy,
+        startR = 255 << 12,
+        startG = 0,
+        startB = 0,
+        startA = 255 << 12,
+        startZ = 0,
+        startS = 0,
+        startT = 0,
+        startW = 0,
+        dRdX = 0,
+        dGdX = 0,
+        dBdX = 0,
+        dAdX = 0,
+        dZdX = 0,
+        dSdX = 0,
+        dTdX = 0,
+        dWdX = 0,
+        dRdY = 0,
+        dGdY = 0,
+        dBdY = 0,
+        dAdY = 0,
+        dZdY = 0,
+        dSdY = 0,
+        dTdY = 0,
+        dWdY = 0,
         fbzColorPath = (1 << 8) | (1 << 14),
-        fbzMode = fbzMode1, sign = false,
-        clipRight = 640, clipHighY = 480
+        fbzMode = fbzMode1,
+        sign = false,
+        clipRight = 640,
+        clipHighY = 480
       )
       VoodooReference.voodooTriangle(refParams1, fb)
 
       val refParams2 = VoodooReference.fromRegisterValues(
-        vertexAx = vAx, vertexAy = vAy,
-        vertexBx = vBx, vertexBy = vBy,
-        vertexCx = vCx, vertexCy = vCy,
-        startR = 0, startG = 0, startB = 255 << 12, startA = 128 << 12,
-        startZ = 0, startS = 0, startT = 0, startW = 0,
-        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
-        dSdX = 0, dTdX = 0, dWdX = 0,
-        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
-        dSdY = 0, dTdY = 0, dWdY = 0,
+        vertexAx = vAx,
+        vertexAy = vAy,
+        vertexBx = vBx,
+        vertexBy = vBy,
+        vertexCx = vCx,
+        vertexCy = vCy,
+        startR = 0,
+        startG = 0,
+        startB = 255 << 12,
+        startA = 128 << 12,
+        startZ = 0,
+        startS = 0,
+        startT = 0,
+        startW = 0,
+        dRdX = 0,
+        dGdX = 0,
+        dBdX = 0,
+        dAdX = 0,
+        dZdX = 0,
+        dSdX = 0,
+        dTdX = 0,
+        dWdX = 0,
+        dRdY = 0,
+        dGdY = 0,
+        dBdY = 0,
+        dAdY = 0,
+        dZdY = 0,
+        dSdY = 0,
+        dTdY = 0,
+        dWdY = 0,
         fbzColorPath = (1 << 8) | (1 << 14),
-        fbzMode = fbzMode2, sign = false,
+        fbzMode = fbzMode2,
+        sign = false,
         alphaMode = alphaMode2,
-        clipRight = 640, clipHighY = 480
+        clipRight = 640,
+        clipHighY = 480
       )
       VoodooReference.voodooTriangle(refParams2, fb)
 
@@ -2318,9 +3066,9 @@ class CoreIntegrationTest extends AnyFunSuite {
       val clipHighY = 13
 
       // color1 = 0x00FF8040 (R=255, G=128, B=64)
-      val color1 = 0x00FF8040
+      val color1 = 0x00ff8040
       // zaColor = 0x0000ABCD (depth = 0xABCD)
-      val zaColor = 0x0000ABCD
+      val zaColor = 0x0000abcd
 
       // fbzMode: clipping enabled (bit 0) + rgbBufferMask (bit 9) + auxBufferMask (bit 10), no dithering
       val fbzMode = (1 << 0) | (1 << 9) | (1 << 10)
@@ -2378,23 +3126,39 @@ class CoreIntegrationTest extends AnyFunSuite {
       // Immediately after writeReg returns (BMB response received), the FIFO enqueue
       // has happened so swapsPending should already be >= 1. The swap hasn't completed
       // yet (FIFO drain + SAMPLING takes a few more cycles).
-      assert(dut.io.swapsPending.toInt >= 1,
-        s"swapsPending should be >= 1 right after writeReg (FIFO enqueue), got ${dut.io.swapsPending.toInt}")
+      assert(
+        dut.io.swapsPending.toInt >= 1,
+        s"swapsPending should be >= 1 right after writeReg (FIFO enqueue), got ${dut.io.swapsPending.toInt}"
+      )
 
       dut.clockDomain.waitSampling(50)
 
-      assert(dut.io.swapDisplayedBuffer.toInt == 1, s"displayedBuffer should be 1, got ${dut.io.swapDisplayedBuffer.toInt}")
-      assert(dut.io.swapsPending.toInt == 0, s"swapsPending should be 0 after swap, got ${dut.io.swapsPending.toInt}")
+      assert(
+        dut.io.swapDisplayedBuffer.toInt == 1,
+        s"displayedBuffer should be 1, got ${dut.io.swapDisplayedBuffer.toInt}"
+      )
+      assert(
+        dut.io.swapsPending.toInt == 0,
+        s"swapsPending should be 0 after swap, got ${dut.io.swapsPending.toInt}"
+      )
 
       // Issue second swap
       writeReg(driver, REG_SWAPBUFFER_CMD, 0)
-      assert(dut.io.swapsPending.toInt >= 1,
-        s"swapsPending should be >= 1 right after second writeReg, got ${dut.io.swapsPending.toInt}")
+      assert(
+        dut.io.swapsPending.toInt >= 1,
+        s"swapsPending should be >= 1 right after second writeReg, got ${dut.io.swapsPending.toInt}"
+      )
 
       dut.clockDomain.waitSampling(50)
 
-      assert(dut.io.swapDisplayedBuffer.toInt == 2, s"displayedBuffer should be 2, got ${dut.io.swapDisplayedBuffer.toInt}")
-      assert(dut.io.swapsPending.toInt == 0, s"swapsPending should be 0, got ${dut.io.swapsPending.toInt}")
+      assert(
+        dut.io.swapDisplayedBuffer.toInt == 2,
+        s"displayedBuffer should be 2, got ${dut.io.swapDisplayedBuffer.toInt}"
+      )
+      assert(
+        dut.io.swapsPending.toInt == 0,
+        s"swapsPending should be 0, got ${dut.io.swapsPending.toInt}"
+      )
 
       println("[swap_immediate] PASS: immediate swap without vsync works correctly")
     }
@@ -2462,33 +3226,59 @@ class CoreIntegrationTest extends AnyFunSuite {
       val tLOD = 0
 
       // fbzColorPath: texture passthrough
-      val fbzColorPath = 1 |       // rgbSel=1 (TREX/texture)
-        (0 << 8) |                  // zero_other=0
-        (0 << 9) |                  // sub_clocal=0
-        (0 << 10) |                 // mselect=0 (ZERO)
-        (0 << 13) |                 // reverse_blend=0 (factor inverted: 0→0xff→+1=256)
-        (0 << 14) |                 // add=0
-        (1 << 27)                   // texture_enable
+      val fbzColorPath = 1 | // rgbSel=1 (TREX/texture)
+        (0 << 8) | // zero_other=0
+        (0 << 9) | // sub_clocal=0
+        (0 << 10) | // mselect=0 (ZERO)
+        (0 << 13) | // reverse_blend=0 (factor inverted: 0→0xff→+1=256)
+        (0 << 14) | // add=0
+        (1 << 27) // texture_enable
 
-      val fbzMode = 1 | (1 << 9)   // clipping + RGB write
+      val fbzMode = 1 | (1 << 9) // clipping + RGB write
       val sign = false
 
       writeReg(driver, REG_TEXBASEADDR, 0)
 
       submitTriangle(
-        driver, dut.clockDomain,
-        vertexAx = vAx, vertexAy = vAy,
-        vertexBx = vBx, vertexBy = vBy,
-        vertexCx = vCx, vertexCy = vCy,
-        startR = 0, startG = 0, startB = 0, startA = 255 << 12,
-        startZ = 0, startS = startS_reg, startT = startT_reg, startW = startW_reg,
-        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
-        dSdX = dSdX_reg, dTdX = 0, dWdX = 0,
-        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
-        dSdY = 0, dTdY = dTdY_reg, dWdY = 0,
-        fbzColorPath = fbzColorPath, fbzMode = fbzMode, sign = sign,
-        textureMode = textureMode, tLOD = tLOD,
-        clipRight = 640, clipHighY = 480
+        driver,
+        dut.clockDomain,
+        vertexAx = vAx,
+        vertexAy = vAy,
+        vertexBx = vBx,
+        vertexBy = vBy,
+        vertexCx = vCx,
+        vertexCy = vCy,
+        startR = 0,
+        startG = 0,
+        startB = 0,
+        startA = 255 << 12,
+        startZ = 0,
+        startS = startS_reg,
+        startT = startT_reg,
+        startW = startW_reg,
+        dRdX = 0,
+        dGdX = 0,
+        dBdX = 0,
+        dAdX = 0,
+        dZdX = 0,
+        dSdX = dSdX_reg,
+        dTdX = 0,
+        dWdX = 0,
+        dRdY = 0,
+        dGdY = 0,
+        dBdY = 0,
+        dAdY = 0,
+        dZdY = 0,
+        dSdY = 0,
+        dTdY = dTdY_reg,
+        dWdY = 0,
+        fbzColorPath = fbzColorPath,
+        fbzMode = fbzMode,
+        sign = sign,
+        textureMode = textureMode,
+        tLOD = tLOD,
+        clipRight = 640,
+        clipHighY = 480
       )
 
       dut.clockDomain.waitSampling(30000)
@@ -2508,20 +3298,47 @@ class CoreIntegrationTest extends AnyFunSuite {
       val texLodPerLod = Array.fill(9)(0)
 
       val refParams = VoodooReference.fromRegisterValues(
-        vertexAx = vAx, vertexAy = vAy,
-        vertexBx = vBx, vertexBy = vBy,
-        vertexCx = vCx, vertexCy = vCy,
-        startR = 0, startG = 0, startB = 0, startA = 255 << 12,
-        startZ = 0, startS = startS_reg, startT = startT_reg, startW = startW_reg,
-        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
-        dSdX = dSdX_reg, dTdX = 0, dWdX = 0,
-        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
-        dSdY = 0, dTdY = dTdY_reg, dWdY = 0,
-        fbzColorPath = fbzColorPath, fbzMode = fbzMode, sign = sign,
-        textureMode = textureMode, tLOD = tLOD,
-        clipRight = 640, clipHighY = 480,
-        texData = texDataPerLod, texWMask = texWMaskPerLod,
-        texHMask = texHMaskPerLod, texShift = texShiftPerLod,
+        vertexAx = vAx,
+        vertexAy = vAy,
+        vertexBx = vBx,
+        vertexBy = vBy,
+        vertexCx = vCx,
+        vertexCy = vCy,
+        startR = 0,
+        startG = 0,
+        startB = 0,
+        startA = 255 << 12,
+        startZ = 0,
+        startS = startS_reg,
+        startT = startT_reg,
+        startW = startW_reg,
+        dRdX = 0,
+        dGdX = 0,
+        dBdX = 0,
+        dAdX = 0,
+        dZdX = 0,
+        dSdX = dSdX_reg,
+        dTdX = 0,
+        dWdX = 0,
+        dRdY = 0,
+        dGdY = 0,
+        dBdY = 0,
+        dAdY = 0,
+        dZdY = 0,
+        dSdY = 0,
+        dTdY = dTdY_reg,
+        dWdY = 0,
+        fbzColorPath = fbzColorPath,
+        fbzMode = fbzMode,
+        sign = sign,
+        textureMode = textureMode,
+        tLOD = tLOD,
+        clipRight = 640,
+        clipHighY = 480,
+        texData = texDataPerLod,
+        texWMask = texWMaskPerLod,
+        texHMask = texHMaskPerLod,
+        texShift = texShiftPerLod,
         texLod = texLodPerLod
       )
 
@@ -2600,19 +3417,45 @@ class CoreIntegrationTest extends AnyFunSuite {
       writeReg(driver, REG_TEXBASEADDR, 0)
 
       submitTriangle(
-        driver, dut.clockDomain,
-        vertexAx = vAx, vertexAy = vAy,
-        vertexBx = vBx, vertexBy = vBy,
-        vertexCx = vCx, vertexCy = vCy,
-        startR = 0, startG = 0, startB = 0, startA = 255 << 12,
-        startZ = 0, startS = startS_reg, startT = startT_reg, startW = startW_reg,
-        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
-        dSdX = dSdX_reg, dTdX = 0, dWdX = dWdX_reg,
-        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
-        dSdY = 0, dTdY = dTdY_reg, dWdY = 0,
-        fbzColorPath = fbzColorPath, fbzMode = fbzMode, sign = sign,
-        textureMode = textureMode, tLOD = tLOD,
-        clipRight = 640, clipHighY = 480
+        driver,
+        dut.clockDomain,
+        vertexAx = vAx,
+        vertexAy = vAy,
+        vertexBx = vBx,
+        vertexBy = vBy,
+        vertexCx = vCx,
+        vertexCy = vCy,
+        startR = 0,
+        startG = 0,
+        startB = 0,
+        startA = 255 << 12,
+        startZ = 0,
+        startS = startS_reg,
+        startT = startT_reg,
+        startW = startW_reg,
+        dRdX = 0,
+        dGdX = 0,
+        dBdX = 0,
+        dAdX = 0,
+        dZdX = 0,
+        dSdX = dSdX_reg,
+        dTdX = 0,
+        dWdX = dWdX_reg,
+        dRdY = 0,
+        dGdY = 0,
+        dBdY = 0,
+        dAdY = 0,
+        dZdY = 0,
+        dSdY = 0,
+        dTdY = dTdY_reg,
+        dWdY = 0,
+        fbzColorPath = fbzColorPath,
+        fbzMode = fbzMode,
+        sign = sign,
+        textureMode = textureMode,
+        tLOD = tLOD,
+        clipRight = 640,
+        clipHighY = 480
       )
 
       dut.clockDomain.waitSampling(30000)
@@ -2631,20 +3474,47 @@ class CoreIntegrationTest extends AnyFunSuite {
       val texLodPerLod = Array.fill(9)(0)
 
       val refParams = VoodooReference.fromRegisterValues(
-        vertexAx = vAx, vertexAy = vAy,
-        vertexBx = vBx, vertexBy = vBy,
-        vertexCx = vCx, vertexCy = vCy,
-        startR = 0, startG = 0, startB = 0, startA = 255 << 12,
-        startZ = 0, startS = startS_reg, startT = startT_reg, startW = startW_reg,
-        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
-        dSdX = dSdX_reg, dTdX = 0, dWdX = dWdX_reg,
-        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
-        dSdY = 0, dTdY = dTdY_reg, dWdY = 0,
-        fbzColorPath = fbzColorPath, fbzMode = fbzMode, sign = sign,
-        textureMode = textureMode, tLOD = tLOD,
-        clipRight = 640, clipHighY = 480,
-        texData = texDataPerLod, texWMask = texWMaskPerLod,
-        texHMask = texHMaskPerLod, texShift = texShiftPerLod,
+        vertexAx = vAx,
+        vertexAy = vAy,
+        vertexBx = vBx,
+        vertexBy = vBy,
+        vertexCx = vCx,
+        vertexCy = vCy,
+        startR = 0,
+        startG = 0,
+        startB = 0,
+        startA = 255 << 12,
+        startZ = 0,
+        startS = startS_reg,
+        startT = startT_reg,
+        startW = startW_reg,
+        dRdX = 0,
+        dGdX = 0,
+        dBdX = 0,
+        dAdX = 0,
+        dZdX = 0,
+        dSdX = dSdX_reg,
+        dTdX = 0,
+        dWdX = dWdX_reg,
+        dRdY = 0,
+        dGdY = 0,
+        dBdY = 0,
+        dAdY = 0,
+        dZdY = 0,
+        dSdY = 0,
+        dTdY = dTdY_reg,
+        dWdY = 0,
+        fbzColorPath = fbzColorPath,
+        fbzMode = fbzMode,
+        sign = sign,
+        textureMode = textureMode,
+        tLOD = tLOD,
+        clipRight = 640,
+        clipHighY = 480,
+        texData = texDataPerLod,
+        texWMask = texWMaskPerLod,
+        texHMask = texHMaskPerLod,
+        texShift = texShiftPerLod,
         texLod = texLodPerLod
       )
 
@@ -2676,11 +3546,11 @@ class CoreIntegrationTest extends AnyFunSuite {
       // 5 distinct solid-color mipmap levels (LOD 0-4)
       // LOD 0: 256×256, LOD 1: 128×128, LOD 2: 64×64, LOD 3: 32×32, LOD 4: 16×16
       val lodColors = Array(
-        0xF800, // LOD 0: Red (RGB565)
-        0x07E0, // LOD 1: Green
-        0x001F, // LOD 2: Blue
-        0xFFE0, // LOD 3: Yellow (R+G)
-        0xF81F  // LOD 4: Magenta (R+B)
+        0xf800, // LOD 0: Red (RGB565)
+        0x07e0, // LOD 1: Green
+        0x001f, // LOD 2: Blue
+        0xffe0, // LOD 3: Yellow (R+G)
+        0xf81f // LOD 4: Magenta (R+B)
       )
       val lodSizes = Array(256, 128, 64, 32, 16)
       val lodColorSet = lodColors.toSet
@@ -2700,18 +3570,18 @@ class CoreIntegrationTest extends AnyFunSuite {
 
       // Triangle: vertex A at left edge, wide horizontal span
       // A = (10,50), B = (90,58), C = (10,58) — right triangle, wide base
-      val vAx = 10 * 16    // x=10
-      val vAy = 50 * 16    // y=50
-      val vBx = 90 * 16    // x=90
-      val vBy = 58 * 16    // y=58
-      val vCx = 10 * 16    // x=10
-      val vCy = 58 * 16    // y=58
+      val vAx = 10 * 16 // x=10
+      val vAy = 50 * 16 // y=50
+      val vBx = 90 * 16 // x=90
+      val vBy = 58 * 16 // y=58
+      val vCx = 10 * 16 // x=10
+      val vCy = 58 * 16 // y=58
 
       // 1/W starts at 1.0 at vertex A (x=10), decreases rightward
       // Over 80 pixels: oow goes from 1.0 to 0.125 (W from 1 to 8)
       // dWdX = (0.125 - 1.0) / 80 = -0.010937... in 2.30 format
-      val startW_reg = 0x40000000  // 1.0 in 2.30
-      val dWdX_reg = -11744051    // -0.010937 * 2^30
+      val startW_reg = 0x40000000 // 1.0 in 2.30
+      val dWdX_reg = -11744051 // -0.010937 * 2^30
 
       // S/W gradient = 4.0 → baseLod = floor(log2(4)) = 2
       // Per-pixel LOD = baseLod + log2(W):
@@ -2732,19 +3602,45 @@ class CoreIntegrationTest extends AnyFunSuite {
       writeReg(driver, REG_TEXBASEADDR, 0)
 
       submitTriangle(
-        driver, dut.clockDomain,
-        vertexAx = vAx, vertexAy = vAy,
-        vertexBx = vBx, vertexBy = vBy,
-        vertexCx = vCx, vertexCy = vCy,
-        startR = 0, startG = 0, startB = 0, startA = 255 << 12,
-        startZ = 0, startS = 0, startT = 0, startW = startW_reg,
-        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
-        dSdX = dSdX_reg, dTdX = 0, dWdX = dWdX_reg,
-        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
-        dSdY = 0, dTdY = 0, dWdY = 0,
-        fbzColorPath = fbzColorPath, fbzMode = fbzMode, sign = sign,
-        textureMode = textureMode, tLOD = tLOD,
-        clipRight = 640, clipHighY = 480
+        driver,
+        dut.clockDomain,
+        vertexAx = vAx,
+        vertexAy = vAy,
+        vertexBx = vBx,
+        vertexBy = vBy,
+        vertexCx = vCx,
+        vertexCy = vCy,
+        startR = 0,
+        startG = 0,
+        startB = 0,
+        startA = 255 << 12,
+        startZ = 0,
+        startS = 0,
+        startT = 0,
+        startW = startW_reg,
+        dRdX = 0,
+        dGdX = 0,
+        dBdX = 0,
+        dAdX = 0,
+        dZdX = 0,
+        dSdX = dSdX_reg,
+        dTdX = 0,
+        dWdX = dWdX_reg,
+        dRdY = 0,
+        dGdY = 0,
+        dBdY = 0,
+        dAdY = 0,
+        dZdY = 0,
+        dSdY = 0,
+        dTdY = 0,
+        dWdY = 0,
+        fbzColorPath = fbzColorPath,
+        fbzMode = fbzMode,
+        sign = sign,
+        textureMode = textureMode,
+        tLOD = tLOD,
+        clipRight = 640,
+        clipHighY = 480
       )
 
       dut.clockDomain.waitSampling(50000)
@@ -2762,7 +3658,7 @@ class CoreIntegrationTest extends AnyFunSuite {
 
       // Print sample scanline
       val allYs = simPixels.keys.map(_._2).toSeq.sorted
-      val sampleY = allYs(allYs.size * 3 / 4)  // pick a wide scanline near the bottom
+      val sampleY = allYs(allYs.size * 3 / 4) // pick a wide scanline near the bottom
       val rowPixels = simPixels.filter(_._1._2 == sampleY).toSeq.sortBy(_._1._1)
       println(s"[perpixel_lod] Sample scanline y=$sampleY (${rowPixels.size} pixels):")
       for (((x, y), (rgb, _)) <- rowPixels) {
@@ -2774,8 +3670,13 @@ class CoreIntegrationTest extends AnyFunSuite {
       // 1. Verify multiple distinct LOD colors are present
       val simLodColors = simPixels.values.map(_._1).toSet.intersect(lodColorSet)
       val simLods = simLodColors.map(colorToLod)
-      println(s"[perpixel_lod] Distinct LOD levels in output: ${simLods.toSeq.sorted.map(l => s"$l(${lodName(l)})").mkString(", ")}")
-      assert(simLods.size >= 2, s"Expected at least 2 distinct LOD levels, got ${simLods.size}: ${simLods}")
+      println(
+        s"[perpixel_lod] Distinct LOD levels in output: ${simLods.toSeq.sorted.map(l => s"$l(${lodName(l)})").mkString(", ")}"
+      )
+      assert(
+        simLods.size >= 2,
+        s"Expected at least 2 distinct LOD levels, got ${simLods.size}: ${simLods}"
+      )
 
       // 2. Verify LOD increases from left to right (W increases as oow decreases)
       if (rowPixels.size >= 6) {
@@ -2783,7 +3684,7 @@ class CoreIntegrationTest extends AnyFunSuite {
         val leftPixels = rowPixels.take(third)
         val rightPixels = rowPixels.takeRight(third)
 
-        def avgLod(pixels: Seq[((Int,Int), (Int,Int))]): Double = {
+        def avgLod(pixels: Seq[((Int, Int), (Int, Int))]): Double = {
           val lods = pixels.map { case (_, (rgb, _)) => colorToLod(rgb) }.filter(_ >= 0)
           if (lods.isEmpty) -1.0 else lods.sum.toDouble / lods.size
         }
@@ -2791,11 +3692,15 @@ class CoreIntegrationTest extends AnyFunSuite {
         val leftAvg = avgLod(leftPixels)
         val rightAvg = avgLod(rightPixels)
         println(f"[perpixel_lod] Avg LOD: left=$leftAvg%.2f, right=$rightAvg%.2f")
-        assert(rightAvg > leftAvg,
-          f"LOD should increase left→right (W increases): left=$leftAvg%.2f right=$rightAvg%.2f")
+        assert(
+          rightAvg > leftAvg,
+          f"LOD should increase left→right (W increases): left=$leftAvg%.2f right=$rightAvg%.2f"
+        )
       }
 
-      println("[perpixel_lod] PASS: Per-pixel LOD produces multiple levels with correct progression")
+      println(
+        "[perpixel_lod] PASS: Per-pixel LOD produces multiple levels with correct progression"
+      )
     }
   }
 
@@ -2817,8 +3722,8 @@ class CoreIntegrationTest extends AnyFunSuite {
       val (driver, fbMemory, texMemory, writtenAddrs) = setupDut(dut)
 
       // LOD 0: 256x256 solid Red, LOD 1: 128x128 solid Green (RGB565)
-      val lod0Color = 0xF800  // Red
-      val lod1Color = 0x07E0  // Green
+      val lod0Color = 0xf800 // Red
+      val lod1Color = 0x07e0 // Green
 
       // Fill row 0 of LOD 0 (at offset 0)
       for (s <- 0 until 256) {
@@ -2843,32 +3748,58 @@ class CoreIntegrationTest extends AnyFunSuite {
       val vCy = 66 * 16
 
       // Gradient = 1.5 texels/pixel (non-power-of-2)
-      val dSdX_reg = (1.5 * (1 << 18)).toInt  // 393216
+      val dSdX_reg = (1.5 * (1 << 18)).toInt // 393216
 
       // textureMode: RGB565 (10 << 8), clampS, clampT, non-perspective
       val textureMode = (10 << 8) | (1 << 7) | (1 << 6)
       // tLOD: lodmin=0, lodmax=2.0 (8 in UQ(4,2)), lodbias=+0.5 (2 in SQ(4,2))
       val tLOD = (2 << 12) | (8 << 6) | 0
 
-      val fbzColorPath = 1 | (1 << 27)  // texture passthrough
-      val fbzMode = 1 | (1 << 9)        // clipping + RGB write
+      val fbzColorPath = 1 | (1 << 27) // texture passthrough
+      val fbzMode = 1 | (1 << 9) // clipping + RGB write
 
       writeReg(driver, REG_TEXBASEADDR, 0)
 
       submitTriangle(
-        driver, dut.clockDomain,
-        vertexAx = vAx, vertexAy = vAy,
-        vertexBx = vBx, vertexBy = vBy,
-        vertexCx = vCx, vertexCy = vCy,
-        startR = 0, startG = 0, startB = 0, startA = 255 << 12,
-        startZ = 0, startS = 0, startT = 0, startW = 0,
-        dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
-        dSdX = dSdX_reg, dTdX = 0, dWdX = 0,
-        dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
-        dSdY = 0, dTdY = 0, dWdY = 0,
-        fbzColorPath = fbzColorPath, fbzMode = fbzMode, sign = false,
-        textureMode = textureMode, tLOD = tLOD,
-        clipRight = 640, clipHighY = 480
+        driver,
+        dut.clockDomain,
+        vertexAx = vAx,
+        vertexAy = vAy,
+        vertexBx = vBx,
+        vertexBy = vBy,
+        vertexCx = vCx,
+        vertexCy = vCy,
+        startR = 0,
+        startG = 0,
+        startB = 0,
+        startA = 255 << 12,
+        startZ = 0,
+        startS = 0,
+        startT = 0,
+        startW = 0,
+        dRdX = 0,
+        dGdX = 0,
+        dBdX = 0,
+        dAdX = 0,
+        dZdX = 0,
+        dSdX = dSdX_reg,
+        dTdX = 0,
+        dWdX = 0,
+        dRdY = 0,
+        dGdY = 0,
+        dBdY = 0,
+        dAdY = 0,
+        dZdY = 0,
+        dSdY = 0,
+        dTdY = 0,
+        dWdY = 0,
+        fbzColorPath = fbzColorPath,
+        fbzMode = fbzMode,
+        sign = false,
+        textureMode = textureMode,
+        tLOD = tLOD,
+        clipRight = 640,
+        clipHighY = 480
       )
 
       dut.clockDomain.waitSampling(20000)
@@ -2879,15 +3810,25 @@ class CoreIntegrationTest extends AnyFunSuite {
 
       // All pixels should be Green (LOD 1), NOT Red (LOD 0)
       val colorCounts = simPixels.values.map(_._1).groupBy(identity).mapValues(_.size)
-      println(s"[baselod_frac] Color distribution: ${colorCounts.map { case (c, n) => f"0x$c%04X→$n" }.mkString(", ")}")
+      println(
+        s"[baselod_frac] Color distribution: ${colorCounts.map { case (c, n) => f"0x$c%04X→$n" }.mkString(", ")}"
+      )
 
       val greenCount = colorCounts.getOrElse(lod1Color, 0)
       val redCount = colorCounts.getOrElse(lod0Color, 0)
 
-      assert(greenCount > 0, "Expected Green (LOD 1) pixels — fractional baseLod should push LOD past 1.0")
-      assert(redCount == 0, s"Got $redCount Red (LOD 0) pixels — baseLod fraction not working correctly")
+      assert(
+        greenCount > 0,
+        "Expected Green (LOD 1) pixels — fractional baseLod should push LOD past 1.0"
+      )
+      assert(
+        redCount == 0,
+        s"Got $redCount Red (LOD 0) pixels — baseLod fraction not working correctly"
+      )
 
-      println(s"[baselod_frac] PASS: All ${simPixels.size} pixels are Green (LOD 1), confirming fractional baseLod precision")
+      println(
+        s"[baselod_frac] PASS: All ${simPixels.size} pixels are Green (LOD 1), confirming fractional baseLod precision"
+      )
     }
   }
 
@@ -2901,8 +3842,14 @@ class CoreIntegrationTest extends AnyFunSuite {
 
       // Wait 100 cycles with vRetrace=false — swap should NOT have happened
       dut.clockDomain.waitSampling(100)
-      assert(dut.io.swapDisplayedBuffer.toInt == 0, s"displayedBuffer should still be 0 (waiting for vsync), got ${dut.io.swapDisplayedBuffer.toInt}")
-      assert(dut.io.swapsPending.toInt == 1, s"swapsPending should be 1 while waiting, got ${dut.io.swapsPending.toInt}")
+      assert(
+        dut.io.swapDisplayedBuffer.toInt == 0,
+        s"displayedBuffer should still be 0 (waiting for vsync), got ${dut.io.swapDisplayedBuffer.toInt}"
+      )
+      assert(
+        dut.io.swapsPending.toInt == 1,
+        s"swapsPending should be 1 while waiting, got ${dut.io.swapsPending.toInt}"
+      )
 
       // Pulse vRetrace high for a few cycles
       dut.io.statusInputs.vRetrace #= true
@@ -2912,8 +3859,14 @@ class CoreIntegrationTest extends AnyFunSuite {
       // Wait for swap to complete
       dut.clockDomain.waitSampling(50)
 
-      assert(dut.io.swapDisplayedBuffer.toInt == 1, s"displayedBuffer should be 1 after vsync, got ${dut.io.swapDisplayedBuffer.toInt}")
-      assert(dut.io.swapsPending.toInt == 0, s"swapsPending should be 0 after swap, got ${dut.io.swapsPending.toInt}")
+      assert(
+        dut.io.swapDisplayedBuffer.toInt == 1,
+        s"displayedBuffer should be 1 after vsync, got ${dut.io.swapDisplayedBuffer.toInt}"
+      )
+      assert(
+        dut.io.swapsPending.toInt == 0,
+        s"swapsPending should be 0 after swap, got ${dut.io.swapsPending.toInt}"
+      )
 
       println("[swap_vsync] PASS: vsync-synchronized swap blocks correctly")
     }
@@ -2961,9 +3914,9 @@ class CoreIntegrationTest extends AnyFunSuite {
         val y = 10
         val baseX = 20
         val testPixels = Seq(
-          (0xF800, 0x07E0), // word 0: pure red, pure green
-          (0x001F, 0xFFFF), // word 1: pure blue, white
-          (0x8410, 0x0000)  // word 2: mid-gray, black
+          (0xf800, 0x07e0), // word 0: pure red, pure green
+          (0x001f, 0xffff), // word 1: pure blue, white
+          (0x8410, 0x0000) // word 2: mid-gray, black
         )
 
         for (i <- testPixels.indices) {
@@ -2980,10 +3933,10 @@ class CoreIntegrationTest extends AnyFunSuite {
         // Verify each pixel
         // RGB565 expand-truncate round-trip is identity (no dithering)
         val expectedFlat = Seq(
-          (baseX + 0, y, 0xF800),
-          (baseX + 1, y, 0x07E0),
-          (baseX + 2, y, 0x001F),
-          (baseX + 3, y, 0xFFFF),
+          (baseX + 0, y, 0xf800),
+          (baseX + 1, y, 0x07e0),
+          (baseX + 2, y, 0x001f),
+          (baseX + 3, y, 0xffff),
           (baseX + 4, y, 0x8410),
           (baseX + 5, y, 0x0000)
         )
@@ -2993,7 +3946,9 @@ class CoreIntegrationTest extends AnyFunSuite {
           pixels.get((x, py)) match {
             case Some((actualRgb, _)) =>
               if (actualRgb != expectedRgb) {
-                println(f"[lfb_rgb565] ($x,$py) MISMATCH: expected=0x$expectedRgb%04X actual=0x$actualRgb%04X")
+                println(
+                  f"[lfb_rgb565] ($x,$py) MISMATCH: expected=0x$expectedRgb%04X actual=0x$actualRgb%04X"
+                )
                 mismatches += 1
               }
             case None =>
@@ -3020,9 +3975,9 @@ class CoreIntegrationTest extends AnyFunSuite {
         // 32-bit stride: addr = (y << 12) | (x << 2)
         val y = 20
         val testPixels32 = Seq(
-          (50, 0xFFC08040L), // x=50, ARGB: A=0xFF, R=0xC0, G=0x80, B=0x40
-          (51, 0xFF00FF00L), // x=51, ARGB: pure green
-          (52, 0xFFFFFFFFL)  // x=52, ARGB: white
+          (50, 0xffc08040L), // x=50, ARGB: A=0xFF, R=0xC0, G=0x80, B=0x40
+          (51, 0xff00ff00L), // x=51, ARGB: pure green
+          (52, 0xffffffffL) // x=52, ARGB: white
         )
 
         for ((x, argb) <- testPixels32) {
@@ -3036,9 +3991,9 @@ class CoreIntegrationTest extends AnyFunSuite {
 
         // Expected: 8-bit RGB truncated to 565 (no dithering)
         val expected32 = Seq(
-          (50, y, toRgb565(0xC0, 0x80, 0x40)),
-          (51, y, toRgb565(0x00, 0xFF, 0x00)),
-          (52, y, toRgb565(0xFF, 0xFF, 0xFF))
+          (50, y, toRgb565(0xc0, 0x80, 0x40)),
+          (51, y, toRgb565(0x00, 0xff, 0x00)),
+          (52, y, toRgb565(0xff, 0xff, 0xff))
         )
 
         var mismatches = 0
@@ -3046,7 +4001,9 @@ class CoreIntegrationTest extends AnyFunSuite {
           pixels.get((x, py)) match {
             case Some((actualRgb, _)) =>
               if (actualRgb != expectedRgb) {
-                println(f"[lfb_argb8888] ($x,$py) MISMATCH: expected=0x$expectedRgb%04X actual=0x$actualRgb%04X")
+                println(
+                  f"[lfb_argb8888] ($x,$py) MISMATCH: expected=0x$expectedRgb%04X actual=0x$actualRgb%04X"
+                )
                 mismatches += 1
               }
             case None =>
@@ -3074,7 +4031,7 @@ class CoreIntegrationTest extends AnyFunSuite {
         // Data: hi16 = depth, lo16 = RGB565
         val y = 30
         val x = 100
-        val rgb565val = 0xF800 // pure red
+        val rgb565val = 0xf800 // pure red
         val depthVal = 0x1234
         val addr = (y << 11) | (x << 1)
         val data = (depthVal << 16) | rgb565val
@@ -3086,10 +4043,14 @@ class CoreIntegrationTest extends AnyFunSuite {
 
         pixels.get((x, y)) match {
           case Some((actualRgb, actualDepth)) =>
-            assert(actualRgb == rgb565val,
-              f"[lfb_depth_rgb565] color: expected=0x$rgb565val%04X actual=0x$actualRgb%04X")
-            assert(actualDepth == depthVal,
-              f"[lfb_depth_rgb565] depth: expected=0x$depthVal%04X actual=0x$actualDepth%04X")
+            assert(
+              actualRgb == rgb565val,
+              f"[lfb_depth_rgb565] color: expected=0x$rgb565val%04X actual=0x$actualRgb%04X"
+            )
+            assert(
+              actualDepth == depthVal,
+              f"[lfb_depth_rgb565] depth: expected=0x$depthVal%04X actual=0x$actualDepth%04X"
+            )
             println(f"[lfb_depth_rgb565] PASS: color=0x$actualRgb%04X depth=0x$actualDepth%04X")
           case None =>
             fail(s"[lfb_depth_rgb565] pixel ($x,$y) MISSING")
@@ -3111,7 +4072,7 @@ class CoreIntegrationTest extends AnyFunSuite {
         // 16-bit stride: addr = (y << 11) | (x << 1)
         val y = 40
         val x = 200
-        val depth0 = 0xAAAA
+        val depth0 = 0xaaaa
         val depth1 = 0x5555
         val addr = (y << 11) | (x << 1)
         val data = (depth1 << 16) | depth0
@@ -3125,15 +4086,19 @@ class CoreIntegrationTest extends AnyFunSuite {
         // So only bytes 2-3 (depth) should be written via mask
         pixels.get((x, y)) match {
           case Some((_, actualDepth0)) =>
-            assert(actualDepth0 == depth0,
-              f"[lfb_depth_only] pixel 0: expected=0x$depth0%04X actual=0x$actualDepth0%04X")
+            assert(
+              actualDepth0 == depth0,
+              f"[lfb_depth_only] pixel 0: expected=0x$depth0%04X actual=0x$actualDepth0%04X"
+            )
           case None =>
             fail(s"[lfb_depth_only] pixel ($x,$y) MISSING")
         }
         pixels.get((x + 1, y)) match {
           case Some((_, actualDepth1)) =>
-            assert(actualDepth1 == depth1,
-              f"[lfb_depth_only] pixel 1: expected=0x$depth1%04X actual=0x$actualDepth1%04X")
+            assert(
+              actualDepth1 == depth1,
+              f"[lfb_depth_only] pixel 1: expected=0x$depth1%04X actual=0x$actualDepth1%04X"
+            )
           case None =>
             fail(s"[lfb_depth_only] pixel (${x + 1},$y) MISSING")
         }
@@ -3180,7 +4145,9 @@ class CoreIntegrationTest extends AnyFunSuite {
         pixels.get((x, y)) match {
           case Some((actual, _)) =>
             if (actual != expected1) {
-              println(f"[lfb_rgb555] ($x,$y) MISMATCH: expected=0x$expected1%04X actual=0x$actual%04X")
+              println(
+                f"[lfb_rgb555] ($x,$y) MISMATCH: expected=0x$expected1%04X actual=0x$actual%04X"
+              )
               mismatches += 1
             }
           case None =>
@@ -3189,7 +4156,9 @@ class CoreIntegrationTest extends AnyFunSuite {
         pixels.get((x + 1, y)) match {
           case Some((actual, _)) =>
             if (actual != expected2) {
-              println(f"[lfb_rgb555] (${x + 1},$y) MISMATCH: expected=0x$expected2%04X actual=0x$actual%04X")
+              println(
+                f"[lfb_rgb555] (${x + 1},$y) MISMATCH: expected=0x$expected2%04X actual=0x$actual%04X"
+              )
               mismatches += 1
             }
           case None =>
@@ -3206,15 +4175,15 @@ class CoreIntegrationTest extends AnyFunSuite {
       {
         // Test all 4 lane orderings with the same 32-bit input word
         // Input: 0xAABBCCDD (bytes: AA=31:24, BB=23:16, CC=15:8, DD=7:0)
-        val testWord = 0xAABBCCDDL
+        val testWord = 0xaabbccddL
         val y = 60
 
         val laneExpected = Seq(
           // (lanes, expectedR, expectedG, expectedB)
-          (0, 0xBB, 0xCC, 0xDD), // ARGB: R=[23:16], G=[15:8], B=[7:0]
-          (1, 0xDD, 0xCC, 0xBB), // ABGR: R=[7:0], G=[15:8], B=[23:16]
-          (2, 0xAA, 0xBB, 0xCC), // RGBA: R=[31:24], G=[23:16], B=[15:8]
-          (3, 0xCC, 0xBB, 0xAA)  // BGRA: R=[15:8], G=[23:16], B=[31:24]
+          (0, 0xbb, 0xcc, 0xdd), // ARGB: R=[23:16], G=[15:8], B=[7:0]
+          (1, 0xdd, 0xcc, 0xbb), // ABGR: R=[7:0], G=[15:8], B=[23:16]
+          (2, 0xaa, 0xbb, 0xcc), // RGBA: R=[31:24], G=[23:16], B=[15:8]
+          (3, 0xcc, 0xbb, 0xaa) // BGRA: R=[15:8], G=[23:16], B=[31:24]
         )
 
         var mismatches = 0
@@ -3235,7 +4204,9 @@ class CoreIntegrationTest extends AnyFunSuite {
           pixels.get((x, y)) match {
             case Some((actual, _)) =>
               if (actual != expectedRgb) {
-                println(f"[lfb_rgba_lanes] lanes=$lanes ($x,$y) MISMATCH: expected=0x$expectedRgb%04X actual=0x$actual%04X")
+                println(
+                  f"[lfb_rgba_lanes] lanes=$lanes ($x,$y) MISMATCH: expected=0x$expectedRgb%04X actual=0x$actual%04X"
+                )
                 mismatches += 1
               }
             case None =>
@@ -3271,7 +4242,7 @@ class CoreIntegrationTest extends AnyFunSuite {
         //   B: frac=4, scaled=8, 8>7 → +1 → B=17
         // Dithered at (1,0) = R=17, G=33, B=17 → (17<<11)|(33<<5)|17 = 0x8C31
         val y = 70
-        val argb = 0xFF848484L
+        val argb = 0xff848484L
 
         // Write pixel at (0,70)
         val addr0 = (y << 12) | (0 << 2)
@@ -3292,7 +4263,9 @@ class CoreIntegrationTest extends AnyFunSuite {
         pixels.get((0, y)) match {
           case Some((actual, _)) =>
             if (actual != noDither) {
-              println(f"[lfb_dither] (0,$y) MISMATCH: expected=0x$noDither%04X actual=0x$actual%04X")
+              println(
+                f"[lfb_dither] (0,$y) MISMATCH: expected=0x$noDither%04X actual=0x$actual%04X"
+              )
               mismatches += 1
             }
           case None => println(f"[lfb_dither] (0,$y) MISSING"); mismatches += 1
@@ -3300,7 +4273,9 @@ class CoreIntegrationTest extends AnyFunSuite {
         pixels.get((1, y)) match {
           case Some((actual, _)) =>
             if (actual != withDither) {
-              println(f"[lfb_dither] (1,$y) MISMATCH: expected=0x$withDither%04X actual=0x$actual%04X")
+              println(
+                f"[lfb_dither] (1,$y) MISMATCH: expected=0x$withDither%04X actual=0x$actual%04X"
+              )
               mismatches += 1
             }
           case None => println(f"[lfb_dither] (1,$y) MISSING"); mismatches += 1
@@ -3326,7 +4301,7 @@ class CoreIntegrationTest extends AnyFunSuite {
         writeReg(regDriver, REG_FBZMODE, 1 << 9)
         dut.clockDomain.waitSampling(50)
 
-        val inputWord = 0xAAAA5555L
+        val inputWord = 0xaaaa5555L
         val addr = (y << 11) | (x << 1)
         lfbDriver.write(BigInt(inputWord & 0xffffffffL), BigInt(addr))
         dut.clockDomain.waitSampling(100)
@@ -3337,7 +4312,7 @@ class CoreIntegrationTest extends AnyFunSuite {
         // pixel 0 (lo16) = 0xAAAA, pixel 1 (hi16) = 0x5555
         pixels.get((x, y)) match {
           case Some((actual, _)) =>
-            assert(actual == 0xAAAA, f"[lfb_wordswap] px0: expected=0xAAAA actual=0x$actual%04X")
+            assert(actual == 0xaaaa, f"[lfb_wordswap] px0: expected=0xAAAA actual=0x$actual%04X")
           case None => fail(s"[lfb_wordswap] ($x,$y) MISSING")
         }
         pixels.get((x + 1, y)) match {
@@ -3388,13 +4363,13 @@ class CoreIntegrationTest extends AnyFunSuite {
         // fbzMode: RGB mask (bit 9) + aux mask (bit 10) + enableAlphaPlanes (bit 18)
         writeReg(regDriver, REG_FBZMODE, (1 << 9) | (1 << 10) | (1 << 18))
         // zaColor low 16 bits = 0xBEEF
-        writeReg(regDriver, REG_ZACOLOR, 0xBEEFL)
+        writeReg(regDriver, REG_ZACOLOR, 0xbeefL)
         dut.clockDomain.waitSampling(50)
 
         val y = 90
         val x = 40
         val addr = (y << 12) | (x << 2)
-        lfbDriver.write(BigInt(0xFF804020L), BigInt(addr)) // ARGB
+        lfbDriver.write(BigInt(0xff804020L), BigInt(addr)) // ARGB
         dut.clockDomain.waitSampling(100)
 
         val pixels = collectPixels(fbMemory, writtenAddrs, 0)
@@ -3402,10 +4377,14 @@ class CoreIntegrationTest extends AnyFunSuite {
         pixels.get((x, y)) match {
           case Some((actualRgb, actualAux)) =>
             val expectedRgb = toRgb565(0x80, 0x40, 0x20)
-            assert(actualRgb == expectedRgb,
-              f"[lfb_alpha_planes] color: expected=0x$expectedRgb%04X actual=0x$actualRgb%04X")
-            assert(actualAux == 0xBEEF,
-              f"[lfb_alpha_planes] aux: expected=0xBEEF actual=0x$actualAux%04X")
+            assert(
+              actualRgb == expectedRgb,
+              f"[lfb_alpha_planes] color: expected=0x$expectedRgb%04X actual=0x$actualRgb%04X"
+            )
+            assert(
+              actualAux == 0xbeef,
+              f"[lfb_alpha_planes] aux: expected=0xBEEF actual=0x$actualAux%04X"
+            )
             println(f"[lfb_alpha_planes] PASS: color=0x$actualRgb%04X aux=0x$actualAux%04X")
           case None =>
             fail(s"[lfb_alpha_planes] pixel ($x,$y) MISSING")
@@ -3426,7 +4405,7 @@ class CoreIntegrationTest extends AnyFunSuite {
         val x = 50
         // lo16: ARGB1555 = 1_11111_00000_10101 = 0xFC15 (R=31, G=0, B=21)
         val px1555 = (1 << 15) | (31 << 10) | (0 << 5) | 21
-        val depth = 0xABCD
+        val depth = 0xabcd
         val addr = (y << 11) | (x << 1)
         val data = (depth << 16) | px1555
         lfbDriver.write(BigInt(data.toLong & 0xffffffffL), BigInt(addr))
@@ -3440,10 +4419,14 @@ class CoreIntegrationTest extends AnyFunSuite {
         val expectedRgb = (31 << 11) | (0 << 5) | 21
         pixels.get((x, y)) match {
           case Some((actualRgb, actualDepth)) =>
-            assert(actualRgb == expectedRgb,
-              f"[lfb_depth_argb1555] color: expected=0x$expectedRgb%04X actual=0x$actualRgb%04X")
-            assert(actualDepth == 0xABCD,
-              f"[lfb_depth_argb1555] depth: expected=0xABCD actual=0x$actualDepth%04X")
+            assert(
+              actualRgb == expectedRgb,
+              f"[lfb_depth_argb1555] color: expected=0x$expectedRgb%04X actual=0x$actualRgb%04X"
+            )
+            assert(
+              actualDepth == 0xabcd,
+              f"[lfb_depth_argb1555] depth: expected=0xABCD actual=0x$actualDepth%04X"
+            )
             println(f"[lfb_depth_argb1555] PASS: color=0x$actualRgb%04X depth=0x$actualDepth%04X")
           case None => fail(s"[lfb_depth_argb1555] ($x,$y) MISSING")
         }
@@ -3487,7 +4470,7 @@ class CoreIntegrationTest extends AnyFunSuite {
 
         // Write pixel at (60,60) with alpha=0x80 (should pass GEQUAL 128)
         val y1 = 60; val x1 = 60
-        val argb_pass = (0x80L << 24) | (0xC0L << 16) | (0x80L << 8) | 0x40L
+        val argb_pass = (0x80L << 24) | (0xc0L << 16) | (0x80L << 8) | 0x40L
         val addr1 = (y1 << 12) | (x1 << 2)
         lfbDriver.write(BigInt(argb_pass), BigInt(addr1))
 
@@ -3495,7 +4478,7 @@ class CoreIntegrationTest extends AnyFunSuite {
 
         // Write pixel at (62,60) with alpha=0x7F (should fail GEQUAL 128)
         val y2 = 60; val x2 = 62
-        val argb_fail = (0x7FL << 24) | (0xFFL << 16) | (0x00L << 8) | 0x00L
+        val argb_fail = (0x7fL << 24) | (0xffL << 16) | (0x00L << 8) | 0x00L
         val addr2 = (y2 << 12) | (x2 << 2)
         lfbDriver.write(BigInt(argb_fail), BigInt(addr2))
 
@@ -3506,9 +4489,11 @@ class CoreIntegrationTest extends AnyFunSuite {
         // Pixel at (60,60) should exist (alpha 0x80 >= ref 128)
         pixels.get((x1, y1)) match {
           case Some((actualRgb, _)) =>
-            val expectedRgb = toRgb565(0xC0, 0x80, 0x40)
-            assert(actualRgb == expectedRgb,
-              f"[lfb_pipeline_alpha_pass] ($x1,$y1) color: expected=0x$expectedRgb%04X actual=0x$actualRgb%04X")
+            val expectedRgb = toRgb565(0xc0, 0x80, 0x40)
+            assert(
+              actualRgb == expectedRgb,
+              f"[lfb_pipeline_alpha_pass] ($x1,$y1) color: expected=0x$expectedRgb%04X actual=0x$actualRgb%04X"
+            )
             println(f"[lfb_pipeline_alpha_pass] PASS: ($x1,$y1) color=0x$actualRgb%04X")
           case None =>
             fail(s"[lfb_pipeline_alpha_pass] ($x1,$y1) MISSING — alpha test should have passed")
@@ -3517,7 +4502,9 @@ class CoreIntegrationTest extends AnyFunSuite {
         // Pixel at (62,60) should NOT exist (alpha 0x7F < ref 128)
         pixels.get((x2, y2)) match {
           case Some((rgb, _)) =>
-            fail(f"[lfb_pipeline_alpha_reject] ($x2,$y2) UNEXPECTED pixel rgb=0x$rgb%04X — alpha test should have rejected")
+            fail(
+              f"[lfb_pipeline_alpha_reject] ($x2,$y2) UNEXPECTED pixel rgb=0x$rgb%04X — alpha test should have rejected"
+            )
           case None =>
             println(s"[lfb_pipeline_alpha_reject] PASS: ($x2,$y2) correctly rejected by alpha test")
         }
@@ -3549,7 +4536,7 @@ class CoreIntegrationTest extends AnyFunSuite {
         writeReg(regDriver, REG_FBZMODE, (1 << 9) | (1 << 10) | (1 << 4) | (7 << 5))
         dut.clockDomain.waitSampling(50)
 
-        val rgb565_red = 0xF800
+        val rgb565_red = 0xf800
         val depth1 = 0x8000
         val addr = (y << 11) | (x << 1)
         val data1 = (depth1 << 16) | rgb565_red
@@ -3561,14 +4548,14 @@ class CoreIntegrationTest extends AnyFunSuite {
         dut.clockDomain.waitSampling(50)
 
         // Second write: depth=0x4000 (less than 0x8000), RGB565=pure green — should pass
-        val rgb565_green = 0x07E0
+        val rgb565_green = 0x07e0
         val depth2 = 0x4000
         val data2 = (depth2 << 16) | rgb565_green
         lfbDriver.write(BigInt(data2.toLong & 0xffffffffL), BigInt(addr))
         dut.clockDomain.waitSampling(200)
 
         // Third write: depth=0x6000 (greater than 0x4000), RGB565=pure blue — should fail
-        val rgb565_blue = 0x001F
+        val rgb565_blue = 0x001f
         val depth3 = 0x6000
         val data3 = (depth3 << 16) | rgb565_blue
         lfbDriver.write(BigInt(data3.toLong & 0xffffffffL), BigInt(addr))
@@ -3579,11 +4566,17 @@ class CoreIntegrationTest extends AnyFunSuite {
         // Final pixel should be green (depth 0x4000 passed, 0x6000 rejected)
         pixels.get((x, y)) match {
           case Some((actualRgb, actualDepth)) =>
-            assert(actualRgb == rgb565_green,
-              f"[lfb_pipeline_depth] ($x,$y) color: expected=0x$rgb565_green%04X actual=0x$actualRgb%04X")
-            assert(actualDepth == depth2,
-              f"[lfb_pipeline_depth] ($x,$y) depth: expected=0x$depth2%04X actual=0x$actualDepth%04X")
-            println(f"[lfb_pipeline_depth] PASS: ($x,$y) color=0x$actualRgb%04X depth=0x$actualDepth%04X")
+            assert(
+              actualRgb == rgb565_green,
+              f"[lfb_pipeline_depth] ($x,$y) color: expected=0x$rgb565_green%04X actual=0x$actualRgb%04X"
+            )
+            assert(
+              actualDepth == depth2,
+              f"[lfb_pipeline_depth] ($x,$y) depth: expected=0x$depth2%04X actual=0x$actualDepth%04X"
+            )
+            println(
+              f"[lfb_pipeline_depth] PASS: ($x,$y) color=0x$actualRgb%04X depth=0x$actualDepth%04X"
+            )
           case None =>
             fail(s"[lfb_pipeline_depth] ($x,$y) MISSING")
         }
@@ -3609,7 +4602,7 @@ class CoreIntegrationTest extends AnyFunSuite {
         dut.clockDomain.waitSampling(50)
 
         // Color where dithering matters: R=0x84, G=0x42, B=0x21 (non-565-aligned)
-        val argb = (0xFFL << 24) | (0x84L << 16) | (0x42L << 8) | 0x21L
+        val argb = (0xffL << 24) | (0x84L << 16) | (0x42L << 8) | 0x21L
         val bypassAddr = (y << 12) | (x << 2)
         lfbDriver.write(BigInt(argb), BigInt(bypassAddr))
         dut.clockDomain.waitSampling(100)
@@ -3642,7 +4635,9 @@ class CoreIntegrationTest extends AnyFunSuite {
         // Pipeline mode: dithering happens in Write stage (same as triangle path)
         // Both bypass and pipeline have dithering, but they both dither — the point is
         // pipeline mode doesn't double-dither. Just verify both produce valid output.
-        println(f"[lfb_pipeline_dither] bypass($x,$y)=0x$bypassRgb%04X pipeline($x2,$y)=0x$pipeRgb%04X truncated=0x$truncatedRgb565%04X")
+        println(
+          f"[lfb_pipeline_dither] bypass($x,$y)=0x$bypassRgb%04X pipeline($x2,$y)=0x$pipeRgb%04X truncated=0x$truncatedRgb565%04X"
+        )
         println(s"[lfb_pipeline_dither] PASS: both modes produce valid pixels")
         writtenAddrs.clear()
       }
@@ -3674,8 +4669,8 @@ class CoreIntegrationTest extends AnyFunSuite {
         dut.clockDomain.waitSampling(50)
 
         val y = 50; val x = 100
-        val rgb565_0 = 0xF800 // pure red
-        val rgb565_1 = 0x07E0 // pure green
+        val rgb565_0 = 0xf800 // pure red
+        val rgb565_1 = 0x07e0 // pure green
         val depth0 = 0x1234
         val depth1 = 0x5678
 
@@ -3700,13 +4695,17 @@ class CoreIntegrationTest extends AnyFunSuite {
         // LFB read: address encodes (x,y) with 16-bit stride
         val readAddr = (y << 11) | (x << 1)
         val readResult = lfbDriver.read(BigInt(readAddr))
-        val readLo16 = (readResult & 0xFFFF).toInt
-        val readHi16 = ((readResult >> 16) & 0xFFFF).toInt
+        val readLo16 = (readResult & 0xffff).toInt
+        val readHi16 = ((readResult >> 16) & 0xffff).toInt
 
-        assert(readLo16 == rgb565_0,
-          f"[lfb_read_rgb] lo16: expected=0x$rgb565_0%04X actual=0x$readLo16%04X")
-        assert(readHi16 == rgb565_1,
-          f"[lfb_read_rgb] hi16: expected=0x$rgb565_1%04X actual=0x$readHi16%04X")
+        assert(
+          readLo16 == rgb565_0,
+          f"[lfb_read_rgb] lo16: expected=0x$rgb565_0%04X actual=0x$readLo16%04X"
+        )
+        assert(
+          readHi16 == rgb565_1,
+          f"[lfb_read_rgb] hi16: expected=0x$rgb565_1%04X actual=0x$readHi16%04X"
+        )
         println(f"[lfb_read_rgb] PASS: lo16=0x$readLo16%04X hi16=0x$readHi16%04X")
       }
 
@@ -3726,13 +4725,17 @@ class CoreIntegrationTest extends AnyFunSuite {
 
         val readAddr = (y << 11) | (x << 1)
         val readResult = lfbDriver.read(BigInt(readAddr))
-        val readLo16 = (readResult & 0xFFFF).toInt
-        val readHi16 = ((readResult >> 16) & 0xFFFF).toInt
+        val readLo16 = (readResult & 0xffff).toInt
+        val readHi16 = ((readResult >> 16) & 0xffff).toInt
 
-        assert(readLo16 == depth0,
-          f"[lfb_read_depth] lo16: expected=0x$depth0%04X actual=0x$readLo16%04X")
-        assert(readHi16 == depth1,
-          f"[lfb_read_depth] hi16: expected=0x$depth1%04X actual=0x$readHi16%04X")
+        assert(
+          readLo16 == depth0,
+          f"[lfb_read_depth] lo16: expected=0x$depth0%04X actual=0x$readLo16%04X"
+        )
+        assert(
+          readHi16 == depth1,
+          f"[lfb_read_depth] hi16: expected=0x$depth1%04X actual=0x$readHi16%04X"
+        )
         println(f"[lfb_read_depth] PASS: lo16=0x$readLo16%04X hi16=0x$readHi16%04X")
       }
 
@@ -3741,8 +4744,8 @@ class CoreIntegrationTest extends AnyFunSuite {
       // ----------------------------------------------------------------
       {
         val y = 50; val x = 100
-        val rgb565_0 = 0xF800
-        val rgb565_1 = 0x07E0
+        val rgb565_0 = 0xf800
+        val rgb565_1 = 0x07e0
 
         // readBufferSelect=0 (RGB), wordSwapReads=1 (bit 15)
         val lfbModeWordSwap = (1 << 15) // wordSwapReads
@@ -3751,14 +4754,18 @@ class CoreIntegrationTest extends AnyFunSuite {
 
         val readAddr = (y << 11) | (x << 1)
         val readResult = lfbDriver.read(BigInt(readAddr))
-        val readLo16 = (readResult & 0xFFFF).toInt
-        val readHi16 = ((readResult >> 16) & 0xFFFF).toInt
+        val readLo16 = (readResult & 0xffff).toInt
+        val readHi16 = ((readResult >> 16) & 0xffff).toInt
 
         // Word swap swaps the two 16-bit halves: hi and lo are swapped
-        assert(readLo16 == rgb565_1,
-          f"[lfb_read_wordswap] lo16: expected=0x$rgb565_1%04X actual=0x$readLo16%04X")
-        assert(readHi16 == rgb565_0,
-          f"[lfb_read_wordswap] hi16: expected=0x$rgb565_0%04X actual=0x$readHi16%04X")
+        assert(
+          readLo16 == rgb565_1,
+          f"[lfb_read_wordswap] lo16: expected=0x$rgb565_1%04X actual=0x$readLo16%04X"
+        )
+        assert(
+          readHi16 == rgb565_0,
+          f"[lfb_read_wordswap] hi16: expected=0x$rgb565_0%04X actual=0x$readHi16%04X"
+        )
         println(f"[lfb_read_wordswap] PASS: lo16=0x$readLo16%04X hi16=0x$readHi16%04X")
       }
 
@@ -3767,8 +4774,8 @@ class CoreIntegrationTest extends AnyFunSuite {
       // ----------------------------------------------------------------
       {
         val y = 50; val x = 100
-        val rgb565_0 = 0xF800
-        val rgb565_1 = 0x07E0
+        val rgb565_0 = 0xf800
+        val rgb565_1 = 0x07e0
 
         // readBufferSelect=0, byteSwizzleReads=1 (bit 16)
         val lfbModeByteSwizzle = (1 << 16) // byteSwizzleReads
@@ -3783,14 +4790,16 @@ class CoreIntegrationTest extends AnyFunSuite {
         // Original raw: 0x07E0_F800 → bytes: 00 F8 E0 07
         // After swizzle: 07 E0 F8 00 → 0x07E0F800 reversed = 0x00F8E007
         val origRaw = (rgb565_1 << 16) | rgb565_0
-        val b0 = origRaw & 0xFF
-        val b1 = (origRaw >> 8) & 0xFF
-        val b2 = (origRaw >> 16) & 0xFF
-        val b3 = (origRaw >> 24) & 0xFF
+        val b0 = origRaw & 0xff
+        val b1 = (origRaw >> 8) & 0xff
+        val b2 = (origRaw >> 16) & 0xff
+        val b3 = (origRaw >> 24) & 0xff
         val expected = (b0 << 24) | (b1 << 16) | (b2 << 8) | b3
 
-        assert(readResult.toInt == expected,
-          f"[lfb_read_byteswizzle] expected=0x$expected%08X actual=0x${readResult.toInt}%08X")
+        assert(
+          readResult.toInt == expected,
+          f"[lfb_read_byteswizzle] expected=0x$expected%08X actual=0x${readResult.toInt}%08X"
+        )
         println(f"[lfb_read_byteswizzle] PASS: result=0x${readResult.toInt}%08X")
       }
 
@@ -3800,8 +4809,8 @@ class CoreIntegrationTest extends AnyFunSuite {
       // ----------------------------------------------------------------
       {
         val y = 50; val x = 100
-        val rgb565_0 = 0xF800
-        val rgb565_1 = 0x07E0
+        val rgb565_0 = 0xf800
+        val rgb565_1 = 0x07e0
 
         // readBufferSelect=0, wordSwapReads=1 (bit 15), byteSwizzleReads=1 (bit 16)
         val lfbModeBoth = (1 << 15) | (1 << 16)
@@ -3816,16 +4825,18 @@ class CoreIntegrationTest extends AnyFunSuite {
         // After byte swizzle: bytes reversed → 0xE007_00F8
         val origRaw = (rgb565_1.toLong << 16) | rgb565_0.toLong
         // Word swap
-        val afterWS = ((origRaw & 0xFFFF) << 16) | ((origRaw >> 16) & 0xFFFF)
+        val afterWS = ((origRaw & 0xffff) << 16) | ((origRaw >> 16) & 0xffff)
         // Byte swizzle
-        val b0 = afterWS & 0xFF
-        val b1 = (afterWS >> 8) & 0xFF
-        val b2 = (afterWS >> 16) & 0xFF
-        val b3 = (afterWS >> 24) & 0xFF
+        val b0 = afterWS & 0xff
+        val b1 = (afterWS >> 8) & 0xff
+        val b2 = (afterWS >> 16) & 0xff
+        val b3 = (afterWS >> 24) & 0xff
         val expected = (b0 << 24) | (b1 << 16) | (b2 << 8) | b3
 
-        assert(readResult.toLong == expected,
-          f"[lfb_read_combined] expected=0x$expected%08X actual=0x${readResult.toLong}%08X")
+        assert(
+          readResult.toLong == expected,
+          f"[lfb_read_combined] expected=0x$expected%08X actual=0x${readResult.toLong}%08X"
+        )
         println(f"[lfb_read_combined] PASS: result=0x${readResult.toLong}%08X")
       }
 
@@ -3858,16 +4869,42 @@ class CoreIntegrationTest extends AnyFunSuite {
       // Sub-case 1: Draw with wide clip bounds (no effective clipping) — baseline
       {
         writtenAddrs.clear()
-        submitTriangle(driver, dut.clockDomain,
-          vertexAx = vAx, vertexAy = vAy, vertexBx = vBx, vertexBy = vBy,
-          vertexCx = vCx, vertexCy = vCy,
-          startR = startR, startG = startG, startB = startB, startA = startA,
-          startZ = 0, startS = 0, startT = 0, startW = 0,
-          dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
-          dSdX = 0, dTdX = 0, dWdX = 0,
-          dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
-          dSdY = 0, dTdY = 0, dWdY = 0,
-          fbzColorPath = fbzColorPath, fbzMode = fbzModeClipped, sign = false
+        submitTriangle(
+          driver,
+          dut.clockDomain,
+          vertexAx = vAx,
+          vertexAy = vAy,
+          vertexBx = vBx,
+          vertexBy = vBy,
+          vertexCx = vCx,
+          vertexCy = vCy,
+          startR = startR,
+          startG = startG,
+          startB = startB,
+          startA = startA,
+          startZ = 0,
+          startS = 0,
+          startT = 0,
+          startW = 0,
+          dRdX = 0,
+          dGdX = 0,
+          dBdX = 0,
+          dAdX = 0,
+          dZdX = 0,
+          dSdX = 0,
+          dTdX = 0,
+          dWdX = 0,
+          dRdY = 0,
+          dGdY = 0,
+          dBdY = 0,
+          dAdY = 0,
+          dZdY = 0,
+          dSdY = 0,
+          dTdY = 0,
+          dWdY = 0,
+          fbzColorPath = fbzColorPath,
+          fbzMode = fbzModeClipped,
+          sign = false
         )
         dut.clockDomain.waitSampling(5000)
         val baselinePixels = collectPixels(fbMemory, writtenAddrs, 0)
@@ -3881,39 +4918,76 @@ class CoreIntegrationTest extends AnyFunSuite {
         writtenAddrs.clear()
         val clipL = 15; val clipR = 30; val clipLY = 15; val clipHY = 25
 
-        submitTriangle(driver, dut.clockDomain,
-          vertexAx = vAx, vertexAy = vAy, vertexBx = vBx, vertexBy = vBy,
-          vertexCx = vCx, vertexCy = vCy,
-          startR = startR, startG = startG, startB = startB, startA = startA,
-          startZ = 0, startS = 0, startT = 0, startW = 0,
-          dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
-          dSdX = 0, dTdX = 0, dWdX = 0,
-          dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
-          dSdY = 0, dTdY = 0, dWdY = 0,
-          fbzColorPath = fbzColorPath, fbzMode = fbzModeClipped, sign = false,
-          clipLeft = clipL, clipRight = clipR, clipLowY = clipLY, clipHighY = clipHY
+        submitTriangle(
+          driver,
+          dut.clockDomain,
+          vertexAx = vAx,
+          vertexAy = vAy,
+          vertexBx = vBx,
+          vertexBy = vBy,
+          vertexCx = vCx,
+          vertexCy = vCy,
+          startR = startR,
+          startG = startG,
+          startB = startB,
+          startA = startA,
+          startZ = 0,
+          startS = 0,
+          startT = 0,
+          startW = 0,
+          dRdX = 0,
+          dGdX = 0,
+          dBdX = 0,
+          dAdX = 0,
+          dZdX = 0,
+          dSdX = 0,
+          dTdX = 0,
+          dWdX = 0,
+          dRdY = 0,
+          dGdY = 0,
+          dBdY = 0,
+          dAdY = 0,
+          dZdY = 0,
+          dSdY = 0,
+          dTdY = 0,
+          dWdY = 0,
+          fbzColorPath = fbzColorPath,
+          fbzMode = fbzModeClipped,
+          sign = false,
+          clipLeft = clipL,
+          clipRight = clipR,
+          clipLowY = clipLY,
+          clipHighY = clipHY
         )
         dut.clockDomain.waitSampling(5000)
         val clippedPixels = collectPixels(fbMemory, writtenAddrs, 0)
 
         // All clipped pixels must be inside clip rectangle
         for (((x, y), _) <- clippedPixels) {
-          assert(x >= clipL && x < clipR && y >= clipLY && y < clipHY,
-            f"[scissor_clip_2] pixel ($x,$y) outside clip rect [$clipL,$clipR) x [$clipLY,$clipHY)")
+          assert(
+            x >= clipL && x < clipR && y >= clipLY && y < clipHY,
+            f"[scissor_clip_2] pixel ($x,$y) outside clip rect [$clipL,$clipR) x [$clipLY,$clipHY)"
+          )
         }
 
         // Clipped set must be smaller than baseline
-        assert(clippedPixels.size < 200,
-          f"[scissor_clip_2] expected fewer pixels than baseline, got ${clippedPixels.size}")
-        assert(clippedPixels.size > 50,
-          f"[scissor_clip_2] expected some pixels inside clip rect, got ${clippedPixels.size}")
+        assert(
+          clippedPixels.size < 200,
+          f"[scissor_clip_2] expected fewer pixels than baseline, got ${clippedPixels.size}"
+        )
+        assert(
+          clippedPixels.size > 50,
+          f"[scissor_clip_2] expected some pixels inside clip rect, got ${clippedPixels.size}"
+        )
 
         // Verify every baseline pixel inside clip rect IS in the clipped output (and vice versa)
         // This confirms clipping doesn't reject pixels that should pass
         val baselineInsideClip = collectPixels(fbMemory, writtenAddrs, 0)
         // (We already checked all clipped pixels are inside the rect above)
 
-        println(f"[scissor_clip_2] PASS: ${clippedPixels.size} pixels, all inside clip [$clipL,$clipR) x [$clipLY,$clipHY)")
+        println(
+          f"[scissor_clip_2] PASS: ${clippedPixels.size} pixels, all inside clip [$clipL,$clipR) x [$clipLY,$clipHY)"
+        )
       }
 
       // Sub-case 3: enableClipping=0 — clipping disabled, tight bounds have no effect
@@ -3923,33 +4997,68 @@ class CoreIntegrationTest extends AnyFunSuite {
         val fbzModeNoClip = (1 << 9) | (1 << 10)
         val clipL = 25; val clipR = 26; val clipLY = 20; val clipHY = 21
 
-        submitTriangle(driver, dut.clockDomain,
-          vertexAx = vAx, vertexAy = vAy, vertexBx = vBx, vertexBy = vBy,
-          vertexCx = vCx, vertexCy = vCy,
-          startR = startR, startG = startG, startB = startB, startA = startA,
-          startZ = 0, startS = 0, startT = 0, startW = 0,
-          dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
-          dSdX = 0, dTdX = 0, dWdX = 0,
-          dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
-          dSdY = 0, dTdY = 0, dWdY = 0,
-          fbzColorPath = fbzColorPath, fbzMode = fbzModeNoClip, sign = false,
-          clipLeft = clipL, clipRight = clipR, clipLowY = clipLY, clipHighY = clipHY
+        submitTriangle(
+          driver,
+          dut.clockDomain,
+          vertexAx = vAx,
+          vertexAy = vAy,
+          vertexBx = vBx,
+          vertexBy = vBy,
+          vertexCx = vCx,
+          vertexCy = vCy,
+          startR = startR,
+          startG = startG,
+          startB = startB,
+          startA = startA,
+          startZ = 0,
+          startS = 0,
+          startT = 0,
+          startW = 0,
+          dRdX = 0,
+          dGdX = 0,
+          dBdX = 0,
+          dAdX = 0,
+          dZdX = 0,
+          dSdX = 0,
+          dTdX = 0,
+          dWdX = 0,
+          dRdY = 0,
+          dGdY = 0,
+          dBdY = 0,
+          dAdY = 0,
+          dZdY = 0,
+          dSdY = 0,
+          dTdY = 0,
+          dWdY = 0,
+          fbzColorPath = fbzColorPath,
+          fbzMode = fbzModeNoClip,
+          sign = false,
+          clipLeft = clipL,
+          clipRight = clipR,
+          clipLowY = clipLY,
+          clipHighY = clipHY
         )
         dut.clockDomain.waitSampling(5000)
         val noClipPixels = collectPixels(fbMemory, writtenAddrs, 0)
 
         // With clipping disabled, should have many more pixels than the 1x1 clip rect allows
-        assert(noClipPixels.size > 100,
-          f"[scissor_clip_3] expected many pixels with clipping off, got ${noClipPixels.size}")
+        assert(
+          noClipPixels.size > 100,
+          f"[scissor_clip_3] expected many pixels with clipping off, got ${noClipPixels.size}"
+        )
 
         // Verify some pixels ARE outside the tight clip bounds
         val outsideClip = noClipPixels.keys.count { case (x, y) =>
           x < clipL || x >= clipR || y < clipLY || y >= clipHY
         }
-        assert(outsideClip > 50,
-          f"[scissor_clip_3] expected many pixels outside tight clip bounds, got $outsideClip")
+        assert(
+          outsideClip > 50,
+          f"[scissor_clip_3] expected many pixels outside tight clip bounds, got $outsideClip"
+        )
 
-        println(f"[scissor_clip_3] PASS: ${noClipPixels.size} pixels ($outsideClip outside tight bounds)")
+        println(
+          f"[scissor_clip_3] PASS: ${noClipPixels.size} pixels ($outsideClip outside tight bounds)"
+        )
       }
 
       // Sub-case 4: Empty clip rectangle — no pixels should be drawn
@@ -3958,23 +5067,54 @@ class CoreIntegrationTest extends AnyFunSuite {
         // clipRight < clipLeft → empty rect
         val clipL = 30; val clipR = 15; val clipLY = 15; val clipHY = 25
 
-        submitTriangle(driver, dut.clockDomain,
-          vertexAx = vAx, vertexAy = vAy, vertexBx = vBx, vertexBy = vBy,
-          vertexCx = vCx, vertexCy = vCy,
-          startR = startR, startG = startG, startB = startB, startA = startA,
-          startZ = 0, startS = 0, startT = 0, startW = 0,
-          dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
-          dSdX = 0, dTdX = 0, dWdX = 0,
-          dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
-          dSdY = 0, dTdY = 0, dWdY = 0,
-          fbzColorPath = fbzColorPath, fbzMode = fbzModeClipped, sign = false,
-          clipLeft = clipL, clipRight = clipR, clipLowY = clipLY, clipHighY = clipHY
+        submitTriangle(
+          driver,
+          dut.clockDomain,
+          vertexAx = vAx,
+          vertexAy = vAy,
+          vertexBx = vBx,
+          vertexBy = vBy,
+          vertexCx = vCx,
+          vertexCy = vCy,
+          startR = startR,
+          startG = startG,
+          startB = startB,
+          startA = startA,
+          startZ = 0,
+          startS = 0,
+          startT = 0,
+          startW = 0,
+          dRdX = 0,
+          dGdX = 0,
+          dBdX = 0,
+          dAdX = 0,
+          dZdX = 0,
+          dSdX = 0,
+          dTdX = 0,
+          dWdX = 0,
+          dRdY = 0,
+          dGdY = 0,
+          dBdY = 0,
+          dAdY = 0,
+          dZdY = 0,
+          dSdY = 0,
+          dTdY = 0,
+          dWdY = 0,
+          fbzColorPath = fbzColorPath,
+          fbzMode = fbzModeClipped,
+          sign = false,
+          clipLeft = clipL,
+          clipRight = clipR,
+          clipLowY = clipLY,
+          clipHighY = clipHY
         )
         dut.clockDomain.waitSampling(5000)
         val emptyPixels = collectPixels(fbMemory, writtenAddrs, 0)
 
-        assert(emptyPixels.isEmpty,
-          f"[scissor_clip_4] expected no pixels with inverted clip rect, got ${emptyPixels.size}")
+        assert(
+          emptyPixels.isEmpty,
+          f"[scissor_clip_4] expected no pixels with inverted clip rect, got ${emptyPixels.size}"
+        )
         println("[scissor_clip_4] PASS: 0 pixels with inverted clip rect")
       }
 
@@ -4007,27 +5147,57 @@ class CoreIntegrationTest extends AnyFunSuite {
         // fbzMode: enableClipping=1, rgbWrite=1, auxWrite=1, yOrigin=0
         val fbzMode = 1 | (1 << 9) | (1 << 10)
 
-        submitTriangle(driver, dut.clockDomain,
-          vertexAx = vAx, vertexAy = vAy, vertexBx = vBx, vertexBy = vBy,
-          vertexCx = vCx, vertexCy = vCy,
-          startR = startR, startG = startG, startB = startB, startA = startA,
-          startZ = 0, startS = 0, startT = 0, startW = 0,
-          dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
-          dSdX = 0, dTdX = 0, dWdX = 0,
-          dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
-          dSdY = 0, dTdY = 0, dWdY = 0,
-          fbzColorPath = fbzColorPath, fbzMode = fbzMode, sign = false
+        submitTriangle(
+          driver,
+          dut.clockDomain,
+          vertexAx = vAx,
+          vertexAy = vAy,
+          vertexBx = vBx,
+          vertexBy = vBy,
+          vertexCx = vCx,
+          vertexCy = vCy,
+          startR = startR,
+          startG = startG,
+          startB = startB,
+          startA = startA,
+          startZ = 0,
+          startS = 0,
+          startT = 0,
+          startW = 0,
+          dRdX = 0,
+          dGdX = 0,
+          dBdX = 0,
+          dAdX = 0,
+          dZdX = 0,
+          dSdX = 0,
+          dTdX = 0,
+          dWdX = 0,
+          dRdY = 0,
+          dGdY = 0,
+          dBdY = 0,
+          dAdY = 0,
+          dZdY = 0,
+          dSdY = 0,
+          dTdY = 0,
+          dWdY = 0,
+          fbzColorPath = fbzColorPath,
+          fbzMode = fbzMode,
+          sign = false
         )
         dut.clockDomain.waitSampling(5000)
         val normalPixels = collectPixels(fbMemory, writtenAddrs, 0)
 
         // Verify pixels are in raster Y range [10, 20)
         val yRange = normalPixels.keys.map(_._2)
-        assert(yRange.min >= 10 && yRange.max < 20,
-          f"[y_origin_1] expected Y in [10,20), got [${yRange.min},${yRange.max}]")
+        assert(
+          yRange.min >= 10 && yRange.max < 20,
+          f"[y_origin_1] expected Y in [10,20), got [${yRange.min},${yRange.max}]"
+        )
         assert(normalPixels.size > 20, "Expected substantial triangle")
 
-        println(f"[y_origin_1] PASS: ${normalPixels.size} pixels, Y range [${yRange.min},${yRange.max}]")
+        println(
+          f"[y_origin_1] PASS: ${normalPixels.size} pixels, Y range [${yRange.min},${yRange.max}]"
+        )
       }
 
       // Sub-case 2: yOrigin enabled with yOriginSwap=99 — Y flipped
@@ -4042,16 +5212,42 @@ class CoreIntegrationTest extends AnyFunSuite {
         // fbzMode: enableClipping=1, rgbWrite=1, auxWrite=1, yOrigin=1 (bit 17)
         val fbzMode = 1 | (1 << 9) | (1 << 10) | (1 << 17)
 
-        submitTriangle(driver, dut.clockDomain,
-          vertexAx = vAx, vertexAy = vAy, vertexBx = vBx, vertexBy = vBy,
-          vertexCx = vCx, vertexCy = vCy,
-          startR = startR, startG = startG, startB = startB, startA = startA,
-          startZ = 0, startS = 0, startT = 0, startW = 0,
-          dRdX = 0, dGdX = 0, dBdX = 0, dAdX = 0, dZdX = 0,
-          dSdX = 0, dTdX = 0, dWdX = 0,
-          dRdY = 0, dGdY = 0, dBdY = 0, dAdY = 0, dZdY = 0,
-          dSdY = 0, dTdY = 0, dWdY = 0,
-          fbzColorPath = fbzColorPath, fbzMode = fbzMode, sign = false
+        submitTriangle(
+          driver,
+          dut.clockDomain,
+          vertexAx = vAx,
+          vertexAy = vAy,
+          vertexBx = vBx,
+          vertexBy = vBy,
+          vertexCx = vCx,
+          vertexCy = vCy,
+          startR = startR,
+          startG = startG,
+          startB = startB,
+          startA = startA,
+          startZ = 0,
+          startS = 0,
+          startT = 0,
+          startW = 0,
+          dRdX = 0,
+          dGdX = 0,
+          dBdX = 0,
+          dAdX = 0,
+          dZdX = 0,
+          dSdX = 0,
+          dTdX = 0,
+          dWdX = 0,
+          dRdY = 0,
+          dGdY = 0,
+          dBdY = 0,
+          dAdY = 0,
+          dZdY = 0,
+          dSdY = 0,
+          dTdY = 0,
+          dWdY = 0,
+          fbzColorPath = fbzColorPath,
+          fbzMode = fbzMode,
+          sign = false
         )
         dut.clockDomain.waitSampling(5000)
         val flippedPixels = collectPixels(fbMemory, writtenAddrs, 0)
@@ -4059,11 +5255,15 @@ class CoreIntegrationTest extends AnyFunSuite {
         // Flipped Y should be yOriginSwap - rasterY
         // Raster Y in [10, 20) → FB Y in [99-19, 99-10] = [80, 89]
         val yRange = flippedPixels.keys.map(_._2)
-        assert(yRange.min >= 80 && yRange.max <= 89,
-          f"[y_origin_2] expected Y in [80,89], got [${yRange.min},${yRange.max}]")
+        assert(
+          yRange.min >= 80 && yRange.max <= 89,
+          f"[y_origin_2] expected Y in [80,89], got [${yRange.min},${yRange.max}]"
+        )
         assert(flippedPixels.size > 20, "Expected substantial triangle")
 
-        println(f"[y_origin_2] PASS: ${flippedPixels.size} pixels, Y range [${yRange.min},${yRange.max}] (flipped)")
+        println(
+          f"[y_origin_2] PASS: ${flippedPixels.size} pixels, Y range [${yRange.min},${yRange.max}] (flipped)"
+        )
       }
 
       // Sub-case 3: Fastfill with yOrigin — verify fill region is Y-flipped
@@ -4078,7 +5278,7 @@ class CoreIntegrationTest extends AnyFunSuite {
         // fbzMode: enableClipping=1, rgbWrite=1, auxWrite=1, yOrigin=1 (bit 17)
         val fbzMode = 1 | (1 << 9) | (1 << 10) | (1 << 17)
         writeReg(driver, REG_FBZMODE, fbzMode)
-        writeReg(driver, REG_COLOR1, 0x00FF00) // green
+        writeReg(driver, REG_COLOR1, 0x00ff00) // green
         writeReg(driver, REG_ZACOLOR, 0)
 
         // Clip rect for fastfill: x=[5,15), y=[10,15)
@@ -4093,12 +5293,18 @@ class CoreIntegrationTest extends AnyFunSuite {
         // Fastfill clip rect y=[10,15) → FB Y = [99-14, 99-10] = [85, 89]
         val yRange = fillPixels.keys.map(_._2)
         val xRange = fillPixels.keys.map(_._1)
-        assert(xRange.min >= 5 && xRange.max < 15,
-          f"[y_origin_3] expected X in [5,15), got [${xRange.min},${xRange.max}]")
-        assert(yRange.min >= 85 && yRange.max <= 89,
-          f"[y_origin_3] expected Y in [85,89], got [${yRange.min},${yRange.max}]")
+        assert(
+          xRange.min >= 5 && xRange.max < 15,
+          f"[y_origin_3] expected X in [5,15), got [${xRange.min},${xRange.max}]"
+        )
+        assert(
+          yRange.min >= 85 && yRange.max <= 89,
+          f"[y_origin_3] expected Y in [85,89], got [${yRange.min},${yRange.max}]"
+        )
 
-        println(f"[y_origin_3] PASS: ${fillPixels.size} fastfill pixels, Y range [${yRange.min},${yRange.max}] (flipped)")
+        println(
+          f"[y_origin_3] PASS: ${fillPixels.size} fastfill pixels, Y range [${yRange.min},${yRange.max}] (flipped)"
+        )
       }
 
       println("[y_origin] PASS: all sub-cases passed")
@@ -4123,7 +5329,7 @@ class CoreIntegrationTest extends AnyFunSuite {
       // Small triangle: A(10,10), B(15,15), C(5,15) in 12.4 format
       val vAx = 10 * 16; val vAy = 10 * 16
       val vBx = 15 * 16; val vBy = 15 * 16
-      val vCx = 5 * 16;  val vCy = 15 * 16
+      val vCx = 5 * 16; val vCy = 15 * 16
 
       // Constant green: startG = 200<<12
       val startG = 200 << 12
@@ -4137,12 +5343,43 @@ class CoreIntegrationTest extends AnyFunSuite {
         // fbzMode: clipping=1, rgbWrite=1, drawBuffer=1 (bits [15:14])
         val fbzMode = 1 | (1 << 9) | (1 << 14)
 
-        submitTriangle(driver, dut.clockDomain,
-          vAx, vAy, vBx, vBy, vCx, vCy,
-          0, startG, 0, 0, 0, 0, 0, 0, // startR,G,B,A,Z,S,T,W
-          0, 0, 0, 0, 0, 0, 0, 0, // dX gradients
-          0, 0, 0, 0, 0, 0, 0, 0, // dY gradients
-          fbzColorPath, fbzMode, sign = false)
+        submitTriangle(
+          driver,
+          dut.clockDomain,
+          vAx,
+          vAy,
+          vBx,
+          vBy,
+          vCx,
+          vCy,
+          0,
+          startG,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0, // startR,G,B,A,Z,S,T,W
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0, // dX gradients
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0, // dY gradients
+          fbzColorPath,
+          fbzMode,
+          sign = false
+        )
         dut.clockDomain.waitSampling(5000)
 
         // Pixels should be in buffer1 (base = 0x80000)
@@ -4154,7 +5391,9 @@ class CoreIntegrationTest extends AnyFunSuite {
         val anyInFront = writtenAddrs.exists(_ < bufferOffsetBytes)
         assert(!anyInFront, "[draw_buffer_1] No pixels should be in front buffer region")
 
-        println(f"[draw_buffer_1] PASS: ${backPixels.size} pixels in back buffer (offset 0x${bufferOffsetBytes}%X)")
+        println(
+          f"[draw_buffer_1] PASS: ${backPixels.size} pixels in back buffer (offset 0x${bufferOffsetBytes}%X)"
+        )
       }
 
       // Sub-case 2: Draw to front buffer (drawBuffer=0)
@@ -4163,12 +5402,43 @@ class CoreIntegrationTest extends AnyFunSuite {
 
         val fbzMode = 1 | (1 << 9) // drawBuffer=0 (front)
 
-        submitTriangle(driver, dut.clockDomain,
-          vAx, vAy, vBx, vBy, vCx, vCy,
-          0, startG, 0, 0, 0, 0, 0, 0,
-          0, 0, 0, 0, 0, 0, 0, 0,
-          0, 0, 0, 0, 0, 0, 0, 0,
-          fbzColorPath, fbzMode, sign = false)
+        submitTriangle(
+          driver,
+          dut.clockDomain,
+          vAx,
+          vAy,
+          vBx,
+          vBy,
+          vCx,
+          vCy,
+          0,
+          startG,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          fbzColorPath,
+          fbzMode,
+          sign = false
+        )
         dut.clockDomain.waitSampling(5000)
 
         val frontPixels = collectPixels(fbMemory, writtenAddrs, 0)
@@ -4191,17 +5461,51 @@ class CoreIntegrationTest extends AnyFunSuite {
 
         val fbzMode = 1 | (1 << 9) | (1 << 14) // drawBuffer=1 (back)
 
-        submitTriangle(driver, dut.clockDomain,
-          vAx, vAy, vBx, vBy, vCx, vCy,
-          0, startG, 0, 0, 0, 0, 0, 0,
-          0, 0, 0, 0, 0, 0, 0, 0,
-          0, 0, 0, 0, 0, 0, 0, 0,
-          fbzColorPath, fbzMode, sign = false)
+        submitTriangle(
+          driver,
+          dut.clockDomain,
+          vAx,
+          vAy,
+          vBx,
+          vBy,
+          vCx,
+          vCy,
+          0,
+          startG,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          fbzColorPath,
+          fbzMode,
+          sign = false
+        )
         dut.clockDomain.waitSampling(5000)
 
         // After swap: back=buffer0, so pixels should be at offset 0
         val anyInBack1 = writtenAddrs.exists(_ >= bufferOffsetBytes)
-        assert(!anyInBack1, "[draw_buffer_3] After swap, back=buffer0; no pixels should be at buffer1 offset")
+        assert(
+          !anyInBack1,
+          "[draw_buffer_3] After swap, back=buffer0; no pixels should be at buffer1 offset"
+        )
         val pixels = collectPixels(fbMemory, writtenAddrs, 0)
         assert(pixels.nonEmpty, "[draw_buffer_3] Expected pixels in buffer0 (back after swap)")
 
@@ -4225,7 +5529,7 @@ class CoreIntegrationTest extends AnyFunSuite {
 
         // Write a pixel at (20, 30) via LFB: 16-bit stride addr = (30 << 11) | (20 << 1)
         val lfbAddr = (30 << 11) | (20 << 1)
-        val rgb565 = 0x07E0 // green
+        val rgb565 = 0x07e0 // green
         lfbDriver.write(BigInt(rgb565 | (rgb565 << 16)), BigInt(lfbAddr))
         dut.clockDomain.waitSampling(500)
 
@@ -4239,6 +5543,445 @@ class CoreIntegrationTest extends AnyFunSuite {
       }
 
       println("[draw_buffer] PASS: all sub-cases passed")
+    }
+  }
+
+  // ========================================================================
+  // Test 27: Bilinear texture filtering
+  // ========================================================================
+  test("Bilinear texture filtering") {
+    compiled.doSim("bilinear") { dut =>
+      val (driver, fbMemory, texMemory, writtenAddrs) = setupDut(dut)
+
+      // 8x8 RGB565 gradient texture at LOD 5 (lodmin=lodmax=20 in 4.2 format)
+      // Pattern: R varies across S (0..7), G varies across T (0..7), B=0
+      val texWidth = 8
+      val texHeight = 8
+
+      // LOD 5 base offset for 16-bit texels:
+      // sum of areas for LODs 0-4 = 65536+16384+4096+1024+256 = 87296 texels = 174592 bytes
+      val lod5Base = 174592L
+
+      // Encode gradient texels as RGB565
+      def encodeRgb565(r8: Int, g8: Int, b8: Int): Int =
+        ((r8 >> 3) << 11) | ((g8 >> 2) << 5) | (b8 >> 3)
+
+      for (t <- 0 until texHeight; s <- 0 until texWidth) {
+        val r8 = s * 36 // 0, 36, 72, 108, 144, 180, 216, 252
+        val g8 = t * 36
+        val b8 = 0
+        val rgb565 = encodeRgb565(r8, g8, b8)
+        val addr = lod5Base + (t * texWidth + s) * 2
+        texMemory.setByte(addr, (rgb565 & 0xff).toByte)
+        texMemory.setByte(addr + 1, ((rgb565 >> 8) & 0xff).toByte)
+      }
+
+      // Pre-decode for reference model
+      val refTexData = new Array[Int](texWidth * texHeight)
+      for (t <- 0 until texHeight; s <- 0 until texWidth) {
+        val r8 = s * 36
+        val g8 = t * 36
+        val b8 = 0
+        val rgb565 = encodeRgb565(r8, g8, b8)
+        refTexData(s + t * texWidth) = VoodooReference.decodeTexel(rgb565, 0xa)
+      }
+
+      // Triangle covering ~16x16 pixels
+      val vAx = 100 * 16
+      val vAy = 100 * 16
+      val vBx = 116 * 16
+      val vBy = 116 * 16
+      val vCx = 84 * 16
+      val vCy = 116 * 16
+
+      // Texture coords: non-perspective, stepping through texels fractionally
+      // At LOD 5, texLodVal=5. texS = regS >> 14 (X.4 format).
+      // Bilinear: adjS = texS - (1<<8), sScaled = adjS >> 5, si = sScaled >> 4, ds = sScaled & 0xf
+      // To span 0..7 texels across ~16 pixels: need texS to go from 0 to 7*16=112 in X.4
+      // texS = regS >> 14, so regS needs to go from 0 to 112 << 14 = 1835008
+      // Over 16 pixels: dSdX_reg = 1835008 / 16 = 114688
+      val startS_reg = 0
+      val startT_reg = 0
+      val dSdX_reg = 114688
+      val dTdX_reg = 0
+      val dSdY_reg = 0
+      val dTdY_reg = 114688
+
+      // fbzColorPath: texture passthrough (rgbSel=1, zero_other=0, sub_clocal=0, mselect=0, reverse_blend=0, texture_enable)
+      val fbzColorPath = 1 | (1 << 27)
+      val fbzMode = 1 | (1 << 9) // clipping + RGB write
+
+      // tLOD: lodmin=20, lodmax=20 (forces LOD 5); 4.2 format: 5*4=20
+      val tLOD_lod5 = (20 << 6) | 20
+
+      // Reference texture arrays for LOD 5
+      val texDataPerLod = Array.fill(9)(Array.empty[Int])
+      texDataPerLod(5) = refTexData
+      val texWMaskPerLod = Array.fill(9)(0)
+      texWMaskPerLod(5) = texWidth - 1
+      val texHMaskPerLod = Array.fill(9)(0)
+      texHMaskPerLod(5) = texHeight - 1
+      val texShiftPerLod = Array.fill(9)(0)
+      texShiftPerLod(5) = 8 - 5 // tex_shift = 8 - tex_lod = 3
+      val texLodPerLod = Array.fill(9)(0)
+      texLodPerLod(5) = 5
+
+      // --- Sub-case 1: Bilinear filtering (non-perspective) ---
+      {
+        writtenAddrs.clear()
+
+        // textureMode: RGB565 (10 << 8), minFilter=1, magFilter=1, clampS, clampT
+        val textureMode = (10 << 8) | (1 << 1) | (1 << 2) | (1 << 6) | (1 << 7)
+
+        writeReg(driver, REG_TEXBASEADDR, 0)
+
+        submitTriangle(
+          driver,
+          dut.clockDomain,
+          vertexAx = vAx,
+          vertexAy = vAy,
+          vertexBx = vBx,
+          vertexBy = vBy,
+          vertexCx = vCx,
+          vertexCy = vCy,
+          startR = 0,
+          startG = 0,
+          startB = 0,
+          startA = 255 << 12,
+          startZ = 0,
+          startS = startS_reg,
+          startT = startT_reg,
+          startW = 0,
+          dRdX = 0,
+          dGdX = 0,
+          dBdX = 0,
+          dAdX = 0,
+          dZdX = 0,
+          dSdX = dSdX_reg,
+          dTdX = dTdX_reg,
+          dWdX = 0,
+          dRdY = 0,
+          dGdY = 0,
+          dBdY = 0,
+          dAdY = 0,
+          dZdY = 0,
+          dSdY = dSdY_reg,
+          dTdY = dTdY_reg,
+          dWdY = 0,
+          fbzColorPath = fbzColorPath,
+          fbzMode = fbzMode,
+          sign = false,
+          textureMode = textureMode,
+          tLOD = tLOD_lod5,
+          clipRight = 640,
+          clipHighY = 480
+        )
+
+        dut.clockDomain.waitSampling(40000) // bilinear = 4x reads, give more time
+
+        val simPixels = collectPixels(fbMemory, writtenAddrs, 0)
+        println(s"[bilinear/sub1] Simulation produced ${simPixels.size} pixels")
+
+        val refParams = VoodooReference.fromRegisterValues(
+          vertexAx = vAx,
+          vertexAy = vAy,
+          vertexBx = vBx,
+          vertexBy = vBy,
+          vertexCx = vCx,
+          vertexCy = vCy,
+          startR = 0,
+          startG = 0,
+          startB = 0,
+          startA = 255 << 12,
+          startZ = 0,
+          startS = startS_reg,
+          startT = startT_reg,
+          startW = 0,
+          dRdX = 0,
+          dGdX = 0,
+          dBdX = 0,
+          dAdX = 0,
+          dZdX = 0,
+          dSdX = dSdX_reg,
+          dTdX = dTdX_reg,
+          dWdX = 0,
+          dRdY = 0,
+          dGdY = 0,
+          dBdY = 0,
+          dAdY = 0,
+          dZdY = 0,
+          dSdY = dSdY_reg,
+          dTdY = dTdY_reg,
+          dWdY = 0,
+          fbzColorPath = fbzColorPath,
+          fbzMode = fbzMode,
+          sign = false,
+          textureMode = textureMode,
+          tLOD = tLOD_lod5,
+          clipRight = 640,
+          clipHighY = 480,
+          texData = texDataPerLod,
+          texWMask = texWMaskPerLod,
+          texHMask = texHMaskPerLod,
+          texShift = texShiftPerLod,
+          texLod = texLodPerLod
+        )
+
+        val refPixels = VoodooReference.voodooTriangle(refParams)
+        println(s"[bilinear/sub1] Reference produced ${refPixels.size} pixels")
+
+        comparePixelsFuzzy(refPixels, simPixels, "bilinear/sub1")
+      }
+
+      // --- Sub-case 2: Bilinear filtering with wrap mode ---
+      // Uses an inline reference matching the HW's bbox-corner coordinate system,
+      // since VoodooReference uses 86Box edge-walking with a different gradient origin.
+      {
+        writtenAddrs.clear()
+
+        // textureMode: RGB565 (10 << 8), minFilter=1, magFilter=1, NO clamp bits
+        val textureMode = (10 << 8) | (1 << 1) | (1 << 2)
+
+        writeReg(driver, REG_TEXBASEADDR, 0)
+
+        submitTriangle(
+          driver,
+          dut.clockDomain,
+          vertexAx = vAx,
+          vertexAy = vAy,
+          vertexBx = vBx,
+          vertexBy = vBy,
+          vertexCx = vCx,
+          vertexCy = vCy,
+          startR = 0,
+          startG = 0,
+          startB = 0,
+          startA = 255 << 12,
+          startZ = 0,
+          startS = startS_reg,
+          startT = startT_reg,
+          startW = 0,
+          dRdX = 0,
+          dGdX = 0,
+          dBdX = 0,
+          dAdX = 0,
+          dZdX = 0,
+          dSdX = dSdX_reg,
+          dTdX = dTdX_reg,
+          dWdX = 0,
+          dRdY = 0,
+          dGdY = 0,
+          dBdY = 0,
+          dAdY = 0,
+          dZdY = 0,
+          dSdY = dSdY_reg,
+          dTdY = dTdY_reg,
+          dWdY = 0,
+          fbzColorPath = fbzColorPath,
+          fbzMode = fbzMode,
+          sign = false,
+          textureMode = textureMode,
+          tLOD = tLOD_lod5,
+          clipRight = 640,
+          clipHighY = 480
+        )
+
+        dut.clockDomain.waitSampling(40000) // bilinear = 4x reads
+
+        val simPixels = collectPixels(fbMemory, writtenAddrs, 0)
+        println(s"[bilinear/sub2_wrap] Simulation produced ${simPixels.size} pixels")
+
+        // Inline reference matching HW's bbox-corner coordinate system
+        // TriangleSetup adjusts: start' = start + (xmin-Ax)*dX + (ymin-Ay)*dY
+        // Then per pixel: sow = start' + px_x*dSdX + px_y*dSdY (in SQ(32,18) raw)
+        val xmin = 84 // floor(min(Ax,Bx,Cx)/16)
+        val ymin = 100
+        val dxRaw = (xmin * 16 - vAx).toLong // xmin_12.4 - Ax_12.4
+        val dyRaw = (ymin * 16 - vAy).toLong
+        // adjustedStart = start + (dx * dSdX + dy * dSdY) >> 4
+        val adjStartS = startS_reg + ((dxRaw * dSdX_reg + dyRaw * dSdY_reg) >> 4)
+        val adjStartT = startT_reg + ((dxRaw * dTdX_reg + dyRaw * dTdY_reg) >> 4)
+
+        val texLodVal = 5
+        val wMask = texWidth - 1
+        val hMask = texHeight - 1
+
+        def bilinearRef(px: Int, py: Int): Int = {
+          val pxOff = px - xmin
+          val pyOff = py - ymin
+          val sowRaw = adjStartS + pxOff.toLong * dSdX_reg + pyOff.toLong * dSdY_reg
+          val towRaw = adjStartT + pxOff.toLong * dTdX_reg + pyOff.toLong * dTdY_reg
+          // texS = sow >> 14 (X.4 format)
+          val texSx4 = (sowRaw >> 14).toInt
+          val texTx4 = (towRaw >> 14).toInt
+          // Bilinear center-adjust: adjS = texS - (1 << (3+lodLevel))
+          val adjSb = texSx4 - (1 << (3 + texLodVal))
+          val adjTb = texTx4 - (1 << (3 + texLodVal))
+          // Scale by LOD: sScaled = adjS >> lodLevel
+          val sScaled = adjSb >> texLodVal
+          val tScaled = adjTb >> texLodVal
+          val ds = sScaled & 0xf
+          val dt = tScaled & 0xf
+          val si = sScaled >> 4
+          val ti = tScaled >> 4
+          // Wrap coordinates
+          def wrap(c: Int, mask: Int): Int = c & mask
+          val s0 = wrap(si, wMask)
+          val s1 = wrap(si + 1, wMask)
+          val t0 = wrap(ti, hMask)
+          val t1 = wrap(ti + 1, hMask)
+          // Fetch 4 decoded texels
+          val tex00 = refTexData(s0 + t0 * texWidth)
+          val tex10 = refTexData(s1 + t0 * texWidth)
+          val tex01 = refTexData(s0 + t1 * texWidth)
+          val tex11 = refTexData(s1 + t1 * texWidth)
+          // Blend weights
+          val w0 = (16 - ds) * (16 - dt)
+          val w1 = ds * (16 - dt)
+          val w2 = (16 - ds) * dt
+          val w3 = ds * dt
+          // Blend each channel
+          def blend(ch: Int): Int = {
+            val c00 = (tex00 >> ch) & 0xff
+            val c10 = (tex10 >> ch) & 0xff
+            val c01 = (tex01 >> ch) & 0xff
+            val c11 = (tex11 >> ch) & 0xff
+            (c00 * w0 + c10 * w1 + c01 * w2 + c11 * w3) >> 8
+          }
+          val r = blend(16)
+          val g = blend(8)
+          val b = blend(0)
+          // Encode as RGB565
+          ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)
+        }
+
+        // Compute expected pixels for all sim pixel positions
+        val errors = scala.collection.mutable.ArrayBuffer.empty[String]
+        for (((x, y), (simRgb, _)) <- simPixels) {
+          val expRgb = bilinearRef(x, y)
+          if (simRgb != expRgb) {
+            errors += f"($x,$y) exp=0x$expRgb%04X sim=0x$simRgb%04X"
+          }
+        }
+        if (errors.nonEmpty) {
+          println(s"[bilinear/sub2_wrap] ${errors.size} mismatches:")
+          errors.take(20).foreach(e => println(s"  $e"))
+        }
+        println(s"[bilinear/sub2_wrap] Summary: sim=${simPixels.size} mismatches=${errors.size}")
+        assert(
+          errors.isEmpty,
+          s"bilinear/sub2_wrap: ${errors.size} mismatches against HW-origin ref"
+        )
+      }
+
+      // --- Sub-case 3: Point sampling regression (bilinear disabled) ---
+      {
+        writtenAddrs.clear()
+
+        // textureMode: RGB565 (10 << 8), minFilter=0, magFilter=0, clampS, clampT
+        val textureMode = (10 << 8) | (1 << 6) | (1 << 7)
+
+        writeReg(driver, REG_TEXBASEADDR, 0)
+
+        submitTriangle(
+          driver,
+          dut.clockDomain,
+          vertexAx = vAx,
+          vertexAy = vAy,
+          vertexBx = vBx,
+          vertexBy = vBy,
+          vertexCx = vCx,
+          vertexCy = vCy,
+          startR = 0,
+          startG = 0,
+          startB = 0,
+          startA = 255 << 12,
+          startZ = 0,
+          startS = startS_reg,
+          startT = startT_reg,
+          startW = 0,
+          dRdX = 0,
+          dGdX = 0,
+          dBdX = 0,
+          dAdX = 0,
+          dZdX = 0,
+          dSdX = dSdX_reg,
+          dTdX = dTdX_reg,
+          dWdX = 0,
+          dRdY = 0,
+          dGdY = 0,
+          dBdY = 0,
+          dAdY = 0,
+          dZdY = 0,
+          dSdY = dSdY_reg,
+          dTdY = dTdY_reg,
+          dWdY = 0,
+          fbzColorPath = fbzColorPath,
+          fbzMode = fbzMode,
+          sign = false,
+          textureMode = textureMode,
+          tLOD = tLOD_lod5,
+          clipRight = 640,
+          clipHighY = 480
+        )
+
+        dut.clockDomain.waitSampling(20000)
+
+        val simPixels = collectPixels(fbMemory, writtenAddrs, 0)
+        println(s"[bilinear/sub3_point] Simulation produced ${simPixels.size} pixels")
+
+        val refParams = VoodooReference.fromRegisterValues(
+          vertexAx = vAx,
+          vertexAy = vAy,
+          vertexBx = vBx,
+          vertexBy = vBy,
+          vertexCx = vCx,
+          vertexCy = vCy,
+          startR = 0,
+          startG = 0,
+          startB = 0,
+          startA = 255 << 12,
+          startZ = 0,
+          startS = startS_reg,
+          startT = startT_reg,
+          startW = 0,
+          dRdX = 0,
+          dGdX = 0,
+          dBdX = 0,
+          dAdX = 0,
+          dZdX = 0,
+          dSdX = dSdX_reg,
+          dTdX = dTdX_reg,
+          dWdX = 0,
+          dRdY = 0,
+          dGdY = 0,
+          dBdY = 0,
+          dAdY = 0,
+          dZdY = 0,
+          dSdY = dSdY_reg,
+          dTdY = dTdY_reg,
+          dWdY = 0,
+          fbzColorPath = fbzColorPath,
+          fbzMode = fbzMode,
+          sign = false,
+          textureMode = textureMode,
+          tLOD = tLOD_lod5,
+          clipRight = 640,
+          clipHighY = 480,
+          texData = texDataPerLod,
+          texWMask = texWMaskPerLod,
+          texHMask = texHMaskPerLod,
+          texShift = texShiftPerLod,
+          texLod = texLodPerLod
+        )
+
+        val refPixels = VoodooReference.voodooTriangle(refParams)
+        println(s"[bilinear/sub3_point] Reference produced ${refPixels.size} pixels")
+
+        comparePixelsFuzzy(refPixels, simPixels, "bilinear/sub3_point")
+      }
+
+      println("[bilinear] PASS: all sub-cases passed")
     }
   }
 }

@@ -794,8 +794,6 @@ object VoodooTracePlayer {
     var tmuInputCount = 0
     StreamMonitor(dut.tmu.io.input, dut.clockDomain) { payload =>
       if (tmuInputCount < 20) {
-        val x = payload.coords(0).toInt
-        val y = payload.coords(1).toInt
         val sRaw = payload.s.raw.toBigInt
         val tRaw = payload.t.raw.toBigInt
         val wRaw = payload.w.raw.toBigInt
@@ -805,7 +803,7 @@ object VoodooTracePlayer {
         val texMode = payload.config.textureMode.toBigInt
         val texBase = payload.config.texBaseAddr.toBigInt
         println(
-          f"[TMU IN] $tmuInputCount: ($x,$y) S=0x$sRaw%08X ($s%.4f) T=0x$tRaw%08X ($t%.4f) W=0x$wRaw%08X ($w%.6f)"
+          f"[TMU IN] $tmuInputCount: S=0x$sRaw%08X ($s%.4f) T=0x$tRaw%08X ($t%.4f) W=0x$wRaw%08X ($w%.6f)"
         )
         println(f"[TMU IN]   mode=0x$texMode%08X base=0x$texBase%06X")
         tmuInputCount += 1
@@ -815,17 +813,13 @@ object VoodooTracePlayer {
     // Monitor TMU output - texture color from single TMU
     var tmuPixelCount = 0
     StreamMonitor(dut.tmu.io.output, dut.clockDomain) { payload =>
-      val x = payload.coords(0).toInt
-      val y = payload.coords(1).toInt
       val r = payload.texture.r.toInt
       val g = payload.texture.g.toInt
       val b = payload.texture.b.toInt
-      // Debug: print first few TMU outputs
       if (tmuPixelCount < 20) {
-        println(f"[TMU OUT] $tmuPixelCount: ($x, $y) RGB=($r, $g, $b)")
+        println(f"[TMU OUT] $tmuPixelCount: RGB=($r, $g, $b)")
         tmuPixelCount += 1
       }
-      display.tmuFramebuffer.writePixel(x, y, r, g, b)
     }
 
     // Monitor ColorCombine output - final color before write stage

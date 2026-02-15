@@ -416,7 +416,34 @@ case class Core(c: Config) extends Component {
     cfg.tmudSdY.raw := regBank.triangleGeometry.dSdY.asBits
     cfg.tmudTdY.raw := regBank.triangleGeometry.dTdY.asBits
 
+    // NCC table: select table 0 or 1 based on nccSelect (textureMode bit 5), pre-extract Y values
+    captureNccTable(cfg)
+
     cfg
+  }
+
+  // Helper to capture NCC table into PerTriangleConfig (shared by int and float paths)
+  def captureNccTable(cfg: TriangleSetup.PerTriangleConfig): Unit = {
+    val nccSel = regBank.tmuConfig.textureMode(5)
+    for (r <- 0 until 4; b <- 0 until 4) {
+      cfg.ncc.y(r * 4 + b) := Mux(
+        nccSel,
+        regBank.nccTable.table1Y(r)((b + 1) * 8 - 1 downto b * 8).asUInt,
+        regBank.nccTable.table0Y(r)((b + 1) * 8 - 1 downto b * 8).asUInt
+      )
+    }
+    for (i <- 0 until 4) {
+      cfg.ncc.i(i) := Mux(
+        nccSel,
+        regBank.nccTable.table1I(i)(26 downto 0),
+        regBank.nccTable.table0I(i)(26 downto 0)
+      )
+      cfg.ncc.q(i) := Mux(
+        nccSel,
+        regBank.nccTable.table1Q(i)(26 downto 0),
+        regBank.nccTable.table0Q(i)(26 downto 0)
+      )
+    }
   }
 
   // Float version of capturePerTriangleConfig - converts float S/T gradients
@@ -438,6 +465,9 @@ case class Core(c: Config) extends Component {
     cfg.tmudTdX.raw := floatToFixed(fdTdX, 14, 18).asBits
     cfg.tmudSdY.raw := floatToFixed(fdSdY, 14, 18).asBits
     cfg.tmudTdY.raw := floatToFixed(fdTdY, 14, 18).asBits
+
+    // NCC table (same as int path)
+    captureNccTable(cfg)
 
     cfg
   }
@@ -607,6 +637,7 @@ case class Core(c: Config) extends Component {
     out.config.textureMode := in.config.tmuTextureMode
     out.config.texBaseAddr := in.config.tmuTexBaseAddr
     out.config.tLOD := in.config.tmuTLOD
+    out.config.ncc := in.config.ncc
     // Texture coordinate gradients for LOD calculation (from config, captured at command time)
     out.dSdX := in.config.tmudSdX
     out.dTdX := in.config.tmudTdX

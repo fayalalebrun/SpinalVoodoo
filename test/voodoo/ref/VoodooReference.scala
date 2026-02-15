@@ -90,9 +90,13 @@ object VoodooReference {
       texShift: Array[Int] = Array.fill(9)(0),
       texLod: Array[Int] = Array.fill(9)(0),
       // Chroma key, fog, alpha
-      chromaKey: Int = 0,           // 0x00RRGGBB
-      fogColor: Int = 0,            // 0x00RRGGBB
-      fogTable: Array[Int] = Array.fill(64)(0)  // fog + (dfog << 10) packed per entry
+      chromaKey: Int = 0, // 0x00RRGGBB
+      fogColor: Int = 0, // 0x00RRGGBB
+      fogTable: Array[Int] = Array.fill(64)(0), // fog + (dfog << 10) packed per entry
+      // NCC table data (pre-extracted)
+      nccY: Array[Int] = Array.fill(16)(0), // 16 luminance values (8-bit unsigned)
+      nccI: Array[Int] = Array.fill(4)(0), // 4 I chrominance entries (packed 3x9-bit signed)
+      nccQ: Array[Int] = Array.fill(4)(0) // 4 Q chrominance entries (packed 3x9-bit signed)
   )
 
   /** Per-pixel output */
@@ -112,12 +116,12 @@ object VoodooReference {
   val FBZ_PARAM_ADJUST = 1 << 26
   val FBZCP_TEXTURE_ENABLED = 1 << 27
 
-  val FOG_ENABLE   = 0x01
-  val FOG_ADD      = 0x02
-  val FOG_MULT     = 0x04
-  val FOG_ALPHA    = 0x08
-  val FOG_Z        = 0x10
-  val FOG_W        = 0x18
+  val FOG_ENABLE = 0x01
+  val FOG_ADD = 0x02
+  val FOG_MULT = 0x04
+  val FOG_ALPHA = 0x08
+  val FOG_Z = 0x10
+  val FOG_W = 0x18
   val FOG_CONSTANT = 0x20
 
   val FBZ_DITHER_2x2 = 1 << 11
@@ -220,6 +224,27 @@ object VoodooReference {
   /** Decode a raw texel to ARGB32 (0xAARRGGBB) based on format. Format codes match 86Box TEX_* enum
     * from vid_voodoo_regs.h.
     */
+  /** Decode NCC texel: 8-bit index → ARGB8888 using NCC table. nccY: 16 luminance values (0-255),
+    * nccI/nccQ: 4 entries each (packed 3x9-bit signed R,G,B).
+    */
+  def decodeTexelNcc(raw8: Int, nccY: Array[Int], nccI: Array[Int], nccQ: Array[Int]): Int = {
+    val yIdx = (raw8 >> 4) & 0xf
+    val iIdx = (raw8 >> 2) & 3
+    val qIdx = raw8 & 3
+    val y = nccY(yIdx)
+    def se9(v: Int): Int = if ((v & 0x100) != 0) v | ~0x1ff else v & 0x1ff
+    val iR = se9((nccI(iIdx) >> 18) & 0x1ff)
+    val iG = se9((nccI(iIdx) >> 9) & 0x1ff)
+    val iB = se9(nccI(iIdx) & 0x1ff)
+    val qR = se9((nccQ(qIdx) >> 18) & 0x1ff)
+    val qG = se9((nccQ(qIdx) >> 9) & 0x1ff)
+    val qB = se9(nccQ(qIdx) & 0x1ff)
+    val r = scala.math.max(0, scala.math.min(255, y + iR + qR))
+    val g = scala.math.max(0, scala.math.min(255, y + iG + qG))
+    val b = scala.math.max(0, scala.math.min(255, y + iB + qB))
+    0xff000000 | (r << 16) | (g << 8) | b
+  }
+
   def decodeTexel(raw: Int, format: Int): Int = {
     format match {
       case 0x0 => // RGB332
@@ -589,14 +614,14 @@ object VoodooReference {
   // ========================================================================
 
   def depthTest(depthOp: Int, compDepth: Int, oldDepth: Int): Boolean = depthOp match {
-    case 0 => false                      // NEVER
-    case 1 => compDepth < oldDepth       // LESS
-    case 2 => compDepth == oldDepth      // EQUAL
-    case 3 => compDepth <= oldDepth      // LEQUAL
-    case 4 => compDepth > oldDepth       // GREATER
-    case 5 => compDepth != oldDepth      // NOTEQUAL
-    case 6 => compDepth >= oldDepth      // GEQUAL
-    case 7 => true                       // ALWAYS
+    case 0 => false // NEVER
+    case 1 => compDepth < oldDepth // LESS
+    case 2 => compDepth == oldDepth // EQUAL
+    case 3 => compDepth <= oldDepth // LEQUAL
+    case 4 => compDepth > oldDepth // GREATER
+    case 5 => compDepth != oldDepth // NOTEQUAL
+    case 6 => compDepth >= oldDepth // GEQUAL
+    case 7 => true // ALWAYS
   }
 
   // ========================================================================
@@ -604,22 +629,30 @@ object VoodooReference {
   // ========================================================================
 
   def alphaTest(alphaFunc: Int, srcA: Int, aRef: Int): Boolean = alphaFunc match {
-    case 0 => false                      // NEVER
-    case 1 => srcA < aRef               // LESS
-    case 2 => srcA == aRef              // EQUAL
-    case 3 => srcA <= aRef              // LEQUAL
-    case 4 => srcA > aRef               // GREATER
-    case 5 => srcA != aRef              // NOTEQUAL
-    case 6 => srcA >= aRef              // GEQUAL
-    case 7 => true                       // ALWAYS
+    case 0 => false // NEVER
+    case 1 => srcA < aRef // LESS
+    case 2 => srcA == aRef // EQUAL
+    case 3 => srcA <= aRef // LEQUAL
+    case 4 => srcA > aRef // GREATER
+    case 5 => srcA != aRef // NOTEQUAL
+    case 6 => srcA >= aRef // GEQUAL
+    case 7 => true // ALWAYS
   }
 
   // ========================================================================
   // Fog (render.h APPLY_FOG macro)
   // ========================================================================
 
-  def applyFog(params: VoodooParams, srcR: Int, srcG: Int, srcB: Int,
-               wDepth: Int, z: Int, ia: Int, w: Long): (Int, Int, Int) = {
+  def applyFog(
+      params: VoodooParams,
+      srcR: Int,
+      srcG: Int,
+      srcB: Int,
+      wDepth: Int,
+      z: Int,
+      ia: Int,
+      w: Long
+  ): (Int, Int, Int) = {
     if ((params.fogMode & FOG_ENABLE) == 0) return (srcR, srcG, srcB)
     var (r, g, b) = (srcR, srcG, srcB)
 
@@ -641,12 +674,12 @@ object VoodooReference {
           val idx = (wDepth >> 10) & 0x3f
           val entry = params.fogTable(idx)
           val fog = entry & 0x3ff
-          val dfog = (entry >> 10).toShort.toInt  // signed 10-bit delta
+          val dfog = (entry >> 10).toShort.toInt // signed 10-bit delta
           (fog + ((dfog * ((wDepth >> 2) & 0xff)) >> 10)) & 0xff
-        case 0x10 => (z >> 20) & 0xff                  // FOG_Z
-        case 0x08 => CLAMP(ia >> 12)                    // FOG_ALPHA
-        case 0x18 => CLAMP(((w >> 32) & 0xff).toInt)   // FOG_W
-        case _ => 0
+        case 0x10 => (z >> 20) & 0xff // FOG_Z
+        case 0x08 => CLAMP(ia >> 12) // FOG_ALPHA
+        case 0x18 => CLAMP(((w >> 32) & 0xff).toInt) // FOG_W
+        case _    => 0
       }
       fogA += 1
 
@@ -672,36 +705,78 @@ object VoodooReference {
     (r, g, b)
   }
 
-  def alphaBlend(params: VoodooParams, srcR: Int, srcG: Int, srcB: Int, srcA: Int,
-                 destR: Int, destG: Int, destB: Int, destA: Int,
-                 colbfogR: Int, colbfogG: Int, colbfogB: Int): (Int, Int, Int) = {
+  def alphaBlend(
+      params: VoodooParams,
+      srcR: Int,
+      srcG: Int,
+      srcB: Int,
+      srcA: Int,
+      destR: Int,
+      destG: Int,
+      destB: Int,
+      destA: Int,
+      colbfogR: Int,
+      colbfogG: Int,
+      colbfogB: Int
+  ): (Int, Int, Int) = {
     val srcFunc = (params.alphaMode >> 8) & 0xf
     val destFunc = (params.alphaMode >> 12) & 0xf
 
     // Destination factor
     val (ndR, ndG, ndB) = destFunc match {
-      case 0x0 => (0, 0, 0)                                                        // ZERO
-      case 0x1 => (destR * srcA / 255, destG * srcA / 255, destB * srcA / 255)     // SRC_ALPHA
-      case 0x2 => (destR * srcR / 255, destG * srcG / 255, destB * srcB / 255)     // COLOR
-      case 0x3 => (destR * destA / 255, destG * destA / 255, destB * destA / 255)  // DST_ALPHA
-      case 0x4 => (destR, destG, destB)                                            // ONE
-      case 0x5 => (destR*(255-srcA)/255, destG*(255-srcA)/255, destB*(255-srcA)/255)  // 1-SRC_ALPHA
-      case 0x6 => (destR*(255-srcR)/255, destG*(255-srcG)/255, destB*(255-srcB)/255)  // 1-COLOR
-      case 0x7 => (destR*(255-destA)/255, destG*(255-destA)/255, destB*(255-destA)/255) // 1-DST_ALPHA
-      case 0xf => (destR*colbfogR/255, destG*colbfogG/255, destB*colbfogB/255)     // ACOLORBEFOREFOG
+      case 0x0 => (0, 0, 0) // ZERO
+      case 0x1 => (destR * srcA / 255, destG * srcA / 255, destB * srcA / 255) // SRC_ALPHA
+      case 0x2 => (destR * srcR / 255, destG * srcG / 255, destB * srcB / 255) // COLOR
+      case 0x3 => (destR * destA / 255, destG * destA / 255, destB * destA / 255) // DST_ALPHA
+      case 0x4 => (destR, destG, destB) // ONE
+      case 0x5 =>
+        (
+          destR * (255 - srcA) / 255,
+          destG * (255 - srcA) / 255,
+          destB * (255 - srcA) / 255
+        ) // 1-SRC_ALPHA
+      case 0x6 =>
+        (
+          destR * (255 - srcR) / 255,
+          destG * (255 - srcG) / 255,
+          destB * (255 - srcB) / 255
+        ) // 1-COLOR
+      case 0x7 =>
+        (
+          destR * (255 - destA) / 255,
+          destG * (255 - destA) / 255,
+          destB * (255 - destA) / 255
+        ) // 1-DST_ALPHA
+      case 0xf =>
+        (destR * colbfogR / 255, destG * colbfogG / 255, destB * colbfogB / 255) // ACOLORBEFOREFOG
       case _ => (0, 0, 0)
     }
 
     // Source factor
     val (sR, sG, sB) = srcFunc match {
-      case 0x0 => (0, 0, 0)                                                        // ZERO
-      case 0x1 => (srcR * srcA / 255, srcG * srcA / 255, srcB * srcA / 255)        // SRC_ALPHA
-      case 0x2 => (srcR * destR / 255, srcG * destG / 255, srcB * destB / 255)     // COLOR
-      case 0x3 => (srcR * destA / 255, srcG * destA / 255, srcB * destA / 255)     // DST_ALPHA
-      case 0x4 => (srcR, srcG, srcB)                                                // ONE
-      case 0x5 => (srcR*(255-srcA)/255, srcG*(255-srcA)/255, srcB*(255-srcA)/255)  // 1-SRC_ALPHA
-      case 0x6 => (srcR*(255-destR)/255, srcG*(255-destG)/255, srcB*(255-destB)/255) // 1-COLOR
-      case 0x7 => (srcR*(255-destA)/255, srcG*(255-destA)/255, srcB*(255-destA)/255) // 1-DST_ALPHA
+      case 0x0 => (0, 0, 0) // ZERO
+      case 0x1 => (srcR * srcA / 255, srcG * srcA / 255, srcB * srcA / 255) // SRC_ALPHA
+      case 0x2 => (srcR * destR / 255, srcG * destG / 255, srcB * destB / 255) // COLOR
+      case 0x3 => (srcR * destA / 255, srcG * destA / 255, srcB * destA / 255) // DST_ALPHA
+      case 0x4 => (srcR, srcG, srcB) // ONE
+      case 0x5 =>
+        (
+          srcR * (255 - srcA) / 255,
+          srcG * (255 - srcA) / 255,
+          srcB * (255 - srcA) / 255
+        ) // 1-SRC_ALPHA
+      case 0x6 =>
+        (
+          srcR * (255 - destR) / 255,
+          srcG * (255 - destG) / 255,
+          srcB * (255 - destB) / 255
+        ) // 1-COLOR
+      case 0x7 =>
+        (
+          srcR * (255 - destA) / 255,
+          srcG * (255 - destA) / 255,
+          srcB * (255 - destA) / 255
+        ) // 1-DST_ALPHA
       case 0xf => // SATURATE
         val a = scala.math.min(srcA, 255 - destA)
         (destR * a / 255, destG * a / 255, destB * a / 255)
@@ -715,21 +790,21 @@ object VoodooReference {
   // Dithering (from vid_voodoo_dither.h)
   // ========================================================================
 
-  /** 4x4 Bayer ordered dither matrix matching 86Box vid_voodoo_dither.h.
-    * This is the vertically-flipped standard Bayer matrix.
+  /** 4x4 Bayer ordered dither matrix matching 86Box vid_voodoo_dither.h. This is the
+    * vertically-flipped standard Bayer matrix.
     */
   private val bayer4x4: Array[Array[Int]] = Array(
-    Array(15,  7, 13,  5),
-    Array( 3, 11,  1,  9),
-    Array(12,  4, 14,  6),
-    Array( 0,  8,  2, 10)
+    Array(15, 7, 13, 5),
+    Array(3, 11, 1, 9),
+    Array(12, 4, 14, 6),
+    Array(0, 8, 2, 10)
   )
 
   /** Algorithmic dither_rb[v][y][x] matching 86Box tables.
     *
-    * For an 8-bit to 5-bit dither: base = v >> 3, frac = v & 7.
-    * The Bayer matrix threshold (0-15) determines which positions get rounded up.
-    * Result: base + (if frac*2 > threshold then 1 else 0), clamped to 31.
+    * For an 8-bit to 5-bit dither: base = v >> 3, frac = v & 7. The Bayer matrix threshold (0-15)
+    * determines which positions get rounded up. Result: base + (if frac*2 > threshold then 1 else
+    * 0), clamped to 31.
     */
   def dither_rb(v: Int, y: Int, x: Int): Int = {
     val base = v >> 3
@@ -792,27 +867,35 @@ object VoodooReference {
   // Bilinear texture filtering
   // ========================================================================
 
-  /** Bilinear texture read. Fetches 4 texels and blends them.
-    * ds/dt are fractional parts (0-15) for interpolation weights.
+  /** Bilinear texture read. Fetches 4 texels and blends them. ds/dt are fractional parts (0-15) for
+    * interpolation weights.
     */
   def texRead4(
-      texData: Array[Int], s: Int, t: Int, ds: Int, dt: Int,
-      wMask: Int, hMask: Int, texShift: Int, clampS: Boolean, clampT: Boolean
+      texData: Array[Int],
+      s: Int,
+      t: Int,
+      ds: Int,
+      dt: Int,
+      wMask: Int,
+      hMask: Int,
+      texShift: Int,
+      clampS: Boolean,
+      clampT: Boolean
   ): (Int, Int, Int, Int) = {
-    val d0 = (16 - ds) * (16 - dt)  // top-left weight
-    val d1 = ds * (16 - dt)         // top-right
-    val d2 = (16 - ds) * dt         // bottom-left
-    val d3 = ds * dt                // bottom-right
+    val d0 = (16 - ds) * (16 - dt) // top-left weight
+    val d1 = ds * (16 - dt) // top-right
+    val d2 = (16 - ds) * dt // bottom-left
+    val d3 = ds * dt // bottom-right
 
     val t00 = texRead(texData, s, t, wMask, hMask, texShift, clampS, clampT)
     val t10 = texRead(texData, s + 1, t, wMask, hMask, texShift, clampS, clampT)
     val t01 = texRead(texData, s, t + 1, wMask, hMask, texShift, clampS, clampT)
     val t11 = texRead(texData, s + 1, t + 1, wMask, hMask, texShift, clampS, clampT)
 
-    val r = (t00._1*d0 + t10._1*d1 + t01._1*d2 + t11._1*d3) >> 8
-    val g = (t00._2*d0 + t10._2*d1 + t01._2*d2 + t11._2*d3) >> 8
-    val b = (t00._3*d0 + t10._3*d1 + t01._3*d2 + t11._3*d3) >> 8
-    val a = (t00._4*d0 + t10._4*d1 + t01._4*d2 + t11._4*d3) >> 8
+    val r = (t00._1 * d0 + t10._1 * d1 + t01._1 * d2 + t11._1 * d3) >> 8
+    val g = (t00._2 * d0 + t10._2 * d1 + t01._2 * d2 + t11._2 * d3) >> 8
+    val b = (t00._3 * d0 + t10._3 * d1 + t01._3 * d2 + t11._3 * d3) >> 8
+    val a = (t00._4 * d0 + t10._4 * d1 + t01._4 * d2 + t11._4 * d3) >> 8
     (r, g, b, a)
   }
 
@@ -832,7 +915,8 @@ object VoodooReference {
     */
   def voodooTriangle(
       params: VoodooParams,
-      framebuffer: scala.collection.mutable.Map[(Int, Int), (Int, Int)] = scala.collection.mutable.Map.empty
+      framebuffer: scala.collection.mutable.Map[(Int, Int), (Int, Int)] =
+        scala.collection.mutable.Map.empty
   ): Seq[RefPixel] = {
     val pixels = scala.collection.mutable.ArrayBuffer.empty[RefPixel]
 
@@ -1106,23 +1190,38 @@ object VoodooReference {
                 if ((params.alphaMode & (1 << 4)) != 0) {
                   val (destR, destG, destB) = framebuffer.get((px, pixel_y)) match {
                     case Some((rgb565, _)) => rgb565toRGB8(rgb565)
-                    case None => (0, 0, 0)
+                    case None              => (0, 0, 0)
                   }
                   val destA = 0xff
-                  alphaBlend(params, fogR, fogG, fogB, srcA,
-                             destR, destG, destB, destA,
-                             colbfogR, colbfogG, colbfogB)
+                  alphaBlend(
+                    params,
+                    fogR,
+                    fogG,
+                    fogB,
+                    srcA,
+                    destR,
+                    destG,
+                    destB,
+                    destA,
+                    colbfogR,
+                    colbfogG,
+                    colbfogB
+                  )
                 } else (fogR, fogG, fogB)
 
               // 9. Dither + write
               val rgb565 = ditherPixel(blendR, blendG, blendB, px, pixel_y, params.fbzMode)
 
-              if ((params.fbzMode & FBZ_RGB_WMASK) != 0 || (params.fbzMode & FBZ_DEPTH_WMASK) != 0) {
+              if (
+                (params.fbzMode & FBZ_RGB_WMASK) != 0 || (params.fbzMode & FBZ_DEPTH_WMASK) != 0
+              ) {
                 val oldEntry = framebuffer.get((px, pixel_y))
-                val writeRgb = if ((params.fbzMode & FBZ_RGB_WMASK) != 0) rgb565
-                               else oldEntry.map(_._1).getOrElse(0)
-                val writeDepth = if ((params.fbzMode & FBZ_DEPTH_WMASK) != 0) newDepth
-                                 else oldEntry.map(_._2).getOrElse(0)
+                val writeRgb =
+                  if ((params.fbzMode & FBZ_RGB_WMASK) != 0) rgb565
+                  else oldEntry.map(_._1).getOrElse(0)
+                val writeDepth =
+                  if ((params.fbzMode & FBZ_DEPTH_WMASK) != 0) newDepth
+                  else oldEntry.map(_._2).getOrElse(0)
                 framebuffer((px, pixel_y)) = (writeRgb, writeDepth)
               }
 

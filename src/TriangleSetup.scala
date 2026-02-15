@@ -89,15 +89,19 @@ case class TriangleSetup(c: Config) extends Component {
     val dy = out.yrange(0) - tri(0)(1) // ymin - Ay
 
     val gradFormats = Seq(
-      c.vColorFormat, c.vColorFormat, c.vColorFormat,
-      c.vDepthFormat, c.vColorFormat,
-      c.wFormat, c.texCoordsFormat, c.texCoordsFormat
+      c.vColorFormat,
+      c.vColorFormat,
+      c.vColorFormat,
+      c.vDepthFormat,
+      c.vColorFormat,
+      c.wFormat,
+      c.texCoordsFormat,
+      c.texCoordsFormat
     )
 
-    out.grads.all.zip(input.grads.all).zip(gradFormats).foreach {
-      case ((outG, inG), fmt) =>
-        outG.d := inG.d // pass through per-pixel gradients unchanged
-        outG.start := (inG.start + dx * inG.d(0) + dy * inG.d(1)).fixTo(fmt)
+    out.grads.all.zip(input.grads.all).zip(gradFormats).foreach { case ((outG, inG), fmt) =>
+      outG.d := inG.d // pass through per-pixel gradients unchanged
+      outG.start := (inG.start + dx * inG.d(0) + dy * inG.d(1)).fixTo(fmt)
     }
 
     out.config := input.config
@@ -127,6 +131,8 @@ object TriangleSetup {
     val tmudTdX = AFix(c.texCoordsFormat)
     val tmudSdY = AFix(c.texCoordsFormat)
     val tmudTdY = AFix(c.texCoordsFormat)
+    // NCC table data (pre-extracted at capture time)
+    val ncc = Tmu.NccTableData()
   }
 
   /** Input bundle - triangle with gradients and render config captured at command time */

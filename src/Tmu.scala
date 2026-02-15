@@ -382,6 +382,7 @@ case class Tmu(c: voodoo.Config) extends Component {
     val ds = UInt(4 bits)
     val dt = UInt(4 bits)
     val readIdx = UInt(2 bits)
+    val ncc = Tmu.NccTableData()
   }
 
   case class TmuExpanded() extends Bundle {
@@ -411,6 +412,7 @@ case class Tmu(c: voodoo.Config) extends Component {
   inputPassthrough.ds := finalDs
   inputPassthrough.dt := finalDt
   inputPassthrough.readIdx := 0
+  inputPassthrough.ncc := io.input.payload.config.ncc
 
   // Select address and passthrough based on expansion state.
   // Fields must be assigned individually to avoid SpinalHDL ASSIGNMENT OVERLAP errors
@@ -421,6 +423,7 @@ case class Tmu(c: voodoo.Config) extends Component {
     expandedStream.payload.passthrough.ds := regPassthrough.ds
     expandedStream.payload.passthrough.dt := regPassthrough.dt
     expandedStream.payload.passthrough.readIdx := expandCount
+    expandedStream.payload.passthrough.ncc := regPassthrough.ncc
     switch(expandCount) {
       is(1) { expandedStream.payload.address := regAddr1 }
       is(2) { expandedStream.payload.address := regAddr2 }
@@ -522,12 +525,40 @@ case class Tmu(c: voodoo.Config) extends Component {
     val db = UInt(8 bits)
     val da = UInt(8 bits)
 
+    // NCC decode helper: clamp signed value to [0, 255]
+    def clampSigned(v: SInt): UInt = {
+      val result = UInt(8 bits)
+      when(v < 0) { result := 0 }
+        .elsewhen(v > 255) { result := 255 }
+        .otherwise { result := v(7 downto 0).asUInt }
+      result
+    }
+
+    // NCC decode: Y + I + Q chrominance lookup
+    def nccDecode(texByte: Bits, ncc: Tmu.NccTableData): (UInt, UInt, UInt) = {
+      val yVal = ncc.y(texByte(7 downto 4).asUInt)
+      val iEntry = ncc.i(texByte(3 downto 2).asUInt)
+      val qEntry = ncc.q(texByte(1 downto 0).asUInt)
+      val iR = iEntry(26 downto 18).asSInt; val iG = iEntry(17 downto 9).asSInt;
+      val iB = iEntry(8 downto 0).asSInt
+      val qR = qEntry(26 downto 18).asSInt; val qG = qEntry(17 downto 9).asSInt;
+      val qB = qEntry(8 downto 0).asSInt
+      val rRaw = (False ## yVal).asSInt.resize(11 bits) + iR.resize(11 bits) + qR.resize(11 bits)
+      val gRaw = (False ## yVal).asSInt.resize(11 bits) + iG.resize(11 bits) + qG.resize(11 bits)
+      val bRaw = (False ## yVal).asSInt.resize(11 bits) + iB.resize(11 bits) + qB.resize(11 bits)
+      (clampSigned(rRaw), clampSigned(gRaw), clampSigned(bRaw))
+    }
+
     switch(pass.format) {
       is(Tmu.TextureFormat.RGB332) {
         dr := expand3to8(texelData(7 downto 5).asUInt)
         dg := expand3to8(texelData(4 downto 2).asUInt)
         db := expand2to8(texelData(1 downto 0).asUInt)
         da := U(255, 8 bits)
+      }
+      is(Tmu.TextureFormat.YIQ422) {
+        val (r, g, b) = nccDecode(texelData(7 downto 0), pass.ncc)
+        dr := r; dg := g; db := b; da := U(255, 8 bits)
       }
       is(Tmu.TextureFormat.A8) {
         dr := U(255, 8 bits)
@@ -555,6 +586,10 @@ case class Tmu(c: voodoo.Config) extends Component {
         dr := expand3to8(texelData(7 downto 5).asUInt)
         dg := expand3to8(texelData(4 downto 2).asUInt)
         db := expand2to8(texelData(1 downto 0).asUInt)
+      }
+      is(Tmu.TextureFormat.AYIQ8422) {
+        val (r, g, b) = nccDecode(texelData(7 downto 0), pass.ncc)
+        dr := r; dg := g; db := b; da := texelData(15 downto 8).asUInt
       }
       is(Tmu.TextureFormat.RGB565) {
         dr := expand5to8(texelData(15 downto 11).asUInt)
@@ -747,11 +782,22 @@ object Tmu {
     }
   }
 
+  /** NCC table data, pre-extracted at triangle capture time. Y: 16 luminance values (8-bit
+    * unsigned), pre-extracted from 4 packed 32-bit registers. I/Q: 4 chrominance entries each,
+    * packed as [26:18]=R, [17:9]=G, [8:0]=B (9-bit signed).
+    */
+  case class NccTableData() extends Bundle {
+    val y = Vec(UInt(8 bits), 16)
+    val i = Vec(Bits(27 bits), 4)
+    val q = Vec(Bits(27 bits), 4)
+  }
+
   /** Per-TMU configuration (captured per-triangle) */
   case class TmuConfig() extends Bundle {
     val textureMode = Bits(32 bits)
     val texBaseAddr = UInt(24 bits)
     val tLOD = Bits(27 bits)
+    val ncc = NccTableData()
   }
 
   /** TMU input bundle */

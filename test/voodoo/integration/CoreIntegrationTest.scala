@@ -5984,4 +5984,262 @@ class CoreIntegrationTest extends AnyFunSuite {
       println("[bilinear] PASS: all sub-cases passed")
     }
   }
+
+  // ========================================================================
+  // Test 28: NCC (Narrow Channel Compression) texture formats
+  // ========================================================================
+  test("NCC texture format: YIQ422, AYIQ8422, nccSelect, clamping") {
+    compiled.doSim("ncc") { dut =>
+      val (driver, fbMemory, texMemory, writtenAddrs) = setupDut(dut)
+
+      // NCC register addresses
+      val REG_NCC0_Y0 = 0x324; val REG_NCC0_I0 = 0x334; val REG_NCC0_Q0 = 0x344
+      val REG_NCC1_Y0 = 0x354; val REG_NCC1_I0 = 0x364; val REG_NCC1_Q0 = 0x374
+
+      // --- NCC Table 0 setup ---
+      // Y registers: 4 regs x 4 bytes = 16 Y values
+      // Y[0..3]=10,20,30,40  Y[4..7]=50,60,70,80  Y[8..11]=128,140,150,160  Y[12..15]=200,210,220,230
+      val y0Regs = Array(
+        0x28201e0aL, // Y[3]=40, Y[2]=30, Y[1]=20, Y[0]=10 (little-endian packed)
+        0x50463c32L, // Y[7]=80, Y[6]=70, Y[5]=60, Y[4]=50
+        0xa0968c80L, // Y[11]=160, Y[10]=150, Y[9]=140, Y[8]=128
+        0xe6dcd2c8L // Y[15]=230, Y[14]=220, Y[13]=210, Y[12]=200
+      )
+      val nccY0 = Array(10, 20, 30, 40, 50, 60, 70, 80, 128, 140, 150, 160, 200, 210, 220, 230)
+
+      // I entries: packed as [26:18]=R, [17:9]=G, [8:0]=B (9-bit signed)
+      // I[0]: R=30, G=-50, B=50
+      def packIQ(r: Int, g: Int, b: Int): Long = {
+        val r9 = r & 0x1ff
+        val g9 = g & 0x1ff
+        val b9 = b & 0x1ff
+        ((r9.toLong << 18) | (g9.toLong << 9) | b9.toLong) & 0x7ffffffL
+      }
+      val i0Entries =
+        Array(packIQ(30, -50, 50), packIQ(12, 7, 22), packIQ(-20, 40, -30), packIQ(200, -200, 100))
+      val q0Entries =
+        Array(packIQ(10, -10, 5), packIQ(-5, 20, -15), packIQ(12, 7, 22), packIQ(-100, 100, -50))
+
+      // Write NCC table 0
+      for (i <- 0 until 4) {
+        writeReg(driver, REG_NCC0_Y0 + i * 4, y0Regs(i))
+        writeReg(driver, REG_NCC0_I0 + i * 4, i0Entries(i))
+        writeReg(driver, REG_NCC0_Q0 + i * 4, q0Entries(i))
+      }
+
+      // --- NCC Table 1 setup (different values) ---
+      val y1Regs = Array(0x80604020L, 0xc0b0a090L, 0x44332211L, 0x88776655L)
+      val nccY1 = Array(0x20, 0x40, 0x60, 0x80, 0x90, 0xa0, 0xb0, 0xc0, 0x11, 0x22, 0x33, 0x44,
+        0x55, 0x66, 0x77, 0x88)
+      val i1Entries =
+        Array(packIQ(50, -30, 20), packIQ(-10, 60, -40), packIQ(15, 15, 15), packIQ(-80, 80, -60))
+      val q1Entries =
+        Array(packIQ(20, -20, 10), packIQ(-15, 30, -25), packIQ(25, -5, 30), packIQ(40, -40, 20))
+
+      for (i <- 0 until 4) {
+        writeReg(driver, REG_NCC1_Y0 + i * 4, y1Regs(i))
+        writeReg(driver, REG_NCC1_I0 + i * 4, i1Entries(i))
+        writeReg(driver, REG_NCC1_Q0 + i * 4, q1Entries(i))
+      }
+
+      // Shared triangle geometry: small triangle
+      val vAx = 100 * 16; val vAy = 100 * 16
+      val vBx = 116 * 16; val vBy = 116 * 16
+      val vCx = 84 * 16; val vCy = 116 * 16
+      val sign = false
+
+      // fbzColorPath: texture passthrough (rgbSel=1=TEX, mselect=0, reverse_blend=0 → factor=256, texture_enable=1)
+      val fbzColorPath = 1 | (1 << 27)
+      val fbzMode = 1 | (1 << 9) // clipping + RGB write
+
+      // Helper to run a sub-case
+      def runNccSubCase(
+          subName: String,
+          texelIndex: Int,
+          texelBpp: Int,
+          hwFormat: Int,
+          nccSelect: Int,
+          expectedArgb32: Int,
+          alphaOverride: Int = -1
+      ): Unit = {
+        writtenAddrs.clear()
+
+        // Write single texel at texture address 0
+        val texBaseAddr = 0L
+        if (texelBpp == 1) {
+          texMemory.setByte(0, (texelIndex & 0xff).toByte)
+        } else {
+          // AYIQ8422: alpha in high byte, NCC index in low byte
+          val alpha = if (alphaOverride >= 0) alphaOverride else 0xff
+          texMemory.setByte(0, (texelIndex & 0xff).toByte)
+          texMemory.setByte(1, (alpha & 0xff).toByte)
+        }
+
+        // textureMode: format in bits[11:8], clampS (bit 6), clampT (bit 7), nccSelect (bit 5)
+        val textureMode = (hwFormat << 8) | (1 << 6) | (1 << 7) | (nccSelect << 5)
+
+        writeReg(driver, REG_TEXBASEADDR, texBaseAddr)
+
+        // Re-write NCC table registers before triangle (they're fifoNoSync, captured at triangle time)
+        for (i <- 0 until 4) {
+          writeReg(driver, REG_NCC0_Y0 + i * 4, y0Regs(i))
+          writeReg(driver, REG_NCC0_I0 + i * 4, i0Entries(i))
+          writeReg(driver, REG_NCC0_Q0 + i * 4, q0Entries(i))
+          writeReg(driver, REG_NCC1_Y0 + i * 4, y1Regs(i))
+          writeReg(driver, REG_NCC1_I0 + i * 4, i1Entries(i))
+          writeReg(driver, REG_NCC1_Q0 + i * 4, q1Entries(i))
+        }
+
+        // Texture coords: constant S=0, T=0, non-perspective → always samples texel (0,0)
+        submitTriangle(
+          driver,
+          dut.clockDomain,
+          vertexAx = vAx,
+          vertexAy = vAy,
+          vertexBx = vBx,
+          vertexBy = vBy,
+          vertexCx = vCx,
+          vertexCy = vCy,
+          startR = 0,
+          startG = 0,
+          startB = 0,
+          startA = 255 << 12,
+          startZ = 0,
+          startS = 0,
+          startT = 0,
+          startW = 0,
+          dRdX = 0,
+          dGdX = 0,
+          dBdX = 0,
+          dAdX = 0,
+          dZdX = 0,
+          dSdX = 0,
+          dTdX = 0,
+          dWdX = 0,
+          dRdY = 0,
+          dGdY = 0,
+          dBdY = 0,
+          dAdY = 0,
+          dZdY = 0,
+          dSdY = 0,
+          dTdY = 0,
+          dWdY = 0,
+          fbzColorPath = fbzColorPath,
+          fbzMode = fbzMode,
+          sign = sign,
+          textureMode = textureMode,
+          tLOD = 0,
+          clipRight = 640,
+          clipHighY = 480
+        )
+
+        dut.clockDomain.waitSampling(20000)
+
+        val simPixels = collectPixels(fbMemory, writtenAddrs, 0)
+
+        // Build reference: texData is a single pre-decoded ARGB32 texel
+        val refTexData = Array(expectedArgb32)
+        val texDataPerLod = Array.fill(9)(Array.empty[Int])
+        texDataPerLod(0) = refTexData
+        val texWMaskPerLod = Array.fill(9)(0); texWMaskPerLod(0) = 255
+        val texHMaskPerLod = Array.fill(9)(0); texHMaskPerLod(0) = 255
+        val texShiftPerLod = Array.fill(9)(0); texShiftPerLod(0) = 8
+        val texLodPerLod = Array.fill(9)(0)
+
+        val refParams = VoodooReference.fromRegisterValues(
+          vertexAx = vAx,
+          vertexAy = vAy,
+          vertexBx = vBx,
+          vertexBy = vBy,
+          vertexCx = vCx,
+          vertexCy = vCy,
+          startR = 0,
+          startG = 0,
+          startB = 0,
+          startA = 255 << 12,
+          startZ = 0,
+          startS = 0,
+          startT = 0,
+          startW = 0,
+          dRdX = 0,
+          dGdX = 0,
+          dBdX = 0,
+          dAdX = 0,
+          dZdX = 0,
+          dSdX = 0,
+          dTdX = 0,
+          dWdX = 0,
+          dRdY = 0,
+          dGdY = 0,
+          dBdY = 0,
+          dAdY = 0,
+          dZdY = 0,
+          dSdY = 0,
+          dTdY = 0,
+          dWdY = 0,
+          fbzColorPath = fbzColorPath,
+          fbzMode = fbzMode,
+          sign = sign,
+          textureMode = textureMode,
+          tLOD = 0,
+          clipRight = 640,
+          clipHighY = 480,
+          texData = texDataPerLod,
+          texWMask = texWMaskPerLod,
+          texHMask = texHMaskPerLod,
+          texShift = texShiftPerLod,
+          texLod = texLodPerLod
+        )
+
+        val refPixels = VoodooReference.voodooTriangle(refParams)
+        println(
+          f"[NCC/$subName] sim=${simPixels.size} ref=${refPixels.size} texelIdx=0x${texelIndex}%02X expected=0x${expectedArgb32}%08X"
+        )
+
+        comparePixelsFuzzy(refPixels, simPixels, s"NCC/$subName")
+      }
+
+      // --- Sub-case 1: YIQ422 basic (table 0) ---
+      // texelIndex = 0x86 → Y[8]=128, I[2], Q[1]
+      // I[2]: R=-20, G=40, B=-30
+      // Q[1]: R=-5, G=20, B=-15
+      // R = clamp(128 + (-20) + (-5)) = 103
+      // G = clamp(128 + 40 + 20) = 188
+      // B = clamp(128 + (-30) + (-15)) = 83
+      val expected1 =
+        VoodooReference.decodeTexelNcc(0x86, nccY0, i0Entries.map(_.toInt), q0Entries.map(_.toInt))
+      runNccSubCase("YIQ422_basic", 0x86, 1, 1, 0, expected1)
+
+      // --- Sub-case 2: AYIQ8422 (format=9, 16-bit, alpha from high byte) ---
+      // Same NCC index as sub-case 1 but with alpha=0x80
+      val expectedNcc2 =
+        VoodooReference.decodeTexelNcc(0x86, nccY0, i0Entries.map(_.toInt), q0Entries.map(_.toInt))
+      val expected2 = (0x80 << 24) | (expectedNcc2 & 0x00ffffff) // alpha=0x80
+      runNccSubCase("AYIQ8422", 0x86, 2, 9, 0, expected2, alphaOverride = 0x80)
+
+      // --- Sub-case 3: nccSelect=1 (use table 1) ---
+      // texelIndex = 0x41 → Y[4]=0x90, I[0], Q[1]
+      // Table 1 I[0]: R=50, G=-30, B=20
+      // Table 1 Q[1]: R=-15, G=30, B=-25
+      // R = clamp(0x90 + 50 + (-15)) = clamp(144+50-15) = 179
+      // G = clamp(0x90 + (-30) + 30) = clamp(144-30+30) = 144
+      // B = clamp(0x90 + 20 + (-25)) = clamp(144+20-25) = 139
+      val expected3 =
+        VoodooReference.decodeTexelNcc(0x41, nccY1, i1Entries.map(_.toInt), q1Entries.map(_.toInt))
+      runNccSubCase("nccSelect1", 0x41, 1, 1, 1, expected3)
+
+      // --- Sub-case 4: Clamping test ---
+      // texelIndex = 0xCF → Y[12]=200, I[3], Q[3]
+      // Table 0 I[3]: R=200, G=-200, B=100
+      // Table 0 Q[3]: R=-100, G=100, B=-50
+      // R = clamp(200 + 200 + (-100)) = clamp(300) = 255  (overflow → 255)
+      // G = clamp(200 + (-200) + 100) = clamp(100) = 100
+      // B = clamp(200 + 100 + (-50)) = clamp(250) = 250
+      val expected4 =
+        VoodooReference.decodeTexelNcc(0xcf, nccY0, i0Entries.map(_.toInt), q0Entries.map(_.toInt))
+      runNccSubCase("clamping", 0xcf, 1, 1, 0, expected4)
+
+      println("[NCC] PASS: all sub-cases passed")
+    }
+  }
 }

@@ -768,6 +768,88 @@ case class RegisterBank(config: Config) extends Component {
   }
 
   // ========================================================================
+  // NCC Table Registers (0x324-0x380)
+  // Two NCC tables for YIQ compressed texture decode
+  // ========================================================================
+  val nccTable = new Area {
+    // NCC Table 0: Y[0-3], I[0-3], Q[0-3]
+    val ncc0Y0Reg = busif.newRegAtWithCategory(0x324, "nccTable0Y0", RegisterCategory.fifoNoSync)
+    val table0Y0 = ncc0Y0Reg.field(Bits(32 bits), AccessType.WO, 0, "NCC table 0 Y0").asOutput()
+    val ncc0Y1Reg = busif.newRegAtWithCategory(0x328, "nccTable0Y1", RegisterCategory.fifoNoSync)
+    val table0Y1 = ncc0Y1Reg.field(Bits(32 bits), AccessType.WO, 0, "NCC table 0 Y1").asOutput()
+    val ncc0Y2Reg = busif.newRegAtWithCategory(0x32c, "nccTable0Y2", RegisterCategory.fifoNoSync)
+    val table0Y2 = ncc0Y2Reg.field(Bits(32 bits), AccessType.WO, 0, "NCC table 0 Y2").asOutput()
+    val ncc0Y3Reg = busif.newRegAtWithCategory(0x330, "nccTable0Y3", RegisterCategory.fifoNoSync)
+    val table0Y3 = ncc0Y3Reg.field(Bits(32 bits), AccessType.WO, 0, "NCC table 0 Y3").asOutput()
+
+    val ncc0I0Reg = busif.newRegAtWithCategory(0x334, "nccTable0I0", RegisterCategory.fifoNoSync)
+    val table0I0 = ncc0I0Reg.field(Bits(32 bits), AccessType.WO, 0, "NCC table 0 I0").asOutput()
+    val ncc0I1Reg = busif.newRegAtWithCategory(0x338, "nccTable0I1", RegisterCategory.fifoNoSync)
+    val table0I1 = ncc0I1Reg.field(Bits(32 bits), AccessType.WO, 0, "NCC table 0 I1").asOutput()
+    val ncc0I2Reg = busif.newRegAtWithCategory(0x33c, "nccTable0I2", RegisterCategory.fifoNoSync)
+    val table0I2 = ncc0I2Reg.field(Bits(32 bits), AccessType.WO, 0, "NCC table 0 I2").asOutput()
+    val ncc0I3Reg = busif.newRegAtWithCategory(0x340, "nccTable0I3", RegisterCategory.fifoNoSync)
+    val table0I3 = ncc0I3Reg.field(Bits(32 bits), AccessType.WO, 0, "NCC table 0 I3").asOutput()
+
+    val ncc0Q0Reg = busif.newRegAtWithCategory(0x344, "nccTable0Q0", RegisterCategory.fifoNoSync)
+    val table0Q0 = ncc0Q0Reg.field(Bits(32 bits), AccessType.WO, 0, "NCC table 0 Q0").asOutput()
+    val ncc0Q1Reg = busif.newRegAtWithCategory(0x348, "nccTable0Q1", RegisterCategory.fifoNoSync)
+    val table0Q1 = ncc0Q1Reg.field(Bits(32 bits), AccessType.WO, 0, "NCC table 0 Q1").asOutput()
+    val ncc0Q2Reg = busif.newRegAtWithCategory(0x34c, "nccTable0Q2", RegisterCategory.fifoNoSync)
+    val table0Q2 = ncc0Q2Reg.field(Bits(32 bits), AccessType.WO, 0, "NCC table 0 Q2").asOutput()
+    val ncc0Q3Reg = busif.newRegAtWithCategory(0x350, "nccTable0Q3", RegisterCategory.fifoNoSync)
+    val table0Q3 = ncc0Q3Reg.field(Bits(32 bits), AccessType.WO, 0, "NCC table 0 Q3").asOutput()
+
+    // NCC Table 1: Y[0-3], I[0-3], Q[0-3]
+    val ncc1Y0Reg = busif.newRegAtWithCategory(0x354, "nccTable1Y0", RegisterCategory.fifoNoSync)
+    val table1Y0 = ncc1Y0Reg.field(Bits(32 bits), AccessType.WO, 0, "NCC table 1 Y0").asOutput()
+    val ncc1Y1Reg = busif.newRegAtWithCategory(0x358, "nccTable1Y1", RegisterCategory.fifoNoSync)
+    val table1Y1 = ncc1Y1Reg.field(Bits(32 bits), AccessType.WO, 0, "NCC table 1 Y1").asOutput()
+    val ncc1Y2Reg = busif.newRegAtWithCategory(0x35c, "nccTable1Y2", RegisterCategory.fifoNoSync)
+    val table1Y2 = ncc1Y2Reg.field(Bits(32 bits), AccessType.WO, 0, "NCC table 1 Y2").asOutput()
+    val ncc1Y3Reg = busif.newRegAtWithCategory(0x360, "nccTable1Y3", RegisterCategory.fifoNoSync)
+    val table1Y3 = ncc1Y3Reg.field(Bits(32 bits), AccessType.WO, 0, "NCC table 1 Y3").asOutput()
+
+    val ncc1I0Reg = busif.newRegAtWithCategory(0x364, "nccTable1I0", RegisterCategory.fifoNoSync)
+    val table1I0 = ncc1I0Reg.field(Bits(32 bits), AccessType.WO, 0, "NCC table 1 I0").asOutput()
+    val ncc1I1Reg = busif.newRegAtWithCategory(0x368, "nccTable1I1", RegisterCategory.fifoNoSync)
+    val table1I1 = ncc1I1Reg.field(Bits(32 bits), AccessType.WO, 0, "NCC table 1 I1").asOutput()
+    val ncc1I2Reg = busif.newRegAtWithCategory(0x36c, "nccTable1I2", RegisterCategory.fifoNoSync)
+    val table1I2 = ncc1I2Reg.field(Bits(32 bits), AccessType.WO, 0, "NCC table 1 I2").asOutput()
+    val ncc1I3Reg = busif.newRegAtWithCategory(0x370, "nccTable1I3", RegisterCategory.fifoNoSync)
+    val table1I3 = ncc1I3Reg.field(Bits(32 bits), AccessType.WO, 0, "NCC table 1 I3").asOutput()
+
+    val ncc1Q0Reg = busif.newRegAtWithCategory(0x374, "nccTable1Q0", RegisterCategory.fifoNoSync)
+    val table1Q0 = ncc1Q0Reg.field(Bits(32 bits), AccessType.WO, 0, "NCC table 1 Q0").asOutput()
+    val ncc1Q1Reg = busif.newRegAtWithCategory(0x378, "nccTable1Q1", RegisterCategory.fifoNoSync)
+    val table1Q1 = ncc1Q1Reg.field(Bits(32 bits), AccessType.WO, 0, "NCC table 1 Q1").asOutput()
+    val ncc1Q2Reg = busif.newRegAtWithCategory(0x37c, "nccTable1Q2", RegisterCategory.fifoNoSync)
+    val table1Q2 = ncc1Q2Reg.field(Bits(32 bits), AccessType.WO, 0, "NCC table 1 Q2").asOutput()
+    val ncc1Q3Reg = busif.newRegAtWithCategory(0x380, "nccTable1Q3", RegisterCategory.fifoNoSync)
+    val table1Q3 = ncc1Q3Reg.field(Bits(32 bits), AccessType.WO, 0, "NCC table 1 Q3").asOutput()
+
+    // Convenience accessors as arrays
+    def table0Y(i: Int): Bits = i match {
+      case 0 => table0Y0; case 1 => table0Y1; case 2 => table0Y2; case 3 => table0Y3
+    }
+    def table0I(i: Int): Bits = i match {
+      case 0 => table0I0; case 1 => table0I1; case 2 => table0I2; case 3 => table0I3
+    }
+    def table0Q(i: Int): Bits = i match {
+      case 0 => table0Q0; case 1 => table0Q1; case 2 => table0Q2; case 3 => table0Q3
+    }
+    def table1Y(i: Int): Bits = i match {
+      case 0 => table1Y0; case 1 => table1Y1; case 2 => table1Y2; case 3 => table1Y3
+    }
+    def table1I(i: Int): Bits = i match {
+      case 0 => table1I0; case 1 => table1I1; case 2 => table1I2; case 3 => table1I3
+    }
+    def table1Q(i: Int): Bits = i match {
+      case 0 => table1Q0; case 1 => table1Q1; case 2 => table1Q2; case 3 => table1Q3
+    }
+  }
+
+  // ========================================================================
   // Simulation Support - Make all register fields accessible during simulation
   // ========================================================================
   busif.slices.foreach { slice =>

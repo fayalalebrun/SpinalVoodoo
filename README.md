@@ -57,7 +57,7 @@ SpinalHDL implementation of the 3dfx Voodoo Graphics GPU.
   - [x] 2x2 ordered dither
 - Framebuffer Write
   - [x] 16-bit RGB565 output
-  - [ ] Draw buffer selection
+  - [x] Draw buffer selection
   - [x] Depth/alpha planes selection (fbzMode bit 18)
   - [x] RGB write mask
   - [x] Aux write mask
@@ -86,6 +86,7 @@ SpinalHDL implementation of the 3dfx Voodoo Graphics GPU.
   - [x] Mipmap base offset calculation (per-LOD cumulative sizes)
   - [x] LOD bias (tLOD bits 17:12)
   - [x] LOD clamping (lodmin, lodmax)
+  - [x] Per-pixel LOD adjustment (perspective-corrected W)
   - [x] Aspect ratio / non-square textures (tLOD lodAspect + lodSIsWider)
   - [ ] Trilinear blending (lod_frac)
 - Texture Address
@@ -96,7 +97,7 @@ SpinalHDL implementation of the 3dfx Voodoo Graphics GPU.
   - [ ] texBaseAddr_1/2/3_8 (per-LOD base addresses)
 - Texture Filtering
   - [x] Point sampling (nearest)
-  - [ ] Bilinear filtering (min/mag)
+  - [x] Bilinear filtering (min/mag)
 - Texture Formats (decode logic)
   - [x] RGB332 (8-bit)
   - [x] A8 (8-bit, alpha only)
@@ -107,12 +108,13 @@ SpinalHDL implementation of the 3dfx Voodoo Graphics GPU.
   - [x] ARGB1555 (16-bit)
   - [x] ARGB4444 (16-bit)
   - [x] AI88 (16-bit, alpha + intensity)
-  - [ ] YIQ422 / AYIQ8422 (NCC compressed)
-  - [ ] P8 / AP88 (palettized)
+  - [x] YIQ422 / AYIQ8422 (NCC compressed)
+  - [x] P8 / AP88 (palettized)
 - Texture Combine
   - [x] Texture output to color combine unit
   - [ ] Multi-texture (TMU chaining)
-  - [ ] NCC table decode
+  - [x] NCC table decode
+  - [x] Palette RAM (256-entry, loaded via NCC table 0 I/Q registers)
   - [ ] LOD dither
   - [ ] Data swizzle/swap
 

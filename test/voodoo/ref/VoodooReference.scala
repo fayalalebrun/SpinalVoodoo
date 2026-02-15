@@ -96,7 +96,8 @@ object VoodooReference {
       // NCC table data (pre-extracted)
       nccY: Array[Int] = Array.fill(16)(0), // 16 luminance values (8-bit unsigned)
       nccI: Array[Int] = Array.fill(4)(0), // 4 I chrominance entries (packed 3x9-bit signed)
-      nccQ: Array[Int] = Array.fill(4)(0) // 4 Q chrominance entries (packed 3x9-bit signed)
+      nccQ: Array[Int] = Array.fill(4)(0), // 4 Q chrominance entries (packed 3x9-bit signed)
+      palette: Array[Int] = Array.fill(256)(0) // 256-entry palette, RGB888 (24-bit)
   )
 
   /** Per-pixel output */
@@ -243,6 +244,19 @@ object VoodooReference {
     val g = scala.math.max(0, scala.math.min(255, y + iG + qG))
     val b = scala.math.max(0, scala.math.min(255, y + iB + qB))
     0xff000000 | (r << 16) | (g << 8) | b
+  }
+
+  /** Decode a palette texel: 8-bit index → ARGB8888 using 256-entry palette (24-bit RGB each). P8
+    * (format 5): alpha=0xFF. AP88 (format 14): alpha from high byte of 16-bit texel.
+    */
+  def decodeTexelPalette(raw: Int, format: Int, palette: Array[Int]): Int = {
+    val index = raw & 0xff
+    val color = palette(index) & 0xffffff
+    format match {
+      case 0x5 => 0xff000000 | color // P8: alpha=0xFF
+      case 0xe => ((raw >> 8) & 0xff) << 24 | color // AP88: alpha from high byte
+      case _   => 0xff000000 // fallback
+    }
   }
 
   def decodeTexel(raw: Int, format: Int): Int = {
@@ -1339,7 +1353,8 @@ object VoodooReference {
       texLod: Array[Int] = Array.fill(9)(0),
       chromaKey: Int = 0,
       fogColor: Int = 0,
-      fogTable: Array[Int] = Array.fill(64)(0)
+      fogTable: Array[Int] = Array.fill(64)(0),
+      palette: Array[Int] = Array.fill(256)(0)
   ): VoodooParams = {
     // 86Box shifts: S/T <<14, W <<2
     VoodooParams(
@@ -1397,7 +1412,8 @@ object VoodooReference {
       texLod = texLod,
       chromaKey = chromaKey,
       fogColor = fogColor,
-      fogTable = fogTable
+      fogTable = fogTable,
+      palette = palette
     )
   }
 

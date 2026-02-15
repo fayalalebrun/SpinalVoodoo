@@ -602,6 +602,42 @@ case class Core(c: Config) extends Component {
   // Connect texture memory bus
   io.texRead <> tmu.io.texRead
 
+  // ========================================================================
+  // Palette writes via NCC table 0 I/Q registers (bit 31 = palette mode)
+  // ========================================================================
+  // When a NCC table 0 I/Q register is written with bit 31 set, the write
+  // programs the 256-entry palette RAM instead of the NCC table.
+  // Even registers (I0, I2, Q0, Q2): palette_index = (val >> 23) & 0xFE
+  // Odd registers (I1, I3, Q1, Q3): palette_index = ((val >> 23) & 0xFE) | 0x01
+  // Color: val(23:0) (RGB888)
+  val paletteWriteFlow = Flow(Tmu.PaletteWrite())
+  paletteWriteFlow.valid := False
+  paletteWriteFlow.payload.address := 0
+  paletteWriteFlow.payload.data := 0
+
+  // NCC table 0 I/Q registers: (register accessor, isOdd)
+  val nccPaletteRegs = Seq(
+    (regBank.nccTable.table0I0, false), // I0 - even (0x334)
+    (regBank.nccTable.table0I1, true), // I1 - odd  (0x338)
+    (regBank.nccTable.table0I2, false), // I2 - even (0x33c)
+    (regBank.nccTable.table0I3, true), // I3 - odd  (0x340)
+    (regBank.nccTable.table0Q0, false), // Q0 - even (0x344)
+    (regBank.nccTable.table0Q1, true), // Q1 - odd  (0x348)
+    (regBank.nccTable.table0Q2, false), // Q2 - even (0x34c)
+    (regBank.nccTable.table0Q3, true) // Q3 - odd  (0x350)
+  )
+  for ((reg, isOdd) <- nccPaletteRegs) {
+    val prev = RegNext(reg)
+    when(reg =/= prev && reg(31)) {
+      paletteWriteFlow.valid := True
+      val idx = reg(30 downto 23).asUInt & 0xfe
+      paletteWriteFlow.payload.address := (if (isOdd) (idx | 1).resized else idx.resized)
+      paletteWriteFlow.payload.data := reg(23 downto 0)
+    }
+  }
+
+  tmu.io.paletteWrite << paletteWriteFlow
+
   // Y-origin transform: when fbzMode bit 17 is set, flip Y for bottom-up rendering
   // yOriginSwapValue comes from fbiInit1[31:22]; fb_y = yOriginSwapValue - raster_y
   val yOriginSwapValue = regBank.init.fbiInit1_yOriginSwap

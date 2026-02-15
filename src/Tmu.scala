@@ -27,6 +27,15 @@ case class Tmu(c: voodoo.Config) extends Component {
 
     // Texture memory read bus
     val texRead = master(Bmb(Tmu.bmbParams(c)))
+
+    // Palette write port (from Core, driven by NCC table 0 I/Q register writes with bit 31 set)
+    val paletteWrite = slave Flow (Tmu.PaletteWrite())
+  }
+
+  // Palette RAM: 256 entries x 24-bit RGB
+  val paletteRam = Mem(Bits(24 bits), 256)
+  when(io.paletteWrite.valid) {
+    paletteRam.write(io.paletteWrite.payload.address, io.paletteWrite.payload.data)
   }
 
   // ========================================================================
@@ -549,6 +558,9 @@ case class Tmu(c: voodoo.Config) extends Component {
       (clampSigned(rRaw), clampSigned(gRaw), clampSigned(bRaw))
     }
 
+    // Palette lookup: always read low 8 bits as index (used by P8 and AP88)
+    val paletteColor = paletteRam.readAsync(texelData(7 downto 0).asUInt)
+
     switch(pass.format) {
       is(Tmu.TextureFormat.RGB332) {
         dr := expand3to8(texelData(7 downto 5).asUInt)
@@ -580,6 +592,12 @@ case class Tmu(c: voodoo.Config) extends Component {
         dg := expand4to8(intensity)
         db := expand4to8(intensity)
         da := expand4to8(alpha)
+      }
+      is(Tmu.TextureFormat.P8) {
+        dr := paletteColor(23 downto 16).asUInt
+        dg := paletteColor(15 downto 8).asUInt
+        db := paletteColor(7 downto 0).asUInt
+        da := U(255, 8 bits)
       }
       is(Tmu.TextureFormat.ARGB8332) {
         da := texelData(15 downto 8).asUInt
@@ -616,6 +634,12 @@ case class Tmu(c: voodoo.Config) extends Component {
         dg := intensity
         db := intensity
         da := alpha
+      }
+      is(Tmu.TextureFormat.AP88) {
+        dr := paletteColor(23 downto 16).asUInt
+        dg := paletteColor(15 downto 8).asUInt
+        db := paletteColor(7 downto 0).asUInt
+        da := texelData(15 downto 8).asUInt
       }
       default {
         dr := expand5to8(texelData(15 downto 11).asUInt)
@@ -702,6 +726,12 @@ case class Tmu(c: voodoo.Config) extends Component {
 }
 
 object Tmu {
+
+  /** Palette write command */
+  case class PaletteWrite() extends Bundle {
+    val address = UInt(8 bits)
+    val data = Bits(24 bits)
+  }
 
   /** Decoded textureMode register fields */
   case class TextureMode() extends Bundle {

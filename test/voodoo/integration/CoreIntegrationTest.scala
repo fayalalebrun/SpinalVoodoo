@@ -6242,4 +6242,242 @@ class CoreIntegrationTest extends AnyFunSuite {
       println("[NCC] PASS: all sub-cases passed")
     }
   }
+
+  // ========================================================================
+  // Palette texture test: P8, AP88, multiple entries via different registers
+  // ========================================================================
+  test("Palette texture format: P8, AP88, multiple registers") {
+    compiled.doSim("palette") { dut =>
+      val (driver, fbMemory, texMemory, writtenAddrs) = setupDut(dut)
+
+      // NCC table 0 I/Q register addresses
+      val REG_NCC0_I0 = 0x334 // even
+      val REG_NCC0_I1 = 0x338 // odd
+      val REG_NCC0_I2 = 0x33c // even
+      val REG_NCC0_I3 = 0x340 // odd
+      val REG_NCC0_Q0 = 0x344 // even
+      val REG_NCC0_Q1 = 0x348 // odd
+      val REG_NCC0_Q2 = 0x34c // even
+      val REG_NCC0_Q3 = 0x350 // odd
+
+      // Helper: write a palette entry via NCC table 0 I/Q register with bit 31 set
+      // Even registers: index = (val >> 23) & 0xFE
+      // Odd registers:  index = ((val >> 23) & 0xFE) | 0x01
+      def writePaletteEntry(index: Int, r: Int, g: Int, b: Int): Unit = {
+        val color = (r << 16) | (g << 8) | b
+        val isOdd = (index & 1) != 0
+        val fieldIdx = index & 0xfe // even base for encoding
+        val data = (1L << 31) | (fieldIdx.toLong << 23) | color.toLong
+        // Use I0 for even, I1 for odd (simplest approach)
+        val regAddr = if (isOdd) REG_NCC0_I1 else REG_NCC0_I0
+        writeReg(driver, regAddr, data)
+        dut.clockDomain.waitSampling(5)
+      }
+
+      // Shared triangle geometry: small triangle
+      val vAx = 100 * 16; val vAy = 100 * 16
+      val vBx = 116 * 16; val vBy = 116 * 16
+      val vCx = 84 * 16; val vCy = 116 * 16
+      val sign = false
+
+      // fbzColorPath: texture passthrough (rgbSel=1=TEX, texture_enable=1)
+      val fbzColorPath = 1 | (1 << 27)
+      val fbzMode = 1 | (1 << 9) // clipping + RGB write
+
+      // Build software palette array (mirrors what HW palette RAM should contain)
+      val palette = Array.fill(256)(0)
+
+      def runPaletteSubCase(
+          subName: String,
+          texelBpp: Int,
+          hwFormat: Int,
+          texelBytes: Array[Byte],
+          expectedArgb32: Int
+      ): Unit = {
+        writtenAddrs.clear()
+
+        // Write texture data at address 0
+        for (i <- texelBytes.indices)
+          texMemory.setByte(i, texelBytes(i))
+
+        // textureMode: format in bits[11:8], clampS (bit 6), clampT (bit 7)
+        val textureMode = (hwFormat << 8) | (1 << 6) | (1 << 7)
+
+        writeReg(driver, REG_TEXBASEADDR, 0L)
+
+        // Texture coords: constant S=0, T=0, non-perspective
+        submitTriangle(
+          driver,
+          dut.clockDomain,
+          vertexAx = vAx,
+          vertexAy = vAy,
+          vertexBx = vBx,
+          vertexBy = vBy,
+          vertexCx = vCx,
+          vertexCy = vCy,
+          startR = 0,
+          startG = 0,
+          startB = 0,
+          startA = 255 << 12,
+          startZ = 0,
+          startS = 0,
+          startT = 0,
+          startW = 0,
+          dRdX = 0,
+          dGdX = 0,
+          dBdX = 0,
+          dAdX = 0,
+          dZdX = 0,
+          dSdX = 0,
+          dTdX = 0,
+          dWdX = 0,
+          dRdY = 0,
+          dGdY = 0,
+          dBdY = 0,
+          dAdY = 0,
+          dZdY = 0,
+          dSdY = 0,
+          dTdY = 0,
+          dWdY = 0,
+          fbzColorPath = fbzColorPath,
+          fbzMode = fbzMode,
+          sign = sign,
+          textureMode = textureMode,
+          tLOD = 0,
+          clipRight = 640,
+          clipHighY = 480
+        )
+
+        dut.clockDomain.waitSampling(20000)
+
+        val simPixels = collectPixels(fbMemory, writtenAddrs, 0)
+
+        // Reference: pre-decoded ARGB32 texel
+        val refTexData = Array(expectedArgb32)
+        val texDataPerLod = Array.fill(9)(Array.empty[Int])
+        texDataPerLod(0) = refTexData
+        val texWMaskPerLod = Array.fill(9)(0); texWMaskPerLod(0) = 255
+        val texHMaskPerLod = Array.fill(9)(0); texHMaskPerLod(0) = 255
+        val texShiftPerLod = Array.fill(9)(0); texShiftPerLod(0) = 8
+        val texLodPerLod = Array.fill(9)(0)
+
+        val refParams = VoodooReference.fromRegisterValues(
+          vertexAx = vAx,
+          vertexAy = vAy,
+          vertexBx = vBx,
+          vertexBy = vBy,
+          vertexCx = vCx,
+          vertexCy = vCy,
+          startR = 0,
+          startG = 0,
+          startB = 0,
+          startA = 255 << 12,
+          startZ = 0,
+          startS = 0,
+          startT = 0,
+          startW = 0,
+          dRdX = 0,
+          dGdX = 0,
+          dBdX = 0,
+          dAdX = 0,
+          dZdX = 0,
+          dSdX = 0,
+          dTdX = 0,
+          dWdX = 0,
+          dRdY = 0,
+          dGdY = 0,
+          dBdY = 0,
+          dAdY = 0,
+          dZdY = 0,
+          dSdY = 0,
+          dTdY = 0,
+          dWdY = 0,
+          fbzColorPath = fbzColorPath,
+          fbzMode = fbzMode,
+          sign = sign,
+          textureMode = textureMode,
+          tLOD = 0,
+          clipRight = 640,
+          clipHighY = 480,
+          texData = texDataPerLod,
+          texWMask = texWMaskPerLod,
+          texHMask = texHMaskPerLod,
+          texShift = texShiftPerLod,
+          texLod = texLodPerLod
+        )
+
+        val refPixels = VoodooReference.voodooTriangle(refParams)
+        println(
+          f"[Palette/$subName] sim=${simPixels.size} ref=${refPixels.size} expected=0x${expectedArgb32}%08X"
+        )
+
+        comparePixelsFuzzy(refPixels, simPixels, s"Palette/$subName")
+      }
+
+      // --- Sub-case 1: P8 basic ---
+      // Load palette[0x42] = red (0xFF0000)
+      writePaletteEntry(0x42, 0xff, 0x00, 0x00)
+      palette(0x42) = 0xff0000
+
+      // P8 format = 5, 8-bit texel = 0x42
+      val p8Expected = VoodooReference.decodeTexelPalette(0x42, 0x5, palette)
+      runPaletteSubCase("P8_basic", 1, 5, Array(0x42.toByte), p8Expected)
+
+      // --- Sub-case 2: AP88 ---
+      // Load palette[0x43] = green (0x00FF00) via odd register
+      writePaletteEntry(0x43, 0x00, 0xff, 0x00)
+      palette(0x43) = 0x00ff00
+
+      // AP88 format = 14, 16-bit texel: low byte=0x43 (palette index), high byte=0x80 (alpha)
+      val ap88Expected = VoodooReference.decodeTexelPalette(0x8043, 0xe, palette)
+      runPaletteSubCase("AP88", 2, 14, Array(0x43.toByte, 0x80.toByte), ap88Expected)
+
+      // --- Sub-case 3: Multiple entries via different registers ---
+      // Load palette[0x10] = blue (0x0000FF) via I2 (even)
+      val idx10 = 0x10
+      val data10 = (1L << 31) | (idx10.toLong << 23) | 0x0000ffL
+      writeReg(driver, REG_NCC0_I2, data10)
+      dut.clockDomain.waitSampling(5)
+      palette(0x10) = 0x0000ff
+
+      // Load palette[0x11] = yellow (0xFFFF00) via I3 (odd)
+      val idx11base = 0x10 // field encodes 0x10, odd register adds |1 → 0x11
+      val data11 = (1L << 31) | (idx11base.toLong << 23) | 0xffff00L
+      writeReg(driver, REG_NCC0_I3, data11)
+      dut.clockDomain.waitSampling(5)
+      palette(0x11) = 0xffff00
+
+      // Load palette[0x20] = cyan (0x00FFFF) via Q0 (even)
+      val idx20 = 0x20
+      val data20 = (1L << 31) | (idx20.toLong << 23) | 0x00ffffL
+      writeReg(driver, REG_NCC0_Q0, data20)
+      dut.clockDomain.waitSampling(5)
+      palette(0x20) = 0x00ffff
+
+      // Load palette[0x21] = magenta (0xFF00FF) via Q1 (odd)
+      val idx21base = 0x20
+      val data21 = (1L << 31) | (idx21base.toLong << 23) | 0xff00ffL
+      writeReg(driver, REG_NCC0_Q1, data21)
+      dut.clockDomain.waitSampling(5)
+      palette(0x21) = 0xff00ff
+
+      // Test palette[0x10] = blue via P8
+      val multiExpected = VoodooReference.decodeTexelPalette(0x10, 0x5, palette)
+      runPaletteSubCase("multi_I2_even", 1, 5, Array(0x10.toByte), multiExpected)
+
+      // Test palette[0x11] = yellow via P8
+      val multiExpected2 = VoodooReference.decodeTexelPalette(0x11, 0x5, palette)
+      runPaletteSubCase("multi_I3_odd", 1, 5, Array(0x11.toByte), multiExpected2)
+
+      // Test palette[0x20] = cyan via P8
+      val multiExpected3 = VoodooReference.decodeTexelPalette(0x20, 0x5, palette)
+      runPaletteSubCase("multi_Q0_even", 1, 5, Array(0x20.toByte), multiExpected3)
+
+      // Test palette[0x21] = magenta via P8
+      val multiExpected4 = VoodooReference.decodeTexelPalette(0x21, 0x5, palette)
+      runPaletteSubCase("multi_Q1_odd", 1, 5, Array(0x21.toByte), multiExpected4)
+
+      println("[Palette] PASS: all sub-cases passed")
+    }
+  }
 }

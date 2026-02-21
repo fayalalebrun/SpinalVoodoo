@@ -6,8 +6,8 @@ import spinal.lib.bus.bmb._
 
 /** Framebuffer Access stage — reads existing FB contents for depth test and alpha blend.
   *
-  * Pipeline position: after AlphaTest, before Dither/Write.
-  * Uses fork-queue-join pattern (same as TMU) to overlap FB reads with pixel processing.
+  * Pipeline position: after AlphaTest, before Dither/Write. Uses fork-queue-join pattern (same as
+  * TMU) to overlap FB reads with pixel processing.
   *
   * Flow:
   *   1. Compute newDepth (combinational, before fork)
@@ -19,35 +19,31 @@ import spinal.lib.bus.bmb._
   */
 case class FramebufferAccess(c: Config) extends Component {
   val io = new Bundle {
-    val input  = slave  Stream (Fog.Output(c))
+    val input = slave Stream (Fog.Output(c))
     val output = master Stream (FramebufferAccess.Output(c))
     val fbRead = master(Bmb(FramebufferAccess.bmbParams(c)))
 
-    // Config from fbzMode register
-    val enableDepthBuffer = in Bool ()
-    val depthFunction     = in UInt (3 bits)
-    val wBufferSelect     = in Bool ()
-    val enableDepthBias   = in Bool ()
-    val depthSourceSelect = in Bool ()
-    val rgbBufferMask     = in Bool ()
-    val auxBufferMask     = in Bool ()
-    val enableAlphaPlanes = in Bool ()
-
-    // Config from alphaMode register
-    val alphaBlendEnable = in Bool ()
-    val srcBlendFunc     = in UInt (4 bits)
-    val dstBlendFunc     = in UInt (4 bits)
-
-    // Other registers
-    val zaColor    = in Bits (32 bits)
+    // Other registers (not yet per-triangle)
+    val zaColor = in Bits (32 bits)
     val fbBaseAddr = in UInt (c.addressWidth)
   }
 
   // ========================================================================
-  // Step 1: Compute newDepth (combinational, before fork)
+  // fbzMode bit extraction helpers (bits [20:0] of fbzMode register)
   // ========================================================================
+  // Bit layout: [0]=enableClipping [1]=enableChromaKey [2]=enableStipple
+  //   [3]=wBufferSelect [4]=enableDepthBuffer [7:5]=depthFunction
+  //   [8]=enableDithering [9]=rgbBufferMask [10]=auxBufferMask
+  //   [11]=ditherAlgorithm [12]=enableStipplePattern [13]=enableAlphaMask
+  //   [15:14]=drawBuffer [16]=enableDepthBias [17]=yOrigin
+  //   [18]=enableAlphaPlanes [19]=enableDitherSubtract [20]=depthSourceSelect
 
   val payload = io.input.payload
+  val fbzMode = payload.fbzMode
+
+  // ========================================================================
+  // Step 1: Compute newDepth (combinational, before fork)
+  // ========================================================================
 
   // Depth source selection
   val zaDepth = io.zaColor(15 downto 0).asUInt
@@ -64,11 +60,11 @@ case class FramebufferAccess(c: Config) extends Component {
     zDepth := zDepthShifted.asUInt.resize(16 bits)
   }
 
-  // Select base depth: Z or W buffer
-  val baseDepth = io.wBufferSelect ? payload.wDepth | zDepth
+  // Select base depth: Z or W buffer (per-pixel fbzMode bit 3)
+  val baseDepth = fbzMode(3) ? payload.wDepth | zDepth
 
-  // Depth source: normal pipeline or zaColor register
-  val compDepthPreBias = io.depthSourceSelect ? zaDepth | baseDepth
+  // Depth source: normal pipeline or zaColor register (per-pixel fbzMode bit 20)
+  val compDepthPreBias = fbzMode(20) ? zaDepth | baseDepth
 
   // Depth bias: signed add of zaColor[15:0]
   val zaColorSigned = io.zaColor(15 downto 0).asSInt
@@ -82,7 +78,8 @@ case class FramebufferAccess(c: Config) extends Component {
     biasedDepth := biasedDepthRaw.asUInt.resize(16 bits)
   }
 
-  val compDepth = io.enableDepthBias ? biasedDepth | compDepthPreBias
+  // Per-pixel fbzMode bit 16: enableDepthBias
+  val compDepth = fbzMode(16) ? biasedDepth | compDepthPreBias
 
   // ========================================================================
   // Step 2: Fork-Queue-Join
@@ -90,16 +87,28 @@ case class FramebufferAccess(c: Config) extends Component {
 
   // Bundle to pass through the queue
   case class Passthrough() extends Bundle {
-    val coords         = Vec.fill(2)(SInt(c.vertexFormat.nonFraction bits))
-    val color          = Color(UInt(8 bits), UInt(8 bits), UInt(8 bits))
-    val alpha          = UInt(8 bits)
+    val coords = Vec.fill(2)(SInt(c.vertexFormat.nonFraction bits))
+    val color = Color(UInt(8 bits), UInt(8 bits), UInt(8 bits))
+    val alpha = UInt(8 bits)
     val colorBeforeFog = Color(UInt(8 bits), UInt(8 bits), UInt(8 bits))
-    val newDepth       = UInt(16 bits)
+    val newDepth = UInt(16 bits)
+    // Per-pixel alpha blend config (from per-triangle captured alphaMode)
+    val alphaBlendEnable = Bool()
+    val srcBlendFunc = UInt(4 bits)
+    val dstBlendFunc = UInt(4 bits)
+    // Per-pixel fbzMode fields (from per-triangle captured fbzMode)
+    val enableDepthBuffer = Bool()
+    val depthFunction = UInt(3 bits)
+    val rgbBufferMask = Bool()
+    val auxBufferMask = Bool()
+    val enableAlphaPlanes = Bool()
+    val enableDithering = Bool()
+    val ditherAlgorithm = Bool()
   }
 
   // Create internal stream with computed address and passthrough data
   case class Internal() extends Bundle {
-    val address     = UInt(c.addressWidth.value bits)
+    val address = UInt(c.addressWidth.value bits)
     val passthrough = Passthrough()
   }
 
@@ -112,6 +121,18 @@ case class FramebufferAccess(c: Config) extends Component {
     data.passthrough.alpha := payload.alpha
     data.passthrough.colorBeforeFog := payload.colorBeforeFog
     data.passthrough.newDepth := compDepth
+    // Per-pixel alpha blend config from per-triangle captured alphaMode
+    data.passthrough.alphaBlendEnable := payload.alphaMode(4)
+    data.passthrough.srcBlendFunc := payload.alphaMode(11 downto 8).asUInt
+    data.passthrough.dstBlendFunc := payload.alphaMode(15 downto 12).asUInt
+    // Per-pixel fbzMode fields from per-triangle captured fbzMode
+    data.passthrough.enableDepthBuffer := fbzMode(4)
+    data.passthrough.depthFunction := fbzMode(7 downto 5).asUInt
+    data.passthrough.rgbBufferMask := fbzMode(9)
+    data.passthrough.auxBufferMask := fbzMode(10)
+    data.passthrough.enableAlphaPlanes := fbzMode(18)
+    data.passthrough.enableDithering := fbzMode(8)
+    data.passthrough.ditherAlgorithm := fbzMode(11)
     data
   }
 
@@ -151,14 +172,14 @@ case class FramebufferAccess(c: Config) extends Component {
   val joined = StreamJoin(rspStream, queuedPassthrough)
 
   // ========================================================================
-  // Step 3: Depth test
+  // Step 3: Depth test (per-pixel fbzMode)
   // ========================================================================
 
   val fbData = joined.payload._1
-  val pdata  = joined.payload._2
+  val pdata = joined.payload._2
   val oldDepth = fbData(31 downto 16).asUInt
 
-  val depthPassed = io.depthFunction.mux(
+  val depthPassed = pdata.depthFunction.mux(
     U(0) -> False,
     U(1) -> (pdata.newDepth < oldDepth),
     U(2) -> (pdata.newDepth === oldDepth),
@@ -169,7 +190,7 @@ case class FramebufferAccess(c: Config) extends Component {
     U(7) -> True
   )
 
-  val depthKill = io.enableDepthBuffer && !depthPassed
+  val depthKill = pdata.enableDepthBuffer && !depthPassed
   val afterDepthTest = joined.throwWhen(depthKill)
 
   // ========================================================================
@@ -221,34 +242,43 @@ case class FramebufferAccess(c: Config) extends Component {
   val srcFactorR = UInt(8 bits)
   val srcFactorG = UInt(8 bits)
   val srcFactorB = UInt(8 bits)
-  switch(io.srcBlendFunc) {
+  switch(afterPdata.srcBlendFunc) {
     is(0x0) { // ZERO
       srcFactorR := 0; srcFactorG := 0; srcFactorB := 0
     }
     is(0x1) { // SRC_ALPHA
-      srcFactorR := blendMul(srcA, srcR); srcFactorG := blendMul(srcA, srcG); srcFactorB := blendMul(srcA, srcB)
+      srcFactorR := blendMul(srcA, srcR); srcFactorG := blendMul(srcA, srcG);
+      srcFactorB := blendMul(srcA, srcB)
     }
     is(0x2) { // COLOR (use dst color as factor for src)
-      srcFactorR := blendMul(destR, srcR); srcFactorG := blendMul(destG, srcG); srcFactorB := blendMul(destB, srcB)
+      srcFactorR := blendMul(destR, srcR); srcFactorG := blendMul(destG, srcG);
+      srcFactorB := blendMul(destB, srcB)
     }
     is(0x3) { // DST_ALPHA
-      srcFactorR := blendMul(destA, srcR); srcFactorG := blendMul(destA, srcG); srcFactorB := blendMul(destA, srcB)
+      srcFactorR := blendMul(destA, srcR); srcFactorG := blendMul(destA, srcG);
+      srcFactorB := blendMul(destA, srcB)
     }
     is(0x4) { // ONE
       srcFactorR := srcR; srcFactorG := srcG; srcFactorB := srcB
     }
     is(0x5) { // ONE_MINUS_SRC_ALPHA
-      srcFactorR := blendMul(oneMinusU8(srcA), srcR); srcFactorG := blendMul(oneMinusU8(srcA), srcG); srcFactorB := blendMul(oneMinusU8(srcA), srcB)
+      srcFactorR := blendMul(oneMinusU8(srcA), srcR);
+      srcFactorG := blendMul(oneMinusU8(srcA), srcG); srcFactorB := blendMul(oneMinusU8(srcA), srcB)
     }
     is(0x6) { // ONE_MINUS_COLOR
-      srcFactorR := blendMul(oneMinusU8(destR), srcR); srcFactorG := blendMul(oneMinusU8(destG), srcG); srcFactorB := blendMul(oneMinusU8(destB), srcB)
+      srcFactorR := blendMul(oneMinusU8(destR), srcR);
+      srcFactorG := blendMul(oneMinusU8(destG), srcG);
+      srcFactorB := blendMul(oneMinusU8(destB), srcB)
     }
     is(0x7) { // ONE_MINUS_DST_ALPHA
-      srcFactorR := blendMul(oneMinusU8(destA), srcR); srcFactorG := blendMul(oneMinusU8(destA), srcG); srcFactorB := blendMul(oneMinusU8(destA), srcB)
+      srcFactorR := blendMul(oneMinusU8(destA), srcR);
+      srcFactorG := blendMul(oneMinusU8(destA), srcG);
+      srcFactorB := blendMul(oneMinusU8(destA), srcB)
     }
     is(0xf) { // SATURATE: min(srcA, 255-destA)
       val satFactor = srcA.min(oneMinusU8(destA))
-      srcFactorR := blendMul(satFactor, srcR); srcFactorG := blendMul(satFactor, srcG); srcFactorB := blendMul(satFactor, srcB)
+      srcFactorR := blendMul(satFactor, srcR); srcFactorG := blendMul(satFactor, srcG);
+      srcFactorB := blendMul(satFactor, srcB)
     }
     default {
       srcFactorR := srcR; srcFactorG := srcG; srcFactorB := srcB
@@ -259,33 +289,43 @@ case class FramebufferAccess(c: Config) extends Component {
   val dstFactorR = UInt(8 bits)
   val dstFactorG = UInt(8 bits)
   val dstFactorB = UInt(8 bits)
-  switch(io.dstBlendFunc) {
+  switch(afterPdata.dstBlendFunc) {
     is(0x0) { // ZERO
       dstFactorR := 0; dstFactorG := 0; dstFactorB := 0
     }
     is(0x1) { // SRC_ALPHA
-      dstFactorR := blendMul(srcA, destR); dstFactorG := blendMul(srcA, destG); dstFactorB := blendMul(srcA, destB)
+      dstFactorR := blendMul(srcA, destR); dstFactorG := blendMul(srcA, destG);
+      dstFactorB := blendMul(srcA, destB)
     }
     is(0x2) { // COLOR (use src color as factor for dst)
-      dstFactorR := blendMul(srcR, destR); dstFactorG := blendMul(srcG, destG); dstFactorB := blendMul(srcB, destB)
+      dstFactorR := blendMul(srcR, destR); dstFactorG := blendMul(srcG, destG);
+      dstFactorB := blendMul(srcB, destB)
     }
     is(0x3) { // DST_ALPHA
-      dstFactorR := blendMul(destA, destR); dstFactorG := blendMul(destA, destG); dstFactorB := blendMul(destA, destB)
+      dstFactorR := blendMul(destA, destR); dstFactorG := blendMul(destA, destG);
+      dstFactorB := blendMul(destA, destB)
     }
     is(0x4) { // ONE
       dstFactorR := destR; dstFactorG := destG; dstFactorB := destB
     }
     is(0x5) { // ONE_MINUS_SRC_ALPHA
-      dstFactorR := blendMul(oneMinusU8(srcA), destR); dstFactorG := blendMul(oneMinusU8(srcA), destG); dstFactorB := blendMul(oneMinusU8(srcA), destB)
+      dstFactorR := blendMul(oneMinusU8(srcA), destR);
+      dstFactorG := blendMul(oneMinusU8(srcA), destG);
+      dstFactorB := blendMul(oneMinusU8(srcA), destB)
     }
     is(0x6) { // ONE_MINUS_COLOR
-      dstFactorR := blendMul(oneMinusU8(srcR), destR); dstFactorG := blendMul(oneMinusU8(srcG), destG); dstFactorB := blendMul(oneMinusU8(srcB), destB)
+      dstFactorR := blendMul(oneMinusU8(srcR), destR);
+      dstFactorG := blendMul(oneMinusU8(srcG), destG);
+      dstFactorB := blendMul(oneMinusU8(srcB), destB)
     }
     is(0x7) { // ONE_MINUS_DST_ALPHA
-      dstFactorR := blendMul(oneMinusU8(destA), destR); dstFactorG := blendMul(oneMinusU8(destA), destG); dstFactorB := blendMul(oneMinusU8(destA), destB)
+      dstFactorR := blendMul(oneMinusU8(destA), destR);
+      dstFactorG := blendMul(oneMinusU8(destA), destG);
+      dstFactorB := blendMul(oneMinusU8(destA), destB)
     }
     is(0xf) { // ACOLORBEFOREFOG
-      dstFactorR := blendMul(colbfogR, destR); dstFactorG := blendMul(colbfogG, destG); dstFactorB := blendMul(colbfogB, destB)
+      dstFactorR := blendMul(colbfogR, destR); dstFactorG := blendMul(colbfogG, destG);
+      dstFactorB := blendMul(colbfogB, destB)
     }
     default {
       dstFactorR := 0; dstFactorG := 0; dstFactorB := 0
@@ -309,7 +349,7 @@ case class FramebufferAccess(c: Config) extends Component {
   io.output.translateFrom(afterDepthTest) { (out, in) =>
     val pd = in._2
     out.coords := pd.coords
-    when(io.alphaBlendEnable) {
+    when(pd.alphaBlendEnable) {
       out.color.r := blendedR
       out.color.g := blendedG
       out.color.b := blendedB
@@ -318,21 +358,25 @@ case class FramebufferAccess(c: Config) extends Component {
     }
     out.alpha := pd.alpha
     out.newDepth := pd.newDepth
-    out.rgbWrite := io.rgbBufferMask
-    out.auxWrite := io.auxBufferMask
-    out.enableAlphaPlanes := io.enableAlphaPlanes
+    out.rgbWrite := pd.rgbBufferMask
+    out.auxWrite := pd.auxBufferMask
+    out.enableAlphaPlanes := pd.enableAlphaPlanes
+    out.enableDithering := pd.enableDithering
+    out.ditherAlgorithm := pd.ditherAlgorithm
   }
 }
 
 object FramebufferAccess {
   case class Output(c: Config) extends Bundle {
-    val coords   = Vec.fill(2)(SInt(c.vertexFormat.nonFraction bits))
-    val color    = Color(UInt(8 bits), UInt(8 bits), UInt(8 bits))
-    val alpha    = UInt(8 bits)
+    val coords = Vec.fill(2)(SInt(c.vertexFormat.nonFraction bits))
+    val color = Color(UInt(8 bits), UInt(8 bits), UInt(8 bits))
+    val alpha = UInt(8 bits)
     val newDepth = UInt(16 bits)
     val rgbWrite = Bool()
     val auxWrite = Bool()
     val enableAlphaPlanes = Bool()
+    val enableDithering = Bool()
+    val ditherAlgorithm = Bool()
   }
 
   def bmbParams(c: Config) = BmbParameter(

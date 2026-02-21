@@ -199,8 +199,8 @@ class CoreIntegrationTest extends AnyFunSuite {
     writeReg(driver, REG_CHROMAKEY, chromaKey)
 
     // Clip registers
-    writeReg(driver, REG_CLIP_LR, (clipRight.toLong << 16) | clipLeft.toLong)
-    writeReg(driver, REG_CLIP_TB, (clipHighY.toLong << 16) | clipLowY.toLong)
+    writeReg(driver, REG_CLIP_LR, (clipLeft.toLong << 16) | clipRight.toLong)
+    writeReg(driver, REG_CLIP_TB, (clipLowY.toLong << 16) | clipHighY.toLong)
 
     // Vertex coordinates - these go through the FIFO
     writeReg(driver, REG_VERTEX_AX, vertexAx & 0xffff)
@@ -3077,8 +3077,8 @@ class CoreIntegrationTest extends AnyFunSuite {
       writeReg(driver, REG_FBZMODE, fbzMode)
       writeReg(driver, REG_COLOR1, color1)
       writeReg(driver, REG_ZACOLOR, zaColor)
-      writeReg(driver, REG_CLIP_LR, (clipRight.toLong << 16) | clipLeft.toLong)
-      writeReg(driver, REG_CLIP_TB, (clipHighY.toLong << 16) | clipLowY.toLong)
+      writeReg(driver, REG_CLIP_LR, (clipLeft.toLong << 16) | clipRight.toLong)
+      writeReg(driver, REG_CLIP_TB, (clipLowY.toLong << 16) | clipHighY.toLong)
 
       // Wait for FIFO to drain
       dut.clockDomain.waitSampling(50)
@@ -5282,8 +5282,10 @@ class CoreIntegrationTest extends AnyFunSuite {
         writeReg(driver, REG_ZACOLOR, 0)
 
         // Clip rect for fastfill: x=[5,15), y=[10,15)
-        writeReg(driver, REG_CLIP_LR, (15L << 16) | 5L)
-        writeReg(driver, REG_CLIP_TB, (15L << 16) | 10L)
+        // Datasheet: bits[9:0]=right, bits[25:16]=left
+        writeReg(driver, REG_CLIP_LR, (5L << 16) | 15L)
+        // Datasheet: bits[9:0]=highY, bits[25:16]=lowY
+        writeReg(driver, REG_CLIP_TB, (10L << 16) | 15L)
         dut.clockDomain.waitSampling(50)
 
         writeReg(driver, REG_FASTFILL_CMD, 0)

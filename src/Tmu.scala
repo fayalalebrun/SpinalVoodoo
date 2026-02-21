@@ -230,7 +230,8 @@ case class Tmu(c: voodoo.Config) extends Component {
     lodLevel := lodInt.asUInt.resize(4 bits)
   }
 
-  // Compute texture dimensions based on LOD and aspect ratio
+  // lodDimBits = log2 of the wider mipmap dimension at this LOD level
+  // SST1 convention: lodLevel from tLOD register, baseDimBits=8 (256 base)
   val baseDimBits = U(8, 4 bits)
   val lodDimBits = (baseDimBits - lodLevel).resize(4 bits)
   val aspectRatio = tLOD.lodAspect
@@ -239,33 +240,19 @@ case class Tmu(c: voodoo.Config) extends Component {
   val texWidthBits = UInt(4 bits)
   val texHeightBits = UInt(4 bits)
 
-  when(aspectRatio === 0) {
-    texWidthBits := lodDimBits
-    texHeightBits := lodDimBits
-  }.elsewhen(aspectRatio === 1) {
-    when(sIsWider) {
-      texWidthBits := lodDimBits + 1
-      texHeightBits := lodDimBits
-    }.otherwise {
-      texWidthBits := lodDimBits
-      texHeightBits := lodDimBits + 1
-    }
-  }.elsewhen(aspectRatio === 2) {
-    when(sIsWider) {
-      texWidthBits := lodDimBits + 2
-      texHeightBits := lodDimBits
-    }.otherwise {
-      texWidthBits := lodDimBits
-      texHeightBits := lodDimBits + 2
-    }
+  val narrowDimBits = UInt(4 bits)
+  when(lodDimBits >= aspectRatio) {
+    narrowDimBits := (lodDimBits - aspectRatio).resized
   }.otherwise {
-    when(sIsWider) {
-      texWidthBits := lodDimBits + 3
-      texHeightBits := lodDimBits
-    }.otherwise {
-      texWidthBits := lodDimBits
-      texHeightBits := lodDimBits + 3
-    }
+    narrowDimBits := 0
+  }
+
+  texWidthBits := lodDimBits
+  texHeightBits := lodDimBits
+  when(sIsWider) {
+    texHeightBits := narrowDimBits
+  }.elsewhen(aspectRatio =/= 0) {
+    texWidthBits := narrowDimBits
   }
 
   val texWidth = (U(1, 10 bits) << texWidthBits).resize(10 bits)
@@ -323,47 +310,27 @@ case class Tmu(c: voodoo.Config) extends Component {
   val is16BitFormat = texMode.format >= Tmu.TextureFormat.ARGB8332
   val bytesPerTexel = Mux(is16BitFormat, U(2), U(1))
 
-  val lodBaseOffset = UInt(24 bits)
-  lodBaseOffset := 0
-  when(lodLevel === 0) {
-    lodBaseOffset := 0
-  }.elsewhen(lodLevel === 1) {
-    lodBaseOffset := (U(256 * 256) * bytesPerTexel).resize(24 bits)
-  }.elsewhen(lodLevel === 2) {
-    lodBaseOffset := ((U(256 * 256) + U(128 * 128)) * bytesPerTexel).resize(24 bits)
-  }.elsewhen(lodLevel === 3) {
-    lodBaseOffset := ((U(256 * 256) + U(128 * 128) + U(64 * 64)) * bytesPerTexel).resize(24 bits)
-  }.elsewhen(lodLevel === 4) {
-    lodBaseOffset := ((U(256 * 256) + U(128 * 128) + U(64 * 64) + U(32 * 32)) * bytesPerTexel)
-      .resize(24 bits)
-  }.elsewhen(lodLevel === 5) {
-    lodBaseOffset := ((U(256 * 256) + U(128 * 128) + U(64 * 64) + U(32 * 32) + U(
-      16 * 16
-    )) * bytesPerTexel).resize(24 bits)
-  }.elsewhen(lodLevel === 6) {
-    lodBaseOffset := ((U(256 * 256) + U(128 * 128) + U(64 * 64) + U(32 * 32) + U(16 * 16) + U(
-      8 * 8
-    )) * bytesPerTexel).resize(24 bits)
-  }.elsewhen(lodLevel === 7) {
-    lodBaseOffset := ((U(256 * 256) + U(128 * 128) + U(64 * 64) + U(32 * 32) + U(16 * 16) + U(
-      8 * 8
-    ) + U(4 * 4)) * bytesPerTexel).resize(24 bits)
-  }.otherwise {
-    lodBaseOffset := ((U(256 * 256) + U(128 * 128) + U(64 * 64) + U(32 * 32) + U(16 * 16) + U(
-      8 * 8
-    ) + U(4 * 4) + U(2 * 2)) * bytesPerTexel).resize(24 bits)
-  }
+  // SST1 texture memory layout: each LOD level occupies a fixed 128KB (1 << 17) slot
+  val lodBaseOffset = (lodLevel << 17).resize(24 bits)
 
   val texBaseByteAddr = (io.input.payload.config.texBaseAddr << 3).resize(c.addressWidth.value bits)
 
+  // Texture memory addressing: linear byte addressing matching the Glide driver's
+  // grTexDownloadMipMap upload pattern. Row stride is fixed 512 bytes (t << 9).
+  // On real SST-1 hardware, the FBI memory controller applies two-bank interleaving
+  // between the logical address and physical DRAM. Since our simulation uses flat
+  // BmbOnChipRam, we use the same linear addresses the CPU writes to.
   def texelAddr(x: UInt, y: UInt): UInt = {
-    val texStride = texWidth
-    val texelOffset = (y.resize(20 bits) * texStride.resize(20 bits) + x.resize(20 bits))
-    val texelByteOffset =
-      Mux(is16BitFormat, (texelOffset << 1).resize(24 bits), texelOffset.resize(24 bits))
+    val rowOffset = (y.resize(20 bits) << 9).resize(24 bits) // Fixed 512-byte row stride
+    val colOffset = Mux(
+      is16BitFormat,
+      (x << 1).resize(24 bits), // 16-bit texels: 2 bytes per texel
+      x.resize(24 bits) // 8-bit texels:  1 byte per texel
+    )
     texBaseByteAddr +
       lodBaseOffset.resize(c.addressWidth.value bits) +
-      texelByteOffset.resize(c.addressWidth.value bits)
+      rowOffset.resize(c.addressWidth.value bits) +
+      colOffset.resize(c.addressWidth.value bits)
   }
 
   // Point: 1 address
@@ -482,12 +449,14 @@ case class Tmu(c: voodoo.Config) extends Component {
   case class QueuedData() extends Bundle {
     val passthrough = TmuPassthrough()
     val addrHalf = Bool() // address(1): selects upper/lower 16-bit half of 32-bit BMB response
+    val addrByte = Bool() // address(0): selects byte within 16-bit half (for 8-bit formats)
   }
   val queuedData = toQueue
     .map { e =>
       val d = QueuedData()
       d.passthrough := e.passthrough
       d.addrHalf := e.address(1)
+      d.addrByte := e.address(0)
       d
     }
     .queue(16)
@@ -529,6 +498,8 @@ case class Tmu(c: voodoo.Config) extends Component {
     val pass = queued.passthrough
     // Select correct 16-bit half of 32-bit BMB response based on texel address alignment
     val texelData = Mux(queued.addrHalf, rspData32(31 downto 16), rspData32(15 downto 0))
+    // For 8-bit formats: select correct byte within 16-bit half using address bit 0
+    val texelByte = Mux(queued.addrByte, texelData(15 downto 8), texelData(7 downto 0))
     val dr = UInt(8 bits)
     val dg = UInt(8 bits)
     val db = UInt(8 bits)
@@ -558,36 +529,36 @@ case class Tmu(c: voodoo.Config) extends Component {
       (clampSigned(rRaw), clampSigned(gRaw), clampSigned(bRaw))
     }
 
-    // Palette lookup: always read low 8 bits as index (used by P8 and AP88)
-    val paletteColor = paletteRam.readAsync(texelData(7 downto 0).asUInt)
+    // Palette lookup: read 8-bit index from texelByte (used by P8 and AP88)
+    val paletteColor = paletteRam.readAsync(texelByte.asUInt)
 
     switch(pass.format) {
       is(Tmu.TextureFormat.RGB332) {
-        dr := expand3to8(texelData(7 downto 5).asUInt)
-        dg := expand3to8(texelData(4 downto 2).asUInt)
-        db := expand2to8(texelData(1 downto 0).asUInt)
+        dr := expand3to8(texelByte(7 downto 5).asUInt)
+        dg := expand3to8(texelByte(4 downto 2).asUInt)
+        db := expand2to8(texelByte(1 downto 0).asUInt)
         da := U(255, 8 bits)
       }
       is(Tmu.TextureFormat.YIQ422) {
-        val (r, g, b) = nccDecode(texelData(7 downto 0), pass.ncc)
+        val (r, g, b) = nccDecode(texelByte, pass.ncc)
         dr := r; dg := g; db := b; da := U(255, 8 bits)
       }
       is(Tmu.TextureFormat.A8) {
         dr := U(255, 8 bits)
         dg := U(255, 8 bits)
         db := U(255, 8 bits)
-        da := texelData(7 downto 0).asUInt
+        da := texelByte.asUInt
       }
       is(Tmu.TextureFormat.I8) {
-        val intensity = texelData(7 downto 0).asUInt
+        val intensity = texelByte.asUInt
         dr := intensity
         dg := intensity
         db := intensity
         da := U(255, 8 bits)
       }
       is(Tmu.TextureFormat.AI44) {
-        val alpha = texelData(7 downto 4).asUInt
-        val intensity = texelData(3 downto 0).asUInt
+        val alpha = texelByte(7 downto 4).asUInt
+        val intensity = texelByte(3 downto 0).asUInt
         dr := expand4to8(intensity)
         dg := expand4to8(intensity)
         db := expand4to8(intensity)

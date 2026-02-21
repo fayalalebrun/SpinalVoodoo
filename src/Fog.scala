@@ -10,21 +10,28 @@ object Fog {
     val color = Color(UInt(8 bits), UInt(8 bits), UInt(8 bits))
     val alpha = UInt(8 bits)
     val depth = AFix(c.vDepthFormat)
-    val wDepth = UInt(16 bits)                                         // precomputed wDepth for W-buffer depth mode
-    val colorBeforeFog = Color(UInt(8 bits), UInt(8 bits), UInt(8 bits)) // pre-fog color for ACOLORBEFOREFOG blend factor
+    val wDepth = UInt(16 bits) // precomputed wDepth for W-buffer depth mode
+    val colorBeforeFog = Color(
+      UInt(8 bits),
+      UInt(8 bits),
+      UInt(8 bits)
+    ) // pre-fog color for ACOLORBEFOREFOG blend factor
+
+    // Per-triangle FIFO registers (pass-through for alpha test and framebuffer access)
+    val alphaMode = Bits(32 bits)
+    val fbzMode = Bits(21 bits)
   }
 }
 
 /** Fog stage — applies fog blending between color combine and alpha test.
   *
-  * Combinational transform (no pipeline stages). Fog blends pixel colors toward
-  * a fog color based on a fog factor derived from depth, alpha, or W.
+  * Combinational transform (no pipeline stages). Fog blends pixel colors toward a fog color based
+  * on a fog factor derived from depth, alpha, or W.
   */
 case class Fog(c: Config) extends Component {
   val io = new Bundle {
     val input = slave Stream (ColorCombine.Output(c))
     val output = master Stream (Fog.Output(c))
-    val fogMode = in Bits (32 bits)
     val fogColor = in Bits (32 bits)
     val fogTable = in Vec (Bits(16 bits), 64)
   }
@@ -42,13 +49,15 @@ case class Fog(c: Config) extends Component {
   io.output.payload.colorBeforeFog.r := payload.color.r
   io.output.payload.colorBeforeFog.g := payload.color.g
   io.output.payload.colorBeforeFog.b := payload.color.b
+  io.output.payload.alphaMode := payload.alphaMode
+  io.output.payload.fbzMode := payload.fbzMode
 
-  // Fog mode bits
-  val fogEnable = io.fogMode(0)
-  val fogAdd = io.fogMode(1)
-  val fogMult = io.fogMode(2)
-  val fogConstant = io.fogMode(5)
-  val fogModeSelect = io.fogMode(4 downto 3).asUInt
+  // Fog mode bits (from per-triangle captured config, not live register)
+  val fogEnable = payload.fogMode(0)
+  val fogAdd = payload.fogMode(1)
+  val fogMult = payload.fogMode(2)
+  val fogConstant = payload.fogMode(5)
+  val fogModeSelect = payload.fogMode(4 downto 3).asUInt
 
   // Fog color components
   val fogColorR = io.fogColor(23 downto 16).asUInt
@@ -137,9 +146,9 @@ case class Fog(c: Config) extends Component {
   io.output.payload.wDepth := wDepth
 
   // --- W-table interpolation ---
-  val tableIdx = wDepth(15 downto 10)   // 6-bit index
+  val tableIdx = wDepth(15 downto 10) // 6-bit index
   val tableEntry = io.fogTable(tableIdx)
-  val fogBase = tableEntry(7 downto 0).asUInt   // 8-bit unsigned value
+  val fogBase = tableEntry(7 downto 0).asUInt // 8-bit unsigned value
   val fogDelta = tableEntry(15 downto 8).asSInt // 8-bit signed delta
   val wBlend = wDepth(9 downto 2).resize(8 bits) // 8-bit fraction
 
@@ -158,10 +167,10 @@ case class Fog(c: Config) extends Component {
   // Select fog factor based on mode
   val fogA = UInt(8 bits)
   switch(fogModeSelect) {
-    is(0) { fogA := wFogFactor }    // W-table lookup
+    is(0) { fogA := wFogFactor } // W-table lookup
     is(1) { fogA := alphaFogFactor } // FOG_ALPHA
-    is(2) { fogA := zFogFactor }     // FOG_Z
-    is(3) { fogA := 0 }              // FOG_W direct (rarely used)
+    is(2) { fogA := zFogFactor } // FOG_Z
+    is(3) { fogA := 0 } // FOG_W direct (rarely used)
   }
 
   // --- Fog blending ---

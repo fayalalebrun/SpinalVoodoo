@@ -27,6 +27,9 @@
       pkgs.glibc.dev
     ];
     YOSYS_GHDL_EXTENSION = pkgs.yosys-ghdl.outPath + "/share/yosys/plugins/ghdl.so";
+    # 32-bit toolchain for Glide builds
+    CC32 = pkgs.pkgsi686Linux.stdenv.cc.outPath + "/bin/gcc";
+    CXX32 = pkgs.pkgsi686Linux.stdenv.cc.outPath + "/bin/g++";
   };
 
   packages = [
@@ -47,6 +50,10 @@
     pkgs.scalafmt
     pkgs.python3Packages.jupytext
     pkgs.hdf5
+    pkgs.gdb
+    # Glide build dependencies (32-bit C toolchain for Voodoo1)
+    pkgs.nasm
+    pkgs.pkgsi686Linux.stdenv.cc
   ];
 
   languages.java = {
@@ -57,6 +64,23 @@
     enable = true;
     package = pkgs.scala_2_13;
     sbt.enable = true;
+  };
+
+  scripts.sim-test = {
+    exec = ''exec bash ./emu/sim/run_tests.sh "$@"'';
+    description = "Run Glide SDK tests against SpinalVoodoo Verilator sim";
+  };
+
+  scripts.sim-build = {
+    exec = ''
+      set -e
+      echo "Building sim-enabled Glide library..."
+      make -C emu/glide/glide2x/sst1/glide/src -f Makefile.sim all
+      echo "Building test programs..."
+      make -C emu/glide/glide2x/sst1/glide/tests -f Makefile.sim
+      echo "Done."
+    '';
+    description = "Build sim-enabled Glide library and test programs";
   };
 
     pre-commit = {

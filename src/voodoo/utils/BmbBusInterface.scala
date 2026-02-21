@@ -95,8 +95,8 @@ case class BmbBusInterface(
   val fifoBypass = Bool().setName("busif_fifoBypass")
   val syncRequired = Bool().setName("busif_syncRequired")
 
-  /** Returns True on the cycle a write to the given address is enqueued into the FIFO.
-    * Used by swapbufferCMD to increment swapsPending per SST-1 spec.
+  /** Returns True on the cycle a write to the given address is enqueued into the FIFO. Used by
+    * swapbufferCMD to increment swapsPending per SST-1 spec.
     */
   def wasEnqueued(addr: BigInt): Bool = {
     shouldQueue && bus.cmd.address === U(addr, busAddrWidth bits)
@@ -174,6 +174,17 @@ case class BmbBusInterface(
           }
         }
       }
+      // Detect when a command register is actually drained (consumed from FIFO).
+      // The holdoff counter will then block the FIFO for 2 cycles, letting pipelineBusy propagate.
+      when(doWriteReplayed) {
+        switch(drainedWrite.address) {
+          for ((addr, _) <- commandStreamReady) {
+            is(U(addr, busAddrWidth bits)) {
+              commandDrained := True
+            }
+          }
+        }
+      }
     }
   })
 
@@ -216,6 +227,22 @@ case class BmbBusInterface(
   // Safe because s2mPipe's output valid is registered, breaking the comb loop
   when(commandStreamBlocked) {
     canDrain := False
+  }
+
+  // Post-command holdoff: after a command register is drained (fastfillCMD, triangleCMD, etc.),
+  // block FIFO drain for 2 cycles to let pipelineBusy propagate through pipelineBusyReg.
+  // Without this, the FIFO can drain the next entry (e.g. a config register restore) before
+  // pipelineBusy stalls it, corrupting state mid-operation.
+  private val postCommandHoldoff = RegInit(U(0, 2 bits))
+  when(postCommandHoldoff =/= 0) {
+    postCommandHoldoff := postCommandHoldoff - 1
+    canDrain := False
+  }
+  // Detect command register drain (will be set in addPrePopTask after commandStreamReady is populated)
+  val commandDrained = Bool()
+  commandDrained := False
+  when(commandDrained) {
+    postCommandHoldoff := 2
   }
 
   private val drainedWrite = pciFifo.io.pop.haltWhen(!canDrain)

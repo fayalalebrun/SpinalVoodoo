@@ -59,6 +59,9 @@ case class RegisterBank(config: Config) extends Component {
 
     // Pulses when swapbufferCMD enters the FIFO (for swapsPending per SST-1 spec)
     val swapCmdEnqueued = out Bool ()
+
+    // FIFO empty signal - True when internal PCI FIFO has no pending commands
+    val fifoEmpty = out Bool ()
   }
 
   // Create BMB bus interface for RegIf - shared across all Areas
@@ -74,6 +77,9 @@ case class RegisterBank(config: Config) extends Component {
   val syncPulse = Reg(Bool()) init (False)
   io.syncPulse := syncPulse
   syncPulse := busif.isWriteSyncRequired() // Pulse for one cycle when Sync=Yes write completes
+
+  // Wire FIFO empty status
+  io.fifoEmpty := busif.fifoEmpty
 
   // ========================================================================
   // Status Register (0x000)
@@ -535,20 +541,22 @@ case class RegisterBank(config: Config) extends Component {
     }
 
     // Clipping Registers (0x118-0x11c) - Sync=Yes, FIFO=Yes
+    // Datasheet: clipLeftRight bits[9:0]=right, bits[25:16]=left
     val clipLeftRight =
       busif.newRegAtWithCategory(0x118, "clipLeftRight", RegisterCategory.fifoWithSync)
-    val clipLeftX =
-      clipLeftRight.field(UInt(10 bits), AccessType.RW, 0, "Left clip boundary").asOutput()
-    val clipRightX = clipLeftRight
-      .fieldAt(16, UInt(10 bits), AccessType.RW, 0x3ff, "Right clip boundary")
+    val clipRightX =
+      clipLeftRight.field(UInt(10 bits), AccessType.RW, 0x3ff, "Right clip boundary").asOutput()
+    val clipLeftX = clipLeftRight
+      .fieldAt(16, UInt(10 bits), AccessType.RW, 0, "Left clip boundary")
       .asOutput()
 
+    // Datasheet: clipLowYHighY bits[9:0]=highY, bits[25:16]=lowY
     val clipLowYHighY =
       busif.newRegAtWithCategory(0x11c, "clipLowYHighY", RegisterCategory.fifoWithSync)
-    val clipLowY =
-      clipLowYHighY.field(UInt(10 bits), AccessType.RW, 0, "Top clip boundary").asOutput()
-    val clipHighY = clipLowYHighY
-      .fieldAt(16, UInt(10 bits), AccessType.RW, 0x3ff, "Bottom clip boundary")
+    val clipHighY =
+      clipLowYHighY.field(UInt(10 bits), AccessType.RW, 0x3ff, "Bottom clip boundary").asOutput()
+    val clipLowY = clipLowYHighY
+      .fieldAt(16, UInt(10 bits), AccessType.RW, 0, "Top clip boundary")
       .asOutput()
 
     // Color and Constant Registers (0x12c-0x148) - Sync=Yes, FIFO=Yes

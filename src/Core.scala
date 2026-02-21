@@ -52,6 +52,10 @@ case class Core(c: Config) extends Component {
 
     // Framebuffer base address
     val fbBaseAddr = in UInt (c.addressWidth)
+
+    // Pipeline busy and FIFO empty status (for CoreSim / external polling)
+    val pipelineBusy = out Bool ()
+    val fifoEmpty = out Bool ()
   }
 
   // Instantiate components
@@ -404,6 +408,28 @@ case class Core(c: Config) extends Component {
     cfg.fbzColorPath := regBank.renderConfig.fbzColorPath.resized
     cfg.fogMode := regBank.renderConfig.fogMode.resized
     cfg.alphaMode := regBank.renderConfig.alphaMode
+    // Pack fbzMode fields into Bits(21) matching register bit layout [20:0]
+    val fbzM = regBank.renderConfig.fbzMode
+    cfg.fbzMode := (
+      fbzM.depthSourceSelect.asBits ##
+        fbzM.enableDitherSubtract.asBits ##
+        fbzM.enableAlphaPlanes.asBits ##
+        fbzM.yOrigin.asBits ##
+        fbzM.enableDepthBias.asBits ##
+        fbzM.drawBuffer.asBits ##
+        fbzM.enableAlphaMask.asBits ##
+        fbzM.enableStipplePattern.asBits ##
+        fbzM.ditherAlgorithm.asBits ##
+        fbzM.auxBufferMask.asBits ##
+        fbzM.rgbBufferMask.asBits ##
+        fbzM.enableDithering.asBits ##
+        fbzM.depthFunction.asBits ##
+        fbzM.enableDepthBuffer.asBits ##
+        fbzM.wBufferSelect.asBits ##
+        fbzM.enableStipple.asBits ##
+        fbzM.enableChromaKey.asBits ##
+        fbzM.enableClipping.asBits
+    )
 
     // TMU registers (single TMU - Voodoo 1 level)
     cfg.tmuTextureMode := regBank.tmuConfig.textureMode
@@ -454,6 +480,28 @@ case class Core(c: Config) extends Component {
     cfg.fbzColorPath := regBank.renderConfig.fbzColorPath.resized
     cfg.fogMode := regBank.renderConfig.fogMode.resized
     cfg.alphaMode := regBank.renderConfig.alphaMode
+    // Pack fbzMode fields into Bits(21) matching register bit layout [20:0]
+    val fbzMf = regBank.renderConfig.fbzMode
+    cfg.fbzMode := (
+      fbzMf.depthSourceSelect.asBits ##
+        fbzMf.enableDitherSubtract.asBits ##
+        fbzMf.enableAlphaPlanes.asBits ##
+        fbzMf.yOrigin.asBits ##
+        fbzMf.enableDepthBias.asBits ##
+        fbzMf.drawBuffer.asBits ##
+        fbzMf.enableAlphaMask.asBits ##
+        fbzMf.enableStipplePattern.asBits ##
+        fbzMf.ditherAlgorithm.asBits ##
+        fbzMf.auxBufferMask.asBits ##
+        fbzMf.rgbBufferMask.asBits ##
+        fbzMf.enableDithering.asBits ##
+        fbzMf.depthFunction.asBits ##
+        fbzMf.enableDepthBuffer.asBits ##
+        fbzMf.wBufferSelect.asBits ##
+        fbzMf.enableStipple.asBits ##
+        fbzMf.enableChromaKey.asBits ##
+        fbzMf.enableClipping.asBits
+    )
 
     // TMU registers (single TMU - Voodoo 1 level)
     cfg.tmuTextureMode := regBank.tmuConfig.textureMode
@@ -747,6 +795,11 @@ case class Core(c: Config) extends Component {
 
     // Decode configuration from captured per-triangle fbzColorPath
     out.config := decodeColorCombineConfig(rasterOut.config.fbzColorPath)
+
+    // Per-triangle FIFO registers for downstream stages (alpha test, fog, framebuffer access)
+    out.alphaMode := rasterOut.config.alphaMode
+    out.fogMode := rasterOut.config.fogMode
+    out.fbzMode := rasterOut.config.fbzMode
   }
 
   // ========================================================================
@@ -761,7 +814,6 @@ case class Core(c: Config) extends Component {
   })
 
   val fog = Fog(c)
-  fog.io.fogMode := regBank.renderConfig.fogMode
   fog.io.fogColor := regBank.renderConfig.fogColor
   fog.io.fogTable := fogTableVec
   // Arbiter: CC output (priority) and LFB pipeline output feed into Fog
@@ -770,7 +822,8 @@ case class Core(c: Config) extends Component {
   )
 
   // Alpha test: discard pixels that fail alpha comparison
-  val alphaBits = regBank.renderConfig.alphaMode
+  // Use per-triangle captured alphaMode (not live register) to avoid FIFO sync issues
+  val alphaBits = fog.io.output.payload.alphaMode
   val alphaTestEnable = alphaBits(0)
   val alphaFunc = alphaBits(3 downto 1).asUInt
   val alphaRef = alphaBits(31 downto 24).asUInt
@@ -798,20 +851,8 @@ case class Core(c: Config) extends Component {
   fbAccess.io.fbRead <> io.fbRead
   fbAccess.io.fbBaseAddr := drawBufferBase
 
-  // Wire fbzMode fields
-  fbAccess.io.enableDepthBuffer := regBank.renderConfig.fbzMode.enableDepthBuffer
-  fbAccess.io.depthFunction := regBank.renderConfig.fbzMode.depthFunction
-  fbAccess.io.wBufferSelect := regBank.renderConfig.fbzMode.wBufferSelect
-  fbAccess.io.enableDepthBias := regBank.renderConfig.fbzMode.enableDepthBias
-  fbAccess.io.depthSourceSelect := regBank.renderConfig.fbzMode.depthSourceSelect
-  fbAccess.io.rgbBufferMask := regBank.renderConfig.fbzMode.rgbBufferMask
-  fbAccess.io.auxBufferMask := regBank.renderConfig.fbzMode.auxBufferMask
-  fbAccess.io.enableAlphaPlanes := regBank.renderConfig.fbzMode.enableAlphaPlanes
-
-  // Wire alphaMode fields
-  fbAccess.io.alphaBlendEnable := regBank.renderConfig.alphaMode(4)
-  fbAccess.io.srcBlendFunc := regBank.renderConfig.alphaMode(11 downto 8).asUInt
-  fbAccess.io.dstBlendFunc := regBank.renderConfig.alphaMode(15 downto 12).asUInt
+  // fbzMode fields are now per-pixel (carried through pipeline in Fog.Output.fbzMode)
+  // alphaMode blend fields are now per-pixel (carried through pipeline in Fog.Output.alphaMode)
   fbAccess.io.zaColor := regBank.renderConfig.zaColor
 
   // ========================================================================
@@ -831,8 +872,8 @@ case class Core(c: Config) extends Component {
     triDither.io.b := in.color.b
     triDither.io.x := in.coords(0).asUInt.resize(2 bits)
     triDither.io.y := in.coords(1).asUInt.resize(2 bits)
-    triDither.io.enable := regBank.renderConfig.fbzMode.enableDithering
-    triDither.io.use2x2 := regBank.renderConfig.fbzMode.ditherAlgorithm
+    triDither.io.enable := in.enableDithering
+    triDither.io.use2x2 := in.ditherAlgorithm
 
     fbWord.color.r := triDither.io.ditR
     fbWord.color.g := triDither.io.ditG
@@ -851,21 +892,53 @@ case class Core(c: Config) extends Component {
   // ========================================================================
   // Fastfill → Write path (direct color1/zaColor with dithering)
   // ========================================================================
+  // Capture register values at fastfill command fire time.
+  // Due to pipelineBusyReg's 2-cycle latency in BmbBusInterface, the FIFO
+  // can drain the NEXT write (e.g. Glide restoring color1) before the busy
+  // signal stalls it. We capture registers when the command fires and use
+  // the captured values for all pixels. On the fire cycle itself we use the
+  // live register value (still valid — the overwriting FIFO drain takes effect
+  // at the next clock edge); RegNextWhen latches the same value for subsequent cycles.
+  val ffFiring = regBank.commands.fastfillCmd.fire
+  val ffColor1Cap = RegNextWhen(regBank.renderConfig.color1, ffFiring)
+  val ffZaColorCap = RegNextWhen(regBank.renderConfig.zaColor, ffFiring)
+  val ffDitherEnCap = RegNextWhen(regBank.renderConfig.fbzMode.enableDithering, ffFiring)
+  val ffDitherAlgCap = RegNextWhen(regBank.renderConfig.fbzMode.ditherAlgorithm, ffFiring)
+  val ffRgbMaskCap = RegNextWhen(regBank.renderConfig.fbzMode.rgbBufferMask, ffFiring)
+  val ffAuxMaskCap = RegNextWhen(regBank.renderConfig.fbzMode.auxBufferMask, ffFiring)
+  val ffDrawBaseCap = RegNextWhen(drawBufferBase, ffFiring)
+  val ffYOriginEnCap = RegNextWhen(yOriginEnable, ffFiring)
+  val ffYOriginValCap = RegNextWhen(yOriginSwapValue, ffFiring)
+
+  // Mux: first-pixel cycle uses live register (still correct), subsequent use captured
+  val ffActive = RegInit(False)
+  when(ffFiring) { ffActive := True }
+  when(!fastfill.running) { ffActive := False }
+
+  val ffColor1 = Mux(ffActive, ffColor1Cap, regBank.renderConfig.color1)
+  val ffZaColor = Mux(ffActive, ffZaColorCap, regBank.renderConfig.zaColor)
+  val ffDitherEn = Mux(ffActive, ffDitherEnCap, regBank.renderConfig.fbzMode.enableDithering)
+  val ffDitherAlg = Mux(ffActive, ffDitherAlgCap, regBank.renderConfig.fbzMode.ditherAlgorithm)
+  val ffRgbMask = Mux(ffActive, ffRgbMaskCap, regBank.renderConfig.fbzMode.rgbBufferMask)
+  val ffAuxMask = Mux(ffActive, ffAuxMaskCap, regBank.renderConfig.fbzMode.auxBufferMask)
+  val ffDrawBase = Mux(ffActive, ffDrawBaseCap, drawBufferBase)
+  val ffYOriginEn = Mux(ffActive, ffYOriginEnCap, yOriginEnable)
+  val ffYOriginVal = Mux(ffActive, ffYOriginValCap, yOriginSwapValue)
+
   val fastfillWriteInput = fastfill.o.translateWith {
     val in = fastfill.o.payload
     val out = Write.Input(c)
     out.coords := in.coords
-    when(yOriginEnable) {
-      out.coords(1) := yOriginSwapValue.resize(c.vertexFormat.nonFraction bits).asSInt - in.coords(
+    when(ffYOriginEn) {
+      out.coords(1) := ffYOriginVal.resize(c.vertexFormat.nonFraction bits).asSInt - in.coords(
         1
       )
     }
 
-    // Extract R/G/B from color1 register (bits 23:16, 15:8, 7:0)
-    val color1Bits = regBank.renderConfig.color1
-    val ffR = color1Bits(23 downto 16).asUInt
-    val ffG = color1Bits(15 downto 8).asUInt
-    val ffB = color1Bits(7 downto 0).asUInt
+    // Extract R/G/B from captured color1 (bits 23:16, 15:8, 7:0)
+    val ffR = ffColor1(23 downto 16).asUInt
+    val ffG = ffColor1(15 downto 8).asUInt
+    val ffB = ffColor1(7 downto 0).asUInt
 
     // Dither
     val ffDither = Dither()
@@ -874,19 +947,19 @@ case class Core(c: Config) extends Component {
     ffDither.io.b := ffB
     ffDither.io.x := in.coords(0).asUInt.resize(2 bits)
     ffDither.io.y := in.coords(1).asUInt.resize(2 bits)
-    ffDither.io.enable := regBank.renderConfig.fbzMode.enableDithering
-    ffDither.io.use2x2 := regBank.renderConfig.fbzMode.ditherAlgorithm
+    ffDither.io.enable := ffDitherEn
+    ffDither.io.use2x2 := ffDitherAlg
 
     val fbWord = cloneOf(out.toFb)
     fbWord.color.r := ffDither.io.ditR
     fbWord.color.g := ffDither.io.ditG
     fbWord.color.b := ffDither.io.ditB
-    fbWord.depthAlpha := regBank.renderConfig.zaColor(15 downto 0)
+    fbWord.depthAlpha := ffZaColor(15 downto 0)
 
     out.toFb := fbWord
-    out.rgbWrite := regBank.renderConfig.fbzMode.rgbBufferMask
-    out.auxWrite := regBank.renderConfig.fbzMode.auxBufferMask
-    out.fbBaseAddr := drawBufferBase
+    out.rgbWrite := ffRgbMask
+    out.auxWrite := ffAuxMask
+    out.fbBaseAddr := ffDrawBase
     out
   }
 
@@ -899,5 +972,10 @@ case class Core(c: Config) extends Component {
   write.o.fbWrite <> io.fbWrite
 
   // Pipeline busy signal: any stage has valid data (placed after all stages instantiated)
-  regBank.io.pipelineBusy := triangleSetup.o.valid || rasterizer.o.valid || tmu.io.input.valid || colorCombine.io.input.valid || fog.io.input.valid || fbAccess.io.input.valid || write.i.fromPipeline.valid || fastfill.running || swapBuffer.io.waiting || lfb.io.busy
+  regBank.io.pipelineBusy.simPublic()
+  val pipelineBusySignal =
+    triangleSetup.o.valid || rasterizer.o.valid || tmu.io.input.valid || colorCombine.io.input.valid || fog.io.input.valid || fbAccess.io.input.valid || write.i.fromPipeline.valid || fastfill.running || swapBuffer.io.waiting || lfb.io.busy
+  regBank.io.pipelineBusy := pipelineBusySignal
+  io.pipelineBusy := pipelineBusySignal
+  io.fifoEmpty := regBank.io.fifoEmpty
 }

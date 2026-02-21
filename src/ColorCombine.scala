@@ -82,6 +82,11 @@ object ColorCombine {
 
     // Configuration (decoded enums)
     val config = ColorCombine.Config()
+
+    // Per-triangle FIFO registers (captured at triangle command time, must travel with pixels)
+    val alphaMode = Bits(32 bits)
+    val fogMode = Bits(6 bits)
+    val fbzMode = Bits(21 bits)
   }
 
   /** Output from Color Combine Unit */
@@ -92,6 +97,11 @@ object ColorCombine {
     val depth = AFix(c.vDepthFormat)
     val iteratedAlpha = UInt(8 bits) // Pass-through for fog alpha mode
     val rawW = SInt(32 bits) // Pass-through for fog wDepth calculation
+
+    // Per-triangle FIFO registers (pass-through for downstream stages)
+    val alphaMode = Bits(32 bits)
+    val fogMode = Bits(6 bits)
+    val fbzMode = Bits(21 bits)
   }
 }
 
@@ -110,6 +120,11 @@ case class ColorCombine(c: voodoo.Config) extends Component {
   val ITERATED_ALPHA_PT = Payload(UInt(8 bits))
   val RAW_W = Payload(SInt(32 bits))
   val CONFIG = Payload(ColorCombine.Config())
+
+  // Per-triangle FIFO registers pass-through (must travel with pixels through pipeline)
+  val ALPHA_MODE = Payload(Bits(32 bits))
+  val FOG_MODE = Payload(Bits(6 bits))
+  val FBZ_MODE = Payload(Bits(21 bits))
 
   // Color payloads at various precisions
   val C_OTHER = Payload(Color.s9())
@@ -134,7 +149,9 @@ case class ColorCombine(c: voodoo.Config) extends Component {
   val factorFormat = AFix.UQ(0 bits, 8 bits)
   val C_FACTOR_PRE = Payload(Color.ufactor())
   val A_FACTOR_PRE = Payload(AFix.UQ(0 bits, 8 bits))
-  val C_FACTOR = Payload(Color(AFix.UQ(1 bits, 8 bits), AFix.UQ(1 bits, 8 bits), AFix.UQ(1 bits, 8 bits)))
+  val C_FACTOR = Payload(
+    Color(AFix.UQ(1 bits, 8 bits), AFix.UQ(1 bits, 8 bits), AFix.UQ(1 bits, 8 bits))
+  )
   val A_FACTOR = Payload(AFix.UQ(1 bits, 8 bits))
 
   // After multiply/add (wide for intermediate results)
@@ -201,6 +218,9 @@ case class ColorCombine(c: voodoo.Config) extends Component {
     self(ITERATED_ALPHA_PT) := payload.iteratedAlpha
     self(RAW_W) := payload.rawW
     self(CONFIG) := payload.config
+    self(ALPHA_MODE) := payload.alphaMode
+    self(FOG_MODE) := payload.fogMode
+    self(FBZ_MODE) := payload.fbzMode
 
     // Helper to convert UInt(8) to SInt(9) by zero-extending
     def u8ToS9(v: UInt): SInt = (False ## v).asSInt
@@ -365,12 +385,12 @@ case class ColorCombine(c: voodoo.Config) extends Component {
     // allowing exact 1.0 scaling (256/256).
     val xored = UInt(8 bits)
     when(reverseBlend) {
-      xored := fRaw                // reverse_blend=1: pass through
+      xored := fRaw // reverse_blend=1: pass through
     }.otherwise {
-      xored := ~fRaw               // reverse_blend=0: invert (XOR 0xFF)
+      xored := ~fRaw // reverse_blend=0: invert (XOR 0xFF)
     }
-    val result = AFix.UQ(1 bits, 8 bits)  // wider: can hold 0..256
-    result.raw := (xored.resize(9 bits) + 1).asBits  // +1 unconditionally
+    val result = AFix.UQ(1 bits, 8 bits) // wider: can hold 0..256
+    result.raw := (xored.resize(9 bits) + 1).asBits // +1 unconditionally
     result
   }
   (n4(C_FACTOR).channels, n4(C_FACTOR_PRE).channels).zipped.foreach { (dst, src) =>
@@ -435,6 +455,9 @@ case class ColorCombine(c: voodoo.Config) extends Component {
     payload.depth := self(DEPTH)
     payload.iteratedAlpha := self(ITERATED_ALPHA_PT)
     payload.rawW := self(RAW_W)
+    payload.alphaMode := self(ALPHA_MODE)
+    payload.fogMode := self(FOG_MODE)
+    payload.fbzMode := self(FBZ_MODE)
 
     // Stage 8: Invert Output
     (payload.color.channels, self(C_CLAMPED).channels).zipped.foreach { (dst, src) =>

@@ -12,8 +12,8 @@ import spinal.lib.bus.bmb._
   *
   * Also supports CPU reads from the LFB address space (dual 16-bit pixel reads from FB).
   *
-  * Dual-pixel formats (16-bit: 0-3, 15) produce two items per write.
-  * Single-pixel formats (32-bit: 4-5, 12-14) produce one item per write.
+  * Dual-pixel formats (16-bit: 0-3, 15) produce two items per write. Single-pixel formats (32-bit:
+  * 4-5, 12-14) produce one item per write.
   */
 case class Lfb(c: Config) extends Component {
   val io = new Bundle {
@@ -65,12 +65,12 @@ case class Lfb(c: Config) extends Component {
 
   // State machine: 3 bits to hold 6 states
   val state = RegInit(U(0, 3 bits))
-  val stateIdle    = U(0, 3 bits)
-  val statePixel1  = U(1, 3 bits)
-  val statePixel2  = U(2, 3 bits)
+  val stateIdle = U(0, 3 bits)
+  val statePixel1 = U(1, 3 bits)
+  val statePixel2 = U(2, 3 bits)
   val stateRfetch1 = U(3, 3 bits)
   val stateRfetch2 = U(4, 3 bits)
-  val stateRresp   = U(5, 3 bits)
+  val stateRresp = U(5, 3 bits)
 
   // Accept BMB commands only in IDLE and when no pending response
   io.bus.cmd.ready := (state === stateIdle) && !rspPending
@@ -212,8 +212,8 @@ case class Lfb(c: Config) extends Component {
     switch(lanes) {
       is(0) { a := data(31 downto 24).asUInt } // ARGB: A=[31:24]
       is(1) { a := data(31 downto 24).asUInt } // ABGR: A=[31:24]
-      is(2) { a := data(7 downto 0).asUInt }   // RGBA: A=[7:0]
-      is(3) { a := data(7 downto 0).asUInt }   // BGRA: A=[7:0]
+      is(2) { a := data(7 downto 0).asUInt } // RGBA: A=[7:0]
+      is(3) { a := data(7 downto 0).asUInt } // BGRA: A=[7:0]
     }
     a
   }
@@ -271,16 +271,16 @@ case class Lfb(c: Config) extends Component {
 
   // Decode alpha for pipeline mode
   val decodedAlpha = UInt(8 bits)
-  decodedAlpha := U(0xFF, 8 bits) // Default: fully opaque
+  decodedAlpha := U(0xff, 8 bits) // Default: fully opaque
   switch(io.writeFormat) {
     is(5) { // ARGB8888: extract alpha
       decodedAlpha := decodeAlpha8888(pixelData32, io.rgbaLanes)
     }
     is(2) { // ARGB1555 dual pixel: bit 15
-      decodedAlpha := pixelData16(15) ? U(0xFF, 8 bits) | U(0, 8 bits)
+      decodedAlpha := pixelData16(15) ? U(0xff, 8 bits) | U(0, 8 bits)
     }
     is(14) { // Depth+ARGB1555: bit 15 of lo16
-      decodedAlpha := lo16(15) ? U(0xFF, 8 bits) | U(0, 8 bits)
+      decodedAlpha := lo16(15) ? U(0xff, 8 bits) | U(0, 8 bits)
     }
   }
 
@@ -326,6 +326,11 @@ case class Lfb(c: Config) extends Component {
   pipelinePayload.depth.raw := (depthFor16.resize(32 bits) |<< 12).asBits
   pipelinePayload.iteratedAlpha := decodedAlpha
   pipelinePayload.rawW := S(0, 32 bits) // LFB has no W data
+  pipelinePayload.alphaMode := 0 // LFB writes bypass alpha test/blend
+  pipelinePayload.fogMode := 0 // LFB writes bypass fog
+  // LFB writes: disable depth test, enable both write masks
+  // bit 9 = rgbBufferMask, bit 10 = auxBufferMask
+  pipelinePayload.fbzMode := B(21 bits, 9 -> true, 10 -> true, default -> false)
 
   // Write pixel output valid signals — mux based on pixelPipelineEnable
   val writePixelActive = (state === statePixel1) || (state === statePixel2)
@@ -389,8 +394,11 @@ case class Lfb(c: Config) extends Component {
       capturedRead1 := io.fbReadBus.rsp.data
       state := stateRfetch2
       // Set up address for second read (x+1)
-      val pixelFlat2 = (readPixelY.resize(20 bits) * c.fbPixelStride + (readPixelX + 1).resize(20 bits))
-      fbReadAddr := (io.fbReadBaseAddr + (pixelFlat2 << 2).resize(c.addressWidth.value bits)).resized
+      val pixelFlat2 =
+        (readPixelY.resize(20 bits) * c.fbPixelStride + (readPixelX + 1).resize(20 bits))
+      fbReadAddr := (io.fbReadBaseAddr + (pixelFlat2 << 2).resize(
+        c.addressWidth.value bits
+      )).resized
       fbReadCmdPending := True
     }
   }

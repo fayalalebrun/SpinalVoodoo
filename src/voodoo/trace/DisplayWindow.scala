@@ -1573,14 +1573,14 @@ object RegisterNames {
             if (yOrigin == 1) "bot" else "top"
           }"
 
-      case 0x118L => // clipLeftRight
-        val clipLeft = value & 0x3ff
-        val clipRight = (value >> 16) & 0x3ff
+      case 0x118L => // clipLeftRight: bits[9:0]=right, bits[25:16]=left
+        val clipRight = value & 0x3ff
+        val clipLeft = (value >> 16) & 0x3ff
         f"left:$clipLeft,right:$clipRight"
 
-      case 0x11cL => // clipLowYHighY
-        val clipLow = value & 0x3ff
-        val clipHigh = (value >> 16) & 0x3ff
+      case 0x11cL => // clipLowYHighY: bits[9:0]=highY, bits[25:16]=lowY
+        val clipHigh = value & 0x3ff
+        val clipLow = (value >> 16) & 0x3ff
         f"top:$clipLow,bottom:$clipHigh"
 
       case 0x104L => // fbzColorPath

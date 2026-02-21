@@ -55,9 +55,6 @@ run/%: tests scripts/srle2png
 # Run all tests that support -d
 run-all: $(patsubst %,run/%,test00 test01 test02 test03 test04 test05 test06 test07 test08 test13 test16 test17 test18 test19)
 
-# Legacy: build and run test00
-test00: tests
-	cd $(GLIDE_TST_DIR) && LD_LIBRARY_PATH=../../lib/sst1 timeout 120 ./test00.exe -n 1
 
 clean: clean-tests clean-glide clean-sim
 

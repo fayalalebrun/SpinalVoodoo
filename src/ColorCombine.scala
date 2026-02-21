@@ -60,6 +60,9 @@ object ColorCombine {
     val color0 = Color.u8()
     val color1 = Color.u8()
 
+    // Fog color (per-triangle, passed through to Fog stage)
+    val fogColor = Bits(32 bits)
+
     // Configuration (decoded enums)
     val config = ColorCombine.Config()
 
@@ -77,6 +80,9 @@ object ColorCombine {
     val depth = AFix(c.vDepthFormat)
     val iteratedAlpha = UInt(8 bits) // Pass-through for fog alpha mode
     val rawW = SInt(32 bits) // Pass-through for fog wDepth calculation
+
+    // Fog color (per-triangle, pass-through for Fog stage)
+    val fogColor = Bits(32 bits)
 
     // Per-triangle FIFO registers (pass-through for downstream stages)
     val alphaMode = AlphaMode()
@@ -100,6 +106,9 @@ case class ColorCombine(c: voodoo.Config) extends Component {
   val ITERATED_ALPHA_PT = Payload(UInt(8 bits))
   val RAW_W = Payload(SInt(32 bits))
   val CONFIG = Payload(ColorCombine.Config())
+
+  // Fog color pass-through (per-triangle, must travel with pixels through pipeline)
+  val FOG_COLOR = Payload(Bits(32 bits))
 
   // Per-triangle FIFO registers pass-through (must travel with pixels through pipeline)
   val ALPHA_MODE = Payload(AlphaMode())
@@ -198,6 +207,7 @@ case class ColorCombine(c: voodoo.Config) extends Component {
     self(ITERATED_ALPHA_PT) := payload.iteratedAlpha
     self(RAW_W) := payload.rawW
     self(CONFIG) := payload.config
+    self(FOG_COLOR) := payload.fogColor
     self(ALPHA_MODE) := payload.alphaMode
     self(FOG_MODE) := payload.fogMode
     self(FBZ_MODE) := payload.fbzMode
@@ -435,6 +445,7 @@ case class ColorCombine(c: voodoo.Config) extends Component {
     payload.depth := self(DEPTH)
     payload.iteratedAlpha := self(ITERATED_ALPHA_PT)
     payload.rawW := self(RAW_W)
+    payload.fogColor := self(FOG_COLOR)
     payload.alphaMode := self(ALPHA_MODE)
     payload.fogMode := self(FOG_MODE)
     payload.fbzMode := self(FBZ_MODE)

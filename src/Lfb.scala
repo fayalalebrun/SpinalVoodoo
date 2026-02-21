@@ -282,6 +282,7 @@ case class Lfb(c: Config) extends Component {
   pipelinePayload.depth.raw := (depthFor16.resize(32 bits) |<< 12).asBits
   pipelinePayload.iteratedAlpha := decodedAlpha
   pipelinePayload.rawW := S(0, 32 bits) // LFB has no W data
+  pipelinePayload.fogColor := B(0, 32 bits) // LFB bypasses fog
   pipelinePayload.alphaMode.clearAll() // LFB writes bypass alpha test/blend
   pipelinePayload.fogMode.clearAll() // LFB writes bypass fog
   // LFB writes: disable depth test, enable both write masks

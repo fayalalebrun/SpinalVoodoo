@@ -26,7 +26,19 @@ case class FramebufferAccess(c: Config) extends Component {
     // Other registers (not yet per-triangle)
     val zaColor = in Bits (32 bits)
     val fbBaseAddr = in UInt (c.addressWidth)
+
+    // Pipeline busy: pixels in flight inside fork-queue-join
+    val busy = out Bool ()
   }
+
+  // Track in-flight pixels (max 4 in queue)
+  val inFlightCount = Reg(UInt(3 bits)) init 0
+  when(io.input.fire && !io.output.fire) {
+    inFlightCount := inFlightCount + 1
+  }.elsewhen(!io.input.fire && io.output.fire) {
+    inFlightCount := inFlightCount - 1
+  }
+  io.busy := inFlightCount =/= 0
 
   val payload = io.input.payload
   val fbzMode = payload.fbzMode

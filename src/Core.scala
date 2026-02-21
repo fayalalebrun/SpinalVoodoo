@@ -315,6 +315,11 @@ case class Core(c: Config) extends Component {
     cfg.tmudSdY.raw := dSdY
     cfg.tmudTdY.raw := dTdY
 
+    // Constant colors (captured per-triangle to avoid pipelineBusy gap)
+    cfg.color0 := regBank.renderConfig.color0
+    cfg.color1 := regBank.renderConfig.color1
+    cfg.fogColor := regBank.renderConfig.fogColor
+
     // NCC table: select table 0 or 1 based on nccSelect (textureMode bit 5)
     val nccSel = regBank.tmuConfig.textureMode(5)
     for (r <- 0 until 4; b <- 0 until 4) {
@@ -537,7 +542,7 @@ case class Core(c: Config) extends Component {
   val ckB = ckBits(7 downto 0).asUInt
   val texColor = tmuJoined.payload._1.texture
   val textureEnabled = tmuJoined.payload._2.config.fbzColorPath.textureEnable
-  val chromaKill = regBank.renderConfig.fbzMode.enableChromaKey &&
+  val chromaKill = tmuJoined.payload._2.config.fbzMode.enableChromaKey &&
     textureEnabled &&
     texColor.r === ckR && texColor.g === ckG && texColor.b === ckB
   val afterChromaKey = tmuJoined.throwWhen(chromaKill)
@@ -581,15 +586,18 @@ case class Core(c: Config) extends Component {
     out.texture := tmuOut.texture
     out.textureAlpha := tmuOut.textureAlpha
 
-    // Constant colors from registers (packed as ARGB in 32-bit register)
-    val color0Bits = regBank.renderConfig.color0
-    val color1Bits = regBank.renderConfig.color1
+    // Constant colors from per-triangle captured config (avoids pipelineBusy gap)
+    val color0Bits = rasterOut.config.color0
+    val color1Bits = rasterOut.config.color1
     out.color0.r := color0Bits(23 downto 16).asUInt
     out.color0.g := color0Bits(15 downto 8).asUInt
     out.color0.b := color0Bits(7 downto 0).asUInt
     out.color1.r := color1Bits(23 downto 16).asUInt
     out.color1.g := color1Bits(15 downto 8).asUInt
     out.color1.b := color1Bits(7 downto 0).asUInt
+
+    // Fog color from per-triangle captured config (pass-through to Fog stage)
+    out.fogColor := rasterOut.config.fogColor
 
     // Decode configuration from captured per-triangle fbzColorPath
     out.config := decodeColorCombineConfig(rasterOut.config.fbzColorPath)
@@ -612,7 +620,6 @@ case class Core(c: Config) extends Component {
   })
 
   val fog = Fog(c)
-  fog.io.fogColor := regBank.renderConfig.fogColor
   fog.io.fogTable := fogTableVec
   // Arbiter: CC output (priority) and LFB pipeline output feed into Fog
   fog.io.input << StreamArbiterFactory.lowerFirst.on(
@@ -711,7 +718,10 @@ case class Core(c: Config) extends Component {
   // Pipeline busy signal: any stage has valid data (placed after all stages instantiated)
   regBank.io.pipelineBusy.simPublic()
   val pipelineBusySignal =
-    triangleSetup.o.valid || rasterizer.o.valid || tmu.io.input.valid || colorCombine.io.input.valid || fog.io.input.valid || fbAccess.io.input.valid || write.i.fromPipeline.valid || fastfill.running || swapBuffer.io.waiting || lfb.io.busy
+    triangleSetup.o.valid || rasterizer.o.valid || tmu.io.input.valid ||
+      tmu.io.busy || fbAccess.io.busy ||
+      colorCombine.io.input.valid || fog.io.input.valid || fbAccess.io.input.valid ||
+      write.i.fromPipeline.valid || fastfill.running || swapBuffer.io.waiting || lfb.io.busy
   regBank.io.pipelineBusy := pipelineBusySignal
   io.pipelineBusy := pipelineBusySignal
   io.fifoEmpty := regBank.io.fifoEmpty

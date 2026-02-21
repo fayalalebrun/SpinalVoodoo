@@ -32,7 +32,6 @@ case class Fog(c: Config) extends Component {
   val io = new Bundle {
     val input = slave Stream (ColorCombine.Output(c))
     val output = master Stream (Fog.Output(c))
-    val fogColor = in Bits (32 bits)
     val fogTable = in Vec (Bits(16 bits), 64)
   }
 
@@ -57,11 +56,11 @@ case class Fog(c: Config) extends Component {
   val fogConstant = payload.fogMode.fogConstant
   val fogModeSelect = payload.fogMode.fogModeSelect
 
-  // Fog color as Color bundle
+  // Fog color as Color bundle (from per-triangle captured config)
   val fogRgb = Color.u8()
-  fogRgb.r := io.fogColor(23 downto 16).asUInt
-  fogRgb.g := io.fogColor(15 downto 8).asUInt
-  fogRgb.b := io.fogColor(7 downto 0).asUInt
+  fogRgb.r := payload.fogColor(23 downto 16).asUInt
+  fogRgb.g := payload.fogColor(15 downto 8).asUInt
+  fogRgb.b := payload.fogColor(7 downto 0).asUInt
 
   // --- Fog factor (fogA) selection ---
   // Depth value for Z-based fog: bits [27:20] of the 20.12 depth

@@ -30,7 +30,19 @@ case class Tmu(c: voodoo.Config) extends Component {
 
     // Palette write port (from Core, driven by NCC table 0 I/Q register writes with bit 31 set)
     val paletteWrite = slave Flow (Tmu.PaletteWrite())
+
+    // Pipeline busy: pixels in flight inside fork-queue-join and collector
+    val busy = out Bool ()
   }
+
+  // Track in-flight pixels (max 16 in queue + bilinear expansion)
+  val inFlightCount = Reg(UInt(5 bits)) init 0
+  when(io.input.fire && !io.output.fire) {
+    inFlightCount := inFlightCount + 1
+  }.elsewhen(!io.input.fire && io.output.fire) {
+    inFlightCount := inFlightCount - 1
+  }
+  io.busy := inFlightCount =/= 0
 
   // Palette RAM: 256 entries x 24-bit RGB
   val paletteRam = Mem(Bits(24 bits), 256)

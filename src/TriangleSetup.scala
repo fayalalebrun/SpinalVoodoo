@@ -160,6 +160,11 @@ object TriangleSetup {
     val tmudTdY = AFix(c.texCoordsFormat)
     // NCC table data (pre-extracted at capture time)
     val ncc = Tmu.NccTableData()
+
+    // Constant colors (captured per-triangle to avoid pipelineBusy gap)
+    val color0 = Bits(32 bits)
+    val color1 = Bits(32 bits)
+    val fogColor = Bits(32 bits)
   }
 
   /** Input bundle - triangle with gradients and render config captured at command time */

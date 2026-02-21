@@ -44,6 +44,9 @@ emu/result
 # Trace files
 emu/voodoo_trace.trace/
 
+# Test output
+output/
+
 # Java/Scala artifacts
 META-INF/
 .tmp/

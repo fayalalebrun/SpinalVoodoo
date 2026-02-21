@@ -22,3 +22,28 @@ target/
 
 # SpinalHDL simulation
 simWorkspace/
+
+# Verilator sim build artifacts
+emu/sim/obj_dir/
+emu/sim/output/
+emu/sim/rtl/
+emu/sim/.bsp/
+emu/sim/.scala-build/
+
+# Disk images and ISOs
+*.iso
+*.img
+*.ISO
+*.IMG
+
+# 86Box config
+emu/86box.cfg
+emu/config.txt
+emu/result
+
+# Trace files
+emu/voodoo_trace.trace/
+
+# Java/Scala artifacts
+META-INF/
+.tmp/

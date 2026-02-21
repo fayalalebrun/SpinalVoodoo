@@ -423,6 +423,9 @@ case class Core(c: Config) extends Component {
   lfb.io.bus <> io.lfbBus
   lfb.io.lfbMode := regBank.renderConfig.lfbModeBundle
   lfb.io.fbzMode := regBank.renderConfig.fbzModeBundle
+  lfb.io.alphaMode := regBank.renderConfig.alphaModeBundle
+  lfb.io.fogMode := regBank.renderConfig.fogModeBundle
+  lfb.io.fogColor := regBank.renderConfig.fogColor
   lfb.io.zaColor := regBank.renderConfig.zaColor
   lfb.io.fbReadBus <> io.lfbFbRead
   lfb.io.fbWriteBaseAddr := lfbWriteBufferBase

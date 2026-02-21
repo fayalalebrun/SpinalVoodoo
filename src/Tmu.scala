@@ -322,18 +322,26 @@ case class Tmu(c: voodoo.Config) extends Component {
   val is16BitFormat = texMode.format >= Tmu.TextureFormat.ARGB8332
   val bytesPerTexel = Mux(is16BitFormat, U(2), U(1))
 
-  // SST1 texture memory layout: each LOD level occupies a fixed 128KB (1 << 17) slot
-  val lodBaseOffset = (lodLevel << 17).resize(24 bits)
+  // SST1 texture memory layout: mipmaps are packed sequentially.
+  // Cumulative texel count before each LOD level depends on aspect ratio.
+  // Table indexed by (aspectRatio, lodLevel), values in texels.
+  val lodTexelOffsets = Vec(
+    Vec(Seq(0, 65536, 81920, 86016, 87040, 87296, 87360, 87376, 87380).map(v => U(v, 17 bits))),
+    Vec(Seq(0, 32768, 40960, 43008, 43520, 43648, 43680, 43688, 43690).map(v => U(v, 17 bits))),
+    Vec(Seq(0, 16384, 20480, 21504, 21760, 21824, 21840, 21844, 21846).map(v => U(v, 17 bits))),
+    Vec(Seq(0, 8192, 10240, 10752, 10880, 10912, 10920, 10924, 10926).map(v => U(v, 17 bits)))
+  )
+  val lodTexelOffset = lodTexelOffsets(aspectRatio)(lodLevel)
+  val lodBaseOffset =
+    Mux(is16BitFormat, (lodTexelOffset << 1).resize(24 bits), lodTexelOffset.resize(24 bits))
 
   val texBaseByteAddr = (io.input.payload.config.texBaseAddr << 3).resize(c.addressWidth.value bits)
 
-  // Texture memory addressing: linear byte addressing matching the Glide driver's
-  // grTexDownloadMipMap upload pattern. Row stride is fixed 512 bytes (t << 9).
-  // On real SST-1 hardware, the FBI memory controller applies two-bank interleaving
-  // between the logical address and physical DRAM. Since our simulation uses flat
-  // BmbOnChipRam, we use the same linear addresses the CPU writes to.
+  // Texture memory addressing: linear byte addressing matching real SST-1 layout.
+  // Row stride = width_in_texels * bytesPerTexel (i.e. 1 << (texWidthBits + is16bit)).
   def texelAddr(x: UInt, y: UInt): UInt = {
-    val rowOffset = (y.resize(20 bits) << 9).resize(24 bits) // Fixed 512-byte row stride
+    val rowShift = texWidthBits +^ Mux(is16BitFormat, U(1), U(0))
+    val rowOffset = (y.resize(24 bits) << rowShift).resize(24 bits)
     val colOffset = Mux(
       is16BitFormat,
       (x << 1).resize(24 bits), // 16-bit texels: 2 bytes per texel

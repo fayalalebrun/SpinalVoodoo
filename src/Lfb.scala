@@ -30,6 +30,9 @@ case class Lfb(c: Config) extends Component {
     // Config inputs from RegisterBank
     val lfbMode = in(LfbMode())
     val fbzMode = in(FbzMode())
+    val alphaMode = in(AlphaMode())
+    val fogMode = in(FogMode())
+    val fogColor = in Bits (32 bits)
     val zaColor = in Bits (32 bits)
 
     // Framebuffer read bus (for LFB reads)
@@ -282,13 +285,10 @@ case class Lfb(c: Config) extends Component {
   pipelinePayload.depth.raw := (depthFor16.resize(32 bits) |<< 12).asBits
   pipelinePayload.iteratedAlpha := decodedAlpha
   pipelinePayload.rawW := S(0, 32 bits) // LFB has no W data
-  pipelinePayload.fogColor := B(0, 32 bits) // LFB bypasses fog
-  pipelinePayload.alphaMode.clearAll() // LFB writes bypass alpha test/blend
-  pipelinePayload.fogMode.clearAll() // LFB writes bypass fog
-  // LFB writes: disable depth test, enable both write masks
-  pipelinePayload.fbzMode.clearAll().allowOverride()
-  pipelinePayload.fbzMode.rgbBufferMask := True
-  pipelinePayload.fbzMode.auxBufferMask := True
+  pipelinePayload.fogColor := io.fogColor
+  pipelinePayload.alphaMode := io.alphaMode
+  pipelinePayload.fogMode := io.fogMode
+  pipelinePayload.fbzMode := io.fbzMode
 
   // Write pixel output valid signals — mux based on pixelPipelineEnable
   val writePixelActive = (state === statePixel1) || (state === statePixel2)

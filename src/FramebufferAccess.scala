@@ -32,10 +32,13 @@ case class FramebufferAccess(c: Config) extends Component {
   }
 
   // Track in-flight pixels (max 4 in queue)
+  // Pixels exit via joined.fire (covers both depth-test pass and discard).
+  // The exitFire signal is assigned later after the joined stream is defined.
   val inFlightCount = Reg(UInt(3 bits)) init 0
-  when(io.input.fire && !io.output.fire) {
+  val exitFire = Bool()
+  when(io.input.fire && !exitFire) {
     inFlightCount := inFlightCount + 1
-  }.elsewhen(!io.input.fire && io.output.fire) {
+  }.elsewhen(!io.input.fire && exitFire) {
     inFlightCount := inFlightCount - 1
   }
   io.busy := inFlightCount =/= 0
@@ -151,6 +154,7 @@ case class FramebufferAccess(c: Config) extends Component {
   }
 
   val joined = StreamJoin(rspStream, queuedPassthrough)
+  exitFire := joined.fire // Pixel exits fork-queue-join (pass or discard)
 
   // ========================================================================
   // Step 3: Depth test (per-pixel fbzMode)

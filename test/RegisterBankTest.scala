@@ -228,12 +228,12 @@ class RegisterBankTest extends AnyFunSuite {
     SimConfig.withIVerilog.withWave.compile(RegisterBank(config)).doSim { dut =>
       setupDut(dut)
 
-      // clipLeftRight: left in [9:0], right in [25:16]
+      // clipLeftRight: bits[9:0]=right, bits[25:16]=left (per SST-1 datasheet)
       val leftX = 10
       val rightX = 640
-      val clipLR = (rightX << 16) | leftX
+      val clipLR = (leftX << 16) | rightX
 
-      bmbWrite(dut, 0x118, clipLR) // Address changed from 0x0d4 to 0x118
+      bmbWrite(dut, 0x118, clipLR)
       dut.clockDomain.waitSampling()
 
       assert(dut.renderConfig.clipLeftX.toInt == leftX, s"Left clip should be $leftX")
@@ -241,8 +241,8 @@ class RegisterBankTest extends AnyFunSuite {
 
       // Read back
       val readBack = bmbRead(dut, 0x118)
-      assert((readBack & 0x3ff) == leftX, "Read back left X should match")
-      assert(((readBack >> 16) & 0x3ff) == rightX, "Read back right X should match")
+      assert((readBack & 0x3ff) == rightX, "Read back right X should match")
+      assert(((readBack >> 16) & 0x3ff) == leftX, "Read back left X should match")
     }
   }
 

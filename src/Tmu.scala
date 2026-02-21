@@ -475,14 +475,6 @@ case class Tmu(c: voodoo.Config) extends Component {
   // Stage 5: Format decode
   // ========================================================================
 
-  // Helper: expand N bits to 8 bits by replicating MSBs
-  def expand5to8(v: UInt): UInt = v @@ v(4 downto 2)
-  def expand6to8(v: UInt): UInt = v @@ v(5 downto 4)
-  def expand4to8(v: UInt): UInt = v @@ v
-  def expand3to8(v: UInt): UInt = v @@ v @@ v(2 downto 1)
-  def expand2to8(v: UInt): UInt = v @@ v @@ v @@ v
-  def expand1to8(v: UInt): UInt = Mux(v(0), U(255, 8 bits), U(0, 8 bits))
-
   case class DecodedTexel() extends Bundle {
     val r = UInt(8 bits)
     val g = UInt(8 bits)
@@ -505,15 +497,6 @@ case class Tmu(c: voodoo.Config) extends Component {
     val db = UInt(8 bits)
     val da = UInt(8 bits)
 
-    // NCC decode helper: clamp signed value to [0, 255]
-    def clampSigned(v: SInt): UInt = {
-      val result = UInt(8 bits)
-      when(v < 0) { result := 0 }
-        .elsewhen(v > 255) { result := 255 }
-        .otherwise { result := v(7 downto 0).asUInt }
-      result
-    }
-
     // NCC decode: Y + I + Q chrominance lookup
     def nccDecode(texByte: Bits, ncc: Tmu.NccTableData): (UInt, UInt, UInt) = {
       val yVal = ncc.y(texByte(7 downto 4).asUInt)
@@ -526,7 +509,7 @@ case class Tmu(c: voodoo.Config) extends Component {
       val rRaw = (False ## yVal).asSInt.resize(11 bits) + iR.resize(11 bits) + qR.resize(11 bits)
       val gRaw = (False ## yVal).asSInt.resize(11 bits) + iG.resize(11 bits) + qG.resize(11 bits)
       val bRaw = (False ## yVal).asSInt.resize(11 bits) + iB.resize(11 bits) + qB.resize(11 bits)
-      (clampSigned(rRaw), clampSigned(gRaw), clampSigned(bRaw))
+      (clampToU8(rRaw), clampToU8(gRaw), clampToU8(bRaw))
     }
 
     // Palette lookup: read 8-bit index from texelByte (used by P8 and AP88)
@@ -534,9 +517,9 @@ case class Tmu(c: voodoo.Config) extends Component {
 
     switch(pass.format) {
       is(Tmu.TextureFormat.RGB332) {
-        dr := expand3to8(texelByte(7 downto 5).asUInt)
-        dg := expand3to8(texelByte(4 downto 2).asUInt)
-        db := expand2to8(texelByte(1 downto 0).asUInt)
+        dr := expandTo8(texelByte(7 downto 5).asUInt, 3)
+        dg := expandTo8(texelByte(4 downto 2).asUInt, 3)
+        db := expandTo8(texelByte(1 downto 0).asUInt, 2)
         da := U(255, 8 bits)
       }
       is(Tmu.TextureFormat.YIQ422) {
@@ -559,10 +542,10 @@ case class Tmu(c: voodoo.Config) extends Component {
       is(Tmu.TextureFormat.AI44) {
         val alpha = texelByte(7 downto 4).asUInt
         val intensity = texelByte(3 downto 0).asUInt
-        dr := expand4to8(intensity)
-        dg := expand4to8(intensity)
-        db := expand4to8(intensity)
-        da := expand4to8(alpha)
+        dr := expandTo8(intensity, 4)
+        dg := expandTo8(intensity, 4)
+        db := expandTo8(intensity, 4)
+        da := expandTo8(alpha, 4)
       }
       is(Tmu.TextureFormat.P8) {
         dr := paletteColor(23 downto 16).asUInt
@@ -572,31 +555,31 @@ case class Tmu(c: voodoo.Config) extends Component {
       }
       is(Tmu.TextureFormat.ARGB8332) {
         da := texelData(15 downto 8).asUInt
-        dr := expand3to8(texelData(7 downto 5).asUInt)
-        dg := expand3to8(texelData(4 downto 2).asUInt)
-        db := expand2to8(texelData(1 downto 0).asUInt)
+        dr := expandTo8(texelData(7 downto 5).asUInt, 3)
+        dg := expandTo8(texelData(4 downto 2).asUInt, 3)
+        db := expandTo8(texelData(1 downto 0).asUInt, 2)
       }
       is(Tmu.TextureFormat.AYIQ8422) {
         val (r, g, b) = nccDecode(texelData(7 downto 0), pass.ncc)
         dr := r; dg := g; db := b; da := texelData(15 downto 8).asUInt
       }
       is(Tmu.TextureFormat.RGB565) {
-        dr := expand5to8(texelData(15 downto 11).asUInt)
-        dg := expand6to8(texelData(10 downto 5).asUInt)
-        db := expand5to8(texelData(4 downto 0).asUInt)
+        dr := expandTo8(texelData(15 downto 11).asUInt, 5)
+        dg := expandTo8(texelData(10 downto 5).asUInt, 6)
+        db := expandTo8(texelData(4 downto 0).asUInt, 5)
         da := U(255, 8 bits)
       }
       is(Tmu.TextureFormat.ARGB1555) {
-        da := expand1to8(texelData(15 downto 15).asUInt)
-        dr := expand5to8(texelData(14 downto 10).asUInt)
-        dg := expand5to8(texelData(9 downto 5).asUInt)
-        db := expand5to8(texelData(4 downto 0).asUInt)
+        da := expandTo8(texelData(15 downto 15).asUInt, 1)
+        dr := expandTo8(texelData(14 downto 10).asUInt, 5)
+        dg := expandTo8(texelData(9 downto 5).asUInt, 5)
+        db := expandTo8(texelData(4 downto 0).asUInt, 5)
       }
       is(Tmu.TextureFormat.ARGB4444) {
-        da := expand4to8(texelData(15 downto 12).asUInt)
-        dr := expand4to8(texelData(11 downto 8).asUInt)
-        dg := expand4to8(texelData(7 downto 4).asUInt)
-        db := expand4to8(texelData(3 downto 0).asUInt)
+        da := expandTo8(texelData(15 downto 12).asUInt, 4)
+        dr := expandTo8(texelData(11 downto 8).asUInt, 4)
+        dg := expandTo8(texelData(7 downto 4).asUInt, 4)
+        db := expandTo8(texelData(3 downto 0).asUInt, 4)
       }
       is(Tmu.TextureFormat.AI88) {
         val alpha = texelData(15 downto 8).asUInt
@@ -613,9 +596,9 @@ case class Tmu(c: voodoo.Config) extends Component {
         da := texelData(15 downto 8).asUInt
       }
       default {
-        dr := expand5to8(texelData(15 downto 11).asUInt)
-        dg := expand6to8(texelData(10 downto 5).asUInt)
-        db := expand5to8(texelData(4 downto 0).asUInt)
+        dr := expandTo8(texelData(15 downto 11).asUInt, 5)
+        dg := expandTo8(texelData(10 downto 5).asUInt, 6)
+        db := expandTo8(texelData(4 downto 0).asUInt, 5)
         da := U(255, 8 bits)
       }
     }
@@ -659,10 +642,12 @@ case class Tmu(c: voodoo.Config) extends Component {
     (sum >> 8).resize(8 bits)
   }
 
-  val blendedR = blendChannel(storedR(0), storedR(1), storedR(2), decoded.payload.r)
-  val blendedG = blendChannel(storedG(0), storedG(1), storedG(2), decoded.payload.g)
-  val blendedB = blendChannel(storedB(0), storedB(1), storedB(2), decoded.payload.b)
-  val blendedA = blendChannel(storedA(0), storedA(1), storedA(2), decoded.payload.a)
+  val storedChannels = Seq(storedR, storedG, storedB, storedA)
+  val decodedChannels =
+    Seq(decoded.payload.r, decoded.payload.g, decoded.payload.b, decoded.payload.a)
+  val blendedChannels = storedChannels.zip(decodedChannels).map { case (stored, dec) =>
+    blendChannel(stored(0), stored(1), stored(2), dec)
+  }
 
   val isCollecting = collectCount =/= 0
   val isBilinear = Mux(isCollecting, True, decoded.payload.passthrough.bilinear)
@@ -672,18 +657,24 @@ case class Tmu(c: voodoo.Config) extends Component {
   io.output.valid := decoded.valid && !bilinearAccumulating
   decoded.ready := bilinearAccumulating || io.output.ready
 
-  io.output.payload.texture.r := Mux(isBilinear, blendedR, decoded.payload.r)
-  io.output.payload.texture.g := Mux(isBilinear, blendedG, decoded.payload.g)
-  io.output.payload.texture.b := Mux(isBilinear, blendedB, decoded.payload.b)
-  io.output.payload.textureAlpha := Mux(isBilinear, blendedA, decoded.payload.a)
+  Seq(
+    io.output.payload.texture.r,
+    io.output.payload.texture.g,
+    io.output.payload.texture.b,
+    io.output.payload.textureAlpha
+  )
+    .zip(blendedChannels)
+    .zip(decodedChannels)
+    .foreach { case ((out, blnd), dec) =>
+      out := Mux(isBilinear, blnd, dec)
+    }
 
   when(decoded.fire) {
     when(isBilinear && collectCount < 3) {
       // Accumulate texels 0, 1, 2
-      storedR(collectCount) := decoded.payload.r
-      storedG(collectCount) := decoded.payload.g
-      storedB(collectCount) := decoded.payload.b
-      storedA(collectCount) := decoded.payload.a
+      storedChannels.zip(decodedChannels).foreach { case (stored, dec) =>
+        stored(collectCount) := dec
+      }
       when(collectCount === 0) {
         storedDs := decoded.payload.passthrough.ds
         storedDt := decoded.payload.passthrough.dt

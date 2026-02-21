@@ -86,7 +86,7 @@ case class TriangleSetup(c: Config) extends Component {
     // When enabled, adjusts gradient start values for the sub-pixel offset of vertex A.
     // dx_sub = (8 - fracAx) mod 16, dy_sub = (8 - fracAy) mod 16
     // correction = (dx_sub * dGrad_dX + dy_sub * dGrad_dY) >> 4
-    val paramAdjust = input.config.fbzColorPath(26)
+    val paramAdjust = input.config.fbzColorPath.paramAdjust
     val fracAx = tri(0)(0).raw(3 downto 0).asUInt // 4-bit fractional part of vertex A x
     val dxSubRaw = (U(8, 5 bits) - fracAx.resize(5 bits))(3 downto 0) // (8 - frac) mod 16
     val fracAy = tri(0)(1).raw(3 downto 0).asUInt
@@ -144,10 +144,10 @@ object TriangleSetup {
     */
   case class PerTriangleConfig(c: Config) extends Bundle {
     // FBI registers
-    val fbzColorPath = Bits(28 bits) // Color path control (FBI + TREX)
-    val fogMode = Bits(6 bits) // Fog mode control (FBI)
-    val alphaMode = Bits(32 bits) // Alpha mode control (FBI)
-    val fbzMode = Bits(21 bits) // Framebuffer/depth mode control (FBI) - bits [20:0]
+    val fbzColorPath = FbzColorPath() // Color path control (FBI + TREX)
+    val fogMode = FogMode() // Fog mode control (FBI)
+    val alphaMode = AlphaMode() // Alpha mode control (FBI)
+    val fbzMode = FbzMode() // Framebuffer/depth mode control (FBI)
 
     // TMU registers (single TMU support - Voodoo 1 level functionality)
     val tmuTextureMode = Bits(32 bits) // Texture mode (format, filtering, clamp/wrap)

@@ -589,6 +589,65 @@ case class RegisterBank(config: Config) extends Component {
       .newRegAtWithCategory(0x148, "color1", RegisterCategory.fifoWithSync)
       .field(Bits(32 bits), AccessType.RW, 0, "Constant color 1")
       .asOutput()
+
+    // Bundle accessors — decode flat register bits into named fields
+
+    def fbzColorPathBundle: FbzColorPath = {
+      val b = FbzColorPath()
+      b.assignFromBits(fbzColorPath.resized)
+      b
+    }
+
+    def fogModeBundle: FogMode = {
+      val b = FogMode()
+      b.assignFromBits(fogMode.resized)
+      b
+    }
+
+    def alphaModeBundle: AlphaMode = {
+      val b = AlphaMode()
+      b.assignFromBits(alphaMode)
+      b
+    }
+
+    def fbzModeBundle: FbzMode = {
+      val b = voodoo.FbzMode()
+      b.enableClipping := fbzMode.enableClipping
+      b.enableChromaKey := fbzMode.enableChromaKey
+      b.enableStipple := fbzMode.enableStipple
+      b.wBufferSelect := fbzMode.wBufferSelect
+      b.enableDepthBuffer := fbzMode.enableDepthBuffer
+      b.depthFunction := fbzMode.depthFunction
+      b.enableDithering := fbzMode.enableDithering
+      b.rgbBufferMask := fbzMode.rgbBufferMask
+      b.auxBufferMask := fbzMode.auxBufferMask
+      b.ditherAlgorithm := fbzMode.ditherAlgorithm
+      b.enableStipplePattern := fbzMode.enableStipplePattern
+      b.enableAlphaMask := fbzMode.enableAlphaMask
+      b.drawBuffer := fbzMode.drawBuffer
+      b.enableDepthBias := fbzMode.enableDepthBias
+      b.yOrigin := fbzMode.yOrigin
+      b.enableAlphaPlanes := fbzMode.enableAlphaPlanes
+      b.enableDitherSubtract := fbzMode.enableDitherSubtract
+      b.depthSourceSelect := fbzMode.depthSourceSelect
+      b
+    }
+
+    def lfbModeBundle: LfbMode = {
+      val b = LfbMode()
+      b.writeFormat := lfbMode.writeFormat
+      b.writeBufferSelect := lfbMode.writeBufferSelect
+      b.readBufferSelect := lfbMode.readBufferSelect
+      b.pixelPipelineEnable := lfbMode.pixelPipelineEnable
+      b.rgbaLanes := lfbMode.rgbaLanes
+      b.wordSwapWrites := lfbMode.wordSwapWrites
+      b.byteSwizzleWrites := lfbMode.byteSwizzleWrites
+      b.yOrigin := lfbMode.yOrigin
+      b.wSelect := lfbMode.wSelect
+      b.wordSwapReads := lfbMode.wordSwapReads
+      b.byteSwizzleReads := lfbMode.byteSwizzleReads
+      b
+    }
   }
 
   // ========================================================================

@@ -210,82 +210,23 @@ case class Core(c: Config) extends Component {
     signedResult
   }
 
-  // Create individual converters for each vertex coordinate
-  val convVax = new Fpxx2AFix(16 bits, 16 bits, floatConfig)
-  val convVay = new Fpxx2AFix(16 bits, 16 bits, floatConfig)
-  val convVbx = new Fpxx2AFix(16 bits, 16 bits, floatConfig)
-  val convVby = new Fpxx2AFix(16 bits, 16 bits, floatConfig)
-  val convVcx = new Fpxx2AFix(16 bits, 16 bits, floatConfig)
-  val convVcy = new Fpxx2AFix(16 bits, 16 bits, floatConfig)
+  // Create converters for each vertex coordinate (Ax, Ay, Bx, By, Cx, Cy)
+  val converters = Seq.fill(6)(new Fpxx2AFix(16 bits, 16 bits, floatConfig))
 
   // Fork ftriangleCmd to feed all 6 converters
   val ftriangleForks = StreamFork(regBank.commands.ftriangleCmd, 6, synchronous = true)
 
-  val fvertexAx = regBank.floatTriangleGeometry.fvertexAx
-  val fvertexAy = regBank.floatTriangleGeometry.fvertexAy
-  val fvertexBx = regBank.floatTriangleGeometry.fvertexBx
-  val fvertexBy = regBank.floatTriangleGeometry.fvertexBy
-  val fvertexCx = regBank.floatTriangleGeometry.fvertexCx
-  val fvertexCy = regBank.floatTriangleGeometry.fvertexCy
+  val fg = regBank.floatTriangleGeometry
 
-  val fstartR = regBank.floatTriangleGeometry.fstartR
-  val fstartG = regBank.floatTriangleGeometry.fstartG
-  val fstartB = regBank.floatTriangleGeometry.fstartB
-  val fstartZ = regBank.floatTriangleGeometry.fstartZ
-  val fstartA = regBank.floatTriangleGeometry.fstartA
-  val fstartS = regBank.floatTriangleGeometry.fstartS
-  val fstartT = regBank.floatTriangleGeometry.fstartT
-  val fstartW = regBank.floatTriangleGeometry.fstartW
-
-  val fdRdX = regBank.floatTriangleGeometry.fdRdX
-  val fdGdX = regBank.floatTriangleGeometry.fdGdX
-  val fdBdX = regBank.floatTriangleGeometry.fdBdX
-  val fdZdX = regBank.floatTriangleGeometry.fdZdX
-  val fdAdX = regBank.floatTriangleGeometry.fdAdX
-  val fdSdX = regBank.floatTriangleGeometry.fdSdX
-  val fdTdX = regBank.floatTriangleGeometry.fdTdX
-  val fdWdX = regBank.floatTriangleGeometry.fdWdX
-
-  val fdRdY = regBank.floatTriangleGeometry.fdRdY
-  val fdGdY = regBank.floatTriangleGeometry.fdGdY
-  val fdBdY = regBank.floatTriangleGeometry.fdBdY
-  val fdZdY = regBank.floatTriangleGeometry.fdZdY
-  val fdAdY = regBank.floatTriangleGeometry.fdAdY
-  val fdSdY = regBank.floatTriangleGeometry.fdSdY
-  val fdTdY = regBank.floatTriangleGeometry.fdTdY
-  val fdWdY = regBank.floatTriangleGeometry.fdWdY
-
-  // Feed each forked stream to its converter with appropriate data
-  convVax.io.op.translateFrom(ftriangleForks(0)) { (fpxx, _) =>
-    fpxx.assignFromBits(fvertexAx)
-  }
-  convVay.io.op.translateFrom(ftriangleForks(1)) { (fpxx, _) =>
-    fpxx.assignFromBits(fvertexAy)
-  }
-  convVbx.io.op.translateFrom(ftriangleForks(2)) { (fpxx, _) =>
-    fpxx.assignFromBits(fvertexBx)
-  }
-  convVby.io.op.translateFrom(ftriangleForks(3)) { (fpxx, _) =>
-    fpxx.assignFromBits(fvertexBy)
-  }
-  convVcx.io.op.translateFrom(ftriangleForks(4)) { (fpxx, _) =>
-    fpxx.assignFromBits(fvertexCx)
-  }
-  convVcy.io.op.translateFrom(ftriangleForks(5)) { (fpxx, _) =>
-    fpxx.assignFromBits(fvertexCy)
+  // Feed each forked stream to its converter with appropriate vertex register data
+  val vertexRegs =
+    Seq(fg.fvertexAx, fg.fvertexAy, fg.fvertexBx, fg.fvertexBy, fg.fvertexCx, fg.fvertexCy)
+  converters.zip(ftriangleForks.zip(vertexRegs)).foreach { case (conv, (fork, reg)) =>
+    conv.io.op.translateFrom(fork) { (fpxx, _) => fpxx.assignFromBits(reg) }
   }
 
   // Join all converter results
-  val joinedResults = StreamJoin.vec(
-    Seq(
-      convVax.io.result,
-      convVay.io.result,
-      convVbx.io.result,
-      convVby.io.result,
-      convVcx.io.result,
-      convVcy.io.result
-    )
-  )
+  val joinedResults = StreamJoin.vec(converters.map(_.io.result))
 
   // Build triangle from joined results, converting to target format
   // Gradients and render config are captured at command time to ensure proper pipeline synchronization
@@ -303,153 +244,78 @@ case class Core(c: Config) extends Component {
     out
   }
 
-  // Helper function to capture gradients from floating-point registers with conversion
-  // This is used for ftriangleCmd path where gradients are in IEEE 754 float format
+  // Capture gradients from float registers with IEEE 754 → fixed-point conversion
   def captureFloatGradients(): Rasterizer.GradientBundle[Rasterizer.InputGradient] = {
+    def f(bits: Bits, int: Int, frac: Int) = floatToFixed(bits, int, frac).asBits
+    captureGradientsFrom(
+      Seq(
+        (f(fg.fstartR, 12, 12), f(fg.fdRdX, 12, 12), f(fg.fdRdY, 12, 12)), // red
+        (f(fg.fstartG, 12, 12), f(fg.fdGdX, 12, 12), f(fg.fdGdY, 12, 12)), // green
+        (f(fg.fstartB, 12, 12), f(fg.fdBdX, 12, 12), f(fg.fdBdY, 12, 12)), // blue
+        (f(fg.fstartZ, 20, 12), f(fg.fdZdX, 20, 12), f(fg.fdZdY, 20, 12)), // depth
+        (f(fg.fstartA, 12, 12), f(fg.fdAdX, 12, 12), f(fg.fdAdY, 12, 12)), // alpha
+        (f(fg.fstartW, 2, 30), f(fg.fdWdX, 2, 30), f(fg.fdWdY, 2, 30)), // W
+        (f(fg.fstartS, 14, 18), f(fg.fdSdX, 14, 18), f(fg.fdSdY, 14, 18)), // S
+        (f(fg.fstartT, 14, 18), f(fg.fdTdX, 14, 18), f(fg.fdTdY, 14, 18)) // T
+      )
+    )
+  }
+
+  // Data-driven gradient capture: zips (start, dX, dY) Bits triplets with GradientBundle.all
+  def captureGradientsFrom(
+      sources: Seq[(Bits, Bits, Bits)]
+  ): Rasterizer.GradientBundle[Rasterizer.InputGradient] = {
     val grads = Rasterizer.GradientBundle(Rasterizer.InputGradient(_), c)
-
-    // Red gradient (12.12 fixed point) - convert from float
-    grads.redGrad.start.raw := floatToFixed(fstartR, 12, 12).asBits
-    grads.redGrad.d(0).raw := floatToFixed(fdRdX, 12, 12).asBits
-    grads.redGrad.d(1).raw := floatToFixed(fdRdY, 12, 12).asBits
-
-    // Green gradient (12.12 fixed point)
-    grads.greenGrad.start.raw := floatToFixed(fstartG, 12, 12).asBits
-    grads.greenGrad.d(0).raw := floatToFixed(fdGdX, 12, 12).asBits
-    grads.greenGrad.d(1).raw := floatToFixed(fdGdY, 12, 12).asBits
-
-    // Blue gradient (12.12 fixed point)
-    grads.blueGrad.start.raw := floatToFixed(fstartB, 12, 12).asBits
-    grads.blueGrad.d(0).raw := floatToFixed(fdBdX, 12, 12).asBits
-    grads.blueGrad.d(1).raw := floatToFixed(fdBdY, 12, 12).asBits
-
-    // Depth gradient (20.12 fixed point)
-    grads.depthGrad.start.raw := floatToFixed(fstartZ, 20, 12).asBits
-    grads.depthGrad.d(0).raw := floatToFixed(fdZdX, 20, 12).asBits
-    grads.depthGrad.d(1).raw := floatToFixed(fdZdY, 20, 12).asBits
-
-    // Alpha gradient (12.12 fixed point)
-    grads.alphaGrad.start.raw := floatToFixed(fstartA, 12, 12).asBits
-    grads.alphaGrad.d(0).raw := floatToFixed(fdAdX, 12, 12).asBits
-    grads.alphaGrad.d(1).raw := floatToFixed(fdAdY, 12, 12).asBits
-
-    // W gradient (2.30 fixed point)
-    grads.wGrad.start.raw := floatToFixed(fstartW, 2, 30).asBits
-    grads.wGrad.d(0).raw := floatToFixed(fdWdX, 2, 30).asBits
-    grads.wGrad.d(1).raw := floatToFixed(fdWdY, 2, 30).asBits
-
-    // TMU S gradient (14.18 fixed point)
-    grads.sGrad.start.raw := floatToFixed(fstartS, 14, 18).asBits
-    grads.sGrad.d(0).raw := floatToFixed(fdSdX, 14, 18).asBits
-    grads.sGrad.d(1).raw := floatToFixed(fdSdY, 14, 18).asBits
-
-    // TMU T gradient (14.18 fixed point)
-    grads.tGrad.start.raw := floatToFixed(fstartT, 14, 18).asBits
-    grads.tGrad.d(0).raw := floatToFixed(fdTdX, 14, 18).asBits
-    grads.tGrad.d(1).raw := floatToFixed(fdTdY, 14, 18).asBits
-
+    grads.all.zip(sources).foreach { case (grad, (start, dx, dy)) =>
+      grad.start.raw := start
+      grad.d(0).raw := dx
+      grad.d(1).raw := dy
+    }
     grads
   }
 
-  // Helper function to capture all gradients from registers at command time
-  // This must be called during translateWith to capture register values when command fires
+  // Capture gradients from integer registers at command time
   def captureGradients(): Rasterizer.GradientBundle[Rasterizer.InputGradient] = {
-    val grads = Rasterizer.GradientBundle(Rasterizer.InputGradient(_), c)
-
-    // Red gradient (12.12 fixed point)
-    grads.redGrad.start.raw := regBank.triangleGeometry.startR.asBits
-    grads.redGrad.d(0).raw := regBank.triangleGeometry.dRdX.asBits
-    grads.redGrad.d(1).raw := regBank.triangleGeometry.dRdY.asBits
-
-    // Green gradient (12.12 fixed point)
-    grads.greenGrad.start.raw := regBank.triangleGeometry.startG.asBits
-    grads.greenGrad.d(0).raw := regBank.triangleGeometry.dGdX.asBits
-    grads.greenGrad.d(1).raw := regBank.triangleGeometry.dGdY.asBits
-
-    // Blue gradient (12.12 fixed point)
-    grads.blueGrad.start.raw := regBank.triangleGeometry.startB.asBits
-    grads.blueGrad.d(0).raw := regBank.triangleGeometry.dBdX.asBits
-    grads.blueGrad.d(1).raw := regBank.triangleGeometry.dBdY.asBits
-
-    // Depth gradient (20.12 fixed point)
-    grads.depthGrad.start.raw := regBank.triangleGeometry.startZ.asBits
-    grads.depthGrad.d(0).raw := regBank.triangleGeometry.dZdX.asBits
-    grads.depthGrad.d(1).raw := regBank.triangleGeometry.dZdY.asBits
-
-    // Alpha gradient (12.12 fixed point)
-    grads.alphaGrad.start.raw := regBank.triangleGeometry.startA.asBits
-    grads.alphaGrad.d(0).raw := regBank.triangleGeometry.dAdX.asBits
-    grads.alphaGrad.d(1).raw := regBank.triangleGeometry.dAdY.asBits
-
-    // W gradient (2.30 fixed point)
-    grads.wGrad.start.raw := regBank.triangleGeometry.startW.asBits
-    grads.wGrad.d(0).raw := regBank.triangleGeometry.dWdX.asBits
-    grads.wGrad.d(1).raw := regBank.triangleGeometry.dWdY.asBits
-
-    // TMU S gradient (14.18 fixed point) - single TMU (Voodoo 1 level)
-    grads.sGrad.start.raw := regBank.triangleGeometry.startS.asBits
-    grads.sGrad.d(0).raw := regBank.triangleGeometry.dSdX.asBits
-    grads.sGrad.d(1).raw := regBank.triangleGeometry.dSdY.asBits
-
-    // TMU T gradient (14.18 fixed point) - single TMU (Voodoo 1 level)
-    grads.tGrad.start.raw := regBank.triangleGeometry.startT.asBits
-    grads.tGrad.d(0).raw := regBank.triangleGeometry.dTdX.asBits
-    grads.tGrad.d(1).raw := regBank.triangleGeometry.dTdY.asBits
-
-    grads
+    val g = regBank.triangleGeometry
+    captureGradientsFrom(
+      Seq(
+        (g.startR.asBits, g.dRdX.asBits, g.dRdY.asBits), // red   (12.12)
+        (g.startG.asBits, g.dGdX.asBits, g.dGdY.asBits), // green (12.12)
+        (g.startB.asBits, g.dBdX.asBits, g.dBdY.asBits), // blue  (12.12)
+        (g.startZ.asBits, g.dZdX.asBits, g.dZdY.asBits), // depth (20.12)
+        (g.startA.asBits, g.dAdX.asBits, g.dAdY.asBits), // alpha (12.12)
+        (g.startW.asBits, g.dWdX.asBits, g.dWdY.asBits), // W     (2.30)
+        (g.startS.asBits, g.dSdX.asBits, g.dSdY.asBits), // S     (14.18)
+        (g.startT.asBits, g.dTdX.asBits, g.dTdY.asBits) // T     (14.18)
+      )
+    )
   }
 
-  // Helper function to capture per-triangle render configuration from registers at command time
-  // These are registers with FIFO=Yes, Sync=No in the datasheet
-  def capturePerTriangleConfig(): TriangleSetup.PerTriangleConfig = {
+  // Shared per-triangle config capture — only TMU gradient sources differ between int/float paths
+  def capturePerTriangleConfigWith(
+      dSdX: Bits,
+      dTdX: Bits,
+      dSdY: Bits,
+      dTdY: Bits
+  ): TriangleSetup.PerTriangleConfig = {
     val cfg = TriangleSetup.PerTriangleConfig(c)
 
-    // FBI registers - extract relevant bits from 32-bit registers
-    cfg.fbzColorPath := regBank.renderConfig.fbzColorPath.resized
-    cfg.fogMode := regBank.renderConfig.fogMode.resized
-    cfg.alphaMode := regBank.renderConfig.alphaMode
-    // Pack fbzMode fields into Bits(21) matching register bit layout [20:0]
-    val fbzM = regBank.renderConfig.fbzMode
-    cfg.fbzMode := (
-      fbzM.depthSourceSelect.asBits ##
-        fbzM.enableDitherSubtract.asBits ##
-        fbzM.enableAlphaPlanes.asBits ##
-        fbzM.yOrigin.asBits ##
-        fbzM.enableDepthBias.asBits ##
-        fbzM.drawBuffer.asBits ##
-        fbzM.enableAlphaMask.asBits ##
-        fbzM.enableStipplePattern.asBits ##
-        fbzM.ditherAlgorithm.asBits ##
-        fbzM.auxBufferMask.asBits ##
-        fbzM.rgbBufferMask.asBits ##
-        fbzM.enableDithering.asBits ##
-        fbzM.depthFunction.asBits ##
-        fbzM.enableDepthBuffer.asBits ##
-        fbzM.wBufferSelect.asBits ##
-        fbzM.enableStipple.asBits ##
-        fbzM.enableChromaKey.asBits ##
-        fbzM.enableClipping.asBits
-    )
+    // FBI registers - use bundle accessors from RegisterBank
+    cfg.fbzColorPath := regBank.renderConfig.fbzColorPathBundle
+    cfg.fogMode := regBank.renderConfig.fogModeBundle
+    cfg.alphaMode := regBank.renderConfig.alphaModeBundle
+    cfg.fbzMode := regBank.renderConfig.fbzModeBundle
 
     // TMU registers (single TMU - Voodoo 1 level)
     cfg.tmuTextureMode := regBank.tmuConfig.textureMode
     cfg.tmuTexBaseAddr := regBank.tmuConfig.texBaseAddr
     cfg.tmuTLOD := regBank.tmuConfig.tLOD.resized
-    // TMU texture coordinate gradients (dX and dY for S and T)
-    // Using .raw because AFix isn't a BaseType and can't be used directly with BusIf register fields
-    cfg.tmudSdX.raw := regBank.triangleGeometry.dSdX.asBits
-    cfg.tmudTdX.raw := regBank.triangleGeometry.dTdX.asBits
-    cfg.tmudSdY.raw := regBank.triangleGeometry.dSdY.asBits
-    cfg.tmudTdY.raw := regBank.triangleGeometry.dTdY.asBits
+    cfg.tmudSdX.raw := dSdX
+    cfg.tmudTdX.raw := dTdX
+    cfg.tmudSdY.raw := dSdY
+    cfg.tmudTdY.raw := dTdY
 
-    // NCC table: select table 0 or 1 based on nccSelect (textureMode bit 5), pre-extract Y values
-    captureNccTable(cfg)
-
-    cfg
-  }
-
-  // Helper to capture NCC table into PerTriangleConfig (shared by int and float paths)
-  def captureNccTable(cfg: TriangleSetup.PerTriangleConfig): Unit = {
+    // NCC table: select table 0 or 1 based on nccSelect (textureMode bit 5)
     val nccSel = regBank.tmuConfig.textureMode(5)
     for (r <- 0 until 4; b <- 0 until 4) {
       cfg.ncc.y(r * 4 + b) := Mux(
@@ -470,54 +336,18 @@ case class Core(c: Config) extends Component {
         regBank.nccTable.table0Q(i)(26 downto 0)
       )
     }
-  }
-
-  // Float version of capturePerTriangleConfig - converts float S/T gradients
-  def captureFloatPerTriangleConfig(): TriangleSetup.PerTriangleConfig = {
-    val cfg = TriangleSetup.PerTriangleConfig(c)
-
-    // FBI registers - same as fixed-point version (these aren't float registers)
-    cfg.fbzColorPath := regBank.renderConfig.fbzColorPath.resized
-    cfg.fogMode := regBank.renderConfig.fogMode.resized
-    cfg.alphaMode := regBank.renderConfig.alphaMode
-    // Pack fbzMode fields into Bits(21) matching register bit layout [20:0]
-    val fbzMf = regBank.renderConfig.fbzMode
-    cfg.fbzMode := (
-      fbzMf.depthSourceSelect.asBits ##
-        fbzMf.enableDitherSubtract.asBits ##
-        fbzMf.enableAlphaPlanes.asBits ##
-        fbzMf.yOrigin.asBits ##
-        fbzMf.enableDepthBias.asBits ##
-        fbzMf.drawBuffer.asBits ##
-        fbzMf.enableAlphaMask.asBits ##
-        fbzMf.enableStipplePattern.asBits ##
-        fbzMf.ditherAlgorithm.asBits ##
-        fbzMf.auxBufferMask.asBits ##
-        fbzMf.rgbBufferMask.asBits ##
-        fbzMf.enableDithering.asBits ##
-        fbzMf.depthFunction.asBits ##
-        fbzMf.enableDepthBuffer.asBits ##
-        fbzMf.wBufferSelect.asBits ##
-        fbzMf.enableStipple.asBits ##
-        fbzMf.enableChromaKey.asBits ##
-        fbzMf.enableClipping.asBits
-    )
-
-    // TMU registers (single TMU - Voodoo 1 level)
-    cfg.tmuTextureMode := regBank.tmuConfig.textureMode
-    cfg.tmuTexBaseAddr := regBank.tmuConfig.texBaseAddr
-    cfg.tmuTLOD := regBank.tmuConfig.tLOD.resized
-
-    // TMU texture coordinate gradients - convert from float (14.18 fixed point)
-    cfg.tmudSdX.raw := floatToFixed(fdSdX, 14, 18).asBits
-    cfg.tmudTdX.raw := floatToFixed(fdTdX, 14, 18).asBits
-    cfg.tmudSdY.raw := floatToFixed(fdSdY, 14, 18).asBits
-    cfg.tmudTdY.raw := floatToFixed(fdTdY, 14, 18).asBits
-
-    // NCC table (same as int path)
-    captureNccTable(cfg)
 
     cfg
+  }
+
+  def capturePerTriangleConfig(): TriangleSetup.PerTriangleConfig = {
+    val g = regBank.triangleGeometry
+    capturePerTriangleConfigWith(g.dSdX.asBits, g.dTdX.asBits, g.dSdY.asBits, g.dTdY.asBits)
+  }
+
+  def captureFloatPerTriangleConfig(): TriangleSetup.PerTriangleConfig = {
+    def f(bits: Bits) = floatToFixed(bits, 14, 18).asBits
+    capturePerTriangleConfigWith(f(fg.fdSdX), f(fg.fdTdX), f(fg.fdSdY), f(fg.fdTdY))
   }
 
   // Connect triangle command to triangle setup
@@ -586,18 +416,9 @@ case class Core(c: Config) extends Component {
   // ========================================================================
   val lfb = Lfb(c)
   lfb.io.bus <> io.lfbBus
-  lfb.io.pixelPipelineEnable := regBank.renderConfig.lfbMode.pixelPipelineEnable
-  lfb.io.writeFormat := regBank.renderConfig.lfbMode.writeFormat
-  lfb.io.rgbaLanes := regBank.renderConfig.lfbMode.rgbaLanes
-  lfb.io.wordSwapWrites := regBank.renderConfig.lfbMode.wordSwapWrites
-  lfb.io.byteSwizzleWrites := regBank.renderConfig.lfbMode.byteSwizzleWrites
-  lfb.io.enableDithering := regBank.renderConfig.fbzMode.enableDithering
-  lfb.io.ditherAlgorithm := regBank.renderConfig.fbzMode.ditherAlgorithm
+  lfb.io.lfbMode := regBank.renderConfig.lfbModeBundle
+  lfb.io.fbzMode := regBank.renderConfig.fbzModeBundle
   lfb.io.zaColor := regBank.renderConfig.zaColor
-  lfb.io.enableAlphaPlanes := regBank.renderConfig.fbzMode.enableAlphaPlanes
-  lfb.io.readBufferSelect := regBank.renderConfig.lfbMode.readBufferSelect
-  lfb.io.wordSwapReads := regBank.renderConfig.lfbMode.wordSwapReads
-  lfb.io.byteSwizzleReads := regBank.renderConfig.lfbMode.byteSwizzleReads
   lfb.io.fbReadBus <> io.lfbFbRead
   lfb.io.fbWriteBaseAddr := lfbWriteBufferBase
   lfb.io.fbReadBaseAddr := lfbReadBufferBase
@@ -605,33 +426,10 @@ case class Core(c: Config) extends Component {
   // ========================================================================
   // Color Combine Unit
   // ========================================================================
-  // Helper to decode enum from bits (takes captured fbzColorPath per-triangle)
-  def decodeColorCombineConfig(fbzColorPath: Bits): ColorCombine.Config = {
+  // Decode FbzColorPath into ColorCombine.Config (all fields share names and types)
+  def decodeColorCombineConfig(fcp: FbzColorPath): ColorCombine.Config = {
     val cfg = ColorCombine.Config()
-
-    // RGB channel controls (from fbzColorPath)
-    cfg.rgbSel.assignFromBits(fbzColorPath(1 downto 0))
-    cfg.localSelect.assignFromBits(fbzColorPath(4 downto 4))
-    cfg.localSelectOverride := fbzColorPath(7)
-    cfg.zeroOther := fbzColorPath(8)
-    cfg.subClocal := fbzColorPath(9)
-    cfg.mselect.assignFromBits(fbzColorPath(12 downto 10))
-    cfg.reverseBlend := fbzColorPath(13)
-    cfg.add.assignFromBits(fbzColorPath(15 downto 14))
-    cfg.invertOutput := fbzColorPath(16)
-
-    // Alpha channel controls (from fbzColorPath)
-    cfg.alphaSel.assignFromBits(fbzColorPath(3 downto 2))
-    cfg.alphaLocalSelect.assignFromBits(fbzColorPath(6 downto 5))
-    cfg.alphaZeroOther := fbzColorPath(17)
-    cfg.alphaSubClocal := fbzColorPath(18)
-    cfg.alphaMselect.assignFromBits(fbzColorPath(21 downto 19))
-    cfg.alphaReverseBlend := fbzColorPath(22)
-    cfg.alphaAdd.assignFromBits(fbzColorPath(24 downto 23))
-    cfg.alphaInvertOutput := fbzColorPath(25)
-
-    cfg.textureEnable := fbzColorPath(27)
-
+    cfg.assignSomeByName(fcp)
     cfg
   }
 
@@ -738,7 +536,7 @@ case class Core(c: Config) extends Component {
   val ckG = ckBits(15 downto 8).asUInt
   val ckB = ckBits(7 downto 0).asUInt
   val texColor = tmuJoined.payload._1.texture
-  val textureEnabled = tmuJoined.payload._2.config.fbzColorPath(27)
+  val textureEnabled = tmuJoined.payload._2.config.fbzColorPath.textureEnable
   val chromaKill = regBank.renderConfig.fbzMode.enableChromaKey &&
     textureEnabled &&
     texColor.r === ckR && texColor.g === ckG && texColor.b === ckB
@@ -824,9 +622,9 @@ case class Core(c: Config) extends Component {
   // Alpha test: discard pixels that fail alpha comparison
   // Use per-triangle captured alphaMode (not live register) to avoid FIFO sync issues
   val alphaBits = fog.io.output.payload.alphaMode
-  val alphaTestEnable = alphaBits(0)
-  val alphaFunc = alphaBits(3 downto 1).asUInt
-  val alphaRef = alphaBits(31 downto 24).asUInt
+  val alphaTestEnable = alphaBits.alphaTestEnable
+  val alphaFunc = alphaBits.alphaFunc
+  val alphaRef = alphaBits.alphaRef
   val srcAlpha = fog.io.output.payload.alpha
 
   val alphaPassed = alphaFunc.mux(
@@ -892,80 +690,19 @@ case class Core(c: Config) extends Component {
   // ========================================================================
   // Fastfill → Write path (direct color1/zaColor with dithering)
   // ========================================================================
-  // Capture register values at fastfill command fire time.
-  // Due to pipelineBusyReg's 2-cycle latency in BmbBusInterface, the FIFO
-  // can drain the NEXT write (e.g. Glide restoring color1) before the busy
-  // signal stalls it. We capture registers when the command fires and use
-  // the captured values for all pixels. On the fire cycle itself we use the
-  // live register value (still valid — the overwriting FIFO drain takes effect
-  // at the next clock edge); RegNextWhen latches the same value for subsequent cycles.
-  val ffFiring = regBank.commands.fastfillCmd.fire
-  val ffColor1Cap = RegNextWhen(regBank.renderConfig.color1, ffFiring)
-  val ffZaColorCap = RegNextWhen(regBank.renderConfig.zaColor, ffFiring)
-  val ffDitherEnCap = RegNextWhen(regBank.renderConfig.fbzMode.enableDithering, ffFiring)
-  val ffDitherAlgCap = RegNextWhen(regBank.renderConfig.fbzMode.ditherAlgorithm, ffFiring)
-  val ffRgbMaskCap = RegNextWhen(regBank.renderConfig.fbzMode.rgbBufferMask, ffFiring)
-  val ffAuxMaskCap = RegNextWhen(regBank.renderConfig.fbzMode.auxBufferMask, ffFiring)
-  val ffDrawBaseCap = RegNextWhen(drawBufferBase, ffFiring)
-  val ffYOriginEnCap = RegNextWhen(yOriginEnable, ffFiring)
-  val ffYOriginValCap = RegNextWhen(yOriginSwapValue, ffFiring)
-
-  // Mux: first-pixel cycle uses live register (still correct), subsequent use captured
-  val ffActive = RegInit(False)
-  when(ffFiring) { ffActive := True }
-  when(!fastfill.running) { ffActive := False }
-
-  val ffColor1 = Mux(ffActive, ffColor1Cap, regBank.renderConfig.color1)
-  val ffZaColor = Mux(ffActive, ffZaColorCap, regBank.renderConfig.zaColor)
-  val ffDitherEn = Mux(ffActive, ffDitherEnCap, regBank.renderConfig.fbzMode.enableDithering)
-  val ffDitherAlg = Mux(ffActive, ffDitherAlgCap, regBank.renderConfig.fbzMode.ditherAlgorithm)
-  val ffRgbMask = Mux(ffActive, ffRgbMaskCap, regBank.renderConfig.fbzMode.rgbBufferMask)
-  val ffAuxMask = Mux(ffActive, ffAuxMaskCap, regBank.renderConfig.fbzMode.auxBufferMask)
-  val ffDrawBase = Mux(ffActive, ffDrawBaseCap, drawBufferBase)
-  val ffYOriginEn = Mux(ffActive, ffYOriginEnCap, yOriginEnable)
-  val ffYOriginVal = Mux(ffActive, ffYOriginValCap, yOriginSwapValue)
-
-  val fastfillWriteInput = fastfill.o.translateWith {
-    val in = fastfill.o.payload
-    val out = Write.Input(c)
-    out.coords := in.coords
-    when(ffYOriginEn) {
-      out.coords(1) := ffYOriginVal.resize(c.vertexFormat.nonFraction bits).asSInt - in.coords(
-        1
-      )
-    }
-
-    // Extract R/G/B from captured color1 (bits 23:16, 15:8, 7:0)
-    val ffR = ffColor1(23 downto 16).asUInt
-    val ffG = ffColor1(15 downto 8).asUInt
-    val ffB = ffColor1(7 downto 0).asUInt
-
-    // Dither
-    val ffDither = Dither()
-    ffDither.io.r := ffR
-    ffDither.io.g := ffG
-    ffDither.io.b := ffB
-    ffDither.io.x := in.coords(0).asUInt.resize(2 bits)
-    ffDither.io.y := in.coords(1).asUInt.resize(2 bits)
-    ffDither.io.enable := ffDitherEn
-    ffDither.io.use2x2 := ffDitherAlg
-
-    val fbWord = cloneOf(out.toFb)
-    fbWord.color.r := ffDither.io.ditR
-    fbWord.color.g := ffDither.io.ditG
-    fbWord.color.b := ffDither.io.ditB
-    fbWord.depthAlpha := ffZaColor(15 downto 0)
-
-    out.toFb := fbWord
-    out.rgbWrite := ffRgbMask
-    out.auxWrite := ffAuxMask
-    out.fbBaseAddr := ffDrawBase
-    out
-  }
+  val fastfillWrite = FastfillWrite(c)
+  fastfillWrite.io.pixels << fastfill.o
+  fastfillWrite.io.cmdFire := regBank.commands.fastfillCmd.fire
+  fastfillWrite.io.running := fastfill.running
+  fastfillWrite.io.regs.color1 := regBank.renderConfig.color1
+  fastfillWrite.io.regs.zaColor := regBank.renderConfig.zaColor
+  fastfillWrite.io.regs.fbzMode := regBank.renderConfig.fbzModeBundle
+  fastfillWrite.io.regs.drawBufferBase := drawBufferBase
+  fastfillWrite.io.regs.yOriginSwapValue := yOriginSwapValue
 
   // Merge fastfill, triangle, and LFB paths — lowerFirst gives fastfill priority (index 0)
   write.i.fromPipeline << StreamArbiterFactory.lowerFirst.on(
-    Seq(fastfillWriteInput, triangleWriteInput, lfb.io.writeOutput)
+    Seq(fastfillWrite.io.output, triangleWriteInput, lfb.io.writeOutput)
   )
 
   // Connect framebuffer write bus

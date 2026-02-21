@@ -28,20 +28,9 @@ case class Lfb(c: Config) extends Component {
     val busy = out Bool ()
 
     // Config inputs from RegisterBank
-    val pixelPipelineEnable = in Bool ()
-    val writeFormat = in UInt (4 bits)
-    val rgbaLanes = in UInt (2 bits)
-    val wordSwapWrites = in Bool ()
-    val byteSwizzleWrites = in Bool ()
-    val enableDithering = in Bool ()
-    val ditherAlgorithm = in Bool ()
+    val lfbMode = in(LfbMode())
+    val fbzMode = in(FbzMode())
     val zaColor = in Bits (32 bits)
-    val enableAlphaPlanes = in Bool ()
-
-    // Read config
-    val readBufferSelect = in UInt (2 bits)
-    val wordSwapReads = in Bool ()
-    val byteSwizzleReads = in Bool ()
 
     // Framebuffer read bus (for LFB reads)
     val fbReadBus = master(Bmb(Lfb.fbReadBmbParams(c)))
@@ -60,8 +49,9 @@ case class Lfb(c: Config) extends Component {
   val capturedRead2 = Reg(Bits(32 bits))
 
   // Is this a dual-pixel format?
-  val isDualPixel = io.writeFormat === 0 || io.writeFormat === 1 || io.writeFormat === 2 ||
-    io.writeFormat === 3 || io.writeFormat === 15
+  val isDualPixel =
+    io.lfbMode.writeFormat === 0 || io.lfbMode.writeFormat === 1 || io.lfbMode.writeFormat === 2 ||
+      io.lfbMode.writeFormat === 3 || io.lfbMode.writeFormat === 15
 
   // State machine: 3 bits to hold 6 states
   val state = RegInit(U(0, 3 bits))
@@ -76,20 +66,8 @@ case class Lfb(c: Config) extends Component {
   io.bus.cmd.ready := (state === stateIdle) && !rspPending
 
   // Apply word swap and byte swizzle to incoming write data
-  val rawData = io.bus.cmd.data
-  val afterWordSwap = Bits(32 bits)
-  when(io.wordSwapWrites) {
-    afterWordSwap := rawData(15 downto 0) ## rawData(31 downto 16)
-  } otherwise {
-    afterWordSwap := rawData
-  }
-  val afterByteSwizzle = Bits(32 bits)
-  when(io.byteSwizzleWrites) {
-    afterByteSwizzle := afterWordSwap(7 downto 0) ## afterWordSwap(15 downto 8) ##
-      afterWordSwap(23 downto 16) ## afterWordSwap(31 downto 24)
-  } otherwise {
-    afterByteSwizzle := afterWordSwap
-  }
+  val afterByteSwizzle =
+    wordSwapAndSwizzle(io.bus.cmd.data, io.lfbMode.wordSwapWrites, io.lfbMode.byteSwizzleWrites)
 
   // Capture on cmd.fire
   when(io.bus.cmd.fire) {
@@ -106,7 +84,7 @@ case class Lfb(c: Config) extends Component {
   }
 
   // Address decode: depends on format stride (for writes)
-  val is32bitStride = io.writeFormat === 4 || io.writeFormat === 5
+  val is32bitStride = io.lfbMode.writeFormat === 4 || io.lfbMode.writeFormat === 5
   val pixelX = UInt(10 bits)
   val pixelY = UInt(10 bits)
   when(is32bitStride) {
@@ -149,28 +127,6 @@ case class Lfb(c: Config) extends Component {
   decodedDepth := io.zaColor(15 downto 0) // Default depth from zaColor when no explicit depth
   decodedRgbWrite := True
   decodedAuxWrite := False
-
-  // RGB565 expansion matching 86Box: r = (rgb>>8)&0xf8; r |= r>>5; etc.
-  def expandRgb565(v: UInt): (UInt, UInt, UInt) = {
-    val r5 = v(15 downto 11)
-    val g6 = v(10 downto 5)
-    val b5 = v(4 downto 0)
-    val r8 = (r5 @@ U(0, 3 bits)) | (r5 >> 2).resize(8 bits)
-    val g8 = (g6 @@ U(0, 2 bits)) | (g6 >> 4).resize(8 bits)
-    val b8 = (b5 @@ U(0, 3 bits)) | (b5 >> 2).resize(8 bits)
-    (r8, g8, b8)
-  }
-
-  // RGB555 expansion
-  def expandRgb555(v: UInt): (UInt, UInt, UInt) = {
-    val r5 = v(14 downto 10)
-    val g5 = v(9 downto 5)
-    val b5 = v(4 downto 0)
-    val r8 = (r5 @@ U(0, 3 bits)) | (r5 >> 2).resize(8 bits)
-    val g8 = (g5 @@ U(0, 3 bits)) | (g5 >> 2).resize(8 bits)
-    val b8 = (b5 @@ U(0, 3 bits)) | (b5 >> 2).resize(8 bits)
-    (r8, g8, b8)
-  }
 
   // ARGB8888 with rgbaLanes swizzle
   def decodeArgb8888(data: Bits, lanes: UInt): (UInt, UInt, UInt) = {
@@ -219,47 +175,47 @@ case class Lfb(c: Config) extends Component {
   }
 
   // Format decode logic
-  switch(io.writeFormat) {
+  switch(io.lfbMode.writeFormat) {
     is(0) { // RGB565 - dual pixel
-      val (r, g, b) = expandRgb565(pixelData16)
-      decodedR := r; decodedG := g; decodedB := b
-      decodedRgbWrite := True; decodedAuxWrite := io.enableAlphaPlanes
+      val rgb = expandRgb565(pixelData16)
+      decodedR := rgb.r; decodedG := rgb.g; decodedB := rgb.b
+      decodedRgbWrite := True; decodedAuxWrite := io.fbzMode.enableAlphaPlanes
     }
     is(1) { // RGB555 - dual pixel
-      val (r, g, b) = expandRgb555(pixelData16)
-      decodedR := r; decodedG := g; decodedB := b
-      decodedRgbWrite := True; decodedAuxWrite := io.enableAlphaPlanes
+      val rgb = expandRgb555(pixelData16)
+      decodedR := rgb.r; decodedG := rgb.g; decodedB := rgb.b
+      decodedRgbWrite := True; decodedAuxWrite := io.fbzMode.enableAlphaPlanes
     }
     is(2) { // ARGB1555 - dual pixel
-      val (r, g, b) = expandRgb555(pixelData16)
-      decodedR := r; decodedG := g; decodedB := b
-      decodedRgbWrite := True; decodedAuxWrite := io.enableAlphaPlanes
+      val rgb = expandRgb555(pixelData16)
+      decodedR := rgb.r; decodedG := rgb.g; decodedB := rgb.b
+      decodedRgbWrite := True; decodedAuxWrite := io.fbzMode.enableAlphaPlanes
     }
     is(4) { // XRGB8888 - single pixel
-      val (r, g, b) = decodeArgb8888(pixelData32, io.rgbaLanes)
+      val (r, g, b) = decodeArgb8888(pixelData32, io.lfbMode.rgbaLanes)
       decodedR := r; decodedG := g; decodedB := b
-      decodedRgbWrite := True; decodedAuxWrite := io.enableAlphaPlanes
+      decodedRgbWrite := True; decodedAuxWrite := io.fbzMode.enableAlphaPlanes
     }
     is(5) { // ARGB8888 - single pixel
-      val (r, g, b) = decodeArgb8888(pixelData32, io.rgbaLanes)
+      val (r, g, b) = decodeArgb8888(pixelData32, io.lfbMode.rgbaLanes)
       decodedR := r; decodedG := g; decodedB := b
-      decodedRgbWrite := True; decodedAuxWrite := io.enableAlphaPlanes
+      decodedRgbWrite := True; decodedAuxWrite := io.fbzMode.enableAlphaPlanes
     }
     is(12) { // Depth+RGB565 - single pixel (hi16=depth, lo16=RGB565)
-      val (r, g, b) = expandRgb565(lo16)
-      decodedR := r; decodedG := g; decodedB := b
+      val rgb = expandRgb565(lo16)
+      decodedR := rgb.r; decodedG := rgb.g; decodedB := rgb.b
       decodedDepth := hi16.asBits
       decodedRgbWrite := True; decodedAuxWrite := True
     }
     is(13) { // Depth+RGB555 - single pixel
-      val (r, g, b) = expandRgb555(lo16)
-      decodedR := r; decodedG := g; decodedB := b
+      val rgb = expandRgb555(lo16)
+      decodedR := rgb.r; decodedG := rgb.g; decodedB := rgb.b
       decodedDepth := hi16.asBits
       decodedRgbWrite := True; decodedAuxWrite := True
     }
     is(14) { // Depth+ARGB1555 - single pixel
-      val (r, g, b) = expandRgb555(lo16)
-      decodedR := r; decodedG := g; decodedB := b
+      val rgb = expandRgb555(lo16)
+      decodedR := rgb.r; decodedG := rgb.g; decodedB := rgb.b
       decodedDepth := hi16.asBits
       decodedRgbWrite := True; decodedAuxWrite := True
     }
@@ -272,9 +228,9 @@ case class Lfb(c: Config) extends Component {
   // Decode alpha for pipeline mode
   val decodedAlpha = UInt(8 bits)
   decodedAlpha := U(0xff, 8 bits) // Default: fully opaque
-  switch(io.writeFormat) {
+  switch(io.lfbMode.writeFormat) {
     is(5) { // ARGB8888: extract alpha
-      decodedAlpha := decodeAlpha8888(pixelData32, io.rgbaLanes)
+      decodedAlpha := decodeAlpha8888(pixelData32, io.lfbMode.rgbaLanes)
     }
     is(2) { // ARGB1555 dual pixel: bit 15
       decodedAlpha := pixelData16(15) ? U(0xff, 8 bits) | U(0, 8 bits)
@@ -294,8 +250,8 @@ case class Lfb(c: Config) extends Component {
   dither.io.b := decodedB
   dither.io.x := currentX.resize(2 bits)
   dither.io.y := pixelY.resize(2 bits)
-  dither.io.enable := io.enableDithering
-  dither.io.use2x2 := io.ditherAlgorithm
+  dither.io.enable := io.fbzMode.enableDithering
+  dither.io.use2x2 := io.fbzMode.ditherAlgorithm
 
   // Build Write.Input (bypass mode)
   val writeInput = Write.Input(c)
@@ -326,23 +282,24 @@ case class Lfb(c: Config) extends Component {
   pipelinePayload.depth.raw := (depthFor16.resize(32 bits) |<< 12).asBits
   pipelinePayload.iteratedAlpha := decodedAlpha
   pipelinePayload.rawW := S(0, 32 bits) // LFB has no W data
-  pipelinePayload.alphaMode := 0 // LFB writes bypass alpha test/blend
-  pipelinePayload.fogMode := 0 // LFB writes bypass fog
+  pipelinePayload.alphaMode.clearAll() // LFB writes bypass alpha test/blend
+  pipelinePayload.fogMode.clearAll() // LFB writes bypass fog
   // LFB writes: disable depth test, enable both write masks
-  // bit 9 = rgbBufferMask, bit 10 = auxBufferMask
-  pipelinePayload.fbzMode := B(21 bits, 9 -> true, 10 -> true, default -> false)
+  pipelinePayload.fbzMode.clearAll().allowOverride()
+  pipelinePayload.fbzMode.rgbBufferMask := True
+  pipelinePayload.fbzMode.auxBufferMask := True
 
   // Write pixel output valid signals — mux based on pixelPipelineEnable
   val writePixelActive = (state === statePixel1) || (state === statePixel2)
 
-  io.writeOutput.valid := writePixelActive && !io.pixelPipelineEnable
+  io.writeOutput.valid := writePixelActive && !io.lfbMode.pixelPipelineEnable
   io.writeOutput.payload := writeInput
 
-  io.pipelineOutput.valid := writePixelActive && io.pixelPipelineEnable
+  io.pipelineOutput.valid := writePixelActive && io.lfbMode.pixelPipelineEnable
   io.pipelineOutput.payload := pipelinePayload
 
   // Active output ready: whichever mode is selected
-  val activeReady = io.pixelPipelineEnable ? io.pipelineOutput.ready | io.writeOutput.ready
+  val activeReady = io.lfbMode.pixelPipelineEnable ? io.pipelineOutput.ready | io.writeOutput.ready
 
   // State transitions on active output fire
   val activeOutputFire = writePixelActive && activeReady
@@ -417,7 +374,7 @@ case class Lfb(c: Config) extends Component {
   // readBufferSelect: 0/1 → lo16 (RGB565), 2 → hi16 (depth/alpha)
   val readData1 = Bits(16 bits)
   val readData2 = Bits(16 bits)
-  when(io.readBufferSelect === 2) {
+  when(io.lfbMode.readBufferSelect === 2) {
     readData1 := capturedRead1(31 downto 16)
     readData2 := capturedRead2(31 downto 16)
   } otherwise {
@@ -429,19 +386,8 @@ case class Lfb(c: Config) extends Component {
   val readResponseRaw = readData2 ## readData1
 
   // Apply word swap and byte swizzle to read result
-  val readAfterWordSwap = Bits(32 bits)
-  when(io.wordSwapReads) {
-    readAfterWordSwap := readResponseRaw(15 downto 0) ## readResponseRaw(31 downto 16)
-  } otherwise {
-    readAfterWordSwap := readResponseRaw
-  }
-  val readResponseData = Bits(32 bits)
-  when(io.byteSwizzleReads) {
-    readResponseData := readAfterWordSwap(7 downto 0) ## readAfterWordSwap(15 downto 8) ##
-      readAfterWordSwap(23 downto 16) ## readAfterWordSwap(31 downto 24)
-  } otherwise {
-    readResponseData := readAfterWordSwap
-  }
+  val readResponseData =
+    wordSwapAndSwizzle(readResponseRaw, io.lfbMode.wordSwapReads, io.lfbMode.byteSwizzleReads)
 
   // RRESP state: wait for bus response handshake
   when(state === stateRresp && io.bus.rsp.fire) {

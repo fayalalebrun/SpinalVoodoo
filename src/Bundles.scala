@@ -69,4 +69,63 @@ package object voodoo {
   }
 
   def rgb565() = Color(UInt(5 bits), UInt(6 bits), UInt(5 bits))
+
+  /** Expand N-bit unsigned value to 8 bits by replicating MSBs into padding. Special case: width=1
+    * returns 0x00 or 0xFF.
+    */
+  def expandTo8(v: UInt, srcWidth: Int): UInt = {
+    require(srcWidth >= 1 && srcWidth <= 8)
+    if (srcWidth >= 8) v.resize(8 bits)
+    else if (srcWidth == 1) Mux(v(0), U(255, 8 bits), U(0, 8 bits))
+    else {
+      val reps = (8 + srcWidth - 1) / srcWidth
+      val wide = Seq.fill(reps)(v).reduce(_ @@ _)
+      wide(wide.getWidth - 1 downto wide.getWidth - 8)
+    }
+  }
+
+  /** Expand RGB565 packed value to 8-bit Color */
+  def expandRgb565(v: UInt): Color[UInt] = {
+    val c = Color.u8()
+    c.r := expandTo8(v(15 downto 11), 5)
+    c.g := expandTo8(v(10 downto 5), 6)
+    c.b := expandTo8(v(4 downto 0), 5)
+    c
+  }
+
+  /** Expand RGB1555 packed value to 8-bit Color (ignores alpha bit 15) */
+  def expandRgb555(v: UInt): Color[UInt] = {
+    val c = Color.u8()
+    c.r := expandTo8(v(14 downto 10), 5)
+    c.g := expandTo8(v(9 downto 5), 5)
+    c.b := expandTo8(v(4 downto 0), 5)
+    c
+  }
+
+  /** Clamp signed value to [0, 255] and return as UInt(8 bits) */
+  def clampToU8(v: SInt): UInt = {
+    val result = UInt(8 bits)
+    when(v < 0) { result := 0 }
+      .elsewhen(v > 255) { result := 255 }
+      .otherwise { result := v(7 downto 0).asUInt }
+    result
+  }
+
+  /** Apply word-swap and byte-swizzle transforms to 32-bit data */
+  def wordSwapAndSwizzle(data: Bits, doWordSwap: Bool, doByteSwizzle: Bool): Bits = {
+    val afterWordSwap = Bits(32 bits)
+    when(doWordSwap) {
+      afterWordSwap := data(15 downto 0) ## data(31 downto 16)
+    } otherwise {
+      afterWordSwap := data
+    }
+    val result = Bits(32 bits)
+    when(doByteSwizzle) {
+      result := afterWordSwap(7 downto 0) ## afterWordSwap(15 downto 8) ##
+        afterWordSwap(23 downto 16) ## afterWordSwap(31 downto 24)
+    } otherwise {
+      result := afterWordSwap
+    }
+    result
+  }
 }

@@ -10,9 +10,9 @@ case class Rasterizer(c: Config) extends Component {
 
   // Scissor clip inputs
   val enableClipping = in Bool ()
-  val clipLeft  = in UInt (10 bits)
+  val clipLeft = in UInt (10 bits)
   val clipRight = in UInt (10 bits)
-  val clipLowY  = in UInt (10 bits)
+  val clipLowY = in UInt (10 bits)
   val clipHighY = in UInt (10 bits)
 
   val streamWhileResult = StreamWhile(
@@ -58,12 +58,12 @@ case class Rasterizer(c: Config) extends Component {
 
       // Scissor clip test: inclusive of left/lowY, exclusive of right/highY
       // Widen UInt(10) clip bounds to SInt for comparison with signed coords
-      val clipLeftS  = clipLeft.resize(c.vertexFormat.nonFraction bits).asSInt
+      val clipLeftS = clipLeft.resize(c.vertexFormat.nonFraction bits).asSInt
       val clipRightS = clipRight.resize(c.vertexFormat.nonFraction bits).asSInt
-      val clipLowYS  = clipLowY.resize(c.vertexFormat.nonFraction bits).asSInt
+      val clipLowYS = clipLowY.resize(c.vertexFormat.nonFraction bits).asSInt
       val clipHighYS = clipHighY.resize(c.vertexFormat.nonFraction bits).asSInt
       val insideClip = (intX >= clipLeftS) && (intX < clipRightS) &&
-                       (intY >= clipLowYS) && (intY < clipHighYS)
+        (intY >= clipLowYS) && (intY < clipHighYS)
 
       output.insideTriangle := insideTriangle && (!enableClipping || insideClip)
 
@@ -95,37 +95,36 @@ case class Rasterizer(c: Config) extends Component {
         c.texCoordsFormat
       )
 
+      // Helper: update edges and gradients with selected deltas
+      def updateEdgesAndGrads(
+          edgeDelta: Coefficients => AFix,
+          gradDelta: Rasterizer.InputGradient => AFix
+      ): Unit = {
+        next.edge.zip(state.edge).zip(state.input.coeffs).foreach { case ((nxt, cur), coeff) =>
+          nxt := (cur + edgeDelta(coeff)).fixTo(c.coefficientFormat)
+        }
+        next.grads.all.zip(state.grads.all).zip(state.input.grads.all).zipWithIndex.foreach {
+          case (((nxt, cur), grad), idx) =>
+            nxt := (cur + gradDelta(grad)).fixTo(gradFormats(idx))
+        }
+      }
+
       when(atEdge) {
         // At edge: move down, flip direction
         next.coords(0) := state.coords(0)
         next.coords(1) := (state.coords(1) + one).fixTo(c.vertexFormat)
         next.goingRight := !state.goingRight
-
-        // Update edges and gradients: add b/dy
-        next.edge.zip(state.edge).zip(state.input.coeffs).foreach { case ((nxt, cur), coeff) =>
-          nxt := (cur + coeff.b).fixTo(c.coefficientFormat)
-        }
-        next.grads.all.zip(state.grads.all).zip(state.input.grads.all).zipWithIndex.foreach {
-          case (((nxt, cur), grad), idx) =>
-            nxt := (cur + grad.d(1)).fixTo(gradFormats(idx))
-        }
+        updateEdgesAndGrads(_.b, _.d(1))
       }.otherwise {
         // Move horizontally
         val dx = state.goingRight ? one | negOne
         next.coords(0) := (state.coords(0) + dx).fixTo(c.vertexFormat)
         next.coords(1) := state.coords(1)
         next.goingRight := state.goingRight
-
-        // Update edges and gradients: add/subtract a/dx based on direction
-        next.edge.zip(state.edge).zip(state.input.coeffs).foreach { case ((nxt, cur), coeff) =>
-          val da = state.goingRight ? coeff.a | (-coeff.a)
-          nxt := (cur + da).fixTo(c.coefficientFormat)
-        }
-        next.grads.all.zip(state.grads.all).zip(state.input.grads.all).zipWithIndex.foreach {
-          case (((nxt, cur), grad), idx) =>
-            val dg = state.goingRight ? grad.d(0) | (-grad.d(0))
-            nxt := (cur + dg).fixTo(gradFormats(idx))
-        }
+        updateEdgesAndGrads(
+          co => state.goingRight ? co.a | (-co.a),
+          g => state.goingRight ? g.d(0) | (-g.d(0))
+        )
       }
 
       next.input := state.input

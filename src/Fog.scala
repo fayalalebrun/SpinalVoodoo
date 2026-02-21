@@ -18,8 +18,8 @@ object Fog {
     ) // pre-fog color for ACOLORBEFOREFOG blend factor
 
     // Per-triangle FIFO registers (pass-through for alpha test and framebuffer access)
-    val alphaMode = Bits(32 bits)
-    val fbzMode = Bits(21 bits)
+    val alphaMode = AlphaMode()
+    val fbzMode = FbzMode()
   }
 }
 
@@ -46,28 +46,22 @@ case class Fog(c: Config) extends Component {
   io.output.payload.coords := payload.coords
   io.output.payload.alpha := payload.alpha
   io.output.payload.depth := payload.depth
-  io.output.payload.colorBeforeFog.r := payload.color.r
-  io.output.payload.colorBeforeFog.g := payload.color.g
-  io.output.payload.colorBeforeFog.b := payload.color.b
+  io.output.payload.colorBeforeFog := payload.color
   io.output.payload.alphaMode := payload.alphaMode
   io.output.payload.fbzMode := payload.fbzMode
 
   // Fog mode bits (from per-triangle captured config, not live register)
-  val fogEnable = payload.fogMode(0)
-  val fogAdd = payload.fogMode(1)
-  val fogMult = payload.fogMode(2)
-  val fogConstant = payload.fogMode(5)
-  val fogModeSelect = payload.fogMode(4 downto 3).asUInt
+  val fogEnable = payload.fogMode.fogEnable
+  val fogAdd = payload.fogMode.fogAdd
+  val fogMult = payload.fogMode.fogMult
+  val fogConstant = payload.fogMode.fogConstant
+  val fogModeSelect = payload.fogMode.fogModeSelect
 
-  // Fog color components
-  val fogColorR = io.fogColor(23 downto 16).asUInt
-  val fogColorG = io.fogColor(15 downto 8).asUInt
-  val fogColorB = io.fogColor(7 downto 0).asUInt
-
-  // Source color (from color combine)
-  val srcR = payload.color.r
-  val srcG = payload.color.g
-  val srcB = payload.color.b
+  // Fog color as Color bundle
+  val fogRgb = Color.u8()
+  fogRgb.r := io.fogColor(23 downto 16).asUInt
+  fogRgb.g := io.fogColor(15 downto 8).asUInt
+  fogRgb.b := io.fogColor(7 downto 0).asUInt
 
   // --- Fog factor (fogA) selection ---
   // Depth value for Z-based fog: bits [27:20] of the 20.12 depth
@@ -178,77 +172,50 @@ case class Fog(c: Config) extends Component {
   val fogAPlus1 = (fogA.resize(9 bits) + 1).resize(9 bits)
 
   // Compute fogged color
-  val outR = UInt(8 bits)
-  val outG = UInt(8 bits)
-  val outB = UInt(8 bits)
+  val outColor = Color.u8()
 
   when(!fogEnable) {
-    // Fog disabled — pass through
-    outR := srcR
-    outG := srcG
-    outB := srcB
+    outColor := payload.color
   }.elsewhen(fogConstant) {
-    // FOG_CONSTANT: just add fog color
-    val addR = (srcR.resize(9 bits) + fogColorR.resize(9 bits))
-    val addG = (srcG.resize(9 bits) + fogColorG.resize(9 bits))
-    val addB = (srcB.resize(9 bits) + fogColorB.resize(9 bits))
-    outR := addR.min(U(255, 9 bits)).resize(8 bits)
-    outG := addG.min(U(255, 9 bits)).resize(8 bits)
-    outB := addB.min(U(255, 9 bits)).resize(8 bits)
+    outColor.assignFromSeq(payload.color.zipWith(fogRgb) { (s, f) =>
+      (s.resize(9 bits) + f.resize(9 bits)).min(U(255, 9 bits)).resize(8 bits)
+    })
   }.otherwise {
     // Standard fog blending
-    // fog_rgb = FOG_ADD ? (0,0,0) : (fogColorR, fogColorG, fogColorB)
-    val baseR = SInt(10 bits)
-    val baseG = SInt(10 bits)
-    val baseB = SInt(10 bits)
+    val base = Color.s10()
     when(fogAdd) {
-      baseR := 0; baseG := 0; baseB := 0
+      base.foreach(_ := 0)
     }.otherwise {
-      baseR := fogColorR.resize(10 bits).asSInt
-      baseG := fogColorG.resize(10 bits).asSInt
-      baseB := fogColorB.resize(10 bits).asSInt
+      base.assignFromSeq(fogRgb.map(_.resize(10 bits).asSInt))
     }
 
-    // if !FOG_MULT: fog_rgb -= src_rgb (standard blend: fog - src)
-    val diffR = SInt(10 bits)
-    val diffG = SInt(10 bits)
-    val diffB = SInt(10 bits)
+    val diff = Color.s10()
     when(!fogMult) {
-      diffR := baseR - srcR.resize(10 bits).asSInt
-      diffG := baseG - srcG.resize(10 bits).asSInt
-      diffB := baseB - srcB.resize(10 bits).asSInt
+      diff.assignFromSeq(base.zipWith(payload.color) { (b, s) =>
+        b - s.resize(10 bits).asSInt
+      })
     }.otherwise {
-      diffR := baseR; diffG := baseG; diffB := baseB
+      diff := base
     }
 
-    // result = (diff * (fogA+1)) >> 8
     // fogAPlus1 is UInt(9 bits) range 1-256. Must zero-extend to SInt(10 bits) to avoid sign issues.
     val fogAPlus1Signed = (False ## fogAPlus1).asSInt // SInt(10 bits), always positive
-    val mulR = (diffR * fogAPlus1Signed) >> 8
-    val mulG = (diffG * fogAPlus1Signed) >> 8
-    val mulB = (diffB * fogAPlus1Signed) >> 8
+    val mulChannels = diff.map(d => ((d * fogAPlus1Signed) >> 8).resize(10 bits))
 
-    // if FOG_MULT: out = result; else: out = src + result
-    val finalR = SInt(10 bits)
-    val finalG = SInt(10 bits)
-    val finalB = SInt(10 bits)
+    val finalColor = Color.s10()
     when(fogMult) {
-      finalR := mulR.resize(10 bits)
-      finalG := mulG.resize(10 bits)
-      finalB := mulB.resize(10 bits)
+      finalColor.assignFromSeq(mulChannels)
     }.otherwise {
-      finalR := srcR.resize(10 bits).asSInt + mulR.resize(10 bits)
-      finalG := srcG.resize(10 bits).asSInt + mulG.resize(10 bits)
-      finalB := srcB.resize(10 bits).asSInt + mulB.resize(10 bits)
+      finalColor.assignFromSeq(
+        payload.color.channels.zip(mulChannels).map { case (s, m) =>
+          s.resize(10 bits).asSInt + m
+        }
+      )
     }
 
     // Clamp to [0, 255]
-    outR := finalR.max(S(0, 10 bits)).min(255).asUInt.resize(8 bits)
-    outG := finalG.max(S(0, 10 bits)).min(255).asUInt.resize(8 bits)
-    outB := finalB.max(S(0, 10 bits)).min(255).asUInt.resize(8 bits)
+    outColor.assignFromSeq(finalColor.map(clampToU8))
   }
 
-  io.output.payload.color.r := outR
-  io.output.payload.color.g := outG
-  io.output.payload.color.b := outB
+  io.output.payload.color := outColor
 }

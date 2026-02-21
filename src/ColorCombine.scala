@@ -4,59 +4,39 @@ import spinal.core._
 import spinal.lib._
 import spinal.lib.misc.pipeline._
 
-/** Color Combine Unit enums and types */
+/** Color Combine Unit types */
 object ColorCombine {
-  // RGB source selection (fbzColorPath bits 1:0)
-  object RgbSel extends SpinalEnum {
-    val ITERATED, TEXTURE, COLOR1, LFB = newElement()
-  }
+  // Re-export enums from package level so ColorCombine.RgbSel etc. still work
+  val RgbSel = voodoo.RgbSel
+  val AlphaSel = voodoo.AlphaSel
+  val LocalSel = voodoo.LocalSel
+  val AlphaLocalSel = voodoo.AlphaLocalSel
+  val MSelect = voodoo.MSelect
+  val AddMode = voodoo.AddMode
 
-  // Alpha source selection (fbzColorPath bits 3:2)
-  object AlphaSel extends SpinalEnum {
-    val ITERATED, TEXTURE, COLOR1, LFB = newElement()
-  }
-
-  // Local color selection for CCU (fbzColorPath bit 4)
-  object LocalSel extends SpinalEnum {
-    val ITERATED, COLOR0 = newElement()
-  }
-
-  // Local alpha selection for ACU (fbzColorPath bits 6:5)
-  object AlphaLocalSel extends SpinalEnum {
-    val ITERATED, COLOR0, ITERATED_Z = newElement()
-  }
-
-  // Multiply factor selection (fbzColorPath bits 12:10 for CCU, bits 21:19 for ACU)
-  object MSelect extends SpinalEnum {
-    val ZERO, CLOCAL, AOTHER, ALOCAL, TEXTURE_ALPHA, TEXTURE_RGB = newElement()
-  }
-
-  // Add mode (fbzColorPath bits 15:14 for CCU, bits 24:23 for ACU)
-  object AddMode extends SpinalEnum {
-    val NONE, CLOCAL, ALOCAL = newElement()
-  }
-
-  /** Configuration bundle for Color Combine Unit - decoded from fbzColorPath */
+  /** Configuration bundle for Color Combine Unit — subset of FbzColorPath fields. All fields share
+    * names and types with FbzColorPath, enabling assignSomeByName.
+    */
   case class Config() extends Bundle {
     // RGB channel controls
-    val rgbSel = RgbSel()
-    val localSelect = LocalSel()
+    val rgbSel = voodoo.RgbSel()
+    val localSelect = voodoo.LocalSel()
     val localSelectOverride = Bool()
     val zeroOther = Bool()
     val subClocal = Bool()
-    val mselect = MSelect()
+    val mselect = voodoo.MSelect()
     val reverseBlend = Bool()
-    val add = AddMode()
+    val add = voodoo.AddMode()
     val invertOutput = Bool()
 
     // Alpha channel controls
-    val alphaSel = AlphaSel()
-    val alphaLocalSelect = AlphaLocalSel()
+    val alphaSel = voodoo.AlphaSel()
+    val alphaLocalSelect = voodoo.AlphaLocalSel()
     val alphaZeroOther = Bool()
     val alphaSubClocal = Bool()
-    val alphaMselect = MSelect()
+    val alphaMselect = voodoo.MSelect()
     val alphaReverseBlend = Bool()
-    val alphaAdd = AddMode()
+    val alphaAdd = voodoo.AddMode()
     val alphaInvertOutput = Bool()
 
     // Texture enable
@@ -84,9 +64,9 @@ object ColorCombine {
     val config = ColorCombine.Config()
 
     // Per-triangle FIFO registers (captured at triangle command time, must travel with pixels)
-    val alphaMode = Bits(32 bits)
-    val fogMode = Bits(6 bits)
-    val fbzMode = Bits(21 bits)
+    val alphaMode = AlphaMode()
+    val fogMode = FogMode()
+    val fbzMode = FbzMode()
   }
 
   /** Output from Color Combine Unit */
@@ -99,9 +79,9 @@ object ColorCombine {
     val rawW = SInt(32 bits) // Pass-through for fog wDepth calculation
 
     // Per-triangle FIFO registers (pass-through for downstream stages)
-    val alphaMode = Bits(32 bits)
-    val fogMode = Bits(6 bits)
-    val fbzMode = Bits(21 bits)
+    val alphaMode = AlphaMode()
+    val fogMode = FogMode()
+    val fbzMode = FbzMode()
   }
 }
 
@@ -122,9 +102,9 @@ case class ColorCombine(c: voodoo.Config) extends Component {
   val CONFIG = Payload(ColorCombine.Config())
 
   // Per-triangle FIFO registers pass-through (must travel with pixels through pipeline)
-  val ALPHA_MODE = Payload(Bits(32 bits))
-  val FOG_MODE = Payload(Bits(6 bits))
-  val FBZ_MODE = Payload(Bits(21 bits))
+  val ALPHA_MODE = Payload(AlphaMode())
+  val FOG_MODE = Payload(FogMode())
+  val FBZ_MODE = Payload(FbzMode())
 
   // Color payloads at various precisions
   val C_OTHER = Payload(Color.s9())

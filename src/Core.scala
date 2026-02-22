@@ -590,9 +590,11 @@ case class Core(c: Config) extends Component {
     out.color0.r := color0Bits(23 downto 16).asUInt
     out.color0.g := color0Bits(15 downto 8).asUInt
     out.color0.b := color0Bits(7 downto 0).asUInt
+    out.color0Alpha := color0Bits(31 downto 24).asUInt
     out.color1.r := color1Bits(23 downto 16).asUInt
     out.color1.g := color1Bits(15 downto 8).asUInt
     out.color1.b := color1Bits(7 downto 0).asUInt
+    out.color1Alpha := color1Bits(31 downto 24).asUInt
 
     // Fog color from per-triangle captured config (pass-through to Fog stage)
     out.fogColor := rasterOut.config.fogColor

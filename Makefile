@@ -68,13 +68,13 @@ run/%: $(GLIDE_TST_DIR)/%.exe scripts/srle2png
 	  $(if $(filter 1,$(TRACE)),SIM_FST=$(abspath $(OUTPUT_DIR))/$*/trace.fst) \
 	  LD_LIBRARY_PATH=../../lib/sst1 \
 	  timeout 300 ./$*.exe -n 1 -d $(abspath $(OUTPUT_DIR))/$*/screenshot.srle < /dev/null
-	@if [ -f $(OUTPUT_DIR)/$*/screenshot.srle ]; then \
-	  python3 scripts/srle2png $(OUTPUT_DIR)/$*/screenshot.srle $(OUTPUT_DIR)/$*/screenshot.png && \
-	  rm -f $(OUTPUT_DIR)/$*/screenshot.srle; \
-	fi
+	@for f in $(OUTPUT_DIR)/$*/screenshot*.srle; do \
+	  [ -f "$$f" ] || continue; \
+	  python3 scripts/srle2png "$$f" "$${f%.srle}.png" && rm -f "$$f"; \
+	done
 
 # Run all tests that support -d
-run-all: $(patsubst %,run/%,test00 test01 test02 test03 test04 test05 test06 test07 test08 test13 test16 test17 test18 test19)
+run-all: $(patsubst %,run/%,test00 test01 test02 test03 test04 test05 test06 test07 test08 test09 test13 test16 test17 test18 test19)
 
 
 clean: clean-tests clean-glide clean-sim

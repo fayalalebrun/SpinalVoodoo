@@ -59,6 +59,8 @@ object ColorCombine {
     // Constant colors from registers
     val color0 = Color.u8()
     val color1 = Color.u8()
+    val color0Alpha = UInt(8 bits) // Alpha byte from color0 register (bits 31:24)
+    val color1Alpha = UInt(8 bits) // Alpha byte from color1 register (bits 31:24)
 
     // Fog color (per-triangle, passed through to Fog stage)
     val fogColor = Bits(32 bits)
@@ -263,7 +265,7 @@ case class ColorCombine(c: voodoo.Config) extends Component {
         self(A_OTHER) := u8ToS9(payload.textureAlpha)
       }
       is(AlphaSel.COLOR1) {
-        self(A_OTHER) := u8ToS9(payload.color1.r)
+        self(A_OTHER) := u8ToS9(payload.color1Alpha)
       }
       is(AlphaSel.LFB) {
         self(A_OTHER) := 0
@@ -276,7 +278,7 @@ case class ColorCombine(c: voodoo.Config) extends Component {
         self(A_LOCAL) := u8ToS9(payload.iteratedAlpha)
       }
       is(AlphaLocalSel.COLOR0) {
-        self(A_LOCAL) := u8ToS9(payload.color0.r)
+        self(A_LOCAL) := u8ToS9(payload.color0Alpha)
       }
       is(AlphaLocalSel.ITERATED_Z) {
         self(A_LOCAL) := u8ToS9(payload.iteratedZ)

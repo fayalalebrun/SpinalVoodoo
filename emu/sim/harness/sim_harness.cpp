@@ -15,15 +15,20 @@
 
 /* Verilator boilerplate */
 #include "verilated.h"
+#ifdef VM_TRACE_FST
 #include "verilated_fst_c.h"
+#endif
 
 /* ------------------------------------------------------------------ */
 /* State                                                               */
 /* ------------------------------------------------------------------ */
 
 static VCoreSim *top = nullptr;
+#ifdef VM_TRACE_FST
 static VerilatedFstC *tfp = nullptr;
+#endif
 static uint64_t sim_time = 0;
+static uint64_t cycle_limit = 0;  /* 0 = no limit; set via SIM_CYCLE_LIMIT */
 
 /* Vsync generation: toggle vRetrace every VSYNC_HALF_PERIOD ticks */
 #define VSYNC_PERIOD     5000
@@ -37,16 +42,11 @@ static int fbwrite_phase = 0; /* 0=clear, 1=idle_after_clear, 2=text_render */
 /* TMU logging: log texture lookup details for cutoff analysis */
 static FILE *tmu_log = nullptr;
 
-/* Signal handler to flush FST on termination */
+/* Signal flag — set asynchronously, polled in tick_one() */
+static volatile sig_atomic_t quit_requested = 0;
+
 static void signal_handler(int sig) {
-    fprintf(stderr, "[sim_harness] Signal %d, flushing trace (sim_time=%lu)...\n",
-            sig, (unsigned long)sim_time);
-    if (tfp) {
-        tfp->flush();
-        tfp->close();
-        tfp = nullptr;
-    }
-    _exit(128 + sig);
+    quit_requested = sig;  /* async-signal-safe */
 }
 
 /* ------------------------------------------------------------------ */
@@ -57,7 +57,9 @@ static void tick_one(void) {
     /* Rising edge */
     top->clk = 1;
     top->eval();
+#ifdef VM_TRACE_FST
     if (tfp) tfp->dump(sim_time);
+#endif
     sim_time++;
 
     /* fbWrite logging: capture on rising edge */
@@ -76,15 +78,6 @@ static void tick_one(void) {
                 fprintf(fbwrite_log, "%lu %u %u 0x%08x\n",
                         (unsigned long)(sim_time/2), x, y, data);
             }
-        }
-        /* Detect phase transitions based on pipeline status */
-        if (fbwrite_phase == 0 && top->io_fifoEmpty && !top->io_pipelineBusy) {
-            fbwrite_phase = 1;
-            fprintf(fbwrite_log, "# PHASE 1: idle after clear at tick %lu\n", (unsigned long)(sim_time/2));
-        }
-        if (fbwrite_phase == 1 && (!top->io_fifoEmpty || top->io_pipelineBusy)) {
-            fbwrite_phase = 2;
-            fprintf(fbwrite_log, "# PHASE 2: text rendering at tick %lu\n", (unsigned long)(sim_time/2));
         }
     }
 
@@ -106,11 +99,29 @@ static void tick_one(void) {
         }
     }
 
+    /* Check cycle limit (sim_time/2 = tick count) */
+    if (cycle_limit && (sim_time / 2) >= cycle_limit) {
+        fprintf(stderr, "[sim_harness] Cycle limit reached (%lu ticks), shutting down.\n",
+                (unsigned long)cycle_limit);
+        sim_shutdown();
+        _exit(1);
+    }
+
     /* Falling edge */
     top->clk = 0;
     top->eval();
+#ifdef VM_TRACE_FST
     if (tfp) tfp->dump(sim_time);
+#endif
     sim_time++;
+
+    /* Check for signal (Ctrl-C / SIGTERM) — safe to clean up here */
+    if (quit_requested) {
+        fprintf(stderr, "[sim_harness] Signal %d, shutting down (sim_time=%lu)...\n",
+                (int)quit_requested, (unsigned long)sim_time);
+        sim_shutdown();
+        _exit(128 + quit_requested);
+    }
 
     /* Vsync generation */
     vsync_counter++;
@@ -119,10 +130,12 @@ static void tick_one(void) {
     }
     top->io_vRetrace = (vsync_counter < VSYNC_HIGH_TICKS) ? 1 : 0;
 
+#ifdef VM_TRACE_FST
     /* Periodic FST flush (every 500K sim_time units = 250K ticks) */
     if (tfp && (sim_time % 500000) == 0) {
         tfp->flush();
     }
+#endif
 }
 
 /* ------------------------------------------------------------------ */
@@ -143,12 +156,10 @@ static uint64_t total_write_count = 0;
 static void print_periodic_stats(void) {
     uint64_t total_ops = total_read_count + total_write_count;
     if (total_ops > 0 && (total_ops % STATS_INTERVAL) == 0) {
-        fprintf(stderr, "[sim_harness] %lu ops (%lu R avg %.1f tck, %lu W avg %.1f tck) sim_time=%lu\n",
+        fprintf(stderr, "[sim_harness] %lu ops (%lu R, %lu W) cycle=%lu\n",
                 (unsigned long)total_ops,
                 (unsigned long)total_read_count,
-                total_read_count > 0 ? (double)total_read_ticks / total_read_count : 0.0,
                 (unsigned long)total_write_count,
-                total_write_count > 0 ? (double)total_write_ticks / total_write_count : 0.0,
                 (unsigned long)(sim_time / 2));
     }
 }
@@ -234,8 +245,6 @@ static uint32_t bus_read(uint32_t addr) {
         timeout--;
     }
 
-    uint64_t t_cmd = sim_time;
-
     /* Deassert cmd */
     top->io_cpuBus_cmd_valid = 0;
 
@@ -247,17 +256,7 @@ static uint32_t bus_read(uint32_t addr) {
             uint32_t data = top->io_cpuBus_rsp_payload_fragment_data;
             tick_one();  /* Consume response */
 
-            uint64_t t_rsp = sim_time;
             uint64_t ticks = (sim_time - t0) / 2;
-            uint64_t cmd_ticks = (t_cmd - t0) / 2;
-            uint64_t rsp_ticks = (t_rsp - t_cmd) / 2;
-
-            if (total_read_count < 20 || ticks > 10) {
-                fprintf(stderr, "[bus_read] #%lu addr=0x%06x data=0x%08x ticks=%lu (cmd=%lu rsp=%lu)\n",
-                        (unsigned long)total_read_count, addr & 0xFFFFFF, data,
-                        (unsigned long)ticks, (unsigned long)cmd_ticks, (unsigned long)rsp_ticks);
-            }
-
             total_read_ticks += ticks;
             total_read_count++;
             print_periodic_stats();
@@ -285,11 +284,13 @@ int sim_init(void) {
     /* Verilator context setup */
     Verilated::commandArgs(0, (const char **)nullptr);
 
+#ifdef VM_TRACE_FST
     /* Must call traceEverOn before model construction if tracing */
     const char *fst_path = getenv("SIM_FST");
     if (fst_path) {
         Verilated::traceEverOn(true);
     }
+#endif
 
     top = new VCoreSim;
     if (!top) return -1;
@@ -311,6 +312,7 @@ int sim_init(void) {
         tick_one();
     }
 
+#ifdef VM_TRACE_FST
     /* Enable FST tracing after reset */
     if (fst_path) {
         tfp = new VerilatedFstC;
@@ -318,6 +320,7 @@ int sim_init(void) {
         tfp->open(fst_path);
         fprintf(stderr, "[sim_harness] FST tracing to %s\n", fst_path);
     }
+#endif
 
     /* Install signal handlers for clean FST flush on kill */
     signal(SIGTERM, signal_handler);
@@ -344,6 +347,15 @@ int sim_init(void) {
         }
     }
 
+    /* Optional cycle timeout */
+    const char *cycle_limit_str = getenv("SIM_CYCLE_LIMIT");
+    if (cycle_limit_str) {
+        cycle_limit = strtoull(cycle_limit_str, nullptr, 0);
+        if (cycle_limit)
+            fprintf(stderr, "[sim_harness] Cycle limit set to %lu ticks\n",
+                    (unsigned long)cycle_limit);
+    }
+
     fprintf(stderr, "[sim_harness] Initialized CoreSim Verilator model\n");
     return 0;
 }
@@ -357,28 +369,21 @@ void sim_shutdown(void) {
         fclose(fbwrite_log);
         fbwrite_log = nullptr;
     }
+#ifdef VM_TRACE_FST
     if (tfp) {
         tfp->close();
         delete tfp;
         tfp = nullptr;
     }
+#endif
     if (top) {
         top->final();
         delete top;
         top = nullptr;
     }
-    fprintf(stderr, "[sim_harness] Shutdown complete (%lu ticks)\n",
-            (unsigned long)sim_time);
-    if (total_read_count > 0) {
-        fprintf(stderr, "[sim_harness] Reads: %lu ops, avg %.1f ticks/op\n",
-                (unsigned long)total_read_count,
-                (double)total_read_ticks / total_read_count);
-    }
-    if (total_write_count > 0) {
-        fprintf(stderr, "[sim_harness] Writes: %lu ops, avg %.1f ticks/op\n",
-                (unsigned long)total_write_count,
-                (double)total_write_ticks / total_write_count);
-    }
+    fprintf(stderr, "[sim_harness] Shutdown after %lu cycles (%lu R, %lu W)\n",
+            (unsigned long)(sim_time / 2),
+            (unsigned long)total_read_count, (unsigned long)total_write_count);
 }
 
 void sim_write(uint32_t addr, uint32_t data) {
@@ -391,37 +396,35 @@ uint32_t sim_read(uint32_t addr) {
 
 
 uint32_t sim_idle_wait(void) {
-    /* Spin until FIFO empty and pipeline not busy */
-    int timeout = 10000000;  /* 10M ticks — generous for slow pipelines */
+    /* Poll status register until FIFO has space and pipeline not busy,
+     * matching sst1InitIdleLoop's approach of reading through the bus.
+     * Status register bits: [5:0]=pciFifoFree, [7]=fbiBusy, [9]=sstBusy */
+    #define SST_BUSY       (1u << 9)
+    #define SST_FIFOFREE_MASK 0x3Fu
+
+    int timeout = 5000000;  /* 5M reads — generous for slow pipelines */
     uint64_t t0 = sim_time;
-    int last_report = 0;
+    int idle_count = 0;
     while (timeout > 0) {
-        if (top->io_fifoEmpty && !top->io_pipelineBusy) {
-            fprintf(stderr, "[sim_harness] idle_wait: settled in %lu ticks\n",
-                    (unsigned long)((sim_time - t0) / 2));
-            break;
+        uint32_t status = bus_read(0x000000);
+        int busy = (status & SST_BUSY) != 0;
+        int fifo_free = status & SST_FIFOFREE_MASK;
+
+        if (!busy && fifo_free == 0x3F) {
+            if (++idle_count >= 3) {  /* Match sst1InitIdleLoop: 3 consecutive idle reads */
+                return status;
+            }
+        } else {
+            idle_count = 0;
         }
-        /* Periodic progress report */
-        int elapsed = (int)((sim_time - t0) / 2);
-        if (elapsed / 1000000 > last_report) {
-            last_report = elapsed / 1000000;
-            fprintf(stderr, "[sim_harness] idle_wait: %dM ticks, fifoEmpty=%d pipelineBusy=%d\n",
-                    last_report, (int)top->io_fifoEmpty, (int)top->io_pipelineBusy);
-        }
-        /* Tick in batches for efficiency */
-        for (int i = 0; i < 100 && timeout > 0; i++, timeout--) {
-            tick_one();
-        }
+
+        timeout--;
     }
 
-    if (timeout <= 0) {
-        fprintf(stderr, "[sim_harness] WARNING: idle_wait timeout after %lu ticks! fifoEmpty=%d pipelineBusy=%d\n",
-                (unsigned long)((sim_time - t0) / 2),
-                (int)top->io_fifoEmpty, (int)top->io_pipelineBusy);
-    }
-
-    /* Read status register and return it */
-    return bus_read(0x000000);
+    uint32_t status = bus_read(0x000000);
+    fprintf(stderr, "[sim_harness] WARNING: idle_wait timeout after %lu ticks! status=0x%08x\n",
+            (unsigned long)((sim_time - t0) / 2), status);
+    return status;
 }
 
 void sim_tick(int n) {

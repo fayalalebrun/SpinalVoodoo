@@ -21,9 +21,6 @@ class BmbDriverDebugTest extends AnyFunSuite {
 
       // Setup (pciFifoFree now comes from actual FIFO)
       dut.io.statusInputs.vRetrace #= true
-      dut.io.statusInputs.fbiBusy #= false
-      dut.io.statusInputs.trexBusy #= false
-      dut.io.statusInputs.sstBusy #= false
       dut.io.statusInputs.memFifoFree #= 0xffff
       dut.io.statusInputs.pciInterrupt #= false
       dut.io.swapDisplayedBuffer #= 0

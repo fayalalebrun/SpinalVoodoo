@@ -18,10 +18,6 @@ case class CoreSim(c: Config) extends Component {
     // Unified CPU bus (24-bit address covers 16MB PCI BAR)
     val cpuBus = slave(Bmb(CoreSim.cpuBmbParams))
 
-    // Status outputs for fast polling
-    val pipelineBusy = out Bool ()
-    val fifoEmpty = out Bool ()
-
     // Vsync input (driven by C++ harness)
     val vRetrace = in Bool ()
   }
@@ -124,9 +120,6 @@ case class CoreSim(c: Config) extends Component {
   // ========================================================================
   // Status wiring
   // ========================================================================
-  core.io.statusInputs.sstBusy := core.io.pipelineBusy
-  core.io.statusInputs.fbiBusy := core.io.pipelineBusy
-  core.io.statusInputs.trexBusy := core.io.pipelineBusy
   core.io.statusInputs.vRetrace := io.vRetrace
   core.io.statusInputs.memFifoFree := 0xffff
   core.io.statusInputs.pciInterrupt := False
@@ -138,12 +131,6 @@ case class CoreSim(c: Config) extends Component {
   core.io.statisticsIn.pixelsOut := 0
 
   core.io.fbBaseAddr := 0
-
-  // ========================================================================
-  // Status outputs
-  // ========================================================================
-  io.pipelineBusy := core.io.pipelineBusy
-  io.fifoEmpty := core.io.fifoEmpty
 
   // ========================================================================
   // Unified CPU bus: route to regBus, lfbBus, or cpuTexBus based on address

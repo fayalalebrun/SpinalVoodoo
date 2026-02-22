@@ -677,9 +677,6 @@ object VoodooTracePlayer {
 
     // Initialize status inputs (pciFifoFree now comes from internal FIFO)
     dut.io.statusInputs.vRetrace #= false
-    dut.io.statusInputs.fbiBusy #= false
-    dut.io.statusInputs.trexBusy #= false
-    dut.io.statusInputs.sstBusy #= false
     dut.io.statusInputs.memFifoFree #= 0xffff
     dut.io.statusInputs.pciInterrupt #= false
 

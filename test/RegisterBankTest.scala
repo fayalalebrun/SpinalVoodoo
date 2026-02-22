@@ -18,9 +18,6 @@ class RegisterBankTest extends AnyFunSuite {
     // Initialize status inputs to default values
     // Note: pciFifoFree now comes from busif.pciFifoFree (FIFO availability)
     dut.io.statusInputs.vRetrace #= true
-    dut.io.statusInputs.fbiBusy #= false
-    dut.io.statusInputs.trexBusy #= false
-    dut.io.statusInputs.sstBusy #= false
     dut.io.statusInputs.memFifoFree #= 0xffff
     dut.io.statusInputs.pciInterrupt #= false
     dut.io.swapDisplayedBuffer #= 0
@@ -95,7 +92,8 @@ class RegisterBankTest extends AnyFunSuite {
       setupDut(dut)
 
       // Set specific status inputs (pciFifoFree is now from actual FIFO)
-      dut.io.statusInputs.fbiBusy #= true
+      // fbiBusy/trexBusy/sstBusy are wired from pipelineBusy internally
+      dut.io.pipelineBusy #= true
       dut.io.swapDisplayedBuffer #= 1
       dut.io.swapsPending #= 2
 
@@ -105,7 +103,9 @@ class RegisterBankTest extends AnyFunSuite {
 
       // PCI FIFO should report full availability (64 = 0x40) since FIFO is empty
       assert((status & 0x3f) == 0x3f, s"PCI FIFO should be 0x3f (63 free), got ${status & 0x3f}")
-      assert(((status >> 7) & 1) == 1, "FBI busy should be set")
+      assert(((status >> 7) & 1) == 1, "FBI busy should be set (from pipelineBusy)")
+      assert(((status >> 8) & 1) == 1, "TREX busy should be set (from pipelineBusy)")
+      assert(((status >> 9) & 1) == 1, "SST busy should be set (from pipelineBusy)")
       assert(((status >> 10) & 3) == 1, "Displayed buffer should be 1")
       assert(((status >> 28) & 7) == 2, "Swaps pending should be 2")
     }

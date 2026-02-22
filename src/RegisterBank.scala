@@ -29,11 +29,9 @@ case class RegisterBank(config: Config) extends Component {
 
     // Hardware inputs for status register (read-only fields)
     // Note: pciFifoFree comes from busif.pciFifoFree, not from external inputs
+    // Note: fbiBusy/trexBusy/sstBusy are wired internally from pipelineBusy
     val statusInputs = in(new Bundle {
       val vRetrace = Bool()
-      val fbiBusy = Bool()
-      val trexBusy = Bool()
-      val sstBusy = Bool()
       val memFifoFree = UInt(16 bits)
       val pciInterrupt = Bool()
     })
@@ -93,13 +91,13 @@ case class RegisterBank(config: Config) extends Component {
     vRetrace := io.statusInputs.vRetrace
 
     val fbiBusy = reg.fieldAt(7, Bool(), AccessType.RO, 0, "FBI graphics engine busy")
-    fbiBusy := io.statusInputs.fbiBusy
+    fbiBusy := io.pipelineBusy
 
     val trexBusy = reg.fieldAt(8, Bool(), AccessType.RO, 0, "TREX busy")
-    trexBusy := io.statusInputs.trexBusy
+    trexBusy := io.pipelineBusy
 
     val sstBusy = reg.fieldAt(9, Bool(), AccessType.RO, 0, "SST-1 busy")
-    sstBusy := io.statusInputs.sstBusy
+    sstBusy := io.pipelineBusy
 
     val displayedBuffer = reg.fieldAt(10, UInt(2 bits), AccessType.RO, 0, "Displayed buffer")
     displayedBuffer := io.swapDisplayedBuffer

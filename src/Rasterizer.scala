@@ -140,7 +140,8 @@ case class Rasterizer(c: Config) extends Component {
 
   // Extract output stream and running signal
   val withInsideFlag = streamWhileResult.output
-  val running = streamWhileResult.running
+  val running = out(Bool())
+  running := streamWhileResult.running
 
   // Drop samples outside triangle and remove flag
   o << withInsideFlag.takeWhen(withInsideFlag.payload.insideTriangle).map(_.data)

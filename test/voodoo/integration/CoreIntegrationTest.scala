@@ -21,6 +21,8 @@ class CoreIntegrationTest extends AnyFunSuite {
   // ========================================================================
   // Register addresses (from RegisterBank.scala)
   // ========================================================================
+  val REG_STATUS = 0x000
+  val REG_NOP_CMD = 0x120
   val REG_VERTEX_AX = 0x008
   val REG_VERTEX_AY = 0x00c
   val REG_VERTEX_BX = 0x010
@@ -131,6 +133,20 @@ class CoreIntegrationTest extends AnyFunSuite {
   def writeReg(driver: BmbDriver, addr: Int, data: Long): Unit = {
     driver.write(BigInt(data & 0xffffffffL), BigInt(addr))
   }
+
+  def readStatus(driver: BmbDriver): Long = {
+    driver.read(BigInt(REG_STATUS)).toLong & 0xffffffffL
+  }
+
+  /** Status register bit masks (from SST-1 spec) */
+  val SST_FIFO_FREE_MASK = 0x3fL // bits [5:0]
+  val SST_VRETRACE = 1L << 6 // bit 6
+  val SST_FBI_BUSY = 1L << 7 // bit 7
+  val SST_TREX_BUSY = 1L << 8 // bit 8
+  val SST_BUSY = 1L << 9 // bit 9
+
+  def isBusy(status: Long): Boolean = (status & SST_BUSY) != 0
+  def fifoFull(status: Long): Boolean = (status & SST_FIFO_FREE_MASK) != 0x3f
 
   // ========================================================================
   // Helper: submit a triangle by writing all registers then triangleCMD
@@ -421,9 +437,6 @@ class CoreIntegrationTest extends AnyFunSuite {
 
     // Init status inputs
     dut.io.statusInputs.vRetrace #= false
-    dut.io.statusInputs.fbiBusy #= false
-    dut.io.statusInputs.trexBusy #= false
-    dut.io.statusInputs.sstBusy #= false
     dut.io.statusInputs.memFifoFree #= 0xffff
     dut.io.statusInputs.pciInterrupt #= false
 
@@ -6667,4 +6680,282 @@ class CoreIntegrationTest extends AnyFunSuite {
       println("[param_adjust] PASS: all sub-cases passed")
     }
   }
+
+  // ========================================================================
+  // Pipeline busy diagnostics helper
+  // ========================================================================
+
+  /** Print which pipeline components are busy (via simPublic signals). */
+  def printBusyComponents(dut: Core, label: String, cycle: Int): Unit = {
+    val triSetup = dut.triangleSetup.o.valid.toBoolean
+    val rast = dut.rasterizer.o.valid.toBoolean
+    val tmuIn = dut.tmu.io.input.valid.toBoolean
+    val tmuBusy = dut.tmu.io.busy.toBoolean
+    val fbaBusy = dut.fbAccess.io.busy.toBoolean
+    val ccIn = dut.colorCombine.io.input.valid.toBoolean
+    val fogIn = dut.fog.io.input.valid.toBoolean
+    val fbaIn = dut.fbAccess.io.input.valid.toBoolean
+    val writeIn = dut.write.i.fromPipeline.valid.toBoolean
+    val ffRunning = dut.fastfill.running.toBoolean
+    val swapWait = dut.swapBuffer.io.waiting.toBoolean
+    val lfbBusy = dut.lfb.io.busy.toBoolean
+    println(
+      f"[$label] @$cycle: triSetup=$triSetup rast=$rast tmuIn=$tmuIn tmuBusy=$tmuBusy " +
+        f"fbaBusy=$fbaBusy ccIn=$ccIn fogIn=$fogIn fbaIn=$fbaIn " +
+        f"writeIn=$writeIn ffRunning=$ffRunning swapWait=$swapWait lfbBusy=$lfbBusy"
+    )
+  }
+
+  /** Poll the status register until pipeline is idle. Each iteration advances the clock by
+    * `ticksPerPoll` cycles (via waitSampling) before reading the status register. This matches how
+    * the real C harness works: sim_idle_wait ticks in batches between status polls, giving the
+    * pipeline time to make progress. Requires 3 consecutive idle reads (FIFO empty + not busy) like
+    * sst1InitIdleLoop. Returns the final status value, or fails if timeout is reached.
+    */
+  def pollUntilIdle(
+      driver: BmbDriver,
+      cd: ClockDomain,
+      label: String,
+      maxReads: Int = 50000,
+      ticksPerPoll: Int = 100
+  ): Long = {
+    var idleCount = 0
+    for (i <- 0 until maxReads) {
+      cd.waitSampling(ticksPerPoll)
+      val status = readStatus(driver)
+      val fifoFree = status & SST_FIFO_FREE_MASK
+      if (!isBusy(status) && fifoFree == 0x3f) {
+        idleCount += 1
+        if (idleCount >= 3) {
+          println(f"[$label] idle after $i polls (~${i.toLong * ticksPerPoll} cycles)")
+          return status
+        }
+      } else {
+        idleCount = 0
+      }
+      if (i > 0 && (i % 10000) == 0) {
+        println(f"[$label] still polling after $i reads, status=0x${status}%08x")
+      }
+    }
+    val finalStatus = readStatus(driver)
+    fail(f"[$label] STUCK after $maxReads polls, status=0x$finalStatus%08x")
+    finalStatus
+  }
+
+  // ========================================================================
+  // Test: pipelineBusy clears after gouraud triangle (test04 hypothesis)
+  // ========================================================================
+  test("pipelineBusy clears after gouraud triangle") {
+    compiled.doSim("pipeline_busy_gouraud") { dut =>
+      val (driver, fbMemory, _, writtenAddrs) = setupDut(dut)
+
+      // Same vertices and colors as existing gouraud test
+      val vAx = 160 * 16; val vAy = 80 * 16
+      val vBx = 240 * 16; val vBy = 200 * 16
+      val vCx = 80 * 16; val vCy = 200 * 16
+
+      val startR = 100 << 12
+      val startG = 50 << 12
+      val startB = 0
+      val startA = 255 << 12
+      val dRdX = 1 << 12
+      val dBdX = 1 << 12
+
+      // fbzColorPath: zero_other + add_clocal (iterated color passthrough)
+      val fbzColorPath = (1 << 8) | (1 << 14)
+      // fbzMode: clipping enabled (bit 0), RGB write mask (bit 9)
+      val fbzMode = 1 | (1 << 9)
+
+      submitTriangle(
+        driver,
+        dut.clockDomain,
+        vertexAx = vAx,
+        vertexAy = vAy,
+        vertexBx = vBx,
+        vertexBy = vBy,
+        vertexCx = vCx,
+        vertexCy = vCy,
+        startR = startR,
+        startG = startG,
+        startB = startB,
+        startA = startA,
+        startZ = 0,
+        startS = 0,
+        startT = 0,
+        startW = 0,
+        dRdX = dRdX,
+        dGdX = 0,
+        dBdX = dBdX,
+        dAdX = 0,
+        dZdX = 0,
+        dSdX = 0,
+        dTdX = 0,
+        dWdX = 0,
+        dRdY = 0,
+        dGdY = 0,
+        dBdY = 0,
+        dAdY = 0,
+        dZdY = 0,
+        dSdY = 0,
+        dTdY = 0,
+        dWdY = 0,
+        fbzColorPath = fbzColorPath,
+        fbzMode = fbzMode,
+        sign = false,
+        clipRight = 640,
+        clipHighY = 480
+      )
+
+      // Poll status register until idle — this is the actual test
+      pollUntilIdle(driver, dut.clockDomain, "gouraud_busy")
+
+      assert(writtenAddrs.nonEmpty, s"no pixels were written — triangle didn't execute")
+      println(f"[gouraud_busy] PASS: ${writtenAddrs.size} pixels written, pipeline idle")
+    }
+  }
+
+  // ========================================================================
+  // Test: pipelineBusy clears after swap buffer with vsync
+  // ========================================================================
+  test("pipelineBusy clears after swap buffer with vsync") {
+    compiled.doSim("pipeline_busy_swap") { dut =>
+      val (driver, _, _, _) = setupDut(dut)
+
+      // Drive vRetrace in background (period=5000, high=200)
+      val stopVsync = new java.util.concurrent.atomic.AtomicBoolean(false)
+      val vsyncThread = fork {
+        while (!stopVsync.get()) {
+          dut.io.statusInputs.vRetrace #= true
+          dut.clockDomain.waitSampling(200)
+          dut.io.statusInputs.vRetrace #= false
+          dut.clockDomain.waitSampling(4800)
+        }
+      }
+
+      // Write swap command with vsyncEnable=true (bit 0=1), interval=0 (bits 8:1=0)
+      // This matches grBufferSwap(1): wait for 1 vsync
+      writeReg(driver, REG_SWAPBUFFER_CMD, 1)
+
+      // Poll status register until idle
+      pollUntilIdle(driver, dut.clockDomain, "swap_busy")
+      println("[swap_busy] PASS: pipelineBusy cleared after swap with vsync")
+
+      stopVsync.set(true)
+      vsyncThread.join()
+    }
+  }
+
+  // ========================================================================
+  // Test: full test04 sequence — fastfill, gouraud triangle, swap, idle
+  // ========================================================================
+  test("test04 sequence: fastfill + gouraud triangle + swap + idle") {
+    compiled.doSim("test04_sequence") { dut =>
+      val (driver, fbMemory, _, writtenAddrs) = setupDut(dut)
+
+      // Start vsync generation in background (matches C harness: period=5000, high=200)
+      val stopVsync = new java.util.concurrent.atomic.AtomicBoolean(false)
+      val vsyncThread = fork {
+        while (!stopVsync.get()) {
+          dut.io.statusInputs.vRetrace #= true
+          dut.clockDomain.waitSampling(200)
+          dut.io.statusInputs.vRetrace #= false
+          dut.clockDomain.waitSampling(4800)
+        }
+      }
+
+      // --- Step 1: Fastfill (grBufferClear) ---
+      val fbzMode = 1 | (1 << 9) | (1 << 10)
+      writeReg(driver, REG_FBZMODE, fbzMode.toLong)
+      writeReg(driver, REG_COLOR1, 0x00000000L)
+      writeReg(driver, REG_ZACOLOR, 0x0000ffffL)
+      writeReg(driver, REG_CLIP_LR, (0L << 16) | 64L)
+      writeReg(driver, REG_CLIP_TB, (0L << 16) | 48L)
+      writeReg(driver, REG_FASTFILL_CMD, 0)
+
+      println("[test04] Fastfill issued, polling for idle...")
+      pollUntilIdle(driver, dut.clockDomain, "test04_fastfill")
+      println(f"[test04] Fastfill: ${writtenAddrs.size} pixels written")
+
+      // --- Step 2: Gouraud triangle (grDrawTriangle) ---
+      writtenAddrs.clear()
+      val vAx = 19 * 16; val vAy = 14 * 16
+      val vBx = 51 * 16; val vBy = 19 * 16
+      val vCx = 32 * 16; val vCy = 38 * 16
+      val fbzColorPath = (1 << 8) | (1 << 14)
+      val triFbzMode = 1 | (1 << 9)
+
+      submitTriangle(
+        driver,
+        dut.clockDomain,
+        vertexAx = vAx,
+        vertexAy = vAy,
+        vertexBx = vBx,
+        vertexBy = vBy,
+        vertexCx = vCx,
+        vertexCy = vCy,
+        startR = 255 << 12,
+        startG = 0,
+        startB = 0,
+        startA = 255 << 12,
+        startZ = 0,
+        startS = 0,
+        startT = 0,
+        startW = 0,
+        dRdX = -(1 << 10),
+        dGdX = 1 << 10,
+        dBdX = 0,
+        dAdX = 0,
+        dZdX = 0,
+        dSdX = 0,
+        dTdX = 0,
+        dWdX = 0,
+        dRdY = 0,
+        dGdY = 0,
+        dBdY = 1 << 10,
+        dAdY = 0,
+        dZdY = 0,
+        dSdY = 0,
+        dTdY = 0,
+        dWdY = 0,
+        fbzColorPath = fbzColorPath,
+        fbzMode = triFbzMode,
+        sign = false,
+        clipRight = 64,
+        clipHighY = 48
+      )
+
+      println("[test04] Triangle submitted, polling for idle...")
+      pollUntilIdle(driver, dut.clockDomain, "test04_triangle")
+      println(f"[test04] Triangle: ${writtenAddrs.size} pixels written")
+
+      // --- Step 3: Swap buffer (grBufferSwap(1)) ---
+      writeReg(driver, REG_SWAPBUFFER_CMD, 1)
+
+      println("[test04] Swap issued, polling for idle...")
+      pollUntilIdle(driver, dut.clockDomain, "test04_swap")
+
+      // --- Step 4: Verify final idle state (simulating grGlideShutdown → initIdle) ---
+      val finalStatus = readStatus(driver)
+      assert(!isBusy(finalStatus), f"pipelineBusy not clear at shutdown, status=0x$finalStatus%08x")
+      assert(!fifoFull(finalStatus), f"FIFO not empty at shutdown, status=0x$finalStatus%08x")
+
+      stopVsync.set(true)
+      vsyncThread.join()
+
+      println("[test04] PASS: full sequence completed, verified idle via status register")
+    }
+  }
+
+  // ========================================================================
+  // Test: Sync=Yes registers drain during fastfill
+  //
+  // Reproduces the test00 Glide hang: fastfillCMD fires, then C code
+  // immediately writes Sync=Yes config registers (color1, zaColor, fbzMode,
+  // etc.).  If the FIFO drain blocks on pipelineBusy while fastfill is
+  // running, the Sync=Yes entries pile up and eventually overflow the
+  // 64-entry FIFO, stalling the CPU bus.
+  //
+  // The fix: fastfill captures its own registers at fire time, so Sync=Yes
+  // drain should NOT be blocked by fastfill.running.
+  // ========================================================================
 }

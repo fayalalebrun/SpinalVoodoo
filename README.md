@@ -148,6 +148,27 @@ scalafmt
 scala-cli compile .
 ```
 
+## Glide Simulation Tests
+
+Run the Glide2x test suite against the Verilator model:
+
+```bash
+make run/test00          # single test
+make run-all             # all tests
+TRACE=1 make run/test00  # with FST waveform dump
+```
+
+Screenshots are saved to `output/<test>/screenshot.png`.
+
+**Environment variables** (set at runtime):
+
+| Variable | Description |
+|---|---|
+| `SIM_FST` | Path for FST waveform output (requires `TRACE=1` build) |
+| `SIM_CYCLE_LIMIT` | Max simulation ticks before clean exit (0 = unlimited) |
+| `SIM_FBWRITE_LOG` | Path to log framebuffer writes |
+| `SIM_TMU_LOG` | Path to log TMU/rasterizer activity |
+
 ## Trace Player
 
 Replay Voodoo trace files and watch triangles render in real-time:

@@ -28,11 +28,9 @@ case class Core(c: Config) extends Component {
 
     // Status inputs (hardware state)
     // Note: pciFifoFree now comes from RegisterBank's internal FIFO
+    // Note: fbiBusy/trexBusy/sstBusy are wired internally from pipelineBusy
     val statusInputs = in(new Bundle {
       val vRetrace = Bool()
-      val fbiBusy = Bool()
-      val trexBusy = Bool()
-      val sstBusy = Bool()
       val memFifoFree = UInt(16 bits)
       val pciInterrupt = Bool()
     })
@@ -53,9 +51,6 @@ case class Core(c: Config) extends Component {
     // Framebuffer base address
     val fbBaseAddr = in UInt (c.addressWidth)
 
-    // Pipeline busy and FIFO empty status (for CoreSim / external polling)
-    val pipelineBusy = out Bool ()
-    val fifoEmpty = out Bool ()
   }
 
   // Instantiate components
@@ -720,12 +715,27 @@ case class Core(c: Config) extends Component {
 
   // Pipeline busy signal: any stage has valid data (placed after all stages instantiated)
   regBank.io.pipelineBusy.simPublic()
+  triangleSetup.o.valid.simPublic()
+  rasterizer.o.valid.simPublic()
+  tmu.io.input.valid.simPublic()
+  tmu.io.busy.simPublic()
+  fbAccess.io.busy.simPublic()
+  colorCombine.io.input.valid.simPublic()
+  fog.io.input.valid.simPublic()
+  fbAccess.io.input.valid.simPublic()
+  write.i.fromPipeline.valid.simPublic()
+  fastfill.running.simPublic()
+  swapBuffer.io.waiting.simPublic()
+  lfb.io.busy.simPublic()
+  // Pipeline busy: any stage active.
+  // rasterizer.running covers the gap between accepting a triangle and producing
+  // first output pixel (rasterizer.o.valid only asserts once iteration begins).
+  // This matches SST-1 hardware where SST_BUSY reflects actual pipeline activity.
+  rasterizer.running.simPublic()
   val pipelineBusySignal =
-    triangleSetup.o.valid || rasterizer.o.valid || tmu.io.input.valid ||
+    triangleSetup.o.valid || rasterizer.running || tmu.io.input.valid ||
       tmu.io.busy || fbAccess.io.busy ||
       colorCombine.io.input.valid || fog.io.input.valid || fbAccess.io.input.valid ||
       write.i.fromPipeline.valid || fastfill.running || swapBuffer.io.waiting || lfb.io.busy
   regBank.io.pipelineBusy := pipelineBusySignal
-  io.pipelineBusy := pipelineBusySignal
-  io.fifoEmpty := regBank.io.fifoEmpty
 }

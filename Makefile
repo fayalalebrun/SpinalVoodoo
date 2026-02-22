@@ -25,6 +25,9 @@ SIM_DIR       = emu/sim
 GLIDE_SRC_DIR = emu/glide/glide2x/sst1/glide/src
 GLIDE_TST_DIR = emu/glide/glide2x/sst1/glide/tests
 
+# SpinalHDL sources — trigger sim rebuild when RTL changes
+SCALA_SRCS := $(shell find src -name '*.scala') project.scala
+
 # Stamp files — real build outputs used to avoid unnecessary sub-make invocations
 SIM_STAMP   = $(SIM_DIR)/obj_dir/VCoreSim__ALL.a
 GLIDE_STAMP = emu/glide/glide2x/sst1/lib/sst1/libglide2x.so.2
@@ -45,7 +48,7 @@ tests: glide
 
 # File-based build chain: only recurse when outputs are stale.
 # The sub-makes handle fine-grained .c/.o dependency tracking internally.
-$(SIM_STAMP):
+$(SIM_STAMP): $(SCALA_SRCS)
 	$(MAKE) -C $(SIM_DIR) all
 
 $(GLIDE_STAMP): $(SIM_STAMP)

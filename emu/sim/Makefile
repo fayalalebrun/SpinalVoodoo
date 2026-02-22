@@ -18,6 +18,9 @@ RTL_DIR = rtl
 OBJ_DIR = obj_dir
 HARNESS_DIR = harness
 
+# SpinalHDL sources that generate the Verilog
+SCALA_SRCS := $(shell find $(PROJ_ROOT)/src -name '*.scala') $(PROJ_ROOT)/project.scala
+
 # Verilator settings
 VERILATOR = verilator
 VERILATOR_ROOT ?= $(shell $(VERILATOR) --getenv VERILATOR_ROOT)
@@ -47,10 +50,12 @@ VERILATE_STAMP = $(OBJ_DIR)/.verilate.stamp
 
 all: model harness
 
-# Step 1: Generate Verilog from SpinalHDL
+# Step 1: Generate Verilog from SpinalHDL (rebuilds when Scala sources change)
 # scala-cli run has a LibC native-image bug; use java -cp workaround
-verilog:
+$(RTL_DIR)/CoreSim.v: $(SCALA_SRCS)
 	cd $(PROJ_ROOT) && java -Xmx2g -cp "$$(scala-cli compile . --print-class-path 2>/dev/null)" voodoo.CoreSimGen
+
+verilog: $(RTL_DIR)/CoreSim.v
 
 # Step 2: Run Verilator (only when Verilog source changes)
 $(VERILATE_STAMP): $(RTL_DIR)/CoreSim.v

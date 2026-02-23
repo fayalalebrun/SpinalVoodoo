@@ -11,7 +11,7 @@ import voodoo._
 import voodoo.ref.VoodooReference
 import voodoo.ref.VoodooReference.{VoodooParams, RefPixel}
 
-class CoreIntegrationTest extends AnyFunSuite {
+class CoreTest extends AnyFunSuite {
 
   val voodooConfig = Config.voodoo1()
 

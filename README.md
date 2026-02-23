@@ -10,7 +10,7 @@ SpinalHDL implementation of the 3dfx Voodoo Graphics GPU.
   - [x] Triangle setup (bounding-box scan + edge function testing)
   - [x] Span generation (serpentine scan)
   - [x] Scissor clipping (clipLeftRight, clipLowYHighY)
-  - [x] Y-origin transform (fbzMode bit 17)
+  - [x] Y-origin transform (fbzMode bit 17, fbiInit3[31:22])
   - [ ] Stipple patterns
 - Gradient Interpolation
   - [x] Color (R, G, B, A) - 12.12 fixed-point
@@ -51,10 +51,11 @@ SpinalHDL implementation of the 3dfx Voodoo Graphics GPU.
   - [x] Destination blend factors (10 modes)
   - [x] Framebuffer read for blending (fork-queue-join BMB pattern)
 - Chroma Key
-  - [x] Color key comparison
+  - [x] Color key comparison (post color-combine, matching real hardware)
+  - [ ] Chroma range
 - Dithering
-  - [x] 4x4 ordered dither
-  - [x] 2x2 ordered dither
+  - [x] 4x4 ordered dither (86Box ground-truth LUTs)
+  - [x] 2x2 ordered dither (86Box ground-truth LUTs)
 - Framebuffer Write
   - [x] 16-bit RGB565 output
   - [x] Draw buffer selection

@@ -9,9 +9,7 @@ class DitherTest extends AnyFunSuite {
 
   lazy val compiled = SimConfig.withIVerilog.compile(Dither())
 
-  val testValues = Seq(0, 1, 7, 8, 127, 128, 248, 255)
-
-  test("4x4 dither mode") {
+  test("4x4 dither mode - exhaustive") {
     compiled.doSim("dither_4x4") { dut =>
       dut.io.enable #= true
       dut.io.use2x2 #= false
@@ -19,7 +17,7 @@ class DitherTest extends AnyFunSuite {
       sleep(1)
 
       var mismatches = 0
-      for (y <- 0 until 4; x <- 0 until 4; v <- testValues) {
+      for (y <- 0 until 4; x <- 0 until 4; v <- 0 until 256) {
         dut.io.x #= x
         dut.io.y #= y
         dut.io.r #= v
@@ -31,9 +29,9 @@ class DitherTest extends AnyFunSuite {
         val simG = dut.io.ditG.toInt
         val simB = dut.io.ditB.toInt
 
-        val refR = VoodooReference.dither_rb(v, y, x)
-        val refG = VoodooReference.dither_g(v, y, x)
-        val refB = VoodooReference.dither_rb(v, y, x)
+        val refR = DitherTables.lookupRb(v, y, x)
+        val refG = DitherTables.lookupG(v, y, x)
+        val refB = DitherTables.lookupRb(v, y, x)
 
         if (simR != refR || simG != refG || simB != refB) {
           if (mismatches < 20)
@@ -41,12 +39,12 @@ class DitherTest extends AnyFunSuite {
           mismatches += 1
         }
       }
-      println(s"[4x4] Total mismatches: $mismatches / ${4 * 4 * testValues.size}")
+      println(s"[4x4] Total mismatches: $mismatches / ${4 * 4 * 256}")
       assert(mismatches == 0, s"4x4 dither: $mismatches mismatches")
     }
   }
 
-  test("2x2 dither mode") {
+  test("2x2 dither mode - exhaustive") {
     compiled.doSim("dither_2x2") { dut =>
       dut.io.enable #= true
       dut.io.use2x2 #= true
@@ -54,7 +52,7 @@ class DitherTest extends AnyFunSuite {
       sleep(1)
 
       var mismatches = 0
-      for (y <- 0 until 2; x <- 0 until 2; v <- testValues) {
+      for (y <- 0 until 2; x <- 0 until 2; v <- 0 until 256) {
         dut.io.x #= x
         dut.io.y #= y
         dut.io.r #= v
@@ -66,9 +64,9 @@ class DitherTest extends AnyFunSuite {
         val simG = dut.io.ditG.toInt
         val simB = dut.io.ditB.toInt
 
-        val refR = VoodooReference.dither_rb2x2(v, y, x)
-        val refG = VoodooReference.dither_g2x2(v, y, x)
-        val refB = VoodooReference.dither_rb2x2(v, y, x)
+        val refR = DitherTables.lookupRb2x2(v, y, x)
+        val refG = DitherTables.lookupG2x2(v, y, x)
+        val refB = DitherTables.lookupRb2x2(v, y, x)
 
         if (simR != refR || simG != refG || simB != refB) {
           if (mismatches < 20)
@@ -76,7 +74,7 @@ class DitherTest extends AnyFunSuite {
           mismatches += 1
         }
       }
-      println(s"[2x2] Total mismatches: $mismatches / ${2 * 2 * testValues.size}")
+      println(s"[2x2] Total mismatches: $mismatches / ${2 * 2 * 256}")
       assert(mismatches == 0, s"2x2 dither: $mismatches mismatches")
     }
   }
@@ -88,6 +86,7 @@ class DitherTest extends AnyFunSuite {
 
       sleep(1)
 
+      val testValues = Seq(0, 1, 7, 8, 127, 128, 248, 255)
       var mismatches = 0
       for (v <- testValues) {
         dut.io.x #= 0

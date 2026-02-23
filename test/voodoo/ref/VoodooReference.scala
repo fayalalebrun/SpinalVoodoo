@@ -1,5 +1,7 @@
 package voodoo.ref
 
+import voodoo.DitherTables
+
 /** Faithful Scala port of 86Box vid_voodoo_render.c
   *
   * This is a reference model for integration testing against the SpinalVoodoo HDL. All arithmetic
@@ -801,68 +803,20 @@ object VoodooReference {
   }
 
   // ========================================================================
-  // Dithering (from vid_voodoo_dither.h)
+  // Dithering — direct lookup from 86Box vid_voodoo_dither.h tables
   // ========================================================================
 
-  /** 4x4 Bayer ordered dither matrix matching 86Box vid_voodoo_dither.h. This is the
-    * vertically-flipped standard Bayer matrix.
-    */
-  private val bayer4x4: Array[Array[Int]] = Array(
-    Array(15, 7, 13, 5),
-    Array(3, 11, 1, 9),
-    Array(12, 4, 14, 6),
-    Array(0, 8, 2, 10)
-  )
+  /** dither_rb[v][y][x]: 8-bit to 5-bit R/B dither (4x4 matrix). */
+  def dither_rb(v: Int, y: Int, x: Int): Int = DitherTables.lookupRb(v, y, x)
 
-  /** Algorithmic dither_rb[v][y][x] matching 86Box tables.
-    *
-    * For an 8-bit to 5-bit dither: base = v >> 3, frac = v & 7. The Bayer matrix threshold (0-15)
-    * determines which positions get rounded up. Result: base + (if frac*2 > threshold then 1 else
-    * 0), clamped to 31.
-    */
-  def dither_rb(v: Int, y: Int, x: Int): Int = {
-    val base = v >> 3
-    val frac = v & 7
-    val threshold = bayer4x4(y)(x)
-    // frac ranges 0-7, threshold ranges 0-15
-    // We add 1 to the dithered value if frac * 2 > threshold
-    val add = if (frac * 2 > threshold) 1 else 0
-    scala.math.min(base + add, 31)
-  }
+  /** dither_g[v][y][x]: 8-bit to 6-bit G dither (4x4 matrix). */
+  def dither_g(v: Int, y: Int, x: Int): Int = DitherTables.lookupG(v, y, x)
 
-  /** Algorithmic dither_g[v][y][x] matching 86Box tables */
-  def dither_g(v: Int, y: Int, x: Int): Int = {
-    val base = v >> 2
-    val frac = v & 3
-    val threshold = bayer4x4(y)(x)
-    // frac ranges 0-3, threshold ranges 0-15
-    val add = if (frac * 4 > threshold) 1 else 0
-    scala.math.min(base + add, 63)
-  }
+  /** dither_rb2x2[v][y][x]: 8-bit to 5-bit R/B dither (2x2 matrix). */
+  def dither_rb2x2(v: Int, y: Int, x: Int): Int = DitherTables.lookupRb2x2(v, y, x)
 
-  /** 2x2 Bayer matrix matching 86Box vid_voodoo_dither.h (vertically flipped). */
-  private val bayer2x2: Array[Array[Int]] = Array(
-    Array(3, 1),
-    Array(0, 2)
-  )
-
-  /** Algorithmic dither_rb2x2[v][y][x] */
-  def dither_rb2x2(v: Int, y: Int, x: Int): Int = {
-    val base = v >> 3
-    val frac = v & 7
-    val threshold = bayer2x2(y)(x)
-    val add = if (frac * 1 > threshold) 1 else 0
-    scala.math.min(base + add, 31)
-  }
-
-  /** Algorithmic dither_g2x2[v][y][x] */
-  def dither_g2x2(v: Int, y: Int, x: Int): Int = {
-    val base = v >> 2
-    val frac = v & 3
-    val threshold = bayer2x2(y)(x)
-    val add = if (frac * 1 > threshold) 1 else 0
-    scala.math.min(base + add, 63)
-  }
+  /** dither_g2x2[v][y][x]: 8-bit to 6-bit G dither (2x2 matrix). */
+  def dither_g2x2(v: Int, y: Int, x: Int): Int = DitherTables.lookupG2x2(v, y, x)
 
   /** Apply dithering to produce RGB565. Mirrors 86Box lines 1293-1307. */
   def ditherPixel(r: Int, g: Int, b: Int, x: Int, y: Int, fbzMode: Int): Int = {
@@ -1170,77 +1124,79 @@ object VoodooReference {
           if (!skip && (params.fbzColorPath & FBZCP_TEXTURE_ENABLED) != 0) {
             val result = tmuFetch(params, tmu0_s, tmu0_t, tmu0_w, baseLod, lodMin, lodMax)
             texR = result._1; texG = result._2; texB = result._3; texA = result._4
+          }
 
-            // 4. Chroma key
+          if (!skip) {
+            // 4. Color combine
+            val (ccR, ccG, ccB, srcA) =
+              colorCombine(params, ir, ig, ib, ia, iz, texR, texG, texB, texA)
+
+            // 5. Chroma key: compare color combine output against chromaKey register
             if ((params.fbzMode & FBZ_CHROMAKEY) != 0) {
               val ckR = (params.chromaKey >> 16) & 0xff
               val ckG = (params.chromaKey >> 8) & 0xff
               val ckB = params.chromaKey & 0xff
-              if (texR == ckR && texG == ckG && texB == ckB)
+              if (ccR == ckR && ccG == ckG && ccB == ckB)
                 skip = true
             }
-          }
 
-          if (!skip) {
-            // 5. Color combine
-            val (ccR, ccG, ccB, srcA) =
-              colorCombine(params, ir, ig, ib, ia, iz, texR, texG, texB, texA)
+            if (!skip) {
+              // Save pre-fog color for ACOLORBEFOREFOG blend mode
+              val (colbfogR, colbfogG, colbfogB) = (ccR, ccG, ccB)
 
-            // Save pre-fog color for ACOLORBEFOREFOG blend mode
-            val (colbfogR, colbfogG, colbfogB) = (ccR, ccG, ccB)
+              // 6. Fog
+              val (fogR, fogG, fogB) = applyFog(params, ccR, ccG, ccB, wDepth, iz, ia, w)
 
-            // 6. Fog
-            val (fogR, fogG, fogB) = applyFog(params, ccR, ccG, ccB, wDepth, iz, ia, w)
+              // 7. Alpha test
+              val alphaPass =
+                if ((params.alphaMode & 1) != 0)
+                  alphaTest((params.alphaMode >> 1) & 7, srcA, (params.alphaMode >> 24) & 0xff)
+                else true
 
-            // 7. Alpha test
-            val alphaPass =
-              if ((params.alphaMode & 1) != 0)
-                alphaTest((params.alphaMode >> 1) & 7, srcA, (params.alphaMode >> 24) & 0xff)
-              else true
+              if (alphaPass) {
+                // 8. Alpha blend
+                val (blendR, blendG, blendB) =
+                  if ((params.alphaMode & (1 << 4)) != 0) {
+                    val (destR, destG, destB) = framebuffer.get((px, pixel_y)) match {
+                      case Some((rgb565, _)) => rgb565toRGB8(rgb565)
+                      case None              => (0, 0, 0)
+                    }
+                    val destA = 0xff
+                    alphaBlend(
+                      params,
+                      fogR,
+                      fogG,
+                      fogB,
+                      srcA,
+                      destR,
+                      destG,
+                      destB,
+                      destA,
+                      colbfogR,
+                      colbfogG,
+                      colbfogB
+                    )
+                  } else (fogR, fogG, fogB)
 
-            if (alphaPass) {
-              // 8. Alpha blend
-              val (blendR, blendG, blendB) =
-                if ((params.alphaMode & (1 << 4)) != 0) {
-                  val (destR, destG, destB) = framebuffer.get((px, pixel_y)) match {
-                    case Some((rgb565, _)) => rgb565toRGB8(rgb565)
-                    case None              => (0, 0, 0)
-                  }
-                  val destA = 0xff
-                  alphaBlend(
-                    params,
-                    fogR,
-                    fogG,
-                    fogB,
-                    srcA,
-                    destR,
-                    destG,
-                    destB,
-                    destA,
-                    colbfogR,
-                    colbfogG,
-                    colbfogB
-                  )
-                } else (fogR, fogG, fogB)
+                // 9. Dither + write
+                val rgb565 = ditherPixel(blendR, blendG, blendB, px, pixel_y, params.fbzMode)
 
-              // 9. Dither + write
-              val rgb565 = ditherPixel(blendR, blendG, blendB, px, pixel_y, params.fbzMode)
+                if (
+                  (params.fbzMode & FBZ_RGB_WMASK) != 0 || (params.fbzMode & FBZ_DEPTH_WMASK) != 0
+                ) {
+                  val oldEntry = framebuffer.get((px, pixel_y))
+                  val writeRgb =
+                    if ((params.fbzMode & FBZ_RGB_WMASK) != 0) rgb565
+                    else oldEntry.map(_._1).getOrElse(0)
+                  val writeDepth =
+                    if ((params.fbzMode & FBZ_DEPTH_WMASK) != 0) newDepth
+                    else oldEntry.map(_._2).getOrElse(0)
+                  framebuffer((px, pixel_y)) = (writeRgb, writeDepth)
+                }
 
-              if (
-                (params.fbzMode & FBZ_RGB_WMASK) != 0 || (params.fbzMode & FBZ_DEPTH_WMASK) != 0
-              ) {
-                val oldEntry = framebuffer.get((px, pixel_y))
-                val writeRgb =
-                  if ((params.fbzMode & FBZ_RGB_WMASK) != 0) rgb565
-                  else oldEntry.map(_._1).getOrElse(0)
-                val writeDepth =
-                  if ((params.fbzMode & FBZ_DEPTH_WMASK) != 0) newDepth
-                  else oldEntry.map(_._2).getOrElse(0)
-                framebuffer((px, pixel_y)) = (writeRgb, writeDepth)
-              }
-
-              if ((params.fbzMode & FBZ_RGB_WMASK) != 0) {
-                pixels += RefPixel(px, pixel_y, rgb565, newDepth)
+                if ((params.fbzMode & FBZ_RGB_WMASK) != 0) {
+                  pixels += RefPixel(px, pixel_y, rgb565, newDepth)
+                }
               }
             }
           }

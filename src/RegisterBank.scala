@@ -743,9 +743,7 @@ case class RegisterBank(config: Config) extends Component {
       fbiInit1Reg.fieldAt(2, Bool(), AccessType.RW, 0, "Multi-SST (SLI) mode [V1]").asOutput()
     val fbiInit1_videoReset =
       fbiInit1Reg.fieldAt(8, Bool(), AccessType.RW, 0, "Video timing reset").asOutput()
-    val fbiInit1_yOriginSwap = fbiInit1Reg
-      .fieldAt(22, UInt(10 bits), AccessType.RW, 0, "Y origin swap subtraction value")
-      .asOutput()
+    // Note: yOriginSwap is in fbiInit3 (0x21C), not fbiInit1 — see below
 
     // fbiInit2 (0x218) - Buffer config and swap algorithm
     val fbiInit2Reg = busif.newRegAt(0x218, "fbiInit2")
@@ -762,10 +760,13 @@ case class RegisterBank(config: Config) extends Component {
       .fieldAt(11, UInt(10 bits), AccessType.RW, 0, "Buffer offset in 4KB units")
       .asOutput()
 
-    // fbiInit3 (0x21C) - Register remapping
+    // fbiInit3 (0x21C) - Register remapping and Y origin
     val fbiInit3Reg = busif.newRegAt(0x21c, "fbiInit3")
     val fbiInit3_remapEnable =
       fbiInit3Reg.field(Bool(), AccessType.RW, 0, "Enable register address remapping").asOutput()
+    val fbiInit3_yOriginSwap = fbiInit3Reg
+      .fieldAt(22, UInt(10 bits), AccessType.RW, 0, "Y origin swap subtraction value")
+      .asOutput()
 
     // hSync (0x220) - Horizontal sync timing
     val hSyncReg = busif.newRegAt(0x220, "hSync")

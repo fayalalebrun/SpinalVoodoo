@@ -488,8 +488,8 @@ case class Core(c: Config) extends Component {
   tmu.io.paletteWrite << paletteWriteFlow
 
   // Y-origin transform: when fbzMode bit 17 is set, flip Y for bottom-up rendering
-  // yOriginSwapValue comes from fbiInit1[31:22]; fb_y = yOriginSwapValue - raster_y
-  val yOriginSwapValue = regBank.init.fbiInit1_yOriginSwap
+  // yOriginSwapValue comes from fbiInit3[31:22]; fb_y = yOriginSwapValue - raster_y
+  val yOriginSwapValue = regBank.init.fbiInit3_yOriginSwap
   val yOriginEnable = regBank.renderConfig.fbzMode.yOrigin
 
   val rasterYTransformed = rasterizer.o.map { out =>
@@ -533,20 +533,8 @@ case class Core(c: Config) extends Component {
   // Join TMU output with queued gradients
   val tmuJoined = StreamJoin(tmu.io.output, tmuGradQueue)
 
-  // Chroma key: discard pixels where texture color matches chromaKey register
-  val ckBits = regBank.renderConfig.chromaKey
-  val ckR = ckBits(23 downto 16).asUInt
-  val ckG = ckBits(15 downto 8).asUInt
-  val ckB = ckBits(7 downto 0).asUInt
-  val texColor = tmuJoined.payload._1.texture
-  val textureEnabled = tmuJoined.payload._2.config.fbzColorPath.textureEnable
-  val chromaKill = tmuJoined.payload._2.config.fbzMode.enableChromaKey &&
-    textureEnabled &&
-    texColor.r === ckR && texColor.g === ckG && texColor.b === ckB
-  val afterChromaKey = tmuJoined.throwWhen(chromaKill)
-
   // Connect TMU joined output to ColorCombine
-  colorCombine.io.input.translateFrom(afterChromaKey) { (out, payload) =>
+  colorCombine.io.input.translateFrom(tmuJoined) { (out, payload) =>
     val tmuOut = payload._1
     val rasterOut = payload._2 // Original rasterizer output
 
@@ -619,11 +607,21 @@ case class Core(c: Config) extends Component {
     entry
   })
 
+  // Chroma key: discard pixels where color combine output matches chromaKey register
+  val ckBits = regBank.renderConfig.chromaKey
+  val ckR = ckBits(23 downto 16).asUInt
+  val ckG = ckBits(15 downto 8).asUInt
+  val ckB = ckBits(7 downto 0).asUInt
+  val ccColor = colorCombine.io.output.payload.color
+  val chromaKill = colorCombine.io.output.payload.fbzMode.enableChromaKey &&
+    ccColor.r === ckR && ccColor.g === ckG && ccColor.b === ckB
+  val afterChromaKey = colorCombine.io.output.throwWhen(chromaKill)
+
   val fog = Fog(c)
   fog.io.fogTable := fogTableVec
-  // Arbiter: CC output (priority) and LFB pipeline output feed into Fog
+  // Arbiter: CC output (after chromakey, priority) and LFB pipeline output feed into Fog
   fog.io.input << StreamArbiterFactory.lowerFirst.on(
-    Seq(colorCombine.io.output, lfb.io.pipelineOutput)
+    Seq(afterChromaKey, lfb.io.pipelineOutput)
   )
 
   // Alpha test: discard pixels that fail alpha comparison

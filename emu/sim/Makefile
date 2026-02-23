@@ -44,6 +44,13 @@ CXXFLAGS += -I$(OBJ_DIR) -I$(VERILATOR_ROOT)/include -I$(VERILATOR_ROOT)/include
 # Verilator regenerates obj_dir/*.cpp from the Verilog source.
 VERILATE_STAMP = $(OBJ_DIR)/.verilate.stamp
 
+# Trace mode sentinel: forces rebuild when TRACE= setting changes.
+# Updated at parse time via $(shell) so the timestamp only changes on real transitions.
+TRACE_MODE_FILE = $(OBJ_DIR)/.trace_mode
+TRACE_MODE_VAL  = $(if $(filter 1,$(TRACE)),trace,notrace)
+$(shell mkdir -p $(OBJ_DIR))
+$(shell [ -f $(TRACE_MODE_FILE) ] && [ "$$(cat $(TRACE_MODE_FILE))" = "$(TRACE_MODE_VAL)" ] || echo "$(TRACE_MODE_VAL)" > $(TRACE_MODE_FILE))
+
 ###############################################################################
 # Targets
 ###############################################################################
@@ -57,8 +64,8 @@ $(RTL_DIR)/CoreSim.v: $(SCALA_SRCS)
 
 verilog: $(RTL_DIR)/CoreSim.v
 
-# Step 2: Run Verilator (only when Verilog source changes)
-$(VERILATE_STAMP): $(RTL_DIR)/CoreSim.v
+# Step 2: Run Verilator (rebuilds when Verilog source or TRACE mode changes)
+$(VERILATE_STAMP): $(RTL_DIR)/CoreSim.v $(TRACE_MODE_FILE)
 	$(VERILATOR) $(VERILATOR_FLAGS) $(RTL_DIR)/CoreSim.v --Mdir $(OBJ_DIR)
 	@touch $@
 
@@ -81,13 +88,14 @@ harness: $(HARNESS_OBJS)
 # sim_harness.o only needs generated headers (from verilate), not the compiled model.
 # verilated.o / verilated_fst_c.o only need obj_dir to exist.
 # Using order-only deps on the stamp so these compile in parallel with the model.
-$(OBJ_DIR)/sim_harness.o: $(HARNESS_DIR)/sim_harness.cpp $(HARNESS_DIR)/sim_harness.h | $(VERILATE_STAMP)
+# TRACE_MODE_FILE forces recompilation when TRACE= changes (CXXFLAGS differ).
+$(OBJ_DIR)/sim_harness.o: $(HARNESS_DIR)/sim_harness.cpp $(HARNESS_DIR)/sim_harness.h $(TRACE_MODE_FILE) | $(VERILATE_STAMP)
 	$(CXX32) $(CXXFLAGS) -c -o $@ $<
 
-$(OBJ_DIR)/verilated.o: $(VERILATOR_ROOT)/include/verilated.cpp | $(VERILATE_STAMP)
+$(OBJ_DIR)/verilated.o: $(VERILATOR_ROOT)/include/verilated.cpp $(TRACE_MODE_FILE) | $(VERILATE_STAMP)
 	$(CXX32) $(CXXFLAGS) -c -o $@ $<
 
-$(OBJ_DIR)/verilated_fst_c.o: $(VERILATOR_ROOT)/include/verilated_fst_c.cpp | $(VERILATE_STAMP)
+$(OBJ_DIR)/verilated_fst_c.o: $(VERILATOR_ROOT)/include/verilated_fst_c.cpp $(TRACE_MODE_FILE) | $(VERILATE_STAMP)
 	$(CXX32) $(CXXFLAGS) -c -o $@ $<
 
 clean:

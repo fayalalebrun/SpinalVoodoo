@@ -46,9 +46,16 @@ glide: sim
 tests: glide
 	$(MAKE) -C $(GLIDE_TST_DIR) -f Makefile.sim all
 
+# Trace mode sentinel: force sim+glide rebuild when TRACE= setting changes.
+# Updated at parse time via $(shell) so the timestamp only changes on real transitions.
+TRACE_MODE_FILE = $(SIM_DIR)/obj_dir/.trace_mode
+TRACE_MODE_VAL  = $(if $(filter 1,$(TRACE)),trace,notrace)
+$(shell mkdir -p $(dir $(TRACE_MODE_FILE)))
+$(shell [ -f $(TRACE_MODE_FILE) ] && [ "$$(cat $(TRACE_MODE_FILE))" = "$(TRACE_MODE_VAL)" ] || echo "$(TRACE_MODE_VAL)" > $(TRACE_MODE_FILE))
+
 # File-based build chain: only recurse when outputs are stale.
 # The sub-makes handle fine-grained .c/.o dependency tracking internally.
-$(SIM_STAMP): $(SCALA_SRCS)
+$(SIM_STAMP): $(SCALA_SRCS) $(TRACE_MODE_FILE)
 	$(MAKE) -C $(SIM_DIR) all
 
 $(GLIDE_STAMP): $(SIM_STAMP)
@@ -67,7 +74,7 @@ run/%: $(GLIDE_TST_DIR)/%.exe scripts/srle2png
 	cd $(GLIDE_TST_DIR) && \
 	  $(if $(filter 1,$(TRACE)),SIM_FST=$(abspath $(OUTPUT_DIR))/$*/trace.fst) \
 	  LD_LIBRARY_PATH=../../lib/sst1 \
-	  timeout 300 ./$*.exe -n 1 -d $(abspath $(OUTPUT_DIR))/$*/screenshot.srle < /dev/null
+	  ./$*.exe -n 1 -d $(abspath $(OUTPUT_DIR))/$*/screenshot.srle < /dev/null
 	@for f in $(OUTPUT_DIR)/$*/screenshot*.srle; do \
 	  [ -f "$$f" ] || continue; \
 	  python3 scripts/srle2png "$$f" "$${f%.srle}.png" && rm -f "$$f"; \

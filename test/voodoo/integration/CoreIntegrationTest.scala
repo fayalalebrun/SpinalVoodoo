@@ -69,6 +69,7 @@ class CoreIntegrationTest extends AnyFunSuite {
   val REG_SWAPBUFFER_CMD = 0x128
   val REG_FBIINIT1 = 0x214
   val REG_FBIINIT2 = 0x218
+  val REG_FBIINIT3 = 0x21c
   val REG_TEXTUREMODE = 0x300
   val REG_TLOD = 0x304
   val REG_TEXBASEADDR = 0x30c
@@ -5220,8 +5221,8 @@ class CoreIntegrationTest extends AnyFunSuite {
         writtenAddrs.clear()
         val yOriginSwap = 99
 
-        // Write fbiInit1 with yOriginSwap in bits [31:22] (bypass register)
-        writeReg(driver, REG_FBIINIT1, yOriginSwap.toLong << 22)
+        // Write fbiInit3 with yOriginSwap in bits [31:22]
+        writeReg(driver, REG_FBIINIT3, yOriginSwap.toLong << 22)
         dut.clockDomain.waitSampling(5)
 
         // fbzMode: enableClipping=1, rgbWrite=1, auxWrite=1, yOrigin=1 (bit 17)
@@ -5286,8 +5287,8 @@ class CoreIntegrationTest extends AnyFunSuite {
         writtenAddrs.clear()
         val yOriginSwap = 99
 
-        // fbiInit1 already set from sub-case 2, but write again to be safe
-        writeReg(driver, REG_FBIINIT1, yOriginSwap.toLong << 22)
+        // fbiInit3 already set from sub-case 2, but write again to be safe
+        writeReg(driver, REG_FBIINIT3, yOriginSwap.toLong << 22)
         dut.clockDomain.waitSampling(5)
 
         // fbzMode: enableClipping=1, rgbWrite=1, auxWrite=1, yOrigin=1 (bit 17)
@@ -7222,13 +7223,16 @@ class CoreIntegrationTest extends AnyFunSuite {
       // overlap:   (80,70) — inside both triangles
       // tri2-only: (30,75) — inside tri2, left of tri1 (tri1 starts at x=40)
       val interiorChecks = Seq(
-        ((80, 35), 0xF800, "tri1-only: pure red"),
+        ((80, 35), 0xf800, "tri1-only: pure red"),
         ((80, 70), 0x7810, "overlap: blended purple")
       )
       for (((x, y), expected, desc) <- interiorChecks) {
         simPixels.get((x, y)) match {
           case Some((rgb, _)) =>
-            assert(rgb == expected, f"Interior pixel ($x,$y) $desc: expected 0x$expected%04X got 0x$rgb%04X")
+            assert(
+              rgb == expected,
+              f"Interior pixel ($x,$y) $desc: expected 0x$expected%04X got 0x$rgb%04X"
+            )
           case None =>
             fail(s"Interior pixel ($x,$y) $desc: not found in sim output")
         }
@@ -7290,7 +7294,7 @@ class CoreIntegrationTest extends AnyFunSuite {
       val vCy = 200 * 16
 
       // Constant color via color0: bright red (ARGB = 0xFFFF0000)
-      val color0 = 0xFFFF0000
+      val color0 = 0xffff0000
 
       // fbzColorPath: constant color0 passthrough
       //   localSelect = COLOR0 (bit 4)
@@ -7426,7 +7430,10 @@ class CoreIntegrationTest extends AnyFunSuite {
       // Verify distinct fog levels exist (not just one fog factor everywhere)
       val distinctColors = refPixels.map(_.rgb565).toSet.size
       println(s"[fog_w_table] Distinct colors in reference: $distinctColors")
-      assert(distinctColors > 1, "W-table fog should produce varying fog levels across the triangle")
+      assert(
+        distinctColors > 1,
+        "W-table fog should produce varying fog levels across the triangle"
+      )
 
       comparePixelsFuzzy(
         refPixels,
@@ -7435,6 +7442,282 @@ class CoreIntegrationTest extends AnyFunSuite {
         colorTolerance = 1,
         maxEdgeDiffs = 5,
         maxColorMismatches = 100
+      )
+    }
+  }
+
+  // ========================================================================
+  // Test 19: Chromakey + Y-origin flip — red and blue triangle (test09)
+  //
+  // Mirrors Glide test09: draws two overlapping triangles with chromakey.
+  //   - Triangle 1: RED constant color, ORIGIN_UPPER_LEFT
+  //   - Triangle 2: BLUE constant color, ORIGIN_LOWER_LEFT (Y-flipped)
+  //   - Chromakey enabled, key color = BLUE (ARGB 0x000000FF)
+  //
+  // Glide uses GR_COLORFORMAT_ABGR, so API colors are swizzled:
+  //   RED  = 0x000000FF (ABGR) → 0x00FF0000 (ARGB hw) = R=255
+  //   BLUE = 0x00FF0000 (ABGR) → 0x000000FF (ARGB hw) = B=255
+  //
+  // Chromakey compares the color combine OUTPUT against the chromaKey
+  // register. Since color combine outputs color0 (constant color):
+  //   - Triangle 1 (RED): RED != BLUE → passes
+  //   - Triangle 2 (BLUE): BLUE == BLUE → killed by chromakey
+  //
+  // Expected: only the red triangle renders (blue is chromakeyed out)
+  // ========================================================================
+  test("Chromakey + Y-origin: red and blue triangles (test09)") {
+    compiled.doSim("test09_chromakey_yorigin") { dut =>
+      val (driver, fbMemory, _, writtenAddrs) = setupDut(dut)
+
+      // Pre-zero framebuffer so reads during alpha blend return black
+      fbMemory.memory.content(0L) = new Array[Byte](1024 * 1024)
+
+      // Vertex coordinates matching test09: tlScaleX/Y on 640x480
+      //   A = (0.5, 0.1) → (320, 48)
+      //   B = (0.8, 0.9) → (512, 432)
+      //   C = (0.2, 0.9) → (128, 432)
+      val vAx = 320 * 16
+      val vAy = 48 * 16
+      val vBx = 512 * 16
+      val vBy = 432 * 16
+      val vCx = 128 * 16
+      val vCy = 432 * 16
+
+      // Color0 values (after ABGR→ARGB swizzle, matching Glide)
+      val redColor0 = 0x00ff0000 // ARGB: R=255, G=0, B=0
+      val blueColor0 = 0x000000ff // ARGB: R=0, G=0, B=255
+
+      // Chromakey color = BLUE after swizzle (ARGB 0x000000FF)
+      val chromaKeyColor = 0x000000ff
+
+      // fbzColorPath: constant color0 passthrough (matching test09's grColorCombine)
+      //   grColorCombine(LOCAL, NONE, CONSTANT, NONE, FALSE)
+      //   localSelect = COLOR0 (bit 4)
+      //   zeroOther (bit 8), add_clocal (bit 14)
+      //   alphaLocalSelect = COLOR0 (bit 5)
+      //   alphaZeroOther (bit 17), alphaAdd_clocal (bit 23)
+      val fbzColorPath = (1 << 4) | (1 << 5) | (1 << 8) | (1 << 14) | (1 << 17) | (1 << 23)
+
+      // fbiInit3: yOriginSwap = 479 (screen height - 1), in bits [31:22]
+      val yOriginSwap = 479
+      writeReg(driver, REG_FBIINIT3, yOriginSwap.toLong << 22)
+      dut.clockDomain.waitSampling(5)
+
+      // --- Triangle 1: RED, ORIGIN_UPPER_LEFT ---
+      // fbzMode: enable(0) + chromakey(1) + RGB write(9), yOrigin=0
+      val fbzMode1 = 1 | (1 << 1) | (1 << 9)
+
+      submitTriangle(
+        driver,
+        dut.clockDomain,
+        vertexAx = vAx,
+        vertexAy = vAy,
+        vertexBx = vBx,
+        vertexBy = vBy,
+        vertexCx = vCx,
+        vertexCy = vCy,
+        startR = 0,
+        startG = 0,
+        startB = 0,
+        startA = 255 << 12,
+        startZ = 0,
+        startS = 0,
+        startT = 0,
+        startW = 0,
+        dRdX = 0,
+        dGdX = 0,
+        dBdX = 0,
+        dAdX = 0,
+        dZdX = 0,
+        dSdX = 0,
+        dTdX = 0,
+        dWdX = 0,
+        dRdY = 0,
+        dGdY = 0,
+        dBdY = 0,
+        dAdY = 0,
+        dZdY = 0,
+        dSdY = 0,
+        dTdY = 0,
+        dWdY = 0,
+        fbzColorPath = fbzColorPath,
+        fbzMode = fbzMode1,
+        sign = false,
+        color0 = redColor0,
+        chromaKey = chromaKeyColor,
+        clipRight = 640,
+        clipHighY = 480
+      )
+
+      dut.clockDomain.waitSampling(400000)
+
+      // --- Triangle 2: BLUE, ORIGIN_LOWER_LEFT ---
+      // fbzMode: enable(0) + chromakey(1) + RGB write(9) + yOrigin(17)
+      val fbzMode2 = 1 | (1 << 1) | (1 << 9) | (1 << 17)
+
+      submitTriangle(
+        driver,
+        dut.clockDomain,
+        vertexAx = vAx,
+        vertexAy = vAy,
+        vertexBx = vBx,
+        vertexBy = vBy,
+        vertexCx = vCx,
+        vertexCy = vCy,
+        startR = 0,
+        startG = 0,
+        startB = 0,
+        startA = 255 << 12,
+        startZ = 0,
+        startS = 0,
+        startT = 0,
+        startW = 0,
+        dRdX = 0,
+        dGdX = 0,
+        dBdX = 0,
+        dAdX = 0,
+        dZdX = 0,
+        dSdX = 0,
+        dTdX = 0,
+        dWdX = 0,
+        dRdY = 0,
+        dGdY = 0,
+        dBdY = 0,
+        dAdY = 0,
+        dZdY = 0,
+        dSdY = 0,
+        dTdY = 0,
+        dWdY = 0,
+        fbzColorPath = fbzColorPath,
+        fbzMode = fbzMode2,
+        sign = false,
+        color0 = blueColor0,
+        chromaKey = chromaKeyColor,
+        clipRight = 640,
+        clipHighY = 480
+      )
+
+      dut.clockDomain.waitSampling(400000)
+
+      // --- Collect results ---
+      val simPixels = collectPixels(fbMemory, writtenAddrs, 0)
+      println(s"[test09] Simulation produced ${simPixels.size} pixels")
+
+      // --- Build reference ---
+      // Triangle 1: RED, normal Y — passes chromakey (RED != BLUE)
+      val refParams1 = VoodooReference.fromRegisterValues(
+        vertexAx = vAx,
+        vertexAy = vAy,
+        vertexBx = vBx,
+        vertexBy = vBy,
+        vertexCx = vCx,
+        vertexCy = vCy,
+        startR = 0,
+        startG = 0,
+        startB = 0,
+        startA = 255 << 12,
+        startZ = 0,
+        startS = 0,
+        startT = 0,
+        startW = 0,
+        dRdX = 0,
+        dGdX = 0,
+        dBdX = 0,
+        dAdX = 0,
+        dZdX = 0,
+        dSdX = 0,
+        dTdX = 0,
+        dWdX = 0,
+        dRdY = 0,
+        dGdY = 0,
+        dBdY = 0,
+        dAdY = 0,
+        dZdY = 0,
+        dSdY = 0,
+        dTdY = 0,
+        dWdY = 0,
+        fbzColorPath = fbzColorPath,
+        fbzMode = fbzMode1,
+        sign = false,
+        color0 = redColor0,
+        chromaKey = chromaKeyColor,
+        clipRight = 640,
+        clipHighY = 480
+      )
+      val refPixels1 = VoodooReference.voodooTriangle(refParams1)
+
+      // Triangle 2: BLUE — killed by chromakey (BLUE == BLUE), produces 0 pixels
+      val refParams2 = VoodooReference.fromRegisterValues(
+        vertexAx = vAx,
+        vertexAy = vAy,
+        vertexBx = vBx,
+        vertexBy = vBy,
+        vertexCx = vCx,
+        vertexCy = vCy,
+        startR = 0,
+        startG = 0,
+        startB = 0,
+        startA = 255 << 12,
+        startZ = 0,
+        startS = 0,
+        startT = 0,
+        startW = 0,
+        dRdX = 0,
+        dGdX = 0,
+        dBdX = 0,
+        dAdX = 0,
+        dZdX = 0,
+        dSdX = 0,
+        dTdX = 0,
+        dWdX = 0,
+        dRdY = 0,
+        dGdY = 0,
+        dBdY = 0,
+        dAdY = 0,
+        dZdY = 0,
+        dSdY = 0,
+        dTdY = 0,
+        dWdY = 0,
+        fbzColorPath = fbzColorPath,
+        fbzMode = fbzMode2,
+        sign = false,
+        color0 = blueColor0,
+        chromaKey = chromaKeyColor,
+        clipRight = 640,
+        clipHighY = 480
+      )
+      val refPixels2 = VoodooReference.voodooTriangle(refParams2)
+      assert(
+        refPixels2.isEmpty,
+        s"Reference: blue triangle should produce 0 pixels (chromakeyed), got ${refPixels2.size}"
+      )
+
+      println(s"[test09] Reference: ${refPixels1.size} red, ${refPixels2.size} blue (chromakeyed)")
+
+      // --- Verify chromakey behavior ---
+      val red565 = VoodooReference.writePixel(255, 0, 0)
+      val blue565 = VoodooReference.writePixel(0, 0, 255)
+
+      val simRedCount = simPixels.count { case (_, (rgb, _)) => rgb == red565 }
+      val simBlueCount = simPixels.count { case (_, (rgb, _)) => rgb == blue565 }
+      println(s"[test09] Sim pixels: $simRedCount red, $simBlueCount blue, ${simPixels.size} total")
+
+      // Red triangle should render (RED != chromaKey BLUE)
+      assert(simRedCount > 0, "Red triangle should have rendered (not chromakeyed)")
+      // Blue triangle should be killed by chromakey (BLUE == chromaKey BLUE)
+      assert(
+        simBlueCount == 0,
+        s"Blue triangle should be chromakeyed out, but got $simBlueCount blue pixels"
+      )
+
+      // Only red triangle pixels — compare against reference
+      comparePixelsFuzzy(
+        refPixels1,
+        simPixels,
+        "test09_chromakey_yorigin",
+        colorTolerance = 1,
+        maxEdgeDiffs = 8000,
+        maxColorMismatches = 500
       )
     }
   }

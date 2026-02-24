@@ -383,15 +383,16 @@ case class BmbBusInterface(
     val pulseStream = Stream(NoData())
     pulseStream.valid := reg.hitDoWrite
 
-    // Use s2mPipe() to register the ready path - this breaks the combinatorial loop
-    // s2mPipe creates a 1-entry buffer that decouples upstream from downstream backpressure
-    // Its internal rValid register breaks the loop: bufferedStream.valid is registered,
-    // so arbiter's ready doesn't combinatorially depend on drain decision
-    val bufferedStream = pulseStream.s2mPipe()
+    // s2mPipe() breaks the ready-path combinatorial loop (its ready is registered).
+    // m2sPipe() then registers the valid path, ensuring the stream fires ONE CYCLE
+    // AFTER the register write.  This is critical because translateWith() reads
+    // register field values combinationally — without m2sPipe the s2mPipe pass-through
+    // would fire on the SAME cycle as hitDoWrite, before the register flip-flop has
+    // latched the new value (e.g. the sign bit would still read as 0).
+    val s2m = pulseStream.s2mPipe()
+    val bufferedStream = s2m.m2sPipe()
 
-    // For blocking: check pulseStream.ready directly
-    // s2mPipe computes: pulseStream.ready = !rValid || bufferedStream.ready
-    // This is safe because bufferedStream.valid (= rValid) is registered
+    // For blocking: check pulseStream.ready (from s2mPipe, registered — no comb loop)
     commandStreamReady(addr) = pulseStream.ready
 
     (reg, bufferedStream)

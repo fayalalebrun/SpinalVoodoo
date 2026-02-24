@@ -310,7 +310,7 @@ class RegisterBankTest extends AnyFunSuite {
 
       // Write first command - goes into buffer
       bmbWrite(dut, 0x080, 1)
-      dut.clockDomain.waitSampling(3) // Let it drain into buffer
+      dut.clockDomain.waitSamplingWhere(dut.commands.triangleCmd.valid.toBoolean)
 
       // Verify buffer has the command (valid should be true)
       assert(

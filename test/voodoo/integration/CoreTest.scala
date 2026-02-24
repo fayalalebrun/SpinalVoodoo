@@ -74,6 +74,30 @@ class CoreTest extends AnyFunSuite {
   val REG_TLOD = 0x304
   val REG_TEXBASEADDR = 0x30c
 
+  // Float triangle registers (from RegisterBank.scala floatTriangleGeometry)
+  val REG_FVERTEX_AX = 0x088
+  val REG_FVERTEX_AY = 0x08c
+  val REG_FVERTEX_BX = 0x090
+  val REG_FVERTEX_BY = 0x094
+  val REG_FVERTEX_CX = 0x098
+  val REG_FVERTEX_CY = 0x09c
+  val REG_FSTART_R = 0x0a0
+  val REG_FSTART_G = 0x0a4
+  val REG_FSTART_B = 0x0a8
+  val REG_FSTART_Z = 0x0ac
+  val REG_FSTART_A = 0x0b0
+  val REG_FDRDX = 0x0c0
+  val REG_FDGDX = 0x0c4
+  val REG_FDBDX = 0x0c8
+  val REG_FDZDX = 0x0cc
+  val REG_FDADX = 0x0d0
+  val REG_FDRDY = 0x0e0
+  val REG_FDGDY = 0x0e4
+  val REG_FDBDY = 0x0e8
+  val REG_FDZDY = 0x0ec
+  val REG_FDADY = 0x0f0
+  val REG_FTRIANGLE_CMD = 0x100
+
   // ========================================================================
   // Texture format mapping table
   // ========================================================================
@@ -134,6 +158,9 @@ class CoreTest extends AnyFunSuite {
   def writeReg(driver: BmbDriver, addr: Int, data: Long): Unit = {
     driver.write(BigInt(data & 0xffffffffL), BigInt(addr))
   }
+
+  /** Convert a Float to its IEEE 754 bit representation as a Long */
+  def floatBits(f: Float): Long = java.lang.Float.floatToRawIntBits(f).toLong & 0xffffffffL
 
   def readStatus(driver: BmbDriver): Long = {
     driver.read(BigInt(REG_STATUS)).toLong & 0xffffffffL
@@ -4244,21 +4271,12 @@ class CoreTest extends AnyFunSuite {
         writeReg(regDriver, REG_FBZMODE, (1 << 9) | (1 << 8))
         dut.clockDomain.waitSampling(50)
 
-        // Write a pixel with "fractional" color values (not aligned to 5/6 bit boundaries)
-        // R=0x84 (132), G=0x84 (132), B=0x84 (132) at position (0,0)
-        // Without dither: R=132>>3=16, G=132>>2=33, B=132>>3=16 → 0x8430
-        // With 4x4 dither at (0,0): threshold=bayer4x4[0][0]=15 (vertically flipped)
-        //   R: frac=132&7=4, scaled=4*2=8, 8<15 → no add → R=16
-        //   G: frac=132&3=0, scaled=0*4=0, 0<15 → no add → G=33
-        //   B: frac=132&7=4, scaled=4*2=8, 8<15 → no add → B=16
-        // So dithered output at (0,0) = same as undithered = 0x8430
-        // At (1,0): threshold=bayer4x4[0][1]=7
-        //   R: frac=4, scaled=8, 8>7 → +1 → R=17
-        //   G: frac=0, scaled=0, 0<7 → no add → G=33
-        //   B: frac=4, scaled=8, 8>7 → +1 → B=17
-        // Dithered at (1,0) = R=17, G=33, B=17 → (17<<11)|(33<<5)|17 = 0x8C31
+        // Write pixels with color values where dithering produces different results
+        // per position. Use the ground-truth 86Box DitherTables for expected values.
+        // R=G=B=0x84 (132). ARGB8888 at two adjacent positions with 4x4 dither.
         val y = 70
         val argb = 0xff848484L
+        val colorVal = 0x84
 
         // Write pixel at (0,70)
         val addr0 = (y << 12) | (0 << 2)
@@ -4272,15 +4290,24 @@ class CoreTest extends AnyFunSuite {
 
         val pixels = collectPixels(fbMemory, writtenAddrs, 0)
 
-        val noDither = toRgb565(0x84, 0x84, 0x84) // 0x8430
-        val withDither = ((17 << 11) | (33 << 5) | 17) // 0x8C31
+        // Look up expected dithered values from the 86Box ground-truth tables
+        val dy = y % 4
+        val exp0R = DitherTables.lookupRb(colorVal, dy, 0)
+        val exp0G = DitherTables.lookupG(colorVal, dy, 0)
+        val exp0B = DitherTables.lookupRb(colorVal, dy, 0)
+        val expected0 = (exp0R << 11) | (exp0G << 5) | exp0B
+
+        val exp1R = DitherTables.lookupRb(colorVal, dy, 1)
+        val exp1G = DitherTables.lookupG(colorVal, dy, 1)
+        val exp1B = DitherTables.lookupRb(colorVal, dy, 1)
+        val expected1 = (exp1R << 11) | (exp1G << 5) | exp1B
 
         var mismatches = 0
         pixels.get((0, y)) match {
           case Some((actual, _)) =>
-            if (actual != noDither) {
+            if (actual != expected0) {
               println(
-                f"[lfb_dither] (0,$y) MISMATCH: expected=0x$noDither%04X actual=0x$actual%04X"
+                f"[lfb_dither] (0,$y) MISMATCH: expected=0x$expected0%04X actual=0x$actual%04X"
               )
               mismatches += 1
             }
@@ -4288,16 +4315,16 @@ class CoreTest extends AnyFunSuite {
         }
         pixels.get((1, y)) match {
           case Some((actual, _)) =>
-            if (actual != withDither) {
+            if (actual != expected1) {
               println(
-                f"[lfb_dither] (1,$y) MISMATCH: expected=0x$withDither%04X actual=0x$actual%04X"
+                f"[lfb_dither] (1,$y) MISMATCH: expected=0x$expected1%04X actual=0x$actual%04X"
               )
               mismatches += 1
             }
           case None => println(f"[lfb_dither] (1,$y) MISSING"); mismatches += 1
         }
         assert(mismatches == 0, s"[lfb_dither] $mismatches mismatches")
-        println(f"[lfb_dither] PASS: (0,$y)=0x$noDither%04X (1,$y)=0x$withDither%04X")
+        println(f"[lfb_dither] PASS: (0,$y)=0x$expected0%04X (1,$y)=0x$expected1%04X")
         writtenAddrs.clear()
       }
 
@@ -7718,6 +7745,165 @@ class CoreTest extends AnyFunSuite {
         colorTolerance = 1,
         maxEdgeDiffs = 8000,
         maxColorMismatches = 500
+      )
+    }
+  }
+
+  // ========================================================================
+  // Test 20: test16 checkerboard cell — float triangle path
+  //
+  // Port of Glide test16 (grSplash/grShamelessPlug test) cell (0,0).
+  // test16 draws a 10x10 grid of quads, each split into two CW triangles:
+  //
+  //   A(0,0)------D(64,0)
+  //   |\          |
+  //   | \ blue   |
+  //   |  \       |
+  //   | red \    |
+  //   |      \   |
+  //   B(0,48)---C(64,48)
+  //
+  // Glide's _trisetup sorts vertices by Y, computes area as float,
+  // and writes float registers (FvA/FvB/FvC + FtriangleCMD).
+  // Both triangles have negative area (-3072) → CW winding → signBit=1.
+  // Uses grColorCombine(LOCAL, NONE, CONSTANT, NONE, false) → color0 passthrough.
+  // ========================================================================
+  test("test16 checkerboard cell: float triangle path (CW winding)") {
+    compiled.doSim("test16_float_cell") { dut =>
+      val (driver, fbMemory, _, writtenAddrs) = setupDut(dut)
+
+      // fbzColorPath matching grColorCombine(LOCAL, NONE, CONSTANT, NONE, false):
+      // localSelect=1(bit4), zeroOther=1(bit8), reverseBlend=1(bit13),
+      // addClocal=1(bit14), paramAdjust=1(bit26)
+      val fbzColorPath = (1 << 4) | (1 << 8) | (1 << 13) | (1 << 14) | (1 << 26)
+      // fbzMode: clipping(bit0) + RGB write(bit9)
+      val fbzMode = 1 | (1 << 9)
+
+      writeReg(driver, REG_FBZCOLORPATH, fbzColorPath)
+      writeReg(driver, REG_FBZMODE, fbzMode)
+      writeReg(driver, REG_CLIP_LR, 640)
+      writeReg(driver, REG_CLIP_TB, 480)
+
+      // === Red triangle: A(0,0)-B(0,48)-C(64,48) ===
+      // After Glide Y-sort: already sorted (Ay=0 < By=Cy=48)
+      // area = dxAB*dyBC - dxBC*dyAB = 0*0 - (-64)*(-48) = -3072.0 (CW)
+      writeReg(driver, REG_COLOR0, 0x000000ffL) // RED in ABGR
+
+      writeReg(driver, REG_FVERTEX_AX, floatBits(0.0f))
+      writeReg(driver, REG_FVERTEX_AY, floatBits(0.0f))
+      writeReg(driver, REG_FVERTEX_BX, floatBits(0.0f))
+      writeReg(driver, REG_FVERTEX_BY, floatBits(48.0f))
+      writeReg(driver, REG_FVERTEX_CX, floatBits(64.0f))
+      writeReg(driver, REG_FVERTEX_CY, floatBits(48.0f))
+      writeReg(driver, REG_FTRIANGLE_CMD, floatBits(-3072.0f))
+
+      dut.clockDomain.waitSampling(200000)
+
+      val redPixels = collectPixels(fbMemory, writtenAddrs, 0)
+      println(s"[test16_red] Red triangle produced ${redPixels.size} pixels")
+      val red565 = 0xf800 // pure red in RGB565
+      val redCount = redPixels.count { case (_, (rgb, _)) => rgb == red565 }
+      println(s"[test16_red] Of which $redCount are pure red (0xF800)")
+
+      // === Blue triangle: A(0,0)-C(64,48)-D(64,0) ===
+      // After Glide Y-sort: ay=0(A), by=48(C), cy=0(D)
+      //   ay < by → yes, by > cy → yes, ay < cy → 0 < 0 → no → case "cab"
+      //   fa=D(64,0), fb=A(0,0), fc=C(64,48)
+      // area = dxAB*dyBC - dxBC*dyAB = 64*(-48) - (-64)*0 = -3072.0 (CW)
+      writtenAddrs.clear()
+      writeReg(driver, REG_COLOR0, 0x00ff0000L) // BLUE in ABGR
+
+      writeReg(driver, REG_FVERTEX_AX, floatBits(64.0f)) // D (sorted top)
+      writeReg(driver, REG_FVERTEX_AY, floatBits(0.0f))
+      writeReg(driver, REG_FVERTEX_BX, floatBits(0.0f)) // A (sorted mid)
+      writeReg(driver, REG_FVERTEX_BY, floatBits(0.0f))
+      writeReg(driver, REG_FVERTEX_CX, floatBits(64.0f)) // C (sorted bottom)
+      writeReg(driver, REG_FVERTEX_CY, floatBits(48.0f))
+      writeReg(driver, REG_FTRIANGLE_CMD, floatBits(-3072.0f))
+
+      dut.clockDomain.waitSampling(200000)
+
+      val bluePixels = collectPixels(fbMemory, writtenAddrs, 0)
+      val blue565 = 0x001f // pure blue in RGB565
+      val blueCount = bluePixels.count { case (_, (rgb, _)) => rgb == blue565 }
+      println(
+        s"[test16_blue] Blue triangle produced ${bluePixels.size} pixels ($blueCount pure blue)"
+      )
+
+      // A 64x48 half-rectangle triangle should produce ~1536 pixels each
+      // (total quad = 64*48 = 3072 pixels, two triangles split it)
+      assert(
+        redPixels.nonEmpty,
+        "Red CW triangle produced 0 pixels — CW winding (signBit=1) is broken via float path"
+      )
+      assert(
+        bluePixels.nonEmpty,
+        "Blue CW triangle produced 0 pixels — CW winding (signBit=1) is broken via float path"
+      )
+    }
+  }
+
+  // ========================================================================
+  // Test 21: CW triangle via integer path — regression for sign bit
+  //
+  // Same triangle shape as the flat_shaded CCW test but with CW winding.
+  // This uses the integer register path (triangleCMD, not FtriangleCMD).
+  // ========================================================================
+  test("CW triangle via integer path (sign=true) must render") {
+    compiled.doSim("test_cw_integer") { dut =>
+      val (driver, fbMemory, _, writtenAddrs) = setupDut(dut)
+
+      val fbzColorPath = (1 << 8) | (1 << 14)
+      val fbzMode = 1 | (1 << 9)
+
+      // A(160,80), B(80,200), C(240,200) — CW winding
+      submitTriangle(
+        driver,
+        dut.clockDomain,
+        vertexAx = 160 * 16,
+        vertexAy = 80 * 16,
+        vertexBx = 80 * 16,
+        vertexBy = 200 * 16,
+        vertexCx = 240 * 16,
+        vertexCy = 200 * 16,
+        startR = 255 << 12,
+        startG = 0,
+        startB = 0,
+        startA = 255 << 12,
+        startZ = 0,
+        startS = 0,
+        startT = 0,
+        startW = 0,
+        dRdX = 0,
+        dGdX = 0,
+        dBdX = 0,
+        dAdX = 0,
+        dZdX = 0,
+        dSdX = 0,
+        dTdX = 0,
+        dWdX = 0,
+        dRdY = 0,
+        dGdY = 0,
+        dBdY = 0,
+        dAdY = 0,
+        dZdY = 0,
+        dSdY = 0,
+        dTdY = 0,
+        dWdY = 0,
+        fbzColorPath = fbzColorPath,
+        fbzMode = fbzMode,
+        sign = true,
+        clipRight = 640,
+        clipHighY = 480
+      )
+      dut.clockDomain.waitSampling(200000)
+
+      val simPixels = collectPixels(fbMemory, writtenAddrs, 0)
+      println(s"[cw_integer] Produced ${simPixels.size} pixels")
+
+      assert(
+        simPixels.nonEmpty,
+        "CW triangle (sign=true) via integer path produced 0 pixels — sign bit handling is broken"
       )
     }
   }

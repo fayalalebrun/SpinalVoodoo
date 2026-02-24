@@ -13,7 +13,7 @@
 #   make tests        # sim + Glide + all test binaries
 #   make clean        # clean all build artifacts
 
-.PHONY: all sim glide tests clean clean-sim clean-glide clean-tests run-all
+.PHONY: all sim glide tests clean clean-sim clean-glide clean-tests run-all FORCE
 
 # Derive CXX32 from CC32 for sub-makefiles that need it
 CC32 ?= gcc -m32
@@ -58,11 +58,12 @@ $(shell [ -f $(TRACE_MODE_FILE) ] && [ "$$(cat $(TRACE_MODE_FILE))" = "$(TRACE_M
 $(SIM_STAMP): $(SCALA_SRCS) $(TRACE_MODE_FILE)
 	$(MAKE) -C $(SIM_DIR) all
 
-$(GLIDE_STAMP): $(SIM_STAMP)
+# Always recurse so sub-make tracks .c → .o deps for Glide sources
+$(GLIDE_STAMP): $(SIM_STAMP) FORCE
 	$(MAKE) -C $(GLIDE_SRC_DIR) -f Makefile.sim
 
-# Build a single test exe (only rebuilds glide/sim if their outputs are missing)
-$(GLIDE_TST_DIR)/%.exe: $(GLIDE_STAMP)
+# Build a single test exe (always recurse so sub-make tracks .c → .o deps)
+$(GLIDE_TST_DIR)/%.exe: $(GLIDE_STAMP) FORCE
 	$(MAKE) -C $(GLIDE_TST_DIR) -f Makefile.sim $*.exe
 
 # Run a single test: make run/test00

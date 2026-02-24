@@ -185,8 +185,10 @@ static void bus_write(uint32_t addr, uint32_t data) {
     /* Always accept responses */
     top->io_cpuBus_rsp_ready = 1;
 
-    /* Tick until cmd accepted: check ready BEFORE each rising edge */
-    int timeout = 10000;
+    /* Tick until cmd accepted: check ready BEFORE each rising edge.
+     * Timeout must be large enough to handle FIFO backpressure — the PCI
+     * FIFO can take 500K+ cycles to drain when filled with triangle data. */
+    int timeout = 5000000;
     while (timeout > 0) {
         top->eval();  /* Settle combinational logic with current inputs */
         if (top->io_cpuBus_cmd_ready) {
@@ -196,12 +198,16 @@ static void bus_write(uint32_t addr, uint32_t data) {
         tick_one();
         timeout--;
     }
+    if (timeout == 0) {
+        fprintf(stderr, "[sim_harness] ERROR: bus_write(0x%06x) cmd timeout after 5M cycles @ cycle %lu\n",
+                addr, (unsigned long)(sim_time / 2));
+    }
 
     /* Deassert cmd */
     top->io_cpuBus_cmd_valid = 0;
 
     /* Wait for response: check rsp_valid BEFORE each rising edge */
-    timeout = 10000;
+    timeout = 5000000;
     while (timeout > 0) {
         top->eval();
         if (top->io_cpuBus_rsp_valid) {
@@ -210,6 +216,10 @@ static void bus_write(uint32_t addr, uint32_t data) {
         }
         tick_one();
         timeout--;
+    }
+    if (timeout == 0) {
+        fprintf(stderr, "[sim_harness] ERROR: bus_write(0x%06x) rsp timeout after 5M cycles @ cycle %lu\n",
+                addr, (unsigned long)(sim_time / 2));
     }
 
     total_write_ticks += (sim_time - t0) / 2;
@@ -234,7 +244,7 @@ static uint32_t bus_read(uint32_t addr) {
     top->io_cpuBus_rsp_ready = 1;
 
     /* Tick until cmd accepted: check ready BEFORE each rising edge */
-    int timeout = 10000;
+    int timeout = 5000000;
     while (timeout > 0) {
         top->eval();
         if (top->io_cpuBus_cmd_ready) {
@@ -244,12 +254,16 @@ static uint32_t bus_read(uint32_t addr) {
         tick_one();
         timeout--;
     }
+    if (timeout == 0) {
+        fprintf(stderr, "[sim_harness] ERROR: bus_read(0x%06x) cmd timeout after 5M cycles @ cycle %lu\n",
+                addr, (unsigned long)(sim_time / 2));
+    }
 
     /* Deassert cmd */
     top->io_cpuBus_cmd_valid = 0;
 
     /* Wait for response: check rsp_valid BEFORE each rising edge */
-    timeout = 10000;
+    timeout = 5000000;
     while (timeout > 0) {
         top->eval();
         if (top->io_cpuBus_rsp_valid) {

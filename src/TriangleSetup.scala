@@ -18,10 +18,7 @@ case class TriangleSetup(c: Config) extends Component {
     val yminRaw = tri.map(_(1)).reduceBalancedTree((a, b) => a.min(b))
     val ymaxRaw = tri.map(_(1)).reduceBalancedTree((a, b) => a.max(b))
 
-    // Convert to integer pixel positions for rasterization
-    // The rasterizer iterates through integer pixels, so bounds must be integers
-    // floor(min) gives first pixel that could be inside
-    // ceil(max) gives last pixel that could be inside (handles subpixel vertices)
+    // Bounding box: snap to integer pixel positions
     out.xrange(0) := xminRaw.floor(0).fixTo(c.vertexFormat)
     out.xrange(1) := xmaxRaw.ceil(0).fixTo(c.vertexFormat)
 
@@ -29,8 +26,8 @@ case class TriangleSetup(c: Config) extends Component {
     // 86Box: ystart = (vertexAy + 7) >> 4, yend = (vertexCy + 7) >> 4
     // Vertices are sorted A=top, C=bottom by the driver.
     // (raw + 7) >> 4 on a 12.4 value = roundHalfDown to integer (ties toward -inf)
-    out.yrange(0) := tri(0)(1).roundHalfDown(0).fixTo(c.vertexFormat) // ystart (inclusive)
-    out.yrange(1) := tri(2)(1).roundHalfDown(0).fixTo(c.vertexFormat) // yend (exclusive)
+    out.yrange(0) := tri(0)(1).roundHalfDown(0).fixTo(c.vertexFormat)
+    out.yrange(1) := tri(2)(1).roundHalfDown(0).fixTo(c.vertexFormat)
 
     // Compute edge coefficients for all 3 edges
     // Note: Our formula produces inverted signs. For CCW triangles (signBit=0),
@@ -43,14 +40,14 @@ case class TriangleSetup(c: Config) extends Component {
       val a_raw = v0(1) - v1(1)
       val b_raw = v1(0) - v0(0)
 
-      // Top-left fill rule: computed using raw edge orientation (before sign flip)
-      val isTopEdge = a_raw === AFix(0) && (b_raw < AFix(0))
-      val isLeftEdge = (a_raw > AFix(0))
-      val fillBias = AFix(!isTopEdge && !isLeftEdge)
-
+      // Voodoo hardware uses span-based rasterization with inclusive-left fill rule,
+      // not the OpenGL/D3D top-left edge function fill rule. With pixel-center sampling
+      // (bounding box offset by +0.5), the edge function naturally produces >= 0 for
+      // pixels whose centers are inside the triangle span. No fill bias is needed.
+      //
       // Compute c using raw coefficients
       // Standard formula: c = x0*y1 - x1*y0
-      val c_raw = v0(0) * v1(1) - v1(0) * v0(1) - fillBias
+      val c_raw = v0(0) * v1(1) - v1(0) * v0(1)
 
       // Flip signs for CW triangles (signBit=1) to match rasterizer expectation (edge >= 0 inside)
       // CCW (signBit=0): use raw coefficients (naturally positive inside)
@@ -72,13 +69,22 @@ case class TriangleSetup(c: Config) extends Component {
     }
     out.coeffs := coeffsVec
 
-    // Compute starting edge values at the integer pixel position (floored bounding box corner)
-    // This ensures edge values match the actual pixel positions being tested by the rasterizer
-    // Use coefficient format since edge values can be as large as coefficients
+    // Compute starting edge values at pixel center (bounding box origin + 0.5)
+    // The rasterizer samples at pixel centers (0.5, 1.5, 2.5, ...) to match the
+    // Voodoo hardware's span-based fill convention. We evaluate the edge function
+    // at (xrange(0)+0.5, yrange(0)+0.5) so that the >= 0 test correctly includes
+    // pixels whose centers are inside the triangle. This is critical for grDrawPoint
+    // degenerate triangles where vertices land exactly at pixel centers.
+    // The +0.5 is NOT applied to xrange/yrange themselves because the gradient
+    // origin shift (dx = xrange(0) - Ax) must use integer positions to avoid
+    // double-counting with paramAdjust's subpixel correction.
+    val halfPixel = AFix.SQ(3 bits, 4 bits)
+    halfPixel := 0.5
     val edgeStartVec = Vec(AFix(c.coefficientFormat), 3)
+    val xCenter = (out.xrange(0) + halfPixel).fixTo(c.vertexFormat)
+    val yCenter = (out.yrange(0) + halfPixel).fixTo(c.vertexFormat)
     out.coeffs.zipWithIndex.foreach { case (coeff, i) =>
-      // xrange(0) and yrange(0) are already floored to integers above
-      edgeStartVec(i) := (coeff.a * out.xrange(0) + coeff.b * out.yrange(0) + coeff.c).truncated
+      edgeStartVec(i) := (coeff.a * xCenter + coeff.b * yCenter + coeff.c).truncated
     }
     out.edgeStart := edgeStartVec
 

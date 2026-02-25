@@ -7907,4 +7907,160 @@ class CoreTest extends AnyFunSuite {
       )
     }
   }
+
+  // ========================================================================
+  // Test: Integer point drawing (grDrawPoint) — single-pixel degenerate triangles
+  //
+  // grDrawPoint draws a single pixel by constructing a degenerate triangle
+  // covering exactly 1 pixel. For pixel (P,Q):
+  //   vA = (P*16+8, Q*16+8)  — pixel center in 12.4 fixed-point
+  //   vB = (P*16+16, Q*16+8) — 0.5px right
+  //   vC = (P*16+16, Q*16+16) — 0.5px right and down
+  // Uses triangleCMD (integer path), sign=false, all gradients=0.
+  // ========================================================================
+  test("Integer point drawing (grDrawPoint): single-pixel degenerate triangles") {
+    compiled.doSim("test_grDrawPoint") { dut =>
+      val (driver, fbMemory, _, writtenAddrs) = setupDut(dut)
+
+      val fbzColorPath = (1 << 8) | (1 << 14) // zero_other + add_clocal
+      val fbzMode = 1 | (1 << 9) // clipping + RGB write enable
+      val startR = 0xff << 12 // Red=255 in 12.12 fixed-point
+      val startA = 0xff << 12 // Alpha=255 in 12.12 fixed-point
+
+      // 10 points along a diagonal
+      val points = (0 until 10).map(i => (i * 63, i * 47))
+
+      for ((px, py) <- points) {
+        submitTriangle(
+          driver,
+          dut.clockDomain,
+          vertexAx = px * 16 + 8,
+          vertexAy = py * 16 + 8,
+          vertexBx = px * 16 + 16,
+          vertexBy = py * 16 + 8,
+          vertexCx = px * 16 + 16,
+          vertexCy = py * 16 + 16,
+          startR = startR,
+          startG = 0,
+          startB = 0,
+          startA = startA,
+          startZ = 0,
+          startS = 0,
+          startT = 0,
+          startW = 0,
+          dRdX = 0,
+          dGdX = 0,
+          dBdX = 0,
+          dAdX = 0,
+          dZdX = 0,
+          dSdX = 0,
+          dTdX = 0,
+          dWdX = 0,
+          dRdY = 0,
+          dGdY = 0,
+          dBdY = 0,
+          dAdY = 0,
+          dZdY = 0,
+          dSdY = 0,
+          dTdY = 0,
+          dWdY = 0,
+          fbzColorPath = fbzColorPath,
+          fbzMode = fbzMode,
+          sign = false,
+          clipRight = 640,
+          clipHighY = 480
+        )
+      }
+
+      // Wait for pipeline to drain (10 single-pixel triangles)
+      dut.clockDomain.waitSampling(50000)
+
+      val simPixels = collectPixels(fbMemory, writtenAddrs, 0)
+      println(s"[grDrawPoint] Simulation produced ${simPixels.size} pixels")
+
+      // Verify exactly 10 pixels
+      assert(
+        simPixels.size == 10,
+        s"Expected exactly 10 pixels, got ${simPixels.size}"
+      )
+
+      val expectedRgb565 = 0xf800 // red=255 -> RGB565
+      for ((px, py) <- points) {
+        val pixel = simPixels.get((px, py))
+        assert(
+          pixel.isDefined,
+          s"Missing pixel at ($px, $py) — expected a point there"
+        )
+        val (rgb565, _) = pixel.get
+        assert(
+          rgb565 == expectedRgb565,
+          f"Pixel ($px, $py) color mismatch: got 0x$rgb565%04X, expected 0x$expectedRgb565%04X"
+        )
+      }
+
+      // No extra pixels beyond the 10 expected
+      val expectedSet = points.toSet
+      val extraPixels = simPixels.keys.filterNot(expectedSet.contains)
+      assert(
+        extraPixels.isEmpty,
+        s"Found ${extraPixels.size} unexpected extra pixels: ${extraPixels.take(5).mkString(", ")}"
+      )
+
+      // Cross-check with reference model
+      for ((px, py) <- points) {
+        val refParams = VoodooReference.fromRegisterValues(
+          vertexAx = px * 16 + 8,
+          vertexAy = py * 16 + 8,
+          vertexBx = px * 16 + 16,
+          vertexBy = py * 16 + 8,
+          vertexCx = px * 16 + 16,
+          vertexCy = py * 16 + 16,
+          startR = startR,
+          startG = 0,
+          startB = 0,
+          startA = startA,
+          startZ = 0,
+          startS = 0,
+          startT = 0,
+          startW = 0,
+          dRdX = 0,
+          dGdX = 0,
+          dBdX = 0,
+          dAdX = 0,
+          dZdX = 0,
+          dSdX = 0,
+          dTdX = 0,
+          dWdX = 0,
+          dRdY = 0,
+          dGdY = 0,
+          dBdY = 0,
+          dAdY = 0,
+          dZdY = 0,
+          dSdY = 0,
+          dTdY = 0,
+          dWdY = 0,
+          fbzColorPath = fbzColorPath,
+          fbzMode = fbzMode,
+          sign = false,
+          clipRight = 640,
+          clipHighY = 480
+        )
+        val refPixels = VoodooReference.voodooTriangle(refParams)
+        assert(
+          refPixels.size == 1,
+          s"Reference model for point ($px,$py) produced ${refPixels.size} pixels, expected 1"
+        )
+        assert(
+          refPixels.head.x == px && refPixels.head.y == py,
+          s"Reference model pixel at (${refPixels.head.x},${refPixels.head.y}), expected ($px,$py)"
+        )
+        assert(
+          refPixels.head.rgb565 == expectedRgb565,
+          f"Reference model color at ($px,$py): 0x${refPixels.head.rgb565}%04X, expected 0x$expectedRgb565%04X"
+        )
+      }
+
+      println("[grDrawPoint] All 10 points verified: correct position, color, and reference match")
+    }
+  }
 }

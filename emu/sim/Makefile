@@ -11,12 +11,13 @@
 #   make verilog      # just generate Verilog
 #   make clean        # remove build artifacts
 
-.PHONY: all verilog model harness clean
+.PHONY: all verilog model harness trace-harness clean
 
 PROJ_ROOT = ../..
 RTL_DIR = rtl
 OBJ_DIR = obj_dir
 HARNESS_DIR = harness
+TRACE_DIR = ../trace
 
 # SpinalHDL sources that generate the Verilog
 SCALA_SRCS := $(shell find $(PROJ_ROOT)/src -name '*.scala') $(PROJ_ROOT)/project.scala
@@ -97,6 +98,15 @@ $(OBJ_DIR)/verilated.o: $(VERILATOR_ROOT)/include/verilated.cpp $(TRACE_MODE_FIL
 
 $(OBJ_DIR)/verilated_fst_c.o: $(VERILATOR_ROOT)/include/verilated_fst_c.cpp $(TRACE_MODE_FILE) | $(VERILATE_STAMP)
 	$(CXX32) $(CXXFLAGS) -c -o $@ $<
+
+# Step 5: Trace-capture harness (no Verilator dependency)
+trace-harness: $(OBJ_DIR)/sim_trace_harness.o $(OBJ_DIR)/voodoo_trace_writer.o
+
+$(OBJ_DIR)/voodoo_trace_writer.o: $(TRACE_DIR)/voodoo_trace_writer.c $(TRACE_DIR)/voodoo_trace_writer.h $(TRACE_DIR)/voodoo_trace_format.h
+	$(CXX32) $(CXXFLAGS) -I$(TRACE_DIR) -c -o $@ $<
+
+$(OBJ_DIR)/sim_trace_harness.o: $(HARNESS_DIR)/sim_trace_harness.c $(HARNESS_DIR)/sim_harness.h $(TRACE_DIR)/voodoo_trace_writer.h $(TRACE_DIR)/voodoo_trace_format.h
+	$(CXX32) $(CXXFLAGS) -I$(TRACE_DIR) -c -o $@ $<
 
 clean:
 	rm -rf $(OBJ_DIR)

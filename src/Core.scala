@@ -4,7 +4,6 @@ import spinal.core._
 import spinal.core.sim._
 import spinal.lib._
 import spinal.lib.bus.bmb._
-import _root_.math.{Fpxx, FpxxConfig, Fpxx2AFix}
 
 case class Core(c: Config) extends Component {
   val io = new Bundle {
@@ -115,146 +114,11 @@ case class Core(c: Config) extends Component {
     regBank.renderConfig.lfbMode.readBufferSelect(0) ? backBufferBase | frontBufferBase
 
   // ========================================================================
-  // Float to Fixed-Point Conversion for fTriangleCMD
+  // Triangle Command Handling
   // ========================================================================
-  // Convert float registers to fixed-point using Fpxx2AFix
-  // Note: Fpxx2AFix requires target format to have enough bits to hold the
-  // full mantissa (23 bits for float32). We convert to SQ(16, 16) first,
-  // then truncate to the target vertex format SQ(12, 4).
-
-  val floatConfig = FpxxConfig.float32()
-
-  // Intermediate format: SQ(16, 16) = 32 bits (enough for float32 mantissa)
-  val intermediateFormat = SQ(16, 16)
-
-  // Combinatorial IEEE 754 float32 to fixed-point conversion
-  // Used for gradient registers where pipelined conversion isn't needed
-  def floatToFixed(floatBits: Bits, intBits: Int, fracBits: Int): SInt = {
-    val sign = floatBits(31)
-    val exponent = floatBits(30 downto 23).asUInt
-    val mantissa = floatBits(22 downto 0).asUInt
-
-    // Total output bits
-    val totalBits = intBits + fracBits
-
-    // For a float, value = (-1)^sign * 2^(exp-127) * 1.mantissa
-    // For fixed point Q(intBits, fracBits), the binary point is after fracBits bits from LSB
-
-    // Build the mantissa with implicit 1: 1.mantissa = 24 bits total
-    val mantissaWithOne = U(1, 1 bit) @@ mantissa // 24 bits
-
-    // The shift amount depends on exponent and target format
-    // When exp=127, value = 1.xxx (no shift needed relative to integer 1)
-    // For Q(intBits, fracBits): integer 1 is at bit position fracBits
-    // So mantissa MSB (the implicit 1) should end up at position fracBits + (exp - 127)
-
-    // We'll shift left if exp > 127, right if exp < 127
-    // Base position: mantissa bit 23 (the implicit 1) represents 2^0
-    // In target format, 2^0 is at bit position fracBits
-
-    // Calculate shift: positive = left, negative = right
-    // We need mantissa positioned so implicit 1 is at bit (fracBits + exp - 127)
-    // Mantissa is 24 bits, with bit 23 = implicit 1 (2^0), bit 0 = 2^-23
-
-    // To place bit 23 at position P, we need to shift by (P - 23)
-    // P = fracBits + exp - 127
-    // shift = fracBits + exp - 127 - 23 = fracBits + exp - 150
-
-    val shiftAmount = (exponent.resize(9 bits).asSInt + S(fracBits - 150, 9 bits)).resize(9 bits)
-
-    // Widen mantissa to accommodate shifts
-    val wideMantissa = mantissaWithOne.resize(64 bits)
-
-    // Apply shift - use barrel shifter approach
-    val maxShift = 40 // Reasonable max shift for our formats
-    val shiftedValue = UInt(64 bits)
-
-    when(shiftAmount >= 0) {
-      // Left shift
-      val leftShift = shiftAmount.asUInt.resize(6 bits)
-      when(leftShift > maxShift) {
-        shiftedValue := U(0) // Overflow - saturate to max or 0
-      } otherwise {
-        shiftedValue := wideMantissa |<< leftShift
-      }
-    } otherwise {
-      // Right shift
-      val rightShift = (-shiftAmount).asUInt.resize(6 bits)
-      when(rightShift > 63) {
-        shiftedValue := U(0) // Underflow to 0
-      } otherwise {
-        shiftedValue := wideMantissa |>> rightShift
-      }
-    }
-
-    // Extract result bits and apply sign
-    val unsignedResult = shiftedValue(totalBits - 1 downto 0)
-    val signedResult = SInt(totalBits bits)
-
-    when(exponent === 0) {
-      // Zero or denormal - treat as zero
-      signedResult := S(0)
-    } otherwise {
-      when(sign) {
-        signedResult := -unsignedResult.asSInt
-      } otherwise {
-        signedResult := unsignedResult.asSInt
-      }
-    }
-
-    signedResult
-  }
-
-  // Create converters for each vertex coordinate (Ax, Ay, Bx, By, Cx, Cy)
-  val converters = Seq.fill(6)(new Fpxx2AFix(16 bits, 16 bits, floatConfig))
-
-  // Fork ftriangleCmd to feed all 6 converters
-  val ftriangleForks = StreamFork(regBank.commands.ftriangleCmd, 6, synchronous = true)
-
-  val fg = regBank.floatTriangleGeometry
-
-  // Feed each forked stream to its converter with appropriate vertex register data
-  val vertexRegs =
-    Seq(fg.fvertexAx, fg.fvertexAy, fg.fvertexBx, fg.fvertexBy, fg.fvertexCx, fg.fvertexCy)
-  converters.zip(ftriangleForks.zip(vertexRegs)).foreach { case (conv, (fork, reg)) =>
-    conv.io.op.translateFrom(fork) { (fpxx, _) => fpxx.assignFromBits(reg) }
-  }
-
-  // Join all converter results
-  val joinedResults = StreamJoin.vec(converters.map(_.io.result))
-
-  // Build triangle from joined results, converting to target format
-  // Gradients and render config are captured at command time to ensure proper pipeline synchronization
-  val ftriangleConverted = joinedResults.map { results =>
-    val out = TriangleSetup.Input(c)
-    out.triWithSign.tri(0)(0) := results(0).number.fixTo(c.vertexFormat)
-    out.triWithSign.tri(0)(1) := results(1).number.fixTo(c.vertexFormat)
-    out.triWithSign.tri(1)(0) := results(2).number.fixTo(c.vertexFormat)
-    out.triWithSign.tri(1)(1) := results(3).number.fixTo(c.vertexFormat)
-    out.triWithSign.tri(2)(0) := results(4).number.fixTo(c.vertexFormat)
-    out.triWithSign.tri(2)(1) := results(5).number.fixTo(c.vertexFormat)
-    out.triWithSign.signBit := regBank.commands.ftriangleSignBit
-    out.grads := captureFloatGradients() // Use float-to-fixed conversion for ftriangleCmd
-    out.config := captureFloatPerTriangleConfig() // Also convert float gradients in config
-    out
-  }
-
-  // Capture gradients from float registers with IEEE 754 → fixed-point conversion
-  def captureFloatGradients(): Rasterizer.GradientBundle[Rasterizer.InputGradient] = {
-    def f(bits: Bits, int: Int, frac: Int) = floatToFixed(bits, int, frac).asBits
-    captureGradientsFrom(
-      Seq(
-        (f(fg.fstartR, 12, 12), f(fg.fdRdX, 12, 12), f(fg.fdRdY, 12, 12)), // red
-        (f(fg.fstartG, 12, 12), f(fg.fdGdX, 12, 12), f(fg.fdGdY, 12, 12)), // green
-        (f(fg.fstartB, 12, 12), f(fg.fdBdX, 12, 12), f(fg.fdBdY, 12, 12)), // blue
-        (f(fg.fstartZ, 20, 12), f(fg.fdZdX, 20, 12), f(fg.fdZdY, 20, 12)), // depth
-        (f(fg.fstartA, 12, 12), f(fg.fdAdX, 12, 12), f(fg.fdAdY, 12, 12)), // alpha
-        (f(fg.fstartW, 2, 30), f(fg.fdWdX, 2, 30), f(fg.fdWdY, 2, 30)), // W
-        (f(fg.fstartS, 14, 18), f(fg.fdSdX, 14, 18), f(fg.fdSdY, 14, 18)), // S
-        (f(fg.fstartT, 14, 18), f(fg.fdTdX, 14, 18), f(fg.fdTdY, 14, 18)) // T
-      )
-    )
-  }
+  // Both triangleCMD and FtriangleCMD read from the same integer registers.
+  // Float addresses (0x088-0x0FC) are converted to fixed-point at FIFO input time
+  // by BmbBusInterface, so both commands see identical fixed-point data.
 
   // Data-driven gradient capture: zips (start, dX, dY) Bits triplets with GradientBundle.all
   def captureGradientsFrom(
@@ -286,13 +150,9 @@ case class Core(c: Config) extends Component {
     )
   }
 
-  // Shared per-triangle config capture — only TMU gradient sources differ between int/float paths
-  def capturePerTriangleConfigWith(
-      dSdX: Bits,
-      dTdX: Bits,
-      dSdY: Bits,
-      dTdY: Bits
-  ): TriangleSetup.PerTriangleConfig = {
+  // Capture per-triangle config from registers at command time
+  def capturePerTriangleConfig(): TriangleSetup.PerTriangleConfig = {
+    val g = regBank.triangleGeometry
     val cfg = TriangleSetup.PerTriangleConfig(c)
 
     // FBI registers - use bundle accessors from RegisterBank
@@ -305,10 +165,10 @@ case class Core(c: Config) extends Component {
     cfg.tmuTextureMode := regBank.tmuConfig.textureMode
     cfg.tmuTexBaseAddr := regBank.tmuConfig.texBaseAddr
     cfg.tmuTLOD := regBank.tmuConfig.tLOD.resized
-    cfg.tmudSdX.raw := dSdX
-    cfg.tmudTdX.raw := dTdX
-    cfg.tmudSdY.raw := dSdY
-    cfg.tmudTdY.raw := dTdY
+    cfg.tmudSdX.raw := g.dSdX.asBits
+    cfg.tmudTdX.raw := g.dTdX.asBits
+    cfg.tmudSdY.raw := g.dSdY.asBits
+    cfg.tmudTdY.raw := g.dTdY.asBits
 
     // Constant colors (captured per-triangle to avoid pipelineBusy gap)
     cfg.color0 := regBank.renderConfig.color0
@@ -340,22 +200,8 @@ case class Core(c: Config) extends Component {
     cfg
   }
 
-  def capturePerTriangleConfig(): TriangleSetup.PerTriangleConfig = {
-    val g = regBank.triangleGeometry
-    capturePerTriangleConfigWith(g.dSdX.asBits, g.dTdX.asBits, g.dSdY.asBits, g.dTdY.asBits)
-  }
-
-  def captureFloatPerTriangleConfig(): TriangleSetup.PerTriangleConfig = {
-    def f(bits: Bits) = floatToFixed(bits, 14, 18).asBits
-    capturePerTriangleConfigWith(f(fg.fdSdX), f(fg.fdTdX), f(fg.fdSdY), f(fg.fdTdY))
-  }
-
-  // Connect triangle command to triangle setup
-  // Build triangle from vertex registers (integer path)
-  // Note: Register values are already in 12.4 fixed-point format, so we interpret
-  // the raw bits directly rather than converting (which would multiply by 16)
-  // Gradients and render config are captured at command time to ensure proper pipeline synchronization
-  val triangleIntPath = regBank.commands.triangleCmd.translateWith {
+  // Shared helper: build TriangleSetup.Input from integer registers
+  def buildTriangleInput(signBit: Bool): TriangleSetup.Input = {
     val out = TriangleSetup.Input(c)
     out.triWithSign.tri(0)(0).raw := regBank.triangleGeometry.vertexAx.asBits
     out.triWithSign.tri(0)(1).raw := regBank.triangleGeometry.vertexAy.asBits
@@ -363,20 +209,28 @@ case class Core(c: Config) extends Component {
     out.triWithSign.tri(1)(1).raw := regBank.triangleGeometry.vertexBy.asBits
     out.triWithSign.tri(2)(0).raw := regBank.triangleGeometry.vertexCx.asBits
     out.triWithSign.tri(2)(1).raw := regBank.triangleGeometry.vertexCy.asBits
-    out.triWithSign.signBit := regBank.commands.triangleSignBit
+    out.triWithSign.signBit := signBit
     out.grads := captureGradients()
     out.config := capturePerTriangleConfig()
     out
   }
 
+  val triangleCmdPath = regBank.commands.triangleCmd.translateWith {
+    buildTriangleInput(regBank.commands.triangleSignBit)
+  }
+
+  val ftriangleCmdPath = regBank.commands.ftriangleCmd.translateWith {
+    buildTriangleInput(regBank.commands.ftriangleSignBit)
+  }
+
   // Merge integer and float triangle paths
   // Use assumeOhInput since only one path is active at a time (no arbitration needed)
-  triangleSetup.i << StreamArbiterFactory.assumeOhInput.on(Seq(triangleIntPath, ftriangleConverted))
+  triangleSetup.i << StreamArbiterFactory.assumeOhInput.on(
+    Seq(triangleCmdPath, ftriangleCmdPath)
+  )
 
   // Make triangle streams accessible for simulation monitoring
-  joinedResults.simPublic()
-  ftriangleConverted.simPublic()
-  triangleIntPath.simPublic()
+  triangleCmdPath.simPublic()
   triangleSetup.i.simPublic()
   triangleSetup.o.simPublic()
   rasterizer.i.simPublic()

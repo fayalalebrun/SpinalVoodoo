@@ -7,6 +7,7 @@ import spinal.lib.bus.bmb._
 import spinal.lib.bus.regif._
 import spinal.lib.bus.misc.SizeMapping
 import scala.collection.mutable
+import _root_.math.{Fpxx, FpxxConfig, Fpxx2AFix}
 
 /** BMB Bus Interface adapter for the RegIf system
   *
@@ -50,6 +51,15 @@ case class BmbBusInterface(
   // Track command register stream ready signals for automatic drain blocking
   // Maps address -> pulseStream.ready (from s2mPipe, safe because output valid is registered)
   private val commandStreamReady = mutable.Map[BigInt, Bool]()
+
+  // Float alias support: maps float address -> config (target addr, format)
+  // Real Voodoo1 hardware has a single set of internal fixed-point registers written by both
+  // integer (0x008-0x07C) and float (0x088-0x0FC) address ranges. Float addresses perform
+  // IEEE754-to-fixed conversion at write time.
+  private case class FloatAliasConfig(targetAddr: BigInt, intBits: Int, fracBits: Int)
+  private val floatAliases = mutable.Map[BigInt, FloatAliasConfig]()
+  private val FLOAT_ALIAS_OFFSET: BigInt = 0x080
+  private var lastCreatedRegAddr: BigInt = -1
 
   // Pipeline busy signal (set by user via setPipelineBusy)
   // Use default assignment (can be overridden by :=)
@@ -95,6 +105,33 @@ case class BmbBusInterface(
   val fifoBypass = Bool().setName("busif_fifoBypass")
   val syncRequired = Bool().setName("busif_syncRequired")
 
+  // Float alias conversion signals (assigned in addPrePopTask after all registers are created)
+  private val isFloatAlias = Bool()
+  private val floatTargetAddr = UInt(busAddrWidth bits)
+  private val floatShiftAmount = UInt(5 bits)
+
+  // Single pipelined float-to-fixed converter for float alias writes
+  // Wide format SQ(20,30) covers all target formats (vertex Q12.4 through W Q2.30)
+  private val floatConverter = new Fpxx2AFix(20 bits, 30 bits, FpxxConfig.float32(), pipeStages = 1)
+
+  // Conversion in-flight state
+  private val floatConvertInFlight = RegInit(False)
+  private val floatConvertTargetAddr = Reg(UInt(busAddrWidth bits))
+  private val floatConvertShift = Reg(UInt(5 bits))
+
+  // Feed converter when float alias write detected and not already converting
+  private val floatWriteRequest =
+    bus.cmd.valid && bus.cmd.opcode === Bmb.Cmd.Opcode.WRITE && !fifoBypass && isFloatAlias
+  floatConverter.io.op.valid := floatWriteRequest && !floatConvertInFlight
+  floatConverter.io.op.payload.assignFromBits(bus.cmd.data)
+
+  // Capture target address and shift when conversion starts
+  when(floatConverter.io.op.fire) {
+    floatConvertInFlight := True
+    floatConvertTargetAddr := floatTargetAddr
+    floatConvertShift := floatShiftAmount
+  }
+
   /** Returns True on the cycle a write to the given address is enqueued into the FIFO. Used by
     * swapbufferCMD to increment swapsPending per SST-1 spec.
     */
@@ -104,11 +141,45 @@ case class BmbBusInterface(
 
   // Queued write transaction for FIFO
   private val queuedWriteTx = Stream(QueuedWrite())
-  queuedWriteTx.valid := shouldQueue
-  queuedWriteTx.address := bus.cmd.address
-  queuedWriteTx.data := bus.cmd.data
-  queuedWriteTx.mask := bus.cmd.mask
-  queuedWriteTx.syncRequired := syncRequired
+
+  // Mux FIFO push between normal writes and float-converted writes
+  when(floatConvertInFlight && floatConverter.io.result.valid) {
+    // Push converted float data to FIFO with remapped integer address
+    val rawSInt = floatConverter.io.result.number.raw.asSInt
+    val shifted = (rawSInt >> floatConvertShift)
+
+    // IEEE754-to-fixed truncates toward zero (matching 86Box and real Voodoo1).
+    // Arithmetic right shift gives floor (toward -inf); for negative values
+    // with non-zero shifted-out bits, add 1 to get truncation toward zero.
+    val hasRemainder = Bool()
+    hasRemainder := False
+    switch(floatConvertShift) {
+      is(26) { hasRemainder := rawSInt(25 downto 0).orR }
+      is(18) { hasRemainder := rawSInt(17 downto 0).orR }
+      is(12) { hasRemainder := rawSInt(11 downto 0).orR }
+    }
+    val corrected = Mux(rawSInt.msb && hasRemainder, shifted + 1, shifted)
+
+    queuedWriteTx.valid := True
+    queuedWriteTx.address := floatConvertTargetAddr
+    queuedWriteTx.data := corrected.resize(32 bits).asBits
+    queuedWriteTx.mask := B"1111"
+    queuedWriteTx.syncRequired := False // geometry regs are always NoSync
+  } otherwise {
+    queuedWriteTx.valid := shouldQueue
+    queuedWriteTx.address := bus.cmd.address
+    queuedWriteTx.data := bus.cmd.data
+    queuedWriteTx.mask := bus.cmd.mask
+    queuedWriteTx.syncRequired := syncRequired
+  }
+
+  // Converter result ready when we can push to FIFO
+  floatConverter.io.result.ready := floatConvertInFlight && queuedWriteTx.ready
+
+  // Clear in-flight when result consumed
+  when(floatConverter.io.result.fire) {
+    floatConvertInFlight := False
+  }
 
   // Build address decode logic after all registers are created
   Component.current.addPrePopTask(() => {
@@ -159,7 +230,20 @@ case class BmbBusInterface(
       }
     }
 
-    shouldQueue := doWriteImmediate && !fifoBypass
+    // Float alias address decode
+    isFloatAlias := False
+    floatTargetAddr := 0
+    floatShiftAmount := 0
+    for ((floatAddr, config) <- floatAliases) {
+      when(bus.cmd.address === U(floatAddr, busAddrWidth bits)) {
+        isFloatAlias := True
+        floatTargetAddr := U(config.targetAddr, busAddrWidth bits)
+        floatShiftAmount := U(30 - config.fracBits, 5 bits)
+      }
+    }
+
+    // Normal FIFO path excludes float alias writes (they go through converter)
+    shouldQueue := doWriteImmediate && !fifoBypass && !isFloatAlias
 
     // Generate command stream blocking logic
     // Block FIFO drain when target is a command register and its s2mPipe buffer can't accept
@@ -278,12 +362,23 @@ case class BmbBusInterface(
   if (bus.p.access.contextWidth > 0) bus.rsp.context := RegNext(bus.cmd.context)
 
   // Set ready when we can accept transactions
-  // Stall bus if FIFO is full (for FIFO=Yes writes only)
   bus.cmd.ready := True
+  // Stall when FIFO is full for normal (non-float) FIFO writes
   when(
     bus.cmd.valid && bus.cmd.opcode === Bmb.Cmd.Opcode.WRITE &&
-      !fifoBypass && !queuedWriteTx.ready
+      !fifoBypass && !isFloatAlias && !queuedWriteTx.ready
   ) {
+    bus.cmd.ready := False
+  }
+  // Stall for float alias conversion: initial cycle (feed converter, 1 cycle latency)
+  when(
+    bus.cmd.valid && bus.cmd.opcode === Bmb.Cmd.Opcode.WRITE &&
+      !fifoBypass && isFloatAlias && !floatConvertInFlight
+  ) {
+    bus.cmd.ready := False
+  }
+  // Stall while float conversion in flight but result not ready or FIFO full
+  when(floatConvertInFlight && !(floatConverter.io.result.valid && queuedWriteTx.ready)) {
     bus.cmd.ready := False
   }
 
@@ -337,6 +432,9 @@ case class BmbBusInterface(
   ): RegInst = {
     // Store category metadata
     registerCategories(addr) = category
+
+    // Track last created register address for .withFloatAlias()
+    lastCreatedRegAddr = addr
 
     // Create register normally
     newRegAt(addr, name, sec)
@@ -396,6 +494,23 @@ case class BmbBusInterface(
     commandStreamReady(addr) = pulseStream.ready
 
     (reg, bufferedStream)
+  }
+
+  /** Implicit enrichment for field-level .withFloatAlias()
+    *
+    * Registers a float alias address (integer addr + 0x080) that converts IEEE754 float32 data to
+    * fixed-point at write time, then writes the converted value to the integer register. This
+    * matches real Voodoo1 hardware behavior where float and integer addresses share a single set of
+    * internal fixed-point registers.
+    */
+  implicit class FieldFloatAlias[T <: Data](field: T) {
+    def withFloatAlias(intBits: Int, fracBits: Int): T = {
+      require(lastCreatedRegAddr >= 0, "withFloatAlias must be called after newRegAtWithCategory")
+      val floatAddr = lastCreatedRegAddr + FLOAT_ALIAS_OFFSET
+      floatAliases(floatAddr) = FloatAliasConfig(lastCreatedRegAddr, intBits, fracBits)
+      registerCategories(floatAddr) = RegisterCategory.fifoNoSync
+      field
+    }
   }
 
   /** Get current register write metadata signals

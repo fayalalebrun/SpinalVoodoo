@@ -67,6 +67,7 @@ case class RegisterBank(config: Config) extends Component {
   implicit val moduleName: spinal.lib.bus.regif.ClassName =
     spinal.lib.bus.regif.ClassName("RegisterBank")
   val busif = BmbBusInterface(io.bus, SizeMapping(0x000, 4 KiB), "VDO")
+  import busif.FieldFloatAlias // Bring .withFloatAlias() implicit into scope
 
   // Connect pipeline busy signal for Sync=Yes register FIFO drain blocking
   busif.setPipelineBusy(io.pipelineBusy)
@@ -117,268 +118,169 @@ case class RegisterBank(config: Config) extends Component {
   // ========================================================================
   val triangleGeometry = new Area {
     // Triangle geometry registers are FIFO=Yes, Sync=No
-    // Vertex Registers (0x008-0x01C)
+    // Each register has a float alias at addr+0x080 that converts IEEE754→fixed at write time
+    // Vertex Registers (0x008-0x01C) — float aliases at 0x088-0x09C
     val vertexAx = busif
       .newRegAtWithCategory(0x008, "vertexAx", RegisterCategory.fifoNoSync)
       .field(SInt(16 bits), AccessType.WO, 0, "Vertex A X coordinate")
+      .withFloatAlias(12, 4)
       .asOutput()
     val vertexAy = busif
       .newRegAtWithCategory(0x00c, "vertexAy", RegisterCategory.fifoNoSync)
       .field(SInt(16 bits), AccessType.WO, 0, "Vertex A Y coordinate")
+      .withFloatAlias(12, 4)
       .asOutput()
     val vertexBx = busif
       .newRegAtWithCategory(0x010, "vertexBx", RegisterCategory.fifoNoSync)
       .field(SInt(16 bits), AccessType.WO, 0, "Vertex B X coordinate")
+      .withFloatAlias(12, 4)
       .asOutput()
     val vertexBy = busif
       .newRegAtWithCategory(0x014, "vertexBy", RegisterCategory.fifoNoSync)
       .field(SInt(16 bits), AccessType.WO, 0, "Vertex B Y coordinate")
+      .withFloatAlias(12, 4)
       .asOutput()
     val vertexCx = busif
       .newRegAtWithCategory(0x018, "vertexCx", RegisterCategory.fifoNoSync)
       .field(SInt(16 bits), AccessType.WO, 0, "Vertex C X coordinate")
+      .withFloatAlias(12, 4)
       .asOutput()
     val vertexCy = busif
       .newRegAtWithCategory(0x01c, "vertexCy", RegisterCategory.fifoNoSync)
       .field(SInt(16 bits), AccessType.WO, 0, "Vertex C Y coordinate")
+      .withFloatAlias(12, 4)
       .asOutput()
 
-    // Start Value Registers (0x020-0x03C)
+    // Start Value Registers (0x020-0x03C) — float aliases at 0x0A0-0x0BC
     val startR = busif
-      .newRegAt(0x020, "startR")
+      .newRegAtWithCategory(0x020, "startR", RegisterCategory.fifoNoSync)
       .field(SInt(24 bits), AccessType.WO, 255 << 12, "Starting red value (12.12 fixed)")
+      .withFloatAlias(12, 12)
       .asOutput()
     val startG = busif
-      .newRegAt(0x024, "startG")
+      .newRegAtWithCategory(0x024, "startG", RegisterCategory.fifoNoSync)
       .field(SInt(24 bits), AccessType.WO, 255 << 12, "Starting green value (12.12 fixed)")
+      .withFloatAlias(12, 12)
       .asOutput()
     val startB = busif
-      .newRegAt(0x028, "startB")
+      .newRegAtWithCategory(0x028, "startB", RegisterCategory.fifoNoSync)
       .field(SInt(24 bits), AccessType.WO, 255 << 12, "Starting blue value (12.12 fixed)")
+      .withFloatAlias(12, 12)
       .asOutput()
     val startZ = busif
-      .newRegAt(0x02c, "startZ")
+      .newRegAtWithCategory(0x02c, "startZ", RegisterCategory.fifoNoSync)
       .field(SInt(32 bits), AccessType.WO, 0, "Starting Z depth (20.12 fixed)")
+      .withFloatAlias(20, 12)
       .asOutput()
     val startA = busif
-      .newRegAt(0x030, "startA")
+      .newRegAtWithCategory(0x030, "startA", RegisterCategory.fifoNoSync)
       .field(SInt(24 bits), AccessType.WO, 0, "Starting alpha value (12.12 fixed)")
+      .withFloatAlias(12, 12)
       .asOutput()
     val startS = busif
-      .newRegAt(0x034, "startS")
+      .newRegAtWithCategory(0x034, "startS", RegisterCategory.fifoNoSync)
       .field(SInt(32 bits), AccessType.WO, 0, "Starting S texture coord (14.18 fixed)")
+      .withFloatAlias(14, 18)
       .asOutput()
     val startT = busif
-      .newRegAt(0x038, "startT")
+      .newRegAtWithCategory(0x038, "startT", RegisterCategory.fifoNoSync)
       .field(SInt(32 bits), AccessType.WO, 0, "Starting T texture coord (14.18 fixed)")
+      .withFloatAlias(14, 18)
       .asOutput()
     val startW = busif
-      .newRegAt(0x03c, "startW")
+      .newRegAtWithCategory(0x03c, "startW", RegisterCategory.fifoNoSync)
       .field(SInt(32 bits), AccessType.WO, 0, "Starting W value (2.30 fixed)")
+      .withFloatAlias(2, 30)
       .asOutput()
 
-    // X Gradient Registers (0x040-0x05C)
+    // X Gradient Registers (0x040-0x05C) — float aliases at 0x0C0-0x0DC
     val dRdX = busif
-      .newRegAt(0x040, "dRdX")
+      .newRegAtWithCategory(0x040, "dRdX", RegisterCategory.fifoNoSync)
       .field(SInt(24 bits), AccessType.WO, 0, "Red gradient dR/dX (12.12 fixed)")
+      .withFloatAlias(12, 12)
       .asOutput()
     val dGdX = busif
-      .newRegAt(0x044, "dGdX")
+      .newRegAtWithCategory(0x044, "dGdX", RegisterCategory.fifoNoSync)
       .field(SInt(24 bits), AccessType.WO, 0, "Green gradient dG/dX (12.12 fixed)")
+      .withFloatAlias(12, 12)
       .asOutput()
     val dBdX = busif
-      .newRegAt(0x048, "dBdX")
+      .newRegAtWithCategory(0x048, "dBdX", RegisterCategory.fifoNoSync)
       .field(SInt(24 bits), AccessType.WO, 0, "Blue gradient dB/dX (12.12 fixed)")
+      .withFloatAlias(12, 12)
       .asOutput()
     val dZdX = busif
-      .newRegAt(0x04c, "dZdX")
+      .newRegAtWithCategory(0x04c, "dZdX", RegisterCategory.fifoNoSync)
       .field(SInt(32 bits), AccessType.WO, 0, "Z gradient dZ/dX (20.12 fixed)")
+      .withFloatAlias(20, 12)
       .asOutput()
     val dAdX = busif
-      .newRegAt(0x050, "dAdX")
+      .newRegAtWithCategory(0x050, "dAdX", RegisterCategory.fifoNoSync)
       .field(SInt(24 bits), AccessType.WO, 0, "Alpha gradient dA/dX (12.12 fixed)")
+      .withFloatAlias(12, 12)
       .asOutput()
     val dSdX = busif
-      .newRegAt(0x054, "dSdX")
+      .newRegAtWithCategory(0x054, "dSdX", RegisterCategory.fifoNoSync)
       .field(SInt(32 bits), AccessType.WO, 0, "S texture gradient dS/dX (14.18 fixed)")
+      .withFloatAlias(14, 18)
       .asOutput()
     val dTdX = busif
-      .newRegAt(0x058, "dTdX")
+      .newRegAtWithCategory(0x058, "dTdX", RegisterCategory.fifoNoSync)
       .field(SInt(32 bits), AccessType.WO, 0, "T texture gradient dT/dX (14.18 fixed)")
+      .withFloatAlias(14, 18)
       .asOutput()
     val dWdX = busif
-      .newRegAt(0x05c, "dWdX")
+      .newRegAtWithCategory(0x05c, "dWdX", RegisterCategory.fifoNoSync)
       .field(SInt(32 bits), AccessType.WO, 0, "W gradient dW/dX (2.30 fixed)")
+      .withFloatAlias(2, 30)
       .asOutput()
 
-    // Y Gradient Registers (0x060-0x07C)
+    // Y Gradient Registers (0x060-0x07C) — float aliases at 0x0E0-0x0FC
     val dRdY = busif
-      .newRegAt(0x060, "dRdY")
+      .newRegAtWithCategory(0x060, "dRdY", RegisterCategory.fifoNoSync)
       .field(SInt(24 bits), AccessType.WO, 0, "Red gradient dR/dY (12.12 fixed)")
+      .withFloatAlias(12, 12)
       .asOutput()
     val dGdY = busif
-      .newRegAt(0x064, "dGdY")
+      .newRegAtWithCategory(0x064, "dGdY", RegisterCategory.fifoNoSync)
       .field(SInt(24 bits), AccessType.WO, 0, "Green gradient dG/dY (12.12 fixed)")
+      .withFloatAlias(12, 12)
       .asOutput()
     val dBdY = busif
-      .newRegAt(0x068, "dBdY")
+      .newRegAtWithCategory(0x068, "dBdY", RegisterCategory.fifoNoSync)
       .field(SInt(24 bits), AccessType.WO, 0, "Blue gradient dB/dY (12.12 fixed)")
+      .withFloatAlias(12, 12)
       .asOutput()
     val dZdY = busif
-      .newRegAt(0x06c, "dZdY")
+      .newRegAtWithCategory(0x06c, "dZdY", RegisterCategory.fifoNoSync)
       .field(SInt(32 bits), AccessType.WO, 0, "Z gradient dZ/dY (20.12 fixed)")
+      .withFloatAlias(20, 12)
       .asOutput()
     val dAdY = busif
-      .newRegAt(0x070, "dAdY")
+      .newRegAtWithCategory(0x070, "dAdY", RegisterCategory.fifoNoSync)
       .field(SInt(24 bits), AccessType.WO, 0, "Alpha gradient dA/dY (12.12 fixed)")
+      .withFloatAlias(12, 12)
       .asOutput()
     val dSdY = busif
-      .newRegAt(0x074, "dSdY")
+      .newRegAtWithCategory(0x074, "dSdY", RegisterCategory.fifoNoSync)
       .field(SInt(32 bits), AccessType.WO, 0, "S texture gradient dS/dY (14.18 fixed)")
+      .withFloatAlias(14, 18)
       .asOutput()
     val dTdY = busif
-      .newRegAt(0x078, "dTdY")
+      .newRegAtWithCategory(0x078, "dTdY", RegisterCategory.fifoNoSync)
       .field(SInt(32 bits), AccessType.WO, 0, "T texture gradient dT/dY (14.18 fixed)")
+      .withFloatAlias(14, 18)
       .asOutput()
     val dWdY = busif
-      .newRegAt(0x07c, "dWdY")
+      .newRegAtWithCategory(0x07c, "dWdY", RegisterCategory.fifoNoSync)
       .field(SInt(32 bits), AccessType.WO, 0, "W gradient dW/dY (2.30 fixed)")
+      .withFloatAlias(2, 30)
       .asOutput()
   }
 
-  // ========================================================================
-  // Float Triangle Geometry Area (0x088-0x0fc)
-  // Float registers for ftriangleCMD - IEEE 754 single-precision float32
-  // ========================================================================
-  val floatTriangleGeometry = new Area {
-    // Float Vertex Registers (0x088-0x09c)
-    val fvertexAx = busif
-      .newRegAtWithCategory(0x088, "fvertexAx", RegisterCategory.fifoNoSync)
-      .field(Bits(32 bits), AccessType.WO, 0, "Vertex A X coordinate (IEEE 754 float32)")
-      .asOutput()
-    val fvertexAy = busif
-      .newRegAtWithCategory(0x08c, "fvertexAy", RegisterCategory.fifoNoSync)
-      .field(Bits(32 bits), AccessType.WO, 0, "Vertex A Y coordinate (IEEE 754 float32)")
-      .asOutput()
-    val fvertexBx = busif
-      .newRegAtWithCategory(0x090, "fvertexBx", RegisterCategory.fifoNoSync)
-      .field(Bits(32 bits), AccessType.WO, 0, "Vertex B X coordinate (IEEE 754 float32)")
-      .asOutput()
-    val fvertexBy = busif
-      .newRegAtWithCategory(0x094, "fvertexBy", RegisterCategory.fifoNoSync)
-      .field(Bits(32 bits), AccessType.WO, 0, "Vertex B Y coordinate (IEEE 754 float32)")
-      .asOutput()
-    val fvertexCx = busif
-      .newRegAtWithCategory(0x098, "fvertexCx", RegisterCategory.fifoNoSync)
-      .field(Bits(32 bits), AccessType.WO, 0, "Vertex C X coordinate (IEEE 754 float32)")
-      .asOutput()
-    val fvertexCy = busif
-      .newRegAtWithCategory(0x09c, "fvertexCy", RegisterCategory.fifoNoSync)
-      .field(Bits(32 bits), AccessType.WO, 0, "Vertex C Y coordinate (IEEE 754 float32)")
-      .asOutput()
-
-    // Float Start Value Registers (0x0a0-0x0bc) - all need fifoNoSync for proper triangle command capture
-    val fstartR = busif
-      .newRegAtWithCategory(0x0a0, "fstartR", RegisterCategory.fifoNoSync)
-      .field(Bits(32 bits), AccessType.WO, 0, "Starting red value (IEEE 754 float32)")
-      .asOutput()
-    val fstartG = busif
-      .newRegAtWithCategory(0x0a4, "fstartG", RegisterCategory.fifoNoSync)
-      .field(Bits(32 bits), AccessType.WO, 0, "Starting green value (IEEE 754 float32)")
-      .asOutput()
-    val fstartB = busif
-      .newRegAtWithCategory(0x0a8, "fstartB", RegisterCategory.fifoNoSync)
-      .field(Bits(32 bits), AccessType.WO, 0, "Starting blue value (IEEE 754 float32)")
-      .asOutput()
-    val fstartZ = busif
-      .newRegAtWithCategory(0x0ac, "fstartZ", RegisterCategory.fifoNoSync)
-      .field(Bits(32 bits), AccessType.WO, 0, "Starting Z depth (IEEE 754 float32)")
-      .asOutput()
-    val fstartA = busif
-      .newRegAtWithCategory(0x0b0, "fstartA", RegisterCategory.fifoNoSync)
-      .field(Bits(32 bits), AccessType.WO, 0, "Starting alpha value (IEEE 754 float32)")
-      .asOutput()
-    val fstartS = busif
-      .newRegAtWithCategory(0x0b4, "fstartS", RegisterCategory.fifoNoSync)
-      .field(Bits(32 bits), AccessType.WO, 0, "Starting S texture coord (IEEE 754 float32)")
-      .asOutput()
-    val fstartT = busif
-      .newRegAtWithCategory(0x0b8, "fstartT", RegisterCategory.fifoNoSync)
-      .field(Bits(32 bits), AccessType.WO, 0, "Starting T texture coord (IEEE 754 float32)")
-      .asOutput()
-    val fstartW = busif
-      .newRegAtWithCategory(0x0bc, "fstartW", RegisterCategory.fifoNoSync)
-      .field(Bits(32 bits), AccessType.WO, 0, "Starting W value (IEEE 754 float32)")
-      .asOutput()
-
-    // Float X Gradient Registers (0x0c0-0x0dc)
-    val fdRdX = busif
-      .newRegAtWithCategory(0x0c0, "fdRdX", RegisterCategory.fifoNoSync)
-      .field(Bits(32 bits), AccessType.WO, 0, "Red gradient dR/dX (IEEE 754 float32)")
-      .asOutput()
-    val fdGdX = busif
-      .newRegAtWithCategory(0x0c4, "fdGdX", RegisterCategory.fifoNoSync)
-      .field(Bits(32 bits), AccessType.WO, 0, "Green gradient dG/dX (IEEE 754 float32)")
-      .asOutput()
-    val fdBdX = busif
-      .newRegAtWithCategory(0x0c8, "fdBdX", RegisterCategory.fifoNoSync)
-      .field(Bits(32 bits), AccessType.WO, 0, "Blue gradient dB/dX (IEEE 754 float32)")
-      .asOutput()
-    val fdZdX = busif
-      .newRegAtWithCategory(0x0cc, "fdZdX", RegisterCategory.fifoNoSync)
-      .field(Bits(32 bits), AccessType.WO, 0, "Z gradient dZ/dX (IEEE 754 float32)")
-      .asOutput()
-    val fdAdX = busif
-      .newRegAtWithCategory(0x0d0, "fdAdX", RegisterCategory.fifoNoSync)
-      .field(Bits(32 bits), AccessType.WO, 0, "Alpha gradient dA/dX (IEEE 754 float32)")
-      .asOutput()
-    val fdSdX = busif
-      .newRegAtWithCategory(0x0d4, "fdSdX", RegisterCategory.fifoNoSync)
-      .field(Bits(32 bits), AccessType.WO, 0, "S texture gradient dS/dX (IEEE 754 float32)")
-      .asOutput()
-    val fdTdX = busif
-      .newRegAtWithCategory(0x0d8, "fdTdX", RegisterCategory.fifoNoSync)
-      .field(Bits(32 bits), AccessType.WO, 0, "T texture gradient dT/dX (IEEE 754 float32)")
-      .asOutput()
-    val fdWdX = busif
-      .newRegAtWithCategory(0x0dc, "fdWdX", RegisterCategory.fifoNoSync)
-      .field(Bits(32 bits), AccessType.WO, 0, "W gradient dW/dX (IEEE 754 float32)")
-      .asOutput()
-
-    // Float Y Gradient Registers (0x0e0-0x0fc)
-    val fdRdY = busif
-      .newRegAtWithCategory(0x0e0, "fdRdY", RegisterCategory.fifoNoSync)
-      .field(Bits(32 bits), AccessType.WO, 0, "Red gradient dR/dY (IEEE 754 float32)")
-      .asOutput()
-    val fdGdY = busif
-      .newRegAtWithCategory(0x0e4, "fdGdY", RegisterCategory.fifoNoSync)
-      .field(Bits(32 bits), AccessType.WO, 0, "Green gradient dG/dY (IEEE 754 float32)")
-      .asOutput()
-    val fdBdY = busif
-      .newRegAtWithCategory(0x0e8, "fdBdY", RegisterCategory.fifoNoSync)
-      .field(Bits(32 bits), AccessType.WO, 0, "Blue gradient dB/dY (IEEE 754 float32)")
-      .asOutput()
-    val fdZdY = busif
-      .newRegAtWithCategory(0x0ec, "fdZdY", RegisterCategory.fifoNoSync)
-      .field(Bits(32 bits), AccessType.WO, 0, "Z gradient dZ/dY (IEEE 754 float32)")
-      .asOutput()
-    val fdAdY = busif
-      .newRegAtWithCategory(0x0f0, "fdAdY", RegisterCategory.fifoNoSync)
-      .field(Bits(32 bits), AccessType.WO, 0, "Alpha gradient dA/dY (IEEE 754 float32)")
-      .asOutput()
-    val fdSdY = busif
-      .newRegAtWithCategory(0x0f4, "fdSdY", RegisterCategory.fifoNoSync)
-      .field(Bits(32 bits), AccessType.WO, 0, "S texture gradient dS/dY (IEEE 754 float32)")
-      .asOutput()
-    val fdTdY = busif
-      .newRegAtWithCategory(0x0f8, "fdTdY", RegisterCategory.fifoNoSync)
-      .field(Bits(32 bits), AccessType.WO, 0, "T texture gradient dT/dY (IEEE 754 float32)")
-      .asOutput()
-    val fdWdY = busif
-      .newRegAtWithCategory(0x0fc, "fdWdY", RegisterCategory.fifoNoSync)
-      .field(Bits(32 bits), AccessType.WO, 0, "W gradient dW/dY (IEEE 754 float32)")
-      .asOutput()
-  }
+  // Float Triangle Geometry Area (0x088-0x0FC) is handled by float alias conversion
+  // in BmbBusInterface. Writes to float addresses are automatically converted to fixed-point
+  // and written to the corresponding integer registers above.
 
   // ========================================================================
   // Command Area (0x080-0x100)

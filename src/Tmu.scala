@@ -547,10 +547,12 @@ case class Tmu(c: voodoo.Config) extends Component {
         dr := r; dg := g; db := b; da := U(255, 8 bits)
       }
       is(Tmu.TextureFormat.A8) {
-        dr := U(255, 8 bits)
-        dg := U(255, 8 bits)
-        db := U(255, 8 bits)
-        da := texelByte.asUInt
+        // 86Box: makergba(dat, dat, dat, dat) — R=G=B=A=dat
+        val dat = texelByte.asUInt
+        dr := dat
+        dg := dat
+        db := dat
+        da := dat
       }
       is(Tmu.TextureFormat.I8) {
         val intensity = texelByte.asUInt

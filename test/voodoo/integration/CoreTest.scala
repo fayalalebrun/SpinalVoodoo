@@ -74,7 +74,7 @@ class CoreTest extends AnyFunSuite {
   val REG_TLOD = 0x304
   val REG_TEXBASEADDR = 0x30c
 
-  // Float triangle registers (from RegisterBank.scala floatTriangleGeometry)
+  // Float triangle registers (aliases — converted to fixed-point at FIFO input by BmbBusInterface)
   val REG_FVERTEX_AX = 0x088
   val REG_FVERTEX_AY = 0x08c
   val REG_FVERTEX_BX = 0x090

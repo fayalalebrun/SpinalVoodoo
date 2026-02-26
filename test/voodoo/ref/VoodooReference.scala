@@ -268,9 +268,9 @@ object VoodooReference {
         val g = expand3to8((raw >> 2) & 7)
         val b = expand2to8(raw & 3)
         0xff000000 | (r << 16) | (g << 8) | b
-      case 0x2 => // A8
+      case 0x2 => // A8 — 86Box: makergba(dat, dat, dat, dat)
         val a = raw & 0xff
-        (a << 24) | 0x00ffffff
+        (a << 24) | (a << 16) | (a << 8) | a
       case 0x3 => // I8
         val i = raw & 0xff
         0xff000000 | (i << 16) | (i << 8) | i

@@ -83,24 +83,10 @@ class GlideTraceTest extends AnyFunSuite {
   // Texture data helpers
   // ========================================================================
 
-  /** LOD texel offset table from SST-1 spec, indexed by [aspectRatio][lodLevel]. Values are
-    * cumulative texel counts before each LOD level.
-    */
-  val lodTexelOffsets = Array(
-    Array(0, 65536, 81920, 86016, 87040, 87296, 87360, 87376, 87380),
-    Array(0, 32768, 40960, 43008, 43520, 43648, 43680, 43688, 43690),
-    Array(0, 16384, 20480, 21504, 21760, 21824, 21840, 21844, 21846),
-    Array(0, 8192, 10240, 10752, 10880, 10912, 10920, 10924, 10926)
-  )
-
-  /** Decode a PCI texture address from an old-format (buggy deinterleave) trace entry into the
-    * correct flat byte address for the sequential LOD memory layout.
+  /** Map a trace texture address to a byte offset for texMem.
     *
-    * Old simFlushTexture produced: flatAddr = texBaseAddr*8 + rowBase + linearPos where rowBase
-    * used 512-byte stride (should have been 256). The PCI aperture offset encodes LOD in bits
-    * 20:17, T in bits 16:9, S in low bits. We reverse the buggy deinterleave to recover the PCI
-    * offset, decode LOD/T/S, and remap to the sequential layout matching the RTL's lodTexelOffsets
-    * table.
+    * With PCI-encoded layout, the PCI address IS the SRAM address. We add the current texBaseAddr
+    * to produce the absolute texMem address.
     */
   def decodePciTexAddr(
       traceAddr: Long,
@@ -110,46 +96,7 @@ class GlideTraceTest extends AnyFunSuite {
       memMask: Int
   ): Int = {
     val texBaseBytes = texBaseAddr << 3
-    val rawAddr = traceAddr & 0x7fffffL
-    val buggyOffset = rawAddr - texBaseBytes
-
-    // Recover original PCI aperture offset from buggy linearOff.
-    // buggyOffset = row*512 + linearPos, where linearPos < 256.
-    val buggyRow = buggyOffset / 512
-    val buggyCol = buggyOffset % 512
-    val pciOffset = buggyRow * 512 + buggyCol * 2
-
-    // Decode LOD, T, S from PCI address encoding
-    val pciLod = ((pciOffset >> 17) & 0xf).toInt
-    val pciT = ((pciOffset >> 9) & 0xff).toInt
-
-    val format = (textureMode >> 8) & 0xf
-    val is16bit = format >= 8
-    val aspect = (tLOD >> 21) & 3
-    val sIsWider = ((tLOD >> 20) & 1) != 0
-
-    val pciS =
-      if (is16bit) ((pciOffset >> 1) & 0xfe).toInt
-      else ((pciOffset >> 1) & 0xfc).toInt
-
-    if (pciLod > 8) return -1
-
-    // Look up LOD byte offset from table
-    val lodTexOff = lodTexelOffsets(aspect)(pciLod).toLong
-    val lodByteOff = if (is16bit) lodTexOff * 2 else lodTexOff
-
-    // Compute row width for this LOD level
-    val (w0, shift0) = if (sIsWider) (256, 8) else (256 >> aspect, 8 - aspect)
-    val lodW = scala.math.max(1, w0 >> pciLod)
-    val lodShift = scala.math.max(0, shift0 - pciLod)
-
-    // Compute flat byte address
-    val flatOffset =
-      if (is16bit)
-        lodByteOff + pciS.toLong * 2 + (pciT.toLong << lodShift) * 2
-      else
-        lodByteOff + pciS.toLong + (pciT.toLong << lodShift)
-
+    val flatOffset = traceAddr & 0x7fffffL
     ((texBaseBytes + flatOffset) & memMask).toInt
   }
 
@@ -196,16 +143,13 @@ class GlideTraceTest extends AnyFunSuite {
       texShift(lod) = scala.math.max(0, wBits)
       texLod(lod) = lod
 
-      val lodOffset = lodTexelOffsets(aspectRatio)(lod)
-      val lodByteOffset =
-        if (is16Bit) lodOffset.toLong * 2 else lodOffset.toLong
-
       val texels = new Array[Int](w * h)
       for (t <- 0 until h; s <- 0 until w) {
         val texelIdx = s + t * w
-        val byteAddr =
-          (texBaseByteAddr + lodByteOffset +
-            (if (is16Bit) texelIdx.toLong * 2 else texelIdx.toLong)) & memMask
+        // 8-bit textures use two-bank interleaved addressing: {s[7:2], 0, s[1:0]}
+        val colByteOffset = if (is16Bit) (s << 1) else ((s >> 2) << 3) | (s & 3)
+        val pciOffset = (lod << 17) | (t << 9) | colByteOffset
+        val byteAddr = (texBaseByteAddr + pciOffset) & memMask
 
         val raw =
           if (is16Bit) {
@@ -429,6 +373,7 @@ class GlideTraceTest extends AnyFunSuite {
     val texMem = new Array[Byte](texMemSize)
     val texMemMask = texMemSize - 1
     var currentTexBaseAddr = 0L
+    var texWriteCount = 0
     for (entry <- entries) {
       entry.cmdType match {
         case TraceCommandType.WRITE_REG_L =>
@@ -577,10 +522,28 @@ class GlideTraceTest extends AnyFunSuite {
             texMem((maskedAddr + 1) & texMemMask) = ((data >> 8) & 0xff).toByte
             texMem((maskedAddr + 2) & texMemMask) = ((data >> 16) & 0xff).toByte
             texMem((maskedAddr + 3) & texMemMask) = ((data >> 24) & 0xff).toByte
+            texWriteCount += 1
+            if (texWriteCount <= 3)
+              println(
+                f"  [DEBUG TEX] write #$texWriteCount traceAddr=0x${entry.addr}%06X base=0x${currentTexBaseAddr}%05X -> maskedAddr=0x${maskedAddr}%06X data=0x${data}%08X"
+              )
           }
 
         case _ => // Ignore reads, vsync, swap, etc.
       }
+    }
+
+    // Debug: check texture data at correct LOD 1 offset for 2:1 aspect
+    {
+      val texBA = currentTexBaseAddr
+      val texByteAddr = ((texBA << 3) & texMemMask).toInt
+      val lod1Off = 32768 // lodTexelOffsets(1)(1) for aspect=1
+      val lod1Addr = (texByteAddr + lod1Off) & texMemMask
+      val nzCount =
+        (lod1Addr until scala.math.min(lod1Addr + 8192, texMem.length)).count(i => texMem(i) != 0)
+      println(
+        f"  [DEBUG] texWriteCount=$texWriteCount texBase=0x${texBA}%05X lod1Addr=0x${lod1Addr}%06X nzAtLod1=$nzCount/8192"
+      )
     }
 
     (fb, perTriangle.toSeq)
@@ -613,7 +576,7 @@ class GlideTraceTest extends AnyFunSuite {
 
       dut.io.fbBaseAddr #= 0
 
-      val bmbDriver = new BmbDriver(dut.io.regBus, dut.clockDomain)
+      val bmbDriver = new BmbDriver(dut.io.cpuBus, dut.clockDomain)
 
       val fbMemSize = 4 * 1024 * 1024L
       val fbMemory = new BmbMemoryAgent(fbMemSize)
@@ -622,13 +585,7 @@ class GlideTraceTest extends AnyFunSuite {
       for (page <- 0L until (fbMemSize >> 20))
         fbMemory.memory.content(page) = new Array[Byte](1 << 20)
       fbMemory.addPort(
-        bus = dut.io.fbWrite,
-        busAddress = 0,
-        clockDomain = dut.clockDomain,
-        withDriver = true
-      )
-      fbMemory.addPort(
-        bus = dut.io.fbRead,
+        bus = dut.io.fbMem,
         busAddress = 0,
         clockDomain = dut.clockDomain,
         withDriver = true
@@ -642,34 +599,17 @@ class GlideTraceTest extends AnyFunSuite {
       for (page <- 0L until (texMemSize >> 20))
         texMemory.memory.content(page) = new Array[Byte](1 << 20)
       texMemory.addPort(
-        bus = dut.io.texRead,
+        bus = dut.io.texMem,
         busAddress = 0,
         clockDomain = dut.clockDomain,
         withDriver = true
       )
-
-      fbMemory.addPort(
-        bus = dut.io.lfbFbRead,
-        busAddress = 0,
-        clockDomain = dut.clockDomain,
-        withDriver = true
-      )
-
-      dut.io.lfbBus.cmd.valid #= false
-      dut.io.lfbBus.cmd.address #= 0
-      dut.io.lfbBus.cmd.data #= 0
-      dut.io.lfbBus.cmd.opcode #= 0
-      dut.io.lfbBus.cmd.length #= 0
-      dut.io.lfbBus.cmd.source #= 0
-      dut.io.lfbBus.cmd.mask #= 0xf
-      dut.io.lfbBus.cmd.last #= true
-      dut.io.lfbBus.rsp.ready #= true
 
       dut.clockDomain.waitSampling(5)
 
       // Track writes for per-triangle pixel collection
       val writtenAddrs = scala.collection.mutable.Set.empty[Long]
-      StreamMonitor(dut.io.fbWrite.cmd, dut.clockDomain) { payload =>
+      StreamMonitor(dut.io.fbMem.cmd, dut.clockDomain) { payload =>
         if (payload.opcode.toInt == Bmb.Cmd.Opcode.WRITE) {
           writtenAddrs += payload.address.toLong
         }

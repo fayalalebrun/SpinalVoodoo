@@ -125,6 +125,8 @@ SpinalHDL implementation of the 3dfx Voodoo Graphics GPU.
 - [x] 64-entry PCI FIFO with categorized routing (fifoBypass / syncRequired)
 - [x] Pipeline drain blocking for sync registers (triangleCMD, swapbufferCMD, etc.)
 - [x] Address remapping (fbiInit3 bit 0, external bit 21)
+- [x] CPU bus address decode (PCI BAR regions: registers, LFB, texture)
+- [x] texBaseAddr write relocation (SST-1 spec 5.53)
 - [ ] PCI configuration space (initEnable, busSnoop)
 - [ ] Memory FIFO (off-screen framebuffer extension)
 
@@ -170,22 +172,17 @@ Screenshots are saved to `output/<test>/screenshot.png`.
 | `SIM_FBWRITE_LOG` | Path to log framebuffer writes |
 | `SIM_TMU_LOG` | Path to log TMU/rasterizer activity |
 
-## Trace Player
+## Trace-Based Testing
 
-Replay Voodoo trace files and watch triangles render in real-time:
+Glide trace files (`.bin`) capture PCI bus operations for offline replay against both
+the RTL simulation and a software reference model:
 
 ```bash
-scala-cli run . -- \
-  --trace /path/to/voodoo_trace.bin \
-  [--index /path/to/voodoo_trace.bin.idx] \
-  [--frame N] \
-  [--timing accurate|freerun] \
-  [--resolution WxH]
+# Capture a trace (rebuilds Glide with trace harness)
+TRACE_CAPTURE=1 make run/test_alphabet
+
+# Run trace tests via ScalaTest
+scala-cli test . --test-only "voodoo.integration.GlideTraceTest"
 ```
 
-**Options:**
-- `--trace` - Binary trace file (required)
-- `--index` - Frame index file (auto-detected if `.bin.idx` exists)
-- `--frame` - Render specific frame number (requires index)
-- `--timing` - `accurate` for cycle-accurate, `freerun` for max speed (default: freerun)
-- `--resolution` - Display resolution (default: 640x480)
+Trace files are stored in `traces/` and compared pixel-by-pixel against a reference model.

@@ -5,29 +5,65 @@ import spinal.core.sim._
 import spinal.lib._
 import spinal.lib.bus.bmb._
 
+object Core {
+  val cpuBmbParams = BmbParameter(
+    addressWidth = 24,
+    dataWidth = 32,
+    sourceWidth = 4,
+    contextWidth = 0,
+    lengthWidth = 2,
+    canRead = true,
+    canWrite = true,
+    alignment = BmbParameter.BurstAlignement.WORD
+  )
+
+  def fbMemBmbParams(c: Config) = BmbParameter(
+    addressWidth = c.addressWidth.value,
+    dataWidth = 32,
+    sourceWidth = 1 + log2Up(3), // 3 arbiter inputs
+    contextWidth = 0,
+    lengthWidth = 2,
+    canRead = true,
+    canWrite = true,
+    alignment = BmbParameter.BurstAlignement.BYTE
+  )
+
+  def texMemBmbParams(c: Config) = BmbParameter(
+    addressWidth = c.addressWidth.value,
+    dataWidth = 32,
+    sourceWidth = 4 + log2Up(2), // max(srcW=1,4) + 1 route bit = 5
+    contextWidth = 0,
+    lengthWidth = 2,
+    canRead = true,
+    canWrite = true,
+    alignment = BmbParameter.BurstAlignement.BYTE
+  )
+
+  // Internal CPU texture write bus params
+  val cpuTexBmbParams = BmbParameter(
+    addressWidth = 26,
+    dataWidth = 32,
+    sourceWidth = 4,
+    contextWidth = 0,
+    lengthWidth = 2,
+    canRead = true,
+    canWrite = true,
+    alignment = BmbParameter.BurstAlignement.BYTE
+  )
+}
+
 case class Core(c: Config) extends Component {
   val io = new Bundle {
-    // Register bus interface (external: 22-bit address for remap detection)
-    val regBus = slave(Bmb(RegisterBank.externalBmbParams(c)))
+    // Unified CPU bus (24-bit address covers 16MB PCI BAR)
+    val cpuBus = slave(Bmb(Core.cpuBmbParams))
 
-    // Framebuffer write bus
-    val fbWrite = master(Bmb(Write.baseBmbParams(c)))
+    // Framebuffer memory bus (R/W, internal 3-port arbitration)
+    val fbMem = master(Bmb(Core.fbMemBmbParams(c)))
 
-    // Texture memory read bus (single TMU - Voodoo 1 level)
-    val texRead = master(Bmb(Tmu.bmbParams(c)))
-
-    // Framebuffer read bus (for depth test and alpha blend)
-    val fbRead = master(Bmb(FramebufferAccess.bmbParams(c)))
-
-    // Linear frame buffer bus (reads and writes)
-    val lfbBus = slave(Bmb(Lfb.bmbParams(c)))
-
-    // LFB framebuffer read bus (for LFB read path)
-    val lfbFbRead = master(Bmb(Lfb.fbReadBmbParams(c)))
+    // Texture memory bus (R/W, internal 2-port arbitration with texBaseAddr relocation)
+    val texMem = master(Bmb(Core.texMemBmbParams(c)))
 
     // Status inputs (hardware state)
-    // Note: pciFifoFree now comes from RegisterBank's internal FIFO
-    // Note: fbiBusy/trexBusy/sstBusy are wired internally from pipelineBusy
     val statusInputs = in(new Bundle {
       val vRetrace = Bool()
       val memFifoFree = UInt(16 bits)
@@ -66,9 +102,113 @@ case class Core(c: Config) extends Component {
   regBank.commands.triangleCmd.simPublic()
   regBank.commands.ftriangleCmd.simPublic()
 
-  // Connect address remapper between external bus and register bank
+  // ========================================================================
+  // CPU bus address decode
+  // ========================================================================
+  // Decode cpuBus address bits [23:22]:
+  //   00 = registers (0x000000-0x3FFFFF)
+  //   01 = LFB       (0x400000-0x7FFFFF)
+  //   10 = texture    (0x800000-0xBFFFFF)
+  //   11 = texture    (0xC00000-0xFFFFFF)
+
+  val cpuCmd = io.cpuBus.cmd
+  val cpuRsp = io.cpuBus.rsp
+
+  val target = cpuCmd.address(23 downto 22)
+
+  // texBaseAddr snooping for CPU texture write relocation (SST-1 spec 5.53)
+  // Snoop before the FIFO — texBaseAddr is not fifoBypass, so reading the
+  // register bank would give a stale value. Real TREX intercepts PCI writes.
+  val texBaseAddr = Reg(UInt(19 bits)) init (0)
+  when(
+    cpuCmd.fire && target === 0 &&
+      cpuCmd.address(9 downto 0) === U(0x30c, 10 bits) && cpuCmd.opcode(0)
+  ) {
+    texBaseAddr := cpuCmd.data(18 downto 0).asUInt
+  }
+
+  // Register which target was selected (latched on cmd.fire for response routing)
+  val rspTarget = RegNextWhen(target, cpuCmd.fire) init (0)
+
+  val isReg = target === 0
+  val isLfb = target === 1
+  val isTex = target >= 2
+
+  // Internal register bus (22-bit address, includes bit 21 for remap detection)
+  val internalRegBus = Bmb(RegisterBank.externalBmbParams(c))
+  internalRegBus.cmd.valid := cpuCmd.valid && isReg
+  internalRegBus.cmd.opcode := cpuCmd.opcode
+  internalRegBus.cmd.address := cpuCmd.address.resize(22 bits)
+  internalRegBus.cmd.data := cpuCmd.data
+  internalRegBus.cmd.mask := cpuCmd.mask
+  internalRegBus.cmd.length := cpuCmd.length
+  internalRegBus.cmd.last := cpuCmd.last
+  internalRegBus.cmd.source := cpuCmd.source.resize(
+    RegisterBank.externalBmbParams(c).access.sourceWidth bits
+  )
+
+  // Internal LFB bus (22-bit address)
+  val internalLfbBus = Bmb(Lfb.bmbParams(c))
+  internalLfbBus.cmd.valid := cpuCmd.valid && isLfb
+  internalLfbBus.cmd.opcode := cpuCmd.opcode
+  internalLfbBus.cmd.address := cpuCmd.address.resize(22 bits)
+  internalLfbBus.cmd.data := cpuCmd.data
+  internalLfbBus.cmd.mask := cpuCmd.mask
+  internalLfbBus.cmd.length := cpuCmd.length
+  internalLfbBus.cmd.last := cpuCmd.last
+  internalLfbBus.cmd.source := cpuCmd.source.resize(Lfb.bmbParams(c).access.sourceWidth bits)
+
+  // CPU texture bus with texBaseAddr relocation
+  // SRAM addr = (texBaseAddr << 3) + PCI_offset (matches real TREX)
+  val cpuTexBus = Bmb(Core.cpuTexBmbParams)
+  val texPciOffset = cpuCmd.address(22 downto 0) // 23-bit PCI offset within texture space
+  val texSramAddr = ((texBaseAddr << 3) +^ texPciOffset).resize(26 bits)
+  cpuTexBus.cmd.valid := cpuCmd.valid && isTex
+  cpuTexBus.cmd.address := texSramAddr
+  cpuTexBus.cmd.opcode := cpuCmd.opcode
+  cpuTexBus.cmd.data := cpuCmd.data
+  cpuTexBus.cmd.mask := cpuCmd.mask
+  cpuTexBus.cmd.length := cpuCmd.length
+  cpuTexBus.cmd.last := cpuCmd.last
+  cpuTexBus.cmd.source := cpuCmd.source
+
+  // Mux ready back from selected target
+  cpuCmd.ready := (isReg && internalRegBus.cmd.ready) ||
+    (isLfb && internalLfbBus.cmd.ready) ||
+    (isTex && cpuTexBus.cmd.ready)
+
+  // Response mux: route response from selected target
+  cpuRsp.valid := False
+  cpuRsp.data := 0
+  cpuRsp.last := True
+  cpuRsp.opcode := Bmb.Rsp.Opcode.SUCCESS
+  cpuRsp.source := 0
+
+  // Always accept responses from sub-buses
+  internalRegBus.rsp.ready := (rspTarget === 0) && cpuRsp.ready
+  internalLfbBus.rsp.ready := (rspTarget === 1) && cpuRsp.ready
+  cpuTexBus.rsp.ready := (rspTarget >= 2) && cpuRsp.ready
+
+  when(rspTarget === 0) {
+    cpuRsp.valid := internalRegBus.rsp.valid
+    cpuRsp.data := internalRegBus.rsp.data
+    cpuRsp.opcode := internalRegBus.rsp.opcode
+    cpuRsp.source := internalRegBus.rsp.source.resize(cpuRsp.p.access.sourceWidth bits)
+  } elsewhen (rspTarget === 1) {
+    cpuRsp.valid := internalLfbBus.rsp.valid
+    cpuRsp.data := internalLfbBus.rsp.data
+    cpuRsp.opcode := internalLfbBus.rsp.opcode
+    cpuRsp.source := internalLfbBus.rsp.source.resize(cpuRsp.p.access.sourceWidth bits)
+  } otherwise {
+    cpuRsp.valid := cpuTexBus.rsp.valid
+    cpuRsp.data := cpuTexBus.rsp.data
+    cpuRsp.opcode := cpuTexBus.rsp.opcode
+    cpuRsp.source := cpuTexBus.rsp.source.resize(cpuRsp.p.access.sourceWidth bits)
+  }
+
+  // Connect address remapper between internal register bus and register bank
   // AddressRemapper handles RGBZASTW → standard layout translation for remapped addresses
-  addressRemapper.io.input <> io.regBus
+  addressRemapper.io.input <> internalRegBus
   addressRemapper.io.output <> regBank.io.bus
   regBank.io.statusInputs <> io.statusInputs
   regBank.io.statisticsIn <> io.statisticsIn
@@ -269,14 +409,13 @@ case class Core(c: Config) extends Component {
   // Linear Frame Buffer (LFB) writes
   // ========================================================================
   val lfb = Lfb(c)
-  lfb.io.bus <> io.lfbBus
+  lfb.io.bus <> internalLfbBus
   lfb.io.lfbMode := regBank.renderConfig.lfbModeBundle
   lfb.io.fbzMode := regBank.renderConfig.fbzModeBundle
   lfb.io.alphaMode := regBank.renderConfig.alphaModeBundle
   lfb.io.fogMode := regBank.renderConfig.fogModeBundle
   lfb.io.fogColor := regBank.renderConfig.fogColor
   lfb.io.zaColor := regBank.renderConfig.zaColor
-  lfb.io.fbReadBus <> io.lfbFbRead
   lfb.io.fbWriteBaseAddr := lfbWriteBufferBase
   lfb.io.fbReadBaseAddr := lfbReadBufferBase
 
@@ -302,8 +441,7 @@ case class Core(c: Config) extends Component {
   //
   // TMU configuration is now captured per-triangle and flows through the stream
 
-  // Connect texture memory bus
-  io.texRead <> tmu.io.texRead
+  // Texture memory bus: connected through texture arbiter (see below)
 
   // ========================================================================
   // Palette writes via NCC table 0 I/Q registers (bit 31 = palette mode)
@@ -505,7 +643,6 @@ case class Core(c: Config) extends Component {
   // ========================================================================
   val fbAccess = FramebufferAccess(c)
   fbAccess.io.input << afterAlphaTest
-  fbAccess.io.fbRead <> io.fbRead
   fbAccess.io.fbBaseAddr := drawBufferBase
 
   // fbzMode fields are now per-pixel (carried through pipeline in Fog.Output.fbzMode)
@@ -564,8 +701,56 @@ case class Core(c: Config) extends Component {
     Seq(fastfillWrite.io.output, triangleWriteInput, lfb.io.writeOutput)
   )
 
-  // Connect framebuffer write bus
-  write.o.fbWrite <> io.fbWrite
+  // ========================================================================
+  // Framebuffer arbiter (3 inputs → fbMem)
+  // ========================================================================
+  val fbArbiter = BmbArbiter(
+    inputsParameter = Seq(
+      Write.baseBmbParams(c),
+      FramebufferAccess.bmbParams(c),
+      Lfb.fbReadBmbParams(c)
+    ),
+    outputParameter = Core.fbMemBmbParams(c),
+    lowerFirstPriority = true // fbWrite gets priority
+  )
+
+  // Pipe fbWrite cmd.ready to break combinational loop: Core's fbAccess has
+  // a combinational path from fbWrite.cmd.ready -> fbRead.rsp.ready, which
+  // loops back through the arbiter and BmbOnChipRam's !rsp.isStall gating.
+  fbArbiter.io.inputs(0).cmd << write.o.fbWrite.cmd.s2mPipe()
+  fbArbiter.io.inputs(0).rsp >> write.o.fbWrite.rsp
+
+  // Buffer fbRead response to prevent deadlock: FramebufferAccess does
+  // read-then-write (fbRead -> pipeline -> fbWrite). With single-ported RAM,
+  // the read response blocks the RAM until consumed, but consumption requires
+  // the write to complete (backpressure through the pipeline). The s2mPipe
+  // decouples the response handshake, freeing the RAM for the write.
+  fbArbiter.io.inputs(1).cmd << fbAccess.io.fbRead.cmd
+  fbAccess.io.fbRead.rsp << fbArbiter.io.inputs(1).rsp.s2mPipe()
+
+  fbArbiter.io.inputs(2) <> lfb.io.fbReadBus
+  fbArbiter.io.output <> io.fbMem
+
+  // ========================================================================
+  // Texture arbiter (2 inputs → texMem)
+  // ========================================================================
+  val texArbiter = BmbArbiter(
+    inputsParameter = Seq(
+      Tmu.bmbParams(c),
+      Core.cpuTexBmbParams
+    ),
+    outputParameter = Core.texMemBmbParams(c),
+    lowerFirstPriority = true // texRead gets priority over CPU writes
+  )
+
+  // Pipe texRead cmd.ready to break combinational loop: TMU's StreamFork has
+  // a combinational path from texRead.cmd.ready -> texRead.cmd.valid, which
+  // loops through BmbArbiter's StreamArbiter mask logic (valid -> ready).
+  texArbiter.io.inputs(0).cmd << tmu.io.texRead.cmd.s2mPipe()
+  texArbiter.io.inputs(0).rsp >> tmu.io.texRead.rsp
+
+  texArbiter.io.inputs(1) <> cpuTexBus
+  texArbiter.io.output <> io.texMem
 
   // Pipeline busy signal: any stage has valid data (placed after all stages instantiated)
   regBank.io.pipelineBusy.simPublic()

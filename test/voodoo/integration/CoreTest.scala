@@ -480,64 +480,36 @@ class CoreTest extends AnyFunSuite {
     // Set framebuffer base address
     dut.io.fbBaseAddr #= 0
 
-    // Create BmbDriver for register writes
-    val bmbDriver = new BmbDriver(dut.io.regBus, dut.clockDomain)
+    // Create BmbDriver for unified CPU bus (register, LFB, and texture writes)
+    val bmbDriver = new BmbDriver(dut.io.cpuBus, dut.clockDomain)
 
-    // Create BmbMemoryAgent for framebuffer writes
+    // Create BmbMemoryAgent for framebuffer (single R/W port via internal arbiter)
     val fbMemSize = 4 * 1024 * 1024L
     val fbMemory = new BmbMemoryAgent(fbMemSize)
     fbMemory.addPort(
-      bus = dut.io.fbWrite,
-      busAddress = 0, // fbBaseAddr=0, so no offset needed
+      bus = dut.io.fbMem,
+      busAddress = 0,
       clockDomain = dut.clockDomain,
       withDriver = true
     )
 
     // Track written addresses for efficient pixel collection
     val writtenAddrs = scala.collection.mutable.Set.empty[Long]
-    StreamMonitor(dut.io.fbWrite.cmd, dut.clockDomain) { payload =>
+    StreamMonitor(dut.io.fbMem.cmd, dut.clockDomain) { payload =>
       if (payload.opcode.toInt == Bmb.Cmd.Opcode.WRITE) {
         writtenAddrs += payload.address.toLong
       }
     }
 
-    // Add fbRead port to same FB memory agent (reads see prior writes)
-    fbMemory.addPort(
-      bus = dut.io.fbRead,
-      busAddress = 0,
-      clockDomain = dut.clockDomain,
-      withDriver = true
-    )
-
-    // Create BmbMemoryAgent for texture reads
+    // Create BmbMemoryAgent for texture memory (single R/W port via internal arbiter)
     val texMemSize = 4 * 1024 * 1024L
     val texMemory = new BmbMemoryAgent(texMemSize)
     texMemory.addPort(
-      bus = dut.io.texRead,
+      bus = dut.io.texMem,
       busAddress = 0,
       clockDomain = dut.clockDomain,
       withDriver = true
     )
-
-    // Add lfbFbRead port to same FB memory agent (for LFB read path)
-    fbMemory.addPort(
-      bus = dut.io.lfbFbRead,
-      busAddress = 0,
-      clockDomain = dut.clockDomain,
-      withDriver = true
-    )
-
-    // Initialize LFB bus: drive cmd.valid=false so no spurious LFB writes
-    // Don't use BmbDriver here — LFB tests create their own via setupDutWithLfb
-    dut.io.lfbBus.cmd.valid #= false
-    dut.io.lfbBus.cmd.address #= 0
-    dut.io.lfbBus.cmd.data #= 0
-    dut.io.lfbBus.cmd.opcode #= 0
-    dut.io.lfbBus.cmd.length #= 0
-    dut.io.lfbBus.cmd.source #= 0
-    dut.io.lfbBus.cmd.mask #= 0xf
-    dut.io.lfbBus.cmd.last #= true
-    dut.io.lfbBus.rsp.ready #= true
 
     dut.clockDomain.waitSampling(5)
 
@@ -545,14 +517,14 @@ class CoreTest extends AnyFunSuite {
   }
 
   // ========================================================================
-  // DUT setup helper with LFB driver
+  // LFB access helpers (writes/reads go through unified cpuBus at 0x400000)
   // ========================================================================
-  def setupDutWithLfb(
-      dut: Core
-  ): (BmbDriver, BmbDriver, BmbMemoryAgent, BmbMemoryAgent, scala.collection.mutable.Set[Long]) = {
-    val (regDriver, fbMemory, texMemory, writtenAddrs) = setupDut(dut)
-    val lfbDriver = new BmbDriver(dut.io.lfbBus, dut.clockDomain)
-    (regDriver, lfbDriver, fbMemory, texMemory, writtenAddrs)
+  def writeLfb(driver: BmbDriver, addr: Int, data: Long): Unit = {
+    driver.write(BigInt(data & 0xffffffffL), BigInt(0x400000 + addr))
+  }
+
+  def readLfb(driver: BmbDriver, addr: Int): BigInt = {
+    driver.read(BigInt(0x400000 + addr))
   }
 
   // ========================================================================
@@ -842,7 +814,7 @@ class CoreTest extends AnyFunSuite {
         val b = 0
         val a = 0xf // fully opaque
         val argb4444 = (a << 12) | (r << 8) | (g << 4) | b
-        val addr = (t * texWidth + s) * 2
+        val addr = (0 << 17) | (t << 9) | (s << 1) // PCI-encoded LOD 0
         texMemory.setByte(addr, (argb4444 & 0xff).toByte)
         texMemory.setByte(addr + 1, ((argb4444 >> 8) & 0xff).toByte)
       }
@@ -1499,13 +1471,13 @@ class CoreTest extends AnyFunSuite {
       val greenTexel: Int = 0xf0f0 // A=F R=0 G=F B=0
       val blueTexel: Int = 0xf00f // A=F R=0 G=0 B=F
 
-      // Memory layout (ARGB4444 = 2 bytes/texel):
-      // LOD 0 base: offset 0      (256x256 = 131072 bytes)
-      // LOD 1 base: offset 131072 (128x128 = 32768 bytes)
-      // LOD 2 base: offset 163840 (64x64 = 16384 bytes)
-      val lod0Base = 0
-      val lod1Base = 131072
-      val lod2Base = lod1Base + 32768 // 163840
+      // PCI-encoded memory layout: each LOD at (lod << 17)
+      // LOD 0 base: (0 << 17) = 0x00000
+      // LOD 1 base: (1 << 17) = 0x20000 = 131072
+      // LOD 2 base: (2 << 17) = 0x40000 = 262144
+      val lod0Base = 0 << 17
+      val lod1Base = 1 << 17
+      val lod2Base = 2 << 17
 
       // Write texel (0,0) at each LOD base
       texMemory.setByte(lod0Base, (redTexel & 0xff).toByte)
@@ -1717,7 +1689,7 @@ class CoreTest extends AnyFunSuite {
 
       for (t <- 0 until texHeight; s <- 0 until texWidth) {
         val texel = texels(t * texWidth + s)
-        val addr = (t * texWidth + s) * 2
+        val addr = (0 << 17) | (t << 9) | (s << 1) // PCI-encoded LOD 0
         texMemory.setByte(addr, (texel & 0xff).toByte)
         texMemory.setByte(addr + 1, ((texel >> 8) & 0xff).toByte)
       }
@@ -3598,17 +3570,15 @@ class CoreTest extends AnyFunSuite {
       val lodSizes = Array(256, 128, 64, 32, 16)
       val lodColorSet = lodColors.toSet
 
-      // Write mipmaps to texture memory sequentially
-      var texOffset = 0
+      // Write mipmaps to texture memory using PCI-encoded addressing
       for (lod <- 0 until 5) {
         val size = lodSizes(lod)
         val color = lodColors(lod)
         for (t <- 0 until size; s <- 0 until size) {
-          val addr = texOffset + (t * size + s) * 2
+          val addr = (lod << 17) | (t << 9) | (s << 1) // PCI-encoded
           texMemory.setByte(addr, (color & 0xff).toByte)
           texMemory.setByte(addr + 1, ((color >> 8) & 0xff).toByte)
         }
-        texOffset += size * size * 2
       }
 
       // Triangle: vertex A at left edge, wide horizontal span
@@ -3774,8 +3744,8 @@ class CoreTest extends AnyFunSuite {
         texMemory.setByte(addr, (lod0Color & 0xff).toByte)
         texMemory.setByte(addr + 1, ((lod0Color >> 8) & 0xff).toByte)
       }
-      // Fill row 0 of LOD 1 (at offset 256*256*2 = 131072)
-      val lod1Offset = 256 * 256 * 2
+      // Fill row 0 of LOD 1 (PCI-encoded: lod=1 << 17 = 131072)
+      val lod1Offset = 1 << 17
       for (s <- 0 until 128) {
         val addr = lod1Offset + s * 2
         texMemory.setByte(addr, (lod1Color & 0xff).toByte)
@@ -3920,7 +3890,7 @@ class CoreTest extends AnyFunSuite {
   // ========================================================================
   test("LFB write bypass mode") {
     compiled.doSim("lfb_write") { dut =>
-      val (regDriver, lfbDriver, fbMemory, _, writtenAddrs) = setupDutWithLfb(dut)
+      val (regDriver, fbMemory, _, writtenAddrs) = setupDut(dut)
 
       // Helper: compute RGB565 from 8-bit components (truncate, no dither)
       def toRgb565(r8: Int, g8: Int, b8: Int): Int =
@@ -3966,7 +3936,7 @@ class CoreTest extends AnyFunSuite {
           val x = baseX + i * 2
           val addr = (y << 11) | (x << 1)
           val data = (testPixels(i)._2 << 16) | testPixels(i)._1
-          lfbDriver.write(BigInt(data.toLong & 0xffffffffL), BigInt(addr))
+          writeLfb(regDriver, addr, data.toLong)
         }
 
         dut.clockDomain.waitSampling(100)
@@ -4025,7 +3995,7 @@ class CoreTest extends AnyFunSuite {
 
         for ((x, argb) <- testPixels32) {
           val addr = (y << 12) | (x << 2)
-          lfbDriver.write(BigInt(argb & 0xffffffffL), BigInt(addr))
+          writeLfb(regDriver, addr, argb)
         }
 
         dut.clockDomain.waitSampling(100)
@@ -4078,7 +4048,7 @@ class CoreTest extends AnyFunSuite {
         val depthVal = 0x1234
         val addr = (y << 11) | (x << 1)
         val data = (depthVal << 16) | rgb565val
-        lfbDriver.write(BigInt(data.toLong & 0xffffffffL), BigInt(addr))
+        writeLfb(regDriver, addr, data.toLong)
 
         dut.clockDomain.waitSampling(100)
 
@@ -4119,7 +4089,7 @@ class CoreTest extends AnyFunSuite {
         val depth1 = 0x5555
         val addr = (y << 11) | (x << 1)
         val data = (depth1 << 16) | depth0
-        lfbDriver.write(BigInt(data.toLong & 0xffffffffL), BigInt(addr))
+        writeLfb(regDriver, addr, data.toLong)
 
         dut.clockDomain.waitSampling(100)
 
@@ -4166,7 +4136,7 @@ class CoreTest extends AnyFunSuite {
         val px555_2 = (0 << 10) | (31 << 5) | 31 // 0x03FF — G=31, B=31, R=0
         val addr = (y << 11) | (x << 1)
         val data = (px555_2 << 16) | px555
-        lfbDriver.write(BigInt(data.toLong & 0xffffffffL), BigInt(addr))
+        writeLfb(regDriver, addr, data.toLong)
 
         dut.clockDomain.waitSampling(100)
         val pixels = collectPixels(fbMemory, writtenAddrs, 0)
@@ -4239,7 +4209,7 @@ class CoreTest extends AnyFunSuite {
           dut.clockDomain.waitSampling(50)
 
           val addr = (y << 12) | (x << 2)
-          lfbDriver.write(BigInt(testWord & 0xffffffffL), BigInt(addr))
+          writeLfb(regDriver, addr, testWord.toLong)
           dut.clockDomain.waitSampling(50)
 
           val pixels = collectPixels(fbMemory, writtenAddrs, 0)
@@ -4280,12 +4250,12 @@ class CoreTest extends AnyFunSuite {
 
         // Write pixel at (0,70)
         val addr0 = (y << 12) | (0 << 2)
-        lfbDriver.write(BigInt(argb & 0xffffffffL), BigInt(addr0))
+        writeLfb(regDriver, addr0, argb)
         dut.clockDomain.waitSampling(50)
 
         // Write pixel at (1,70)
         val addr1 = (y << 12) | (1 << 2)
-        lfbDriver.write(BigInt(argb & 0xffffffffL), BigInt(addr1))
+        writeLfb(regDriver, addr1, argb)
         dut.clockDomain.waitSampling(50)
 
         val pixels = collectPixels(fbMemory, writtenAddrs, 0)
@@ -4346,7 +4316,7 @@ class CoreTest extends AnyFunSuite {
 
         val inputWord = 0xaaaa5555L
         val addr = (y << 11) | (x << 1)
-        lfbDriver.write(BigInt(inputWord & 0xffffffffL), BigInt(addr))
+        writeLfb(regDriver, addr, inputWord.toLong)
         dut.clockDomain.waitSampling(100)
 
         val pixels = collectPixels(fbMemory, writtenAddrs, 0)
@@ -4376,7 +4346,7 @@ class CoreTest extends AnyFunSuite {
 
         val y2 = 81
         val addr2 = (y2 << 11) | (x << 1)
-        lfbDriver.write(BigInt(0x11223344L), BigInt(addr2))
+        writeLfb(regDriver, addr2, 0x11223344L)
         dut.clockDomain.waitSampling(100)
 
         val pixels2 = collectPixels(fbMemory, writtenAddrs, 0)
@@ -4412,7 +4382,7 @@ class CoreTest extends AnyFunSuite {
         val y = 90
         val x = 40
         val addr = (y << 12) | (x << 2)
-        lfbDriver.write(BigInt(0xff804020L), BigInt(addr)) // ARGB
+        writeLfb(regDriver, addr, 0xff804020L) // ARGB
         dut.clockDomain.waitSampling(100)
 
         val pixels = collectPixels(fbMemory, writtenAddrs, 0)
@@ -4451,7 +4421,7 @@ class CoreTest extends AnyFunSuite {
         val depth = 0xabcd
         val addr = (y << 11) | (x << 1)
         val data = (depth << 16) | px1555
-        lfbDriver.write(BigInt(data.toLong & 0xffffffffL), BigInt(addr))
+        writeLfb(regDriver, addr, data.toLong)
 
         dut.clockDomain.waitSampling(100)
         val pixels = collectPixels(fbMemory, writtenAddrs, 0)
@@ -4485,7 +4455,7 @@ class CoreTest extends AnyFunSuite {
   // ========================================================================
   test("LFB pipeline mode") {
     compiled.doSim("lfb_pipeline") { dut =>
-      val (regDriver, lfbDriver, fbMemory, _, writtenAddrs) = setupDutWithLfb(dut)
+      val (regDriver, fbMemory, _, writtenAddrs) = setupDut(dut)
 
       // Helper: compute RGB565 from 8-bit components (truncate, no dither)
       def toRgb565(r8: Int, g8: Int, b8: Int): Int =
@@ -4515,7 +4485,7 @@ class CoreTest extends AnyFunSuite {
         val y1 = 60; val x1 = 60
         val argb_pass = (0x80L << 24) | (0xc0L << 16) | (0x80L << 8) | 0x40L
         val addr1 = (y1 << 12) | (x1 << 2)
-        lfbDriver.write(BigInt(argb_pass), BigInt(addr1))
+        writeLfb(regDriver, addr1, argb_pass)
 
         dut.clockDomain.waitSampling(200)
 
@@ -4523,7 +4493,7 @@ class CoreTest extends AnyFunSuite {
         val y2 = 60; val x2 = 62
         val argb_fail = (0x7fL << 24) | (0xffL << 16) | (0x00L << 8) | 0x00L
         val addr2 = (y2 << 12) | (x2 << 2)
-        lfbDriver.write(BigInt(argb_fail), BigInt(addr2))
+        writeLfb(regDriver, addr2, argb_fail)
 
         dut.clockDomain.waitSampling(200)
 
@@ -4583,7 +4553,7 @@ class CoreTest extends AnyFunSuite {
         val depth1 = 0x8000
         val addr = (y << 11) | (x << 1)
         val data1 = (depth1 << 16) | rgb565_red
-        lfbDriver.write(BigInt(data1.toLong & 0xffffffffL), BigInt(addr))
+        writeLfb(regDriver, addr, data1.toLong)
         dut.clockDomain.waitSampling(200)
 
         // Now switch to LESS depth test
@@ -4594,14 +4564,14 @@ class CoreTest extends AnyFunSuite {
         val rgb565_green = 0x07e0
         val depth2 = 0x4000
         val data2 = (depth2 << 16) | rgb565_green
-        lfbDriver.write(BigInt(data2.toLong & 0xffffffffL), BigInt(addr))
+        writeLfb(regDriver, addr, data2.toLong)
         dut.clockDomain.waitSampling(200)
 
         // Third write: depth=0x6000 (greater than 0x4000), RGB565=pure blue — should fail
         val rgb565_blue = 0x001f
         val depth3 = 0x6000
         val data3 = (depth3 << 16) | rgb565_blue
-        lfbDriver.write(BigInt(data3.toLong & 0xffffffffL), BigInt(addr))
+        writeLfb(regDriver, addr, data3.toLong)
         dut.clockDomain.waitSampling(200)
 
         val pixels = collectPixels(fbMemory, writtenAddrs, 0)
@@ -4647,7 +4617,7 @@ class CoreTest extends AnyFunSuite {
         // Color where dithering matters: R=0x84, G=0x42, B=0x21 (non-565-aligned)
         val argb = (0xffL << 24) | (0x84L << 16) | (0x42L << 8) | 0x21L
         val bypassAddr = (y << 12) | (x << 2)
-        lfbDriver.write(BigInt(argb), BigInt(bypassAddr))
+        writeLfb(regDriver, bypassAddr, argb)
         dut.clockDomain.waitSampling(100)
 
         val bypassPixels = collectPixels(fbMemory, writtenAddrs, 0)
@@ -4662,7 +4632,7 @@ class CoreTest extends AnyFunSuite {
         dut.clockDomain.waitSampling(50)
 
         val pipeAddr = (y << 12) | (x2 << 2)
-        lfbDriver.write(BigInt(argb), BigInt(pipeAddr))
+        writeLfb(regDriver, pipeAddr, argb)
         dut.clockDomain.waitSampling(200)
 
         val pipePixels = collectPixels(fbMemory, writtenAddrs, 0)
@@ -4694,7 +4664,7 @@ class CoreTest extends AnyFunSuite {
   // ========================================================================
   test("LFB reads") {
     compiled.doSim("lfb_read") { dut =>
-      val (regDriver, lfbDriver, fbMemory, _, writtenAddrs) = setupDutWithLfb(dut)
+      val (regDriver, fbMemory, _, writtenAddrs) = setupDut(dut)
 
       // Helper: compute RGB565 from 8-bit components (truncate, no dither)
       def toRgb565(r8: Int, g8: Int, b8: Int): Int =
@@ -4720,14 +4690,14 @@ class CoreTest extends AnyFunSuite {
         // Write RGB via format 0 (dual pixel)
         val writeAddr = (y << 11) | (x << 1)
         val writeData = (rgb565_1 << 16) | rgb565_0
-        lfbDriver.write(BigInt(writeData.toLong & 0xffffffffL), BigInt(writeAddr))
+        writeLfb(regDriver, writeAddr, writeData.toLong)
         dut.clockDomain.waitSampling(100)
 
         // Write depth via format 15 (depth-only dual pixel)
         writeReg(regDriver, REG_LFBMODE, 15)
         dut.clockDomain.waitSampling(50)
         val depthData = (depth1 << 16) | depth0
-        lfbDriver.write(BigInt(depthData.toLong & 0xffffffffL), BigInt(writeAddr))
+        writeLfb(regDriver, writeAddr, depthData.toLong)
         dut.clockDomain.waitSampling(100)
 
         // Now read back: lfbMode with readBufferSelect=0 (RGB565 from lo16)
@@ -4737,7 +4707,7 @@ class CoreTest extends AnyFunSuite {
 
         // LFB read: address encodes (x,y) with 16-bit stride
         val readAddr = (y << 11) | (x << 1)
-        val readResult = lfbDriver.read(BigInt(readAddr))
+        val readResult = readLfb(regDriver, readAddr)
         val readLo16 = (readResult & 0xffff).toInt
         val readHi16 = ((readResult >> 16) & 0xffff).toInt
 
@@ -4767,7 +4737,7 @@ class CoreTest extends AnyFunSuite {
         dut.clockDomain.waitSampling(50)
 
         val readAddr = (y << 11) | (x << 1)
-        val readResult = lfbDriver.read(BigInt(readAddr))
+        val readResult = readLfb(regDriver, readAddr)
         val readLo16 = (readResult & 0xffff).toInt
         val readHi16 = ((readResult >> 16) & 0xffff).toInt
 
@@ -4796,7 +4766,7 @@ class CoreTest extends AnyFunSuite {
         dut.clockDomain.waitSampling(50)
 
         val readAddr = (y << 11) | (x << 1)
-        val readResult = lfbDriver.read(BigInt(readAddr))
+        val readResult = readLfb(regDriver, readAddr)
         val readLo16 = (readResult & 0xffff).toInt
         val readHi16 = ((readResult >> 16) & 0xffff).toInt
 
@@ -4826,7 +4796,7 @@ class CoreTest extends AnyFunSuite {
         dut.clockDomain.waitSampling(50)
 
         val readAddr = (y << 11) | (x << 1)
-        val readResult = lfbDriver.read(BigInt(readAddr))
+        val readResult = readLfb(regDriver, readAddr)
 
         // Original: byte3=hi16[15:8], byte2=hi16[7:0], byte1=lo16[15:8], byte0=lo16[7:0]
         // After byte swizzle: byte0, byte1, byte2, byte3
@@ -4861,7 +4831,7 @@ class CoreTest extends AnyFunSuite {
         dut.clockDomain.waitSampling(50)
 
         val readAddr = (y << 11) | (x << 1)
-        val readResult = lfbDriver.read(BigInt(readAddr))
+        val readResult = readLfb(regDriver, readAddr)
 
         // Original raw: hi16=pixel(x+1)=0x07E0 ## lo16=pixel(x)=0xF800 → 0x07E0F800
         // After word swap: 0xF800_07E0
@@ -5563,9 +5533,6 @@ class CoreTest extends AnyFunSuite {
       {
         writtenAddrs.clear()
 
-        // Create LFB driver
-        val lfbDriver = new BmbDriver(dut.io.lfbBus, dut.clockDomain)
-
         // lfbMode: format=0 (RGB565), writeBufferSelect=1 (back), bypass mode
         val lfbMode = 0 | (1 << 4) // writeBufferSelect=1 at bits [5:4]
         writeReg(driver, REG_LFBMODE, lfbMode)
@@ -5575,7 +5542,7 @@ class CoreTest extends AnyFunSuite {
         // Write a pixel at (20, 30) via LFB: 16-bit stride addr = (30 << 11) | (20 << 1)
         val lfbAddr = (30 << 11) | (20 << 1)
         val rgb565 = 0x07e0 // green
-        lfbDriver.write(BigInt(rgb565 | (rgb565 << 16)), BigInt(lfbAddr))
+        writeLfb(driver, lfbAddr, (rgb565 | (rgb565 << 16)).toLong)
         dut.clockDomain.waitSampling(500)
 
         // After swap swapCount=1: back=buffer0, so LFB back writes go to offset 0
@@ -5603,9 +5570,8 @@ class CoreTest extends AnyFunSuite {
       val texWidth = 8
       val texHeight = 8
 
-      // LOD 5 base offset for 16-bit texels:
-      // sum of areas for LODs 0-4 = 65536+16384+4096+1024+256 = 87296 texels = 174592 bytes
-      val lod5Base = 174592L
+      // LOD 5 base offset in PCI-encoded layout: (5 << 17) = 0xA0000 = 655360
+      val lod5Base = (5L << 17)
 
       // Encode gradient texels as RGB565
       def encodeRgb565(r8: Int, g8: Int, b8: Int): Int =
@@ -5616,7 +5582,7 @@ class CoreTest extends AnyFunSuite {
         val g8 = t * 36
         val b8 = 0
         val rgb565 = encodeRgb565(r8, g8, b8)
-        val addr = lod5Base + (t * texWidth + s) * 2
+        val addr = lod5Base + (t << 9) + (s << 1) // PCI-encoded row stride = 512
         texMemory.setByte(addr, (rgb565 & 0xff).toByte)
         texMemory.setByte(addr + 1, ((rgb565 >> 8) & 0xff).toByte)
       }

@@ -322,35 +322,28 @@ case class Tmu(c: voodoo.Config) extends Component {
   val is16BitFormat = texMode.format >= Tmu.TextureFormat.ARGB8332
   val bytesPerTexel = Mux(is16BitFormat, U(2), U(1))
 
-  // SST1 texture memory layout: mipmaps are packed sequentially.
-  // Cumulative texel count before each LOD level depends on aspect ratio.
-  // Table indexed by (aspectRatio, lodLevel), values in texels.
-  val lodTexelOffsets = Vec(
-    Vec(Seq(0, 65536, 81920, 86016, 87040, 87296, 87360, 87376, 87380).map(v => U(v, 17 bits))),
-    Vec(Seq(0, 32768, 40960, 43008, 43520, 43648, 43680, 43688, 43690).map(v => U(v, 17 bits))),
-    Vec(Seq(0, 16384, 20480, 21504, 21760, 21824, 21840, 21844, 21846).map(v => U(v, 17 bits))),
-    Vec(Seq(0, 8192, 10240, 10752, 10880, 10912, 10920, 10924, 10926).map(v => U(v, 17 bits)))
-  )
-  val lodTexelOffset = lodTexelOffsets(aspectRatio)(lodLevel)
-  val lodBaseOffset =
-    Mux(is16BitFormat, (lodTexelOffset << 1).resize(24 bits), lodTexelOffset.resize(24 bits))
-
   val texBaseByteAddr = (io.input.payload.config.texBaseAddr << 3).resize(c.addressWidth.value bits)
 
-  // Texture memory addressing: linear byte addressing matching real SST-1 layout.
-  // Row stride = width_in_texels * bytesPerTexel (i.e. 1 << (texWidthBits + is16bit)).
+  // PCI-encoded texture memory addressing matching real SST-1 hardware.
+  // Bits [20:17] = LOD, [16:9] = T (row), [8:0] = column byte offset.
+  // Row stride is always 512 bytes (2^9), regardless of format or LOD.
+  //
+  // 8-bit textures use two-bank interleaved addressing: texel x maps to
+  // byte offset {x[7:2], 0, x[1:0]} (zero inserted at bit 2). This matches
+  // the SST-1 Glide driver's download pattern for tmuRev=0 without
+  // SST_SEQ_8_DOWNLD — each group of 4 texels occupies 8 bytes of
+  // address space with a 4-byte gap (bank 1 unused).
   def texelAddr(x: UInt, y: UInt): UInt = {
-    val rowShift = texWidthBits +^ Mux(is16BitFormat, U(1), U(0))
-    val rowOffset = (y.resize(24 bits) << rowShift).resize(24 bits)
-    val colOffset = Mux(
+    val lodField = lodLevel.resize(4 bits)
+    val tField = y.resize(8 bits)
+    val x8 = x.resize(8 bits)
+    val colByteOffset = Mux(
       is16BitFormat,
-      (x << 1).resize(24 bits), // 16-bit texels: 2 bytes per texel
-      x.resize(24 bits) // 8-bit texels:  1 byte per texel
+      (x << 1).resize(9 bits),
+      (x8(7 downto 2) ## B"0" ## x8(1 downto 0)).asUInt // two-bank interleaved
     )
-    texBaseByteAddr +
-      lodBaseOffset.resize(c.addressWidth.value bits) +
-      rowOffset.resize(c.addressWidth.value bits) +
-      colOffset.resize(c.addressWidth.value bits)
+    val pciOffset = (lodField ## tField ## colByteOffset).asUInt
+    texBaseByteAddr + pciOffset.resize(c.addressWidth.value bits)
   }
 
   // Point: 1 address

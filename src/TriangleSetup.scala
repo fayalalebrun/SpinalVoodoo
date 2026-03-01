@@ -167,6 +167,9 @@ object TriangleSetup {
     // NCC table data (pre-extracted at capture time)
     val ncc = Tmu.NccTableData()
 
+    // Packed texture layout tables (computed at triangle capture time)
+    val texTables = if (c.packedTexLayout) TexLayoutTables.Tables() else null
+
     // Constant colors (captured per-triangle to avoid pipelineBusy gap)
     val color0 = Bits(32 bits)
     val color1 = Bits(32 bits)

@@ -28,8 +28,6 @@ case class RegisterBank(config: Config) extends Component {
     val bus = slave(Bmb(RegisterBank.bmbParams(config)))
 
     // Hardware inputs for status register (read-only fields)
-    // Note: pciFifoFree comes from busif.pciFifoFree, not from external inputs
-    // Note: fbiBusy/trexBusy/sstBusy are wired internally from pipelineBusy
     val statusInputs = in(new Bundle {
       val vRetrace = Bool()
       val memFifoFree = UInt(16 bits)
@@ -55,11 +53,18 @@ case class RegisterBank(config: Config) extends Component {
     // Pipeline busy signal - used to stall Sync=Yes register writes
     val pipelineBusy = in Bool ()
 
-    // Pulses when swapbufferCMD enters the FIFO (for swapsPending per SST-1 spec)
-    val swapCmdEnqueued = out Bool ()
+    // PciFifo signals (replaces internal busif FIFO signals)
+    val pciFifoEmpty = in Bool ()
+    val pciFifoFree = in UInt (7 bits)
+    val swapCmdEnqueued = in Bool () // from PciFifo wasEnqueued
+    val syncDrained = in Bool () // Sync=Yes register was drained
 
-    // FIFO empty signal - True when internal PCI FIFO has no pending commands
+    // FIFO empty signal - True when PCI FIFO has no pending commands
     val fifoEmpty = out Bool ()
+
+    // Command stream ready signals (exposed for PciFifo drain blocking)
+    // One per command register, sorted by address to match PciFifo.commandAddresses ordering
+    val commandReady = out Vec (Bool(), 5)
   }
 
   // Create BMB bus interface for RegIf - shared across all Areas
@@ -69,16 +74,13 @@ case class RegisterBank(config: Config) extends Component {
   val busif = BmbBusInterface(io.bus, SizeMapping(0x000, 4 KiB), "VDO")
   import busif.FieldFloatAlias // Bring .withFloatAlias() implicit into scope
 
-  // Connect pipeline busy signal for Sync=Yes register FIFO drain blocking
-  busif.setPipelineBusy(io.pipelineBusy)
-
-  // Track sync pulse - asserted when any Sync=Yes register is written
+  // Track sync pulse - from PciFifo syncDrained signal
   val syncPulse = Reg(Bool()) init (False)
   io.syncPulse := syncPulse
-  syncPulse := busif.isWriteSyncRequired() // Pulse for one cycle when Sync=Yes write completes
+  syncPulse := io.syncDrained
 
-  // Wire FIFO empty status
-  io.fifoEmpty := busif.fifoEmpty
+  // Wire FIFO empty status from PciFifo
+  io.fifoEmpty := io.pciFifoEmpty
 
   // ========================================================================
   // Status Register (0x000)
@@ -86,7 +88,7 @@ case class RegisterBank(config: Config) extends Component {
   val status = new Area {
     val reg = busif.newRegAt(0x000, "status")
     val pciFifoFree = reg.field(UInt(6 bits), AccessType.RO, 0x3f, "PCI FIFO freespace")
-    pciFifoFree := busif.pciFifoFree.sat(1) // Saturate 7-bit (0-64) to 6-bit (0-63)
+    pciFifoFree := io.pciFifoFree.sat(1) // Saturate 7-bit (0-64) to 6-bit (0-63)
 
     val vRetrace = reg.fieldAt(6, Bool(), AccessType.RO, 0, "Vertical retrace")
     vRetrace := io.statusInputs.vRetrace
@@ -319,8 +321,8 @@ case class RegisterBank(config: Config) extends Component {
       .field(UInt(8 bits), AccessType.RW, 0, "Swap interval (vsyncs to wait)")
       .asOutput()
 
-    // Detect when swapbufferCMD enters the FIFO (for swapsPending increment per spec)
-    io.swapCmdEnqueued := busif.wasEnqueued(0x128)
+    // swapCmdEnqueued comes from PciFifo wasEnqueued signal (via Core)
+    // (io.swapCmdEnqueued is an input, wired from PciFifo in Core)
 
     // Expose streams for convenience (backwards compatibility)
     val triangleCmd = master(triangleCmdStream)
@@ -328,6 +330,14 @@ case class RegisterBank(config: Config) extends Component {
     val nopCmd = master(nopCmdStream)
     val fastfillCmd = master(fastfillCmdStream)
     val swapbufferCmd = master(swapbufferCmdStream)
+  }
+
+  // Wire command stream ready signals to IO (sorted by address for deterministic ordering)
+  Component.current.addPrePopTask { () =>
+    val sorted = busif.getCommandStreamReady.toSeq.sortBy(_._1)
+    for (((_, signal), idx) <- sorted.zipWithIndex) {
+      io.commandReady(idx) := signal
+    }
   }
 
   // ========================================================================

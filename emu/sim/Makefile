@@ -25,7 +25,7 @@ SCALA_SRCS := $(shell find $(PROJ_ROOT)/src -name '*.scala') $(PROJ_ROOT)/projec
 # Verilator settings
 VERILATOR = verilator
 VERILATOR_ROOT ?= $(shell $(VERILATOR) --getenv VERILATOR_ROOT)
-VERILATOR_FLAGS = --cc --output-split 20000 --public-flat-rw --x-assign fast --x-initial fast --noassert -Wno-fatal
+VERILATOR_FLAGS = --cc --output-split 20000 --output-split-cfuncs 5000 --decorations none --public-flat-rw --x-assign fast --x-initial fast --noassert -Wno-fatal
 ifeq ($(TRACE),1)
 VERILATOR_FLAGS += --trace-fst --trace-structs --trace-underscore
 endif
@@ -34,6 +34,12 @@ endif
 # CC32/CXX32 come from devenv; derive CXX32 from CC32 if not set
 CC32 ?= gcc -m32
 CXX32 ?= $(shell d=$$(dirname "$(firstword $(CC32))") && [ -x "$$d/g++" ] && echo "$$d/g++" || echo "g++ -m32")
+
+# Use ccache if available (speeds up incremental rebuilds)
+CCACHE := $(shell command -v ccache 2>/dev/null)
+ifdef CCACHE
+  OBJCACHE = ccache
+endif
 
 CXXFLAGS = -O3 -DVL_TIME_CONTEXT
 ifeq ($(TRACE),1)
@@ -74,10 +80,11 @@ $(VERILATE_STAMP): $(RTL_DIR)/CoreSim.v $(TRACE_MODE_FILE)
 model: $(OBJ_DIR)/VCoreSim__ALL.a
 
 $(OBJ_DIR)/VCoreSim__ALL.a: $(VERILATE_STAMP)
-	$(MAKE) -C $(OBJ_DIR) -f VCoreSim.mk \
+	$(MAKE) -j$(shell nproc) -C $(OBJ_DIR) -f VCoreSim.mk \
 		CXX="$(CXX32)" \
+		OBJCACHE="$(OBJCACHE)" \
 		OPT_FAST="-O3" \
-		OPT_SLOW="-O1"
+		OPT_SLOW=""
 
 # Step 4: Build harness object + verilated runtime
 HARNESS_OBJS = $(OBJ_DIR)/sim_harness.o $(OBJ_DIR)/verilated.o
@@ -91,22 +98,22 @@ harness: $(HARNESS_OBJS)
 # Using order-only deps on the stamp so these compile in parallel with the model.
 # TRACE_MODE_FILE forces recompilation when TRACE= changes (CXXFLAGS differ).
 $(OBJ_DIR)/sim_harness.o: $(HARNESS_DIR)/sim_harness.cpp $(HARNESS_DIR)/sim_harness.h $(TRACE_MODE_FILE) | $(VERILATE_STAMP)
-	$(CXX32) $(CXXFLAGS) -c -o $@ $<
+	$(OBJCACHE) $(CXX32) $(CXXFLAGS) -c -o $@ $<
 
 $(OBJ_DIR)/verilated.o: $(VERILATOR_ROOT)/include/verilated.cpp $(TRACE_MODE_FILE) | $(VERILATE_STAMP)
-	$(CXX32) $(CXXFLAGS) -c -o $@ $<
+	$(OBJCACHE) $(CXX32) $(CXXFLAGS) -c -o $@ $<
 
 $(OBJ_DIR)/verilated_fst_c.o: $(VERILATOR_ROOT)/include/verilated_fst_c.cpp $(TRACE_MODE_FILE) | $(VERILATE_STAMP)
-	$(CXX32) $(CXXFLAGS) -c -o $@ $<
+	$(OBJCACHE) $(CXX32) $(CXXFLAGS) -c -o $@ $<
 
 # Step 5: Trace-capture harness (no Verilator dependency)
 trace-harness: $(OBJ_DIR)/sim_trace_harness.o $(OBJ_DIR)/voodoo_trace_writer.o
 
 $(OBJ_DIR)/voodoo_trace_writer.o: $(TRACE_DIR)/voodoo_trace_writer.c $(TRACE_DIR)/voodoo_trace_writer.h $(TRACE_DIR)/voodoo_trace_format.h
-	$(CXX32) $(CXXFLAGS) -I$(TRACE_DIR) -c -o $@ $<
+	$(OBJCACHE) $(CXX32) $(CXXFLAGS) -I$(TRACE_DIR) -c -o $@ $<
 
 $(OBJ_DIR)/sim_trace_harness.o: $(HARNESS_DIR)/sim_trace_harness.c $(HARNESS_DIR)/sim_harness.h $(TRACE_DIR)/voodoo_trace_writer.h $(TRACE_DIR)/voodoo_trace_format.h
-	$(CXX32) $(CXXFLAGS) -I$(TRACE_DIR) -c -o $@ $<
+	$(OBJCACHE) $(CXX32) $(CXXFLAGS) -I$(TRACE_DIR) -c -o $@ $<
 
 clean:
 	rm -rf $(OBJ_DIR)

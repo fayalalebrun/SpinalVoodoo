@@ -4,8 +4,8 @@ import spinal.core._
 
 /** Combinational ordered-dither module.
   *
-  * Converts 8-bit R/G/B to 5-6-5 bit using ordered dithering with either a 4x4 or 2x2 Bayer
-  * matrix, matching the 86Box vid_voodoo_dither.h lookup tables exactly.
+  * Converts 8-bit R/G/B to 5-6-5 bit using ordered dithering with either a 4x4 or 2x2 Bayer matrix,
+  * matching the 86Box vid_voodoo_dither.h lookup tables exactly.
   *
   * Uses Vec-based constant lookup tables from the ground-truth 86Box tables rather than an
   * algorithmic approximation.

@@ -5,38 +5,38 @@ import spinal.lib._
 
 /** SwapBuffer command handler
   *
-  * Implements swapbufferCMD (0x128) — the Voodoo1 double-buffer swap command.
-  * When vsync is disabled, swap completes immediately.
-  * When vsync is enabled, blocks until the retrace counter exceeds the swap interval.
+  * Implements swapbufferCMD (0x128) — the Voodoo1 double-buffer swap command. When vsync is
+  * disabled, swap completes immediately. When vsync is enabled, blocks until the retrace counter
+  * exceeds the swap interval.
   *
-  * The fifoWithSync mechanism ensures the pipeline is idle before SwapBuffer
-  * receives the command. While SwapBuffer holds the stream not-ready (waiting
-  * for vsync), the FIFO is stalled — no further commands drain.
+  * The fifoWithSync mechanism ensures the pipeline is idle before SwapBuffer receives the command.
+  * While SwapBuffer holds the stream not-ready (waiting for vsync), the FIFO is stalled — no
+  * further commands drain.
   *
-  * Note: The command stream (from s2mPipe) presents valid one cycle before the
-  * register field values are updated. We use a SAMPLING state to wait one cycle
-  * after cmd.valid before reading vsyncEnable/swapInterval.
+  * Note: The command stream (from s2mPipe) presents valid one cycle before the register field
+  * values are updated. We use a SAMPLING state to wait one cycle after cmd.valid before reading
+  * vsyncEnable/swapInterval.
   */
 case class SwapBuffer() extends Component {
   val io = new Bundle {
-    val cmd             = slave Stream (NoData)
-    val vRetrace        = in Bool ()
-    val vsyncEnable     = in Bool ()
-    val swapInterval    = in UInt (8 bits)
+    val cmd = slave Stream (NoData)
+    val vRetrace = in Bool ()
+    val vsyncEnable = in Bool ()
+    val swapInterval = in UInt (8 bits)
     val swapCmdEnqueued = in Bool () // Pulses when swapbufferCMD enters FIFO
 
-    val waiting      = out Bool ()
-    val swapCount    = out UInt (2 bits)
+    val waiting = out Bool ()
+    val swapCount = out UInt (2 bits)
     val swapsPending = out UInt (3 bits)
   }
 
   // States: IDLE → SAMPLING (1 cycle to let register settle) → WAITING or immediate swap
-  val isSampling       = RegInit(False)
-  val isWaiting        = RegInit(False)
-  val retraceCounter   = Reg(UInt(8 bits)) init (0)
-  val swapCountReg     = Reg(UInt(2 bits)) init (0)
-  val swapsPendingReg  = Reg(UInt(3 bits)) init (0)
-  val vRetracePrev     = RegNext(io.vRetrace) init (False)
+  val isSampling = RegInit(False)
+  val isWaiting = RegInit(False)
+  val retraceCounter = Reg(UInt(8 bits)) init (0)
+  val swapCountReg = Reg(UInt(2 bits)) init (0)
+  val swapsPendingReg = Reg(UInt(3 bits)) init (0)
+  val vRetracePrev = RegNext(io.vRetrace) init (False)
   val capturedInterval = Reg(UInt(8 bits)) init (0)
 
   val vRetraceRising = io.vRetrace && !vRetracePrev
@@ -53,8 +53,8 @@ case class SwapBuffer() extends Component {
   // If both happen on the same cycle (impossible in practice since the command must
   // traverse the FIFO), they cancel out and swapsPendingReg stays unchanged.
 
-  io.waiting      := isWaiting || isSampling
-  io.swapCount    := swapCountReg
+  io.waiting := isWaiting || isSampling
+  io.swapCount := swapCountReg
   io.swapsPending := swapsPendingReg
 
   io.cmd.ready := False

@@ -43,6 +43,16 @@ uint32_t sim_idle_wait(void);
 /* Advance simulation by n clock cycles. */
 void sim_tick(int n);
 
+/* Bulk read from CoreSim's fbRam (bypasses bus protocol).
+ * Reads word_count 32-bit words starting at byte_offset into dst. */
+void sim_read_fb(uint32_t byte_offset, uint32_t *dst, uint32_t word_count);
+
+/* Bulk write to CoreSim's fbRam (bypasses bus protocol). */
+void sim_write_fb_bulk(uint32_t byte_offset, const uint32_t *src, uint32_t word_count);
+
+/* Bulk write to CoreSim's texRam (bypasses bus protocol). */
+void sim_write_tex_bulk(uint32_t byte_offset, const uint32_t *src, uint32_t word_count);
+
 #ifdef __cplusplus
 }
 #endif

@@ -3,7 +3,6 @@ package voodoo
 import spinal.core._
 import spinal.core.sim._
 import org.scalatest.funsuite.AnyFunSuite
-import voodoo.ref.VoodooReference
 
 class DitherTest extends AnyFunSuite {
 
@@ -35,7 +34,9 @@ class DitherTest extends AnyFunSuite {
 
         if (simR != refR || simG != refG || simB != refB) {
           if (mismatches < 20)
-            println(f"4x4 MISMATCH v=$v x=$x y=$y: simR=$simR refR=$refR simG=$simG refG=$refG simB=$simB refB=$refB")
+            println(
+              f"4x4 MISMATCH v=$v x=$x y=$y: simR=$simR refR=$refR simG=$simG refG=$refG simB=$simB refB=$refB"
+            )
           mismatches += 1
         }
       }
@@ -70,7 +71,9 @@ class DitherTest extends AnyFunSuite {
 
         if (simR != refR || simG != refG || simB != refB) {
           if (mismatches < 20)
-            println(f"2x2 MISMATCH v=$v x=$x y=$y: simR=$simR refR=$refR simG=$simG refG=$refG simB=$simB refB=$refB")
+            println(
+              f"2x2 MISMATCH v=$v x=$x y=$y: simR=$simR refR=$refR simG=$simG refG=$refG simB=$simB refB=$refB"
+            )
           mismatches += 1
         }
       }
@@ -105,7 +108,9 @@ class DitherTest extends AnyFunSuite {
         val expB = v >> 3
 
         if (simR != expR || simG != expG || simB != expB) {
-          println(f"bypass MISMATCH v=$v: simR=$simR expR=$expR simG=$simG expG=$expG simB=$simB expB=$expB")
+          println(
+            f"bypass MISMATCH v=$v: simR=$simR expR=$expR simG=$simG expG=$expG simB=$simB expB=$expB"
+          )
           mismatches += 1
         }
       }

@@ -13,7 +13,7 @@
 #   make tests        # sim + Glide + all test binaries
 #   make clean        # clean all build artifacts
 
-.PHONY: all sim glide tests clean clean-sim clean-glide clean-tests run-all FORCE
+.PHONY: all sim glide tests clean clean-sim clean-glide clean-tests run-all trace-test check-all FORCE
 
 # Derive CXX32 from CC32 for sub-makefiles that need it
 CC32 ?= gcc -m32
@@ -84,6 +84,72 @@ run/%: $(GLIDE_TST_DIR)/%.exe scripts/srle2png
 # Run all tests that support -d
 run-all: $(patsubst %,run/%,test00 test01 test02 test03 test04 test05 test06 test07 test08 test09 test13 test16 test17 test18 test19)
 
+
+# --------------------------------------------------------------------------
+# Trace-based testing (C++ trace_test binary)
+# --------------------------------------------------------------------------
+
+TRACE_TEST_BIN = emu/test/obj_dir/trace_test
+
+# Build trace_test binary (64-bit, independent of 32-bit Glide build).
+# Always recurse — sub-make tracks Scala → Verilog → Verilator → binary deps.
+$(TRACE_TEST_BIN): FORCE
+	$(MAKE) -C emu/test
+
+trace-test: $(TRACE_TEST_BIN)
+
+# Capture trace from Glide test.
+# TRACE_CAPTURE=1 swaps the Verilator backend for a lightweight trace writer.
+# This overwrites the normal Glide library; next run/% will rebuild it via FORCE.
+trace/%:
+	$(MAKE) -C $(SIM_DIR) trace-harness
+	$(MAKE) -C $(GLIDE_SRC_DIR) -f Makefile.sim TRACE_CAPTURE=1
+	$(MAKE) -C $(GLIDE_TST_DIR) -f Makefile.sim $*.exe TRACE_CAPTURE=1
+	@mkdir -p traces
+	cd $(GLIDE_TST_DIR) && \
+	  SIM_TRACE_FILE=$(abspath traces)/$*.bin \
+	  LD_LIBRARY_PATH=../../lib/sst1 \
+	  ./$*.exe -n 1 < /dev/null
+
+# Replay a .bin trace through both 86Box ref model and Verilator CoreSim.
+# Produces _ref.png, _sim.png, _diff.png in test-output/<name>/.
+check/%: $(TRACE_TEST_BIN)
+	@test -f traces/$*.bin || { echo "ERROR: traces/$*.bin not found. Run 'make trace/$*' first."; exit 1; }
+	@mkdir -p test-output/$*
+	$(TRACE_TEST_BIN) traces/$*.bin --output-dir test-output/$*
+
+# Replay a directory trace (with state.bin)
+check-dir/%: $(TRACE_TEST_BIN)
+	@test -d traces/$* || { echo "ERROR: traces/$*/ not found."; exit 1; }
+	@mkdir -p test-output/$*
+	$(TRACE_TEST_BIN) traces/$*/ --output-dir test-output/$*
+
+# Capture + check in one step (sequential: trace must finish before check starts)
+test/%:
+	$(MAKE) trace/$*
+	$(MAKE) check/$*
+
+# Replay all existing traces
+check-all: $(TRACE_TEST_BIN)
+	@for f in traces/*.bin; do \
+	    [ -f "$$f" ] || continue; \
+	    name=$$(basename $$f .bin); \
+	    echo "=== $$name ==="; \
+	    mkdir -p test-output/$$name; \
+	    $(TRACE_TEST_BIN) $$f --output-dir test-output/$$name || exit 1; \
+	done
+	@for d in traces/*/trace.bin; do \
+	    [ -f "$$d" ] || continue; \
+	    name=$$(basename $$(dirname $$d)); \
+	    echo "=== $$name ==="; \
+	    mkdir -p test-output/$$name; \
+	    $(TRACE_TEST_BIN) traces/$$name/ --output-dir test-output/$$name || exit 1; \
+	done
+
+clean-trace-test:
+	$(MAKE) -C emu/test clean
+
+# --------------------------------------------------------------------------
 
 clean: clean-tests clean-glide clean-sim
 

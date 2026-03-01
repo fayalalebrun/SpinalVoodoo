@@ -322,28 +322,36 @@ case class Tmu(c: voodoo.Config) extends Component {
   val is16BitFormat = texMode.format >= Tmu.TextureFormat.ARGB8332
   val bytesPerTexel = Mux(is16BitFormat, U(2), U(1))
 
-  val texBaseByteAddr = (io.input.payload.config.texBaseAddr << 3).resize(c.addressWidth.value bits)
-
-  // PCI-encoded texture memory addressing matching real SST-1 hardware.
-  // Bits [20:17] = LOD, [16:9] = T (row), [8:0] = column byte offset.
-  // Row stride is always 512 bytes (2^9), regardless of format or LOD.
-  //
-  // 8-bit textures use two-bank interleaved addressing: texel x maps to
-  // byte offset {x[7:2], 0, x[1:0]} (zero inserted at bit 2). This matches
-  // the SST-1 Glide driver's download pattern for tmuRev=0 without
-  // SST_SEQ_8_DOWNLD — each group of 4 texels occupies 8 bytes of
-  // address space with a 4-byte gap (bank 1 unused).
+  // Texture memory addressing — packed or PCI-encoded depending on config
   def texelAddr(x: UInt, y: UInt): UInt = {
-    val lodField = lodLevel.resize(4 bits)
-    val tField = y.resize(8 bits)
-    val x8 = x.resize(8 bits)
-    val colByteOffset = Mux(
-      is16BitFormat,
-      (x << 1).resize(9 bits),
-      (x8(7 downto 2) ## B"0" ## x8(1 downto 0)).asUInt // two-bank interleaved
-    )
-    val pciOffset = (lodField ## tField ## colByteOffset).asUInt
-    texBaseByteAddr + pciOffset.resize(c.addressWidth.value bits)
+    if (c.packedTexLayout) {
+      // Packed layout: use per-triangle computed tables
+      val tables = io.input.payload.config.texTables
+      val lodBase = tables.texBase(lodLevel)
+      val lodShift = tables.texShift(lodLevel)
+      Mux(
+        is16BitFormat,
+        lodBase + (x << 1).resize(22 bits) + (y.resize(22 bits) << (lodShift +^ U(1)).resize(
+          5 bits
+        )).resize(22 bits),
+        lodBase + x.resize(22 bits) + (y.resize(22 bits) << lodShift).resize(22 bits)
+      ).resize(c.addressWidth.value bits)
+    } else {
+      // PCI-encoded texture memory addressing matching real SST-1 hardware.
+      // Bits [20:17] = LOD, [16:9] = T (row), [8:0] = column byte offset.
+      val texBaseByteAddr =
+        (io.input.payload.config.texBaseAddr << 3).resize(c.addressWidth.value bits)
+      val lodField = lodLevel.resize(4 bits)
+      val tField = y.resize(8 bits)
+      val x8 = x.resize(8 bits)
+      val colByteOffset = Mux(
+        is16BitFormat,
+        (x << 1).resize(9 bits),
+        (x8(7 downto 2) ## B"0" ## x8(1 downto 0)).asUInt // two-bank interleaved
+      )
+      val pciOffset = (lodField ## tField ## colByteOffset).asUInt
+      texBaseByteAddr + pciOffset.resize(c.addressWidth.value bits)
+    }
   }
 
   // Point: 1 address
@@ -800,11 +808,12 @@ object Tmu {
   }
 
   /** Per-TMU configuration (captured per-triangle) */
-  case class TmuConfig() extends Bundle {
+  case class TmuConfig(c: voodoo.Config = null) extends Bundle {
     val textureMode = Bits(32 bits)
     val texBaseAddr = UInt(24 bits)
     val tLOD = Bits(27 bits)
     val ncc = NccTableData()
+    val texTables = if (c != null && c.packedTexLayout) TexLayoutTables.Tables() else null
   }
 
   /** TMU input bundle */
@@ -814,7 +823,7 @@ object Tmu {
     val w = AFix(c.wFormat)
     val cOther = Color.u8()
     val aOther = UInt(8 bits)
-    val config = TmuConfig()
+    val config = TmuConfig(c)
     val dSdX = AFix(c.texCoordsFormat)
     val dTdX = AFix(c.texCoordsFormat)
     val dSdY = AFix(c.texCoordsFormat)

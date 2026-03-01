@@ -13,9 +13,9 @@ case class Fastfill(c: Config) extends Component {
   val i = slave Stream (NoData)
   val o = master Stream (Fastfill.Output(c))
 
-  val clipLeft  = in UInt (10 bits)
+  val clipLeft = in UInt (10 bits)
   val clipRight = in UInt (10 bits)
-  val clipLowY  = in UInt (10 bits)
+  val clipLowY = in UInt (10 bits)
   val clipHighY = in UInt (10 bits)
 
   val streamWhileResult = StreamWhile(
@@ -27,9 +27,9 @@ case class Fastfill(c: Config) extends Component {
       val state = cloneOf(Fastfill.State())
       state.x := clipLeft
       state.y := clipLowY
-      state.clipLeft  := clipLeft
+      state.clipLeft := clipLeft
       state.clipRight := clipRight
-      state.clipLowY  := clipLowY
+      state.clipLowY := clipLowY
       state.clipHighY := clipHighY
       state.empty := (clipRight <= clipLeft) || (clipHighY <= clipLowY)
       state
@@ -42,11 +42,11 @@ case class Fastfill(c: Config) extends Component {
       output.pixelValid := !state.empty
 
       val next = cloneOf(state)
-      next.clipLeft  := state.clipLeft
+      next.clipLeft := state.clipLeft
       next.clipRight := state.clipRight
-      next.clipLowY  := state.clipLowY
+      next.clipLowY := state.clipLowY
       next.clipHighY := state.clipHighY
-      next.empty     := state.empty
+      next.empty := state.empty
 
       // Advance: x+1, wrap to next row when reaching clipRight
       val atRowEnd = (state.x + 1) >= state.clipRight
@@ -86,9 +86,9 @@ object Fastfill {
   case class State() extends Bundle {
     val x = UInt(10 bits)
     val y = UInt(10 bits)
-    val clipLeft  = UInt(10 bits)
+    val clipLeft = UInt(10 bits)
     val clipRight = UInt(10 bits)
-    val clipLowY  = UInt(10 bits)
+    val clipLowY = UInt(10 bits)
     val clipHighY = UInt(10 bits)
     val empty = Bool()
   }

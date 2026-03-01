@@ -15,16 +15,20 @@ object DitherTables {
 
   private lazy val headerContent: String = {
     val path = new java.io.File(HeaderPath)
-    val absPath = if (path.isAbsolute) path else {
-      // Try common working directories
-      val candidates = Seq(
-        new java.io.File(HeaderPath),
-        new java.io.File(System.getProperty("user.dir"), HeaderPath)
-      )
-      candidates.find(_.exists()).getOrElse(
-        sys.error(s"Cannot find $HeaderPath from ${System.getProperty("user.dir")}")
-      )
-    }
+    val absPath =
+      if (path.isAbsolute) path
+      else {
+        // Try common working directories
+        val candidates = Seq(
+          new java.io.File(HeaderPath),
+          new java.io.File(System.getProperty("user.dir"), HeaderPath)
+        )
+        candidates
+          .find(_.exists())
+          .getOrElse(
+            sys.error(s"Cannot find $HeaderPath from ${System.getProperty("user.dir")}")
+          )
+      }
     Source.fromFile(absPath).mkString
   }
 
@@ -34,11 +38,14 @@ object DitherTables {
     * `table(v * R * C + y * C + x)`.
     */
   private def parseTable(name: String, rows: Int, cols: Int): Array[Int] = {
-    val pattern = s"""static const uint8_t ${Regex.quote(name)}\\[256\\]\\[$rows\\]\\[$cols\\] = \\{"""
+    val pattern =
+      s"""static const uint8_t ${Regex.quote(name)}\\[256\\]\\[$rows\\]\\[$cols\\] = \\{"""
     val regex = pattern.r
-    val m = regex.findFirstMatchIn(headerContent).getOrElse(
-      sys.error(s"Table $name not found in header")
-    )
+    val m = regex
+      .findFirstMatchIn(headerContent)
+      .getOrElse(
+        sys.error(s"Table $name not found in header")
+      )
 
     val result = new Array[Int](256 * rows * cols)
     var pos = m.end
@@ -81,4 +88,9 @@ object DitherTables {
 
   /** Lookup a 2x2 G dither value. */
   def lookupG2x2(v: Int, y: Int, x: Int): Int = g2x2(v * 4 + y * 2 + x)
+
+  /** Packed ROM init: 4x4 table (4096 entries) followed by 2x2 table (1024 entries) = 5120 total.
+    */
+  lazy val rbPacked: Array[Int] = rb4x4 ++ rb2x2
+  lazy val gPacked: Array[Int] = g4x4 ++ g2x2
 }

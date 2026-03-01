@@ -343,7 +343,7 @@ class ColorCombineTest extends AnyFunSuite {
       // result = 128 * ~0 >> 8 = 0
       dut.io.input.payload.config.rgbSel #= ColorCombine.RgbSel.ITERATED
       dut.io.input.payload.config.mselect #= ColorCombine.MSelect.ALOCAL
-      dut.io.input.payload.config.reverseBlend #= false  // invert factor (Voodoo1 convention)
+      dut.io.input.payload.config.reverseBlend #= false // invert factor (Voodoo1 convention)
       dut.io.input.payload.config.add #= ColorCombine.AddMode.NONE
 
       val (r, g, b, a) = sendAndReceive(dut)

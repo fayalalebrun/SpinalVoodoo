@@ -24,6 +24,24 @@ class TmuTest extends AnyFunSuite {
     dut.io.input.payload.config.texBaseAddr #= 0
     // Default tLOD: lodmin=0, lodmax=8, lodbias=0, aspect=1:1
     dut.io.input.payload.config.tLOD #= 0x00200 // lodmax=8 (bits 11:6 = 0b100000)
+    // Initialize packed texture layout tables (required when packedTexLayout=true)
+    if (config.packedTexLayout) {
+      setTexTables(dut, baseByteAddr = 0, is16bit = true)
+    }
+  }
+
+  // Helper to set up packed texture layout tables for simulation.
+  // Computes per-LOD base addresses and row shifts for a 256x256 texture with 1:1 aspect.
+  def setTexTables(dut: Tmu, baseByteAddr: Long, is16bit: Boolean): Unit = {
+    var offset = 0L
+    val bppShift = if (is16bit) 1 else 0
+    for (lod <- 0 until 9) {
+      val wBits = scala.math.max(8 - lod, 0)
+      val hBits = scala.math.max(8 - lod, 0) // 1:1 aspect ratio
+      dut.io.input.payload.config.texTables.texBase(lod) #= BigInt(baseByteAddr + offset)
+      dut.io.input.payload.config.texTables.texShift(lod) #= BigInt(wBits)
+      offset += 1L << (wBits + hBits + bppShift)
+    }
   }
 
   // Helper to set default input values
@@ -273,6 +291,10 @@ class TmuTest extends AnyFunSuite {
       // texBaseAddr register is address/8 (hardware shifts left by 3)
       val baseByteAddr = 0x100000
       dut.io.input.payload.config.texBaseAddr #= baseByteAddr / 8
+      // Update texTables with the correct base address
+      if (config.packedTexLayout) {
+        setTexTables(dut, baseByteAddr, is16bit = true)
+      }
 
       // Set S=10, T=20 (in integer coordinates)
       dut.io.input.payload.s #= 10.0

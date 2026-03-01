@@ -16,7 +16,6 @@ class RegisterBankTest extends AnyFunSuite {
     dut.clockDomain.forkStimulus(period = 10)
 
     // Initialize status inputs to default values
-    // Note: pciFifoFree now comes from busif.pciFifoFree (FIFO availability)
     dut.io.statusInputs.vRetrace #= true
     dut.io.statusInputs.memFifoFree #= 0xffff
     dut.io.statusInputs.pciInterrupt #= false
@@ -32,6 +31,12 @@ class RegisterBankTest extends AnyFunSuite {
 
     // Initialize pipelineBusy to false by default
     dut.io.pipelineBusy #= false
+
+    // PciFifo status inputs (RegisterBank no longer has internal FIFO)
+    dut.io.pciFifoEmpty #= true
+    dut.io.pciFifoFree #= 64
+    dut.io.swapCmdEnqueued #= false
+    dut.io.syncDrained #= false
 
     // Command streams are always ready by default
     dut.commands.triangleCmd.ready #= true
@@ -52,14 +57,7 @@ class RegisterBankTest extends AnyFunSuite {
 
   /** Helper to write a 32-bit value to a BMB register
     *
-    * @param dut
-    *   RegisterBank device under test
-    * @param address
-    *   Register address
-    * @param data
-    *   Data to write
-    * @param waitForFifoDrain
-    *   If true, waits additional cycles for FIFO to drain (needed for FIFO=Yes registers)
+    * RegisterBank is now a pure RegIf adapter (no FIFO). All writes are immediate.
     */
   def bmbWrite(
       dut: RegisterBank,
@@ -70,9 +68,7 @@ class RegisterBankTest extends AnyFunSuite {
     val driver = getDriver(dut)
     driver.write(address = address, data = data)
 
-    // Wait for FIFO to drain if requested (FIFO=Yes registers need this)
-    // BmbDriver.write() returns when command is acknowledged by bus
-    // But register update happens later when FIFO drains
+    // Wait extra cycles for register update to propagate
     if (waitForFifoDrain) {
       dut.clockDomain.waitSampling()
       dut.clockDomain.waitSampling()
@@ -91,7 +87,7 @@ class RegisterBankTest extends AnyFunSuite {
     SimConfig.withIVerilog.withWave.compile(RegisterBank(config)).doSim { dut =>
       setupDut(dut)
 
-      // Set specific status inputs (pciFifoFree is now from actual FIFO)
+      // Set specific status inputs (pciFifoFree comes from io.pciFifoFree, set in setupDut)
       // fbiBusy/trexBusy/sstBusy are wired from pipelineBusy internally
       dut.io.pipelineBusy #= true
       dut.io.swapDisplayedBuffer #= 1
@@ -101,7 +97,7 @@ class RegisterBankTest extends AnyFunSuite {
 
       val status = bmbRead(dut, 0x000)
 
-      // PCI FIFO should report full availability (64 = 0x40) since FIFO is empty
+      // PCI FIFO should report full availability (64 saturated to 63 = 0x3f)
       assert((status & 0x3f) == 0x3f, s"PCI FIFO should be 0x3f (63 free), got ${status & 0x3f}")
       assert(((status >> 7) & 1) == 1, "FBI busy should be set (from pipelineBusy)")
       assert(((status >> 8) & 1) == 1, "TREX busy should be set (from pipelineBusy)")
@@ -206,13 +202,17 @@ class RegisterBankTest extends AnyFunSuite {
       // Initially no sync pulse
       assert(!dut.io.syncPulse.toBoolean, "Sync pulse should be initially false")
 
-      // Write to fbzMode (Sync=Yes register) - address changed from 0x0cc to 0x110
-      bmbWrite(dut, 0x110, 0x12345678L)
+      // Pulse syncDrained input (simulates PciFifo draining a Sync=Yes register)
+      dut.io.syncDrained #= true
+      dut.clockDomain.waitSampling()
 
-      // Check sync pulse is asserted
+      // Check sync pulse is asserted (one cycle delay from RegNext)
+      dut.io.syncDrained #= false
+      dut.clockDomain.waitSampling()
+
       assert(
         dut.io.syncPulse.toBoolean,
-        "Sync pulse should be high after writing Sync=Yes register"
+        "Sync pulse should be high after syncDrained input"
       )
 
       dut.clockDomain.waitSampling()
@@ -509,276 +509,31 @@ class RegisterBankTest extends AnyFunSuite {
     }
   }
 
-  test("FIFO registers stall when command streams are not ready") {
+  // Note: FIFO-specific tests (FIFO drain blocking, bypass, sync stall, FIFO full)
+  // have been moved to PciFifoTest.scala since RegisterBank no longer contains a FIFO.
+  // RegisterBank is now a pure RegIf adapter — all writes are immediate.
+
+  test("Registers write immediately (no FIFO)") {
     val config = Config.voodoo1()
 
     SimConfig.withIVerilog.withWave.compile(RegisterBank(config)).doSim { dut =>
       setupDut(dut)
 
-      // NEW FIFO BEHAVIOR: Writes are NOT stalled - they're queued in FIFO
-      // FIFO drain is blocked, but CPU doesn't stall
-
-      // Initialize pipelineBusy to false
-      dut.io.pipelineBusy #= false
-
-      // Test 1: FIFO=Yes register (vertexAx at 0x008) is accepted into FIFO even when triangleCmd is not ready
-      dut.commands.triangleCmd.ready #= false
-
-      // Write to vertexAx - should be accepted into FIFO immediately
-      bmbWrite(dut, 0x008, 0x12345678, waitForFifoDrain = false)
-
-      // Register should NOT have updated yet (FIFO hasn't drained)
-      // Note: vertexAx is SInt(16 bits) so only lower 16 bits matter
-      assert(
-        dut.triangleGeometry.vertexAx.toInt == 0,
-        "Register should not update until FIFO drains"
-      )
-
-      // Make stream ready - FIFO should drain
-      dut.commands.triangleCmd.ready #= true
-      dut.clockDomain.waitSampling(2)
-
-      // Now register should have updated
+      // All registers now write immediately since there is no internal FIFO
+      // vertexAx at 0x008
+      bmbWrite(dut, 0x008, 0x12345678)
       assert(
         (dut.triangleGeometry.vertexAx.toLong & 0xffffL) == (0x12345678L & 0xffffL),
-        "Register should update after stream becomes ready"
+        "Register should update immediately (no FIFO)"
       )
 
-      // Test 2: FIFO=Yes register succeeds immediately when all streams are ready
-      dut.commands.triangleCmd.ready #= true
-      dut.commands.fastfillCmd.ready #= true
-      dut.commands.nopCmd.ready #= true
-      dut.commands.swapbufferCmd.ready #= true
-      dut.commands.ftriangleCmd.ready #= true
-
-      bmbWrite(dut, 0x010, 0xaabbccddL) // vertexBx - FIFO=Yes register
-
-      // Should have written successfully (only lower 16 bits stored in SInt(16 bits) register)
-      assert(
-        (dut.triangleGeometry.vertexBx.toLong & 0xffffL) == (0xaabbccddL & 0xffffL),
-        "FIFO register should write when streams ready"
-      )
-    }
-  }
-
-  test("FIFO=No registers bypass stream backpressure") {
-    val config = Config.voodoo1()
-
-    SimConfig.withIVerilog.withWave.compile(RegisterBank(config)).doSim { dut =>
-      setupDut(dut)
-
-      // Initialize pipelineBusy to false
-      dut.io.pipelineBusy #= false
-
-      // Stall all command streams
-      dut.commands.triangleCmd.ready #= false
-      dut.commands.fastfillCmd.ready #= false
-      dut.commands.nopCmd.ready #= false
-      dut.commands.swapbufferCmd.ready #= false
-      dut.commands.ftriangleCmd.ready #= false
-
-      // FIFO=No register (fbiInit0 at 0x210) should NOT stall even when streams are not ready
-      bmbWrite(dut, 0x210, 0x3) // fbiInit0 - FIFO=No register
+      // fbiInit0 at 0x210 (was FIFO=No, now all are immediate)
+      bmbWrite(dut, 0x210, 0x3)
       dut.clockDomain.waitSampling()
-
-      // Should have written successfully despite stream backpressure
       assert(
         dut.init.fbiInit0_vgaPassthrough.toBoolean,
-        "FIFO=No register should write despite stream backpressure"
+        "Register should write immediately"
       )
-      assert(
-        dut.init.fbiInit0_graphicsReset.toBoolean,
-        "FIFO=No register should write despite stream backpressure"
-      )
-    }
-  }
-
-  test("Sync=Yes registers stall when pipeline is busy") {
-    val config = Config.voodoo1()
-
-    SimConfig.withIVerilog.withWave.compile(RegisterBank(config)).doSim { dut =>
-      setupDut(dut)
-
-      // Test that Sync=Yes register drain is blocked when pipeline is busy
-      // 1. Write IS accepted into FIFO even when pipeline is busy
-      // 2. FIFO drain is blocked until pipeline becomes not busy
-      // 3. Register updates after pipeline becomes not busy
-
-      dut.io.pipelineBusy #= true
-
-      var sawUpdateWhileBusy = false
-      var sawUpdateAfterNotBusy = false
-
-      // Fork a monitor to track register updates
-      val monitor = fork {
-        // Phase 1: Watch while pipeline is busy (should not see update)
-        for (_ <- 0 until 5) {
-          if (dut.renderConfig.fbzMode.enableClipping.toBoolean) {
-            sawUpdateWhileBusy = true
-          }
-          dut.clockDomain.waitSampling()
-        }
-
-        // Phase 2: Set pipelineBusy=false and watch for update
-        dut.io.pipelineBusy #= false
-        for (_ <- 0 until 5) {
-          if (dut.renderConfig.fbzMode.enableClipping.toBoolean) {
-            sawUpdateAfterNotBusy = true
-          }
-          dut.clockDomain.waitSampling()
-        }
-      }
-
-      // Write to fbzMode - Sync=Yes register at 0x110
-      // Use value with enableClipping bit set (bit 0)
-      bmbWrite(dut, 0x110, 0x00000001)
-
-      monitor.join()
-
-      // Verify behavior
-      assert(
-        !sawUpdateWhileBusy,
-        "Register should NOT update while pipeline is busy (FIFO drain blocked)"
-      )
-      assert(
-        sawUpdateAfterNotBusy,
-        "Register should update after pipeline becomes not busy"
-      )
-
-      // Test 2: Sync=No register succeeds immediately regardless of pipeline
-      dut.io.pipelineBusy #= false
-
-      bmbWrite(dut, 0x10c, 0x22222222) // alphaMode - Sync=No register
-
-      // Should have written successfully
-      assert(
-        (dut.renderConfig.alphaMode.toLong & 0xffffffffL) == 0x22222222L,
-        "Sync=No register should write when pipeline not busy"
-      )
-    }
-  }
-
-  test("Sync=No registers write immediately regardless of pipeline") {
-    val config = Config.voodoo1()
-
-    SimConfig.withIVerilog.withWave.compile(RegisterBank(config)).doSim { dut =>
-      setupDut(dut)
-
-      // Pipeline is busy but Sync=No register should still write
-      dut.io.pipelineBusy #= true
-
-      // fbzColorPath (0x104) is Sync=No register (address changed from fogColor at 0x0e4)
-      bmbWrite(dut, 0x104, 0x12345678)
-      dut.clockDomain.waitSampling()
-
-      // Should have written successfully despite pipeline being busy
-      assert(
-        (dut.renderConfig.fbzColorPath.toLong & 0xffffffffL) == 0x12345678L,
-        "Sync=No register should write despite pipeline busy"
-      )
-    }
-  }
-
-  test("CPU stalls when FIFO is full (64 entries) - Sync=Yes registers") {
-    val config = Config.voodoo1()
-
-    SimConfig.withIVerilog.withWave.compile(RegisterBank(config)).doSim { dut =>
-      setupDut(dut)
-
-      // Block pipeline to prevent Sync=Yes registers from draining
-      dut.io.pipelineBusy #= true
-      dut.clockDomain.waitSampling(2)
-
-      // Write 64 FIFO=Yes,Sync=Yes registers to fill the FIFO
-      // Use fbzMode (0x110) - Sync=Yes register (address changed from 0x0cc)
-      for (i <- 0 until 64) {
-        dut.io.bus.cmd.valid #= true
-        dut.io.bus.cmd.address #= 0x110
-        dut.io.bus.cmd.data #= i
-        dut.io.bus.cmd.opcode #= Bmb.Cmd.Opcode.WRITE
-        dut.io.bus.cmd.length #= 3
-        dut.io.bus.cmd.last #= true
-        dut.io.bus.cmd.mask #= 0xf
-        dut.io.bus.rsp.ready #= true
-
-        dut.clockDomain.waitSampling()
-
-        assert(dut.io.bus.cmd.ready.toBoolean, s"Bus should accept write $i")
-
-        dut.io.bus.cmd.valid #= false
-        dut.clockDomain.waitSampling()
-      }
-
-      // Now try to write one more (65th entry)
-      dut.io.bus.cmd.valid #= true
-      dut.io.bus.cmd.address #= 0x110
-      dut.io.bus.cmd.data #= 999
-      dut.io.bus.cmd.opcode #= Bmb.Cmd.Opcode.WRITE
-      dut.io.bus.cmd.length #= 3
-      dut.io.bus.cmd.last #= true
-      dut.io.bus.cmd.mask #= 0xf
-      dut.io.bus.rsp.ready #= true
-
-      dut.clockDomain.waitSampling()
-
-      // Bus should stall (FIFO full)
-      assert(!dut.io.bus.cmd.ready.toBoolean, "Bus should stall when FIFO is full")
-
-      dut.io.bus.cmd.valid #= false
-      dut.clockDomain.waitSampling()
-    }
-  }
-
-  test("CPU stalls when FIFO is full (64 entries) - command register backpressure") {
-    val config = Config.voodoo1()
-
-    SimConfig.withIVerilog.withWave.compile(RegisterBank(config)).doSim { dut =>
-      setupDut(dut)
-
-      // Block command register stream by not consuming it
-      // triangleCMD (0x080) is Sync=No, so won't be blocked by pipelineBusy
-      // But it WILL be blocked by stream backpressure
-      dut.commands.triangleCmd.ready #= false
-      dut.clockDomain.waitSampling(2)
-
-      // Write 65 FIFO=Yes,Sync=No command registers to fill the FIFO + buffer
-      // Use triangleCMD (0x080) - command register, Sync=No
-      // With 1-entry buffer: first cmd drains to buffer, FIFO holds 64 more
-      for (i <- 0 until 65) {
-        dut.io.bus.cmd.valid #= true
-        dut.io.bus.cmd.address #= 0x080
-        dut.io.bus.cmd.data #= i
-        dut.io.bus.cmd.opcode #= Bmb.Cmd.Opcode.WRITE
-        dut.io.bus.cmd.length #= 3
-        dut.io.bus.cmd.last #= true
-        dut.io.bus.cmd.mask #= 0xf
-        dut.io.bus.rsp.ready #= true
-
-        dut.clockDomain.waitSampling()
-
-        assert(dut.io.bus.cmd.ready.toBoolean, s"Bus should accept write $i")
-
-        dut.io.bus.cmd.valid #= false
-        dut.clockDomain.waitSampling()
-      }
-
-      // Now try to write one more (66th entry)
-      dut.io.bus.cmd.valid #= true
-      dut.io.bus.cmd.address #= 0x080
-      dut.io.bus.cmd.data #= 999
-      dut.io.bus.cmd.opcode #= Bmb.Cmd.Opcode.WRITE
-      dut.io.bus.cmd.length #= 3
-      dut.io.bus.cmd.last #= true
-      dut.io.bus.cmd.mask #= 0xf
-      dut.io.bus.rsp.ready #= true
-
-      dut.clockDomain.waitSampling()
-
-      // Bus should stall (FIFO + buffer full)
-      assert(!dut.io.bus.cmd.ready.toBoolean, "Bus should stall when FIFO + buffer are full")
-
-      dut.io.bus.cmd.valid #= false
-      dut.clockDomain.waitSampling()
     }
   }
 }

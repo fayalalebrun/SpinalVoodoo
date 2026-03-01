@@ -54,6 +54,9 @@
     # Glide build dependencies (32-bit C toolchain for Voodoo1)
     pkgs.nasm
     pkgs.pkgsi686Linux.stdenv.cc
+    # Verilator build acceleration
+    pkgs.ccache
+    pkgs.llvmPackages.clang
   ];
 
   languages.java = {

@@ -4,6 +4,7 @@ import spinal.core._
 import spinal.core.sim._
 import spinal.lib._
 import spinal.lib.bus.bmb._
+import voodoo.utils.{PciFifo, TexWritePayload}
 
 object Core {
   val cpuBmbParams = BmbParameter(
@@ -31,7 +32,7 @@ object Core {
   def texMemBmbParams(c: Config) = BmbParameter(
     addressWidth = c.addressWidth.value,
     dataWidth = 32,
-    sourceWidth = 4 + log2Up(2), // max(srcW=1,4) + 1 route bit = 5
+    sourceWidth = 4 + log2Up(3), // max(srcW=1,4) + 2 route bits for 3 inputs = 6
     contextWidth = 0,
     lengthWidth = 2,
     canRead = true,
@@ -92,6 +93,15 @@ case class Core(c: Config) extends Component {
   val addressRemapper =
     AddressRemapper(RegisterBank.externalBmbParams(c), RegisterBank.bmbParams(c))
   val regBank = RegisterBank(c)
+
+  // PciFifo: extracted FIFO component between AddressRemapper and RegisterBank
+  val pciFifo = PciFifo(
+    busParams = RegisterBank.bmbParams(c),
+    categories = regBank.busif.getCategories,
+    floatAliases = regBank.busif.getFloatAliases,
+    commandAddresses = regBank.busif.getCommandStreamReady.keys.toSeq.sorted
+  )
+
   val triangleSetup = TriangleSetup(c)
   val rasterizer = Rasterizer(c)
   val tmu = Tmu(c) // Single TMU (Voodoo 1 level)
@@ -116,23 +126,14 @@ case class Core(c: Config) extends Component {
 
   val target = cpuCmd.address(23 downto 22)
 
-  // texBaseAddr snooping for CPU texture write relocation (SST-1 spec 5.53)
-  // Snoop before the FIFO — texBaseAddr is not fifoBypass, so reading the
-  // register bank would give a stale value. Real TREX intercepts PCI writes.
-  val texBaseAddr = Reg(UInt(19 bits)) init (0)
-  when(
-    cpuCmd.fire && target === 0 &&
-      cpuCmd.address(9 downto 0) === U(0x30c, 10 bits) && cpuCmd.opcode(0)
-  ) {
-    texBaseAddr := cpuCmd.data(18 downto 0).asUInt
-  }
-
   // Register which target was selected (latched on cmd.fire for response routing)
   val rspTarget = RegNextWhen(target, cpuCmd.fire) init (0)
 
   val isReg = target === 0
   val isLfb = target === 1
   val isTex = target >= 2
+  val isTexWrite = isTex && cpuCmd.opcode(0)
+  val isTexRead = isTex && !cpuCmd.opcode(0)
 
   // Internal register bus (22-bit address, includes bit 21 for remap detection)
   val internalRegBus = Bmb(RegisterBank.externalBmbParams(c))
@@ -158,13 +159,23 @@ case class Core(c: Config) extends Component {
   internalLfbBus.cmd.last := cpuCmd.last
   internalLfbBus.cmd.source := cpuCmd.source.resize(Lfb.bmbParams(c).access.sourceWidth bits)
 
-  // CPU texture bus with texBaseAddr relocation
-  // SRAM addr = (texBaseAddr << 3) + PCI_offset (matches real TREX)
+  // ========================================================================
+  // Texture write path: through PciFifo
+  // ========================================================================
+  // Texture writes go into PciFifo alongside register writes
+  pciFifo.io.texWrite.valid := cpuCmd.valid && isTexWrite
+  pciFifo.io.texWrite.pciAddr := cpuCmd.address(22 downto 0)
+  pciFifo.io.texWrite.data := cpuCmd.data
+  pciFifo.io.texWrite.mask := cpuCmd.mask
+
+  // CPU texture read bus (direct to SRAM, no FIFO needed)
+  // For reads, use flat addressing with texBaseAddr from post-FIFO register bank
   val cpuTexBus = Bmb(Core.cpuTexBmbParams)
-  val texPciOffset = cpuCmd.address(22 downto 0) // 23-bit PCI offset within texture space
-  val texSramAddr = ((texBaseAddr << 3) +^ texPciOffset).resize(26 bits)
-  cpuTexBus.cmd.valid := cpuCmd.valid && isTex
-  cpuTexBus.cmd.address := texSramAddr
+  val texReadPciOffset = cpuCmd.address(22 downto 0)
+  val texReadBaseAddr = regBank.tmuConfig.texBaseAddr(18 downto 0)
+  val texReadSramAddr = ((texReadBaseAddr << 3) +^ texReadPciOffset).resize(26 bits)
+  cpuTexBus.cmd.valid := cpuCmd.valid && isTexRead
+  cpuTexBus.cmd.address := texReadSramAddr
   cpuTexBus.cmd.opcode := cpuCmd.opcode
   cpuTexBus.cmd.data := cpuCmd.data
   cpuTexBus.cmd.mask := cpuCmd.mask
@@ -172,10 +183,22 @@ case class Core(c: Config) extends Component {
   cpuTexBus.cmd.last := cpuCmd.last
   cpuTexBus.cmd.source := cpuCmd.source
 
+  // Texture write response: generate immediate response when FIFO accepts
+  val texWriteRspPending = RegInit(False)
+  val texWriteRspSource = Reg(cpuCmd.source)
+  when(cpuCmd.valid && isTexWrite && pciFifo.io.texWrite.ready && cpuCmd.ready) {
+    texWriteRspPending := True
+    texWriteRspSource := cpuCmd.source
+  }
+  when(texWriteRspPending) {
+    texWriteRspPending := False
+  }
+
   // Mux ready back from selected target
   cpuCmd.ready := (isReg && internalRegBus.cmd.ready) ||
     (isLfb && internalLfbBus.cmd.ready) ||
-    (isTex && cpuTexBus.cmd.ready)
+    (isTexWrite && pciFifo.io.texWrite.ready) ||
+    (isTexRead && cpuTexBus.cmd.ready)
 
   // Response mux: route response from selected target
   cpuRsp.valid := False
@@ -189,7 +212,10 @@ case class Core(c: Config) extends Component {
   internalLfbBus.rsp.ready := (rspTarget === 1) && cpuRsp.ready
   cpuTexBus.rsp.ready := (rspTarget >= 2) && cpuRsp.ready
 
-  when(rspTarget === 0) {
+  when(texWriteRspPending) {
+    cpuRsp.valid := True
+    cpuRsp.source := texWriteRspSource.resize(cpuRsp.p.access.sourceWidth bits)
+  } elsewhen (rspTarget === 0) {
     cpuRsp.valid := internalRegBus.rsp.valid
     cpuRsp.data := internalRegBus.rsp.data
     cpuRsp.opcode := internalRegBus.rsp.opcode
@@ -206,10 +232,14 @@ case class Core(c: Config) extends Component {
     cpuRsp.source := cpuTexBus.rsp.source.resize(cpuRsp.p.access.sourceWidth bits)
   }
 
-  // Connect address remapper between internal register bus and register bank
-  // AddressRemapper handles RGBZASTW → standard layout translation for remapped addresses
+  // ========================================================================
+  // Wire PciFifo into the bus path
+  // ========================================================================
+  // Before: addressRemapper.io.output <> regBank.io.bus
+  // After:  addressRemapper -> PciFifo -> RegisterBank
   addressRemapper.io.input <> internalRegBus
-  addressRemapper.io.output <> regBank.io.bus
+  addressRemapper.io.output <> pciFifo.io.cpuSide
+  pciFifo.io.regSide <> regBank.io.bus
   regBank.io.statusInputs <> io.statusInputs
   regBank.io.statisticsIn <> io.statisticsIn
 
@@ -226,7 +256,7 @@ case class Core(c: Config) extends Component {
   swapBuffer.io.vRetrace := io.statusInputs.vRetrace
   swapBuffer.io.vsyncEnable := regBank.commands.swapVsyncEnable
   swapBuffer.io.swapInterval := regBank.commands.swapInterval
-  swapBuffer.io.swapCmdEnqueued := regBank.io.swapCmdEnqueued
+  swapBuffer.io.swapCmdEnqueued := pciFifo.io.wasEnqueued
 
   regBank.io.swapDisplayedBuffer := swapBuffer.io.swapCount
   regBank.io.swapsPending := swapBuffer.io.swapsPending
@@ -258,7 +288,7 @@ case class Core(c: Config) extends Component {
   // ========================================================================
   // Both triangleCMD and FtriangleCMD read from the same integer registers.
   // Float addresses (0x088-0x0FC) are converted to fixed-point at FIFO input time
-  // by BmbBusInterface, so both commands see identical fixed-point data.
+  // by PciFifo, so both commands see identical fixed-point data.
 
   // Data-driven gradient capture: zips (start, dX, dY) Bits triplets with GradientBundle.all
   def captureGradientsFrom(
@@ -314,6 +344,16 @@ case class Core(c: Config) extends Component {
     cfg.color0 := regBank.renderConfig.color0
     cfg.color1 := regBank.renderConfig.color1
     cfg.fogColor := regBank.renderConfig.fogColor
+
+    // Packed texture layout tables (computed from post-FIFO register values)
+    if (c.packedTexLayout) {
+      val triCfg = TexLayoutTables.TexConfig()
+      triCfg.texBaseAddr := regBank.tmuConfig.texBaseAddr(18 downto 0)
+      triCfg.tformat := regBank.tmuConfig.textureMode(11 downto 8).asUInt
+      triCfg.tLOD_aspect := regBank.tmuConfig.tLOD(22 downto 21).asUInt
+      triCfg.tLOD_sIsWider := regBank.tmuConfig.tLOD(20)
+      cfg.texTables := TexLayoutTables.compute(triCfg)
+    }
 
     // NCC table: select table 0 or 1 based on nccSelect (textureMode bit 5)
     val nccSel = regBank.tmuConfig.textureMode(5)
@@ -515,6 +555,9 @@ case class Core(c: Config) extends Component {
     out.config.texBaseAddr := in.config.tmuTexBaseAddr
     out.config.tLOD := in.config.tmuTLOD
     out.config.ncc := in.config.ncc
+    if (c.packedTexLayout) {
+      out.config.texTables := in.config.texTables
+    }
     // Texture coordinate gradients for LOD calculation (from config, captured at command time)
     out.dSdX := in.config.tmudSdX
     out.dTdX := in.config.tmudTdX
@@ -732,11 +775,93 @@ case class Core(c: Config) extends Component {
   fbArbiter.io.output <> io.fbMem
 
   // ========================================================================
-  // Texture arbiter (2 inputs → texMem)
+  // Packed texture address translation at FIFO drain
+  // ========================================================================
+  // When PciFifo drains a texture entry, translate PCI address to packed SRAM address
+  val cpuTexWriteBus = Bmb(Core.cpuTexBmbParams)
+
+  if (c.packedTexLayout) {
+    // Compute tex layout tables from post-FIFO register bank values
+    val texCfg = TexLayoutTables.TexConfig()
+    texCfg.texBaseAddr := regBank.tmuConfig.texBaseAddr(18 downto 0)
+    texCfg.tformat := regBank.tmuConfig.textureMode(11 downto 8).asUInt
+    texCfg.tLOD_aspect := regBank.tmuConfig.tLOD(22 downto 21).asUInt
+    texCfg.tLOD_sIsWider := regBank.tmuConfig.tLOD(20)
+    val writeTables = TexLayoutTables.compute(texCfg)
+
+    val is16bit = texCfg.tformat >= Tmu.TextureFormat.ARGB8332
+    val seq8 = regBank.tmuConfig.textureMode(31) // textureMode bit 31: SST_SEQ_8_DOWNLD
+
+    // Extract LOD, T, S from PCI address (matching 86Box voodoo_tex_writel)
+    val pciAddr = pciFifo.io.texDrain.pciAddr
+    val lod = pciAddr(20 downto 17)
+    val t = pciAddr(16 downto 9)
+
+    // S extraction depends on format
+    val s = UInt(8 bits)
+    when(is16bit) {
+      s := ((pciAddr >> 1) & 0xfe).resize(8 bits)
+    }.elsewhen(seq8) {
+      s := (pciAddr & 0xfc).resize(8 bits)
+    }.otherwise {
+      s := ((pciAddr >> 1) & 0xfc).resize(8 bits) // interleaved 8-bit
+    }
+
+    // Guard: discard writes with lod > 8
+    val lodValid = lod <= 8
+
+    // Compute SRAM address using tables
+    val lodBase = writeTables.texBase(lod.resize(4 bits))
+    val lodShift = writeTables.texShift(lod.resize(4 bits))
+    val sramAddr = UInt(c.addressWidth.value bits)
+    when(is16bit) {
+      sramAddr := (lodBase + (s << 1).resize(22 bits) + (t.resize(22 bits) << (lodShift +^ U(1))
+        .resize(5 bits)).resize(22 bits)).resize(c.addressWidth.value bits)
+    } otherwise {
+      sramAddr := (lodBase + s.resize(22 bits) + (t.resize(22 bits) << lodShift).resize(22 bits))
+        .resize(c.addressWidth.value bits)
+    }
+
+    cpuTexWriteBus.cmd.valid := pciFifo.io.texDrain.valid && lodValid
+    cpuTexWriteBus.cmd.address := sramAddr
+    cpuTexWriteBus.cmd.opcode := Bmb.Cmd.Opcode.WRITE
+    cpuTexWriteBus.cmd.data := pciFifo.io.texDrain.data
+    cpuTexWriteBus.cmd.mask := pciFifo.io.texDrain.mask
+    cpuTexWriteBus.cmd.length := 3
+    cpuTexWriteBus.cmd.last := True
+    cpuTexWriteBus.cmd.source := 0
+
+    // Consume drain: either lodValid (write fires) or !lodValid (discard)
+    pciFifo.io.texDrain.ready := (!lodValid) || cpuTexWriteBus.cmd.ready
+
+    // Consume responses from texture write bus (not needed by CPU)
+    cpuTexWriteBus.rsp.ready := True
+  } else {
+    // Flat addressing fallback (non-packed layout)
+    val texBaseAddr = regBank.tmuConfig.texBaseAddr(18 downto 0)
+    val drainPciAddr = pciFifo.io.texDrain.pciAddr
+    val flatSramAddr = ((texBaseAddr << 3) +^ drainPciAddr).resize(26 bits)
+
+    cpuTexWriteBus.cmd.valid := pciFifo.io.texDrain.valid
+    cpuTexWriteBus.cmd.address := flatSramAddr
+    cpuTexWriteBus.cmd.opcode := Bmb.Cmd.Opcode.WRITE
+    cpuTexWriteBus.cmd.data := pciFifo.io.texDrain.data
+    cpuTexWriteBus.cmd.mask := pciFifo.io.texDrain.mask
+    cpuTexWriteBus.cmd.length := 3
+    cpuTexWriteBus.cmd.last := True
+    cpuTexWriteBus.cmd.source := 0
+
+    pciFifo.io.texDrain.ready := cpuTexWriteBus.cmd.ready
+    cpuTexWriteBus.rsp.ready := True
+  }
+
+  // ========================================================================
+  // Texture arbiter (3 inputs → texMem: TMU read, CPU write drain, CPU read)
   // ========================================================================
   val texArbiter = BmbArbiter(
     inputsParameter = Seq(
       Tmu.bmbParams(c),
+      Core.cpuTexBmbParams,
       Core.cpuTexBmbParams
     ),
     outputParameter = Core.texMemBmbParams(c),
@@ -749,7 +874,8 @@ case class Core(c: Config) extends Component {
   texArbiter.io.inputs(0).cmd << tmu.io.texRead.cmd.s2mPipe()
   texArbiter.io.inputs(0).rsp >> tmu.io.texRead.rsp
 
-  texArbiter.io.inputs(1) <> cpuTexBus
+  texArbiter.io.inputs(1) <> cpuTexWriteBus
+  texArbiter.io.inputs(2) <> cpuTexBus
   texArbiter.io.output <> io.texMem
 
   // Pipeline busy signal: any stage has valid data (placed after all stages instantiated)
@@ -777,4 +903,19 @@ case class Core(c: Config) extends Component {
       colorCombine.io.input.valid || fog.io.input.valid || fbAccess.io.input.valid ||
       write.i.fromPipeline.valid || fastfill.running || swapBuffer.io.waiting || lfb.io.busy
   regBank.io.pipelineBusy := pipelineBusySignal
+  lfb.io.pciFifoEmpty := pciFifo.io.fifoEmpty
+  lfb.io.pipelineBusy := pipelineBusySignal
+
+  // ========================================================================
+  // PciFifo control signal wiring
+  // ========================================================================
+  pciFifo.io.pipelineBusy := pipelineBusySignal
+  pciFifo.io.commandReady := regBank.io.commandReady
+  pciFifo.io.wasEnqueuedAddr := U(0x128, pciFifo.busAddrWidth bits) // swapbufferCMD address
+
+  // Feed PciFifo status into RegisterBank
+  regBank.io.pciFifoEmpty := pciFifo.io.fifoEmpty
+  regBank.io.pciFifoFree := pciFifo.io.pciFifoFree
+  regBank.io.swapCmdEnqueued := pciFifo.io.wasEnqueued
+  regBank.io.syncDrained := pciFifo.io.syncDrained
 }

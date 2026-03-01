@@ -12,7 +12,8 @@ case class Config(
     wFormat: QFormat,
     maxFbDims: (Int, Int),
     fbPixelStride: Int,
-    addressWidth: BitCount
+    addressWidth: BitCount,
+    packedTexLayout: Boolean = true
 )
 
 object Config {

@@ -39,6 +39,10 @@ case class Lfb(c: Config) extends Component {
     val fbReadBus = master(Bmb(Lfb.fbReadBmbParams(c)))
     val fbWriteBaseAddr = in UInt (c.addressWidth)
     val fbReadBaseAddr = in UInt (c.addressWidth)
+
+    // LFB reads stall until FIFO is empty and pipeline is idle (SST-1 spec)
+    val pciFifoEmpty = in Bool ()
+    val pipelineBusy = in Bool ()
   }
 
   // Capture BMB command data
@@ -64,6 +68,7 @@ case class Lfb(c: Config) extends Component {
   val stateRfetch1 = U(3, 3 bits)
   val stateRfetch2 = U(4, 3 bits)
   val stateRresp = U(5, 3 bits)
+  val stateRwait = U(6, 3 bits)
 
   // Accept BMB commands only in IDLE and when no pending response
   io.bus.cmd.ready := (state === stateIdle) && !rspPending
@@ -78,7 +83,7 @@ case class Lfb(c: Config) extends Component {
     rspPending := True
     when(io.bus.cmd.opcode === Bmb.Cmd.Opcode.READ) {
       capturedIsRead := True
-      state := stateRfetch1
+      state := stateRwait
     } otherwise {
       capturedIsRead := False
       capturedData := afterByteSwizzle
@@ -332,15 +337,22 @@ case class Lfb(c: Config) extends Component {
 
   io.fbReadBus.rsp.ready := (state === stateRfetch1) || (state === stateRfetch2)
 
-  // On entering stateRfetch1 (from cmd.fire), set up address and issue first read
+  // On accepting a read command, compute the first FB address but don't issue yet.
+  // The read will wait in stateRwait until the FIFO drains and pipeline is idle.
   when(io.bus.cmd.fire && io.bus.cmd.opcode === Bmb.Cmd.Opcode.READ) {
-    // Compute first read address from the captured address (available on cmd cycle)
     val cmdAddr = io.bus.cmd.address
     val rx = (cmdAddr >> 1).resize(10 bits)
     val ry = (cmdAddr >> 11).resize(10 bits)
     val pixelFlat1 = (ry.resize(20 bits) * c.fbPixelStride + rx.resize(20 bits))
     fbReadAddr := (io.fbReadBaseAddr + (pixelFlat1 << 2).resize(c.addressWidth.value bits)).resized
-    fbReadCmdPending := True
+  }
+
+  // Wait for FIFO empty + pipeline idle before issuing FB reads (SST-1 spec)
+  when(state === stateRwait) {
+    when(io.pciFifoEmpty && !io.pipelineBusy) {
+      fbReadCmdPending := True
+      state := stateRfetch1
+    }
   }
 
   // Read state machine
@@ -415,8 +427,10 @@ case class Lfb(c: Config) extends Component {
     rspPending := False
   }
 
-  // Busy signal
-  io.busy := (state =/= stateIdle) || rspPending
+  // Busy signal: only write-side activity contributes to pipeline busy.
+  // Read states are excluded to avoid circular dependency (pipelineBusy includes lfb.io.busy,
+  // and stateRwait needs pipelineBusy to go false before it can proceed).
+  io.busy := (state === statePixel1) || (state === statePixel2)
 }
 
 object Lfb {

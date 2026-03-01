@@ -300,6 +300,8 @@ int ref_init(int fb_size_mb, int tex_size_mb)
     }
 
     voodoo->initEnable = 0x07;  /* Enable fbiInit writes */
+    voodoo->bilinear_enabled  = 1;  /* 86Box UI toggle — enable for HW accuracy */
+    voodoo->dithersub_enabled = 1;
 
     /* Default buffer layout: fbiInit2 = 0 gives buffer_offset=0 which is wrong.
      * Set a reasonable default. Glide typically sets fbiInit2 with buffer_offset. */

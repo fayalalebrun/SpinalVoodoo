@@ -40,6 +40,23 @@ object Write {
     val fbBaseAddr = UInt(c.addressWidth)
   }
 
+  /** Pre-dither payload: RGB888 color + all Write.Input pass-through fields.
+    *
+    * Produced by triangle, fastfill, and LFB bypass paths before the shared Dither instance.
+    */
+  case class PreDither(c: Config) extends Bundle {
+    val r = UInt(8 bits)
+    val g = UInt(8 bits)
+    val b = UInt(8 bits)
+    val coords = Vec.fill(2)(SInt(c.vertexFormat.nonFraction bits))
+    val enableDithering = Bool()
+    val ditherAlgorithm = Bool()
+    val depthAlpha = Bits(16 bits)
+    val rgbWrite = Bool()
+    val auxWrite = Bool()
+    val fbBaseAddr = UInt(c.addressWidth)
+  }
+
   case class FbWord() extends Bundle {
     val color = rgb565()
     val depthAlpha = Bits(16 bits)

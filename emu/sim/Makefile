@@ -25,7 +25,7 @@ SCALA_SRCS := $(shell find $(PROJ_ROOT)/src -name '*.scala') $(PROJ_ROOT)/projec
 # Verilator settings
 VERILATOR = verilator
 VERILATOR_ROOT ?= $(shell $(VERILATOR) --getenv VERILATOR_ROOT)
-VERILATOR_FLAGS = --cc --output-split 20000 --output-split-cfuncs 5000 --decorations none --public-flat-rw --x-assign fast --x-initial fast --noassert -Wno-fatal
+VERILATOR_FLAGS = --cc --output-split 20000 --output-split-cfuncs 5000 --decorations none --public-flat-rw --x-assign fast --x-initial fast --noassert -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -Wno-CMPCONST -Wno-UNSIGNED
 ifeq ($(TRACE),1)
 VERILATOR_FLAGS += --trace-fst --trace-structs --trace-underscore
 endif
@@ -67,7 +67,12 @@ all: model harness
 # Step 1: Generate Verilog from SpinalHDL (rebuilds when Scala sources change)
 # scala-cli run has a LibC native-image bug; use java -cp workaround
 $(RTL_DIR)/CoreSim.v: $(SCALA_SRCS)
+	@rm -f $(RTL_DIR)/*.bin
 	cd $(PROJ_ROOT) && java -Xmx2g -cp "$$(scala-cli compile . --print-class-path 2>/dev/null)" voodoo.CoreSimGen
+	@# Fix $readmemb paths: SpinalHDL emits bare filenames resolved relative to
+	@# the process cwd.  Prepend the absolute RTL path so the Verilator model
+	@# finds the .bin files regardless of where the binary runs from.
+	@sed -i 's|\$$readmemb("\([^/"]*\.bin\)"|\$$readmemb("$(abspath $(RTL_DIR))/\1"|g' $@
 
 verilog: $(RTL_DIR)/CoreSim.v
 
@@ -101,7 +106,7 @@ $(OBJ_DIR)/sim_harness.o: $(HARNESS_DIR)/sim_harness.cpp $(HARNESS_DIR)/sim_harn
 	$(OBJCACHE) $(CXX32) $(CXXFLAGS) -c -o $@ $<
 
 $(OBJ_DIR)/verilated.o: $(VERILATOR_ROOT)/include/verilated.cpp $(TRACE_MODE_FILE) | $(VERILATE_STAMP)
-	$(OBJCACHE) $(CXX32) $(CXXFLAGS) -c -o $@ $<
+	$(OBJCACHE) $(CXX32) $(CXXFLAGS) -DVL_USER_WARN -c -o $@ $<
 
 $(OBJ_DIR)/verilated_fst_c.o: $(VERILATOR_ROOT)/include/verilated_fst_c.cpp $(TRACE_MODE_FILE) | $(VERILATE_STAMP)
 	$(OBJCACHE) $(CXX32) $(CXXFLAGS) -c -o $@ $<

@@ -693,41 +693,26 @@ case class Core(c: Config) extends Component {
   fbAccess.io.zaColor := regBank.renderConfig.zaColor
 
   // ========================================================================
-  // Triangle → Write path (from FramebufferAccess output)
+  // Triangle → Write.PreDither (from FramebufferAccess output)
   // ========================================================================
-  val triangleWriteInput = fbAccess.io.output.translateWith {
-    val in = fbAccess.io.output.payload
-    val out = Write.Input(c)
-    out.coords := in.coords
-
-    val fbWord = cloneOf(out.toFb)
-
-    // Dither 8-bit RGB to 5-6-5 format
-    val triDither = Dither()
-    triDither.io.r := in.color.r
-    triDither.io.g := in.color.g
-    triDither.io.b := in.color.b
-    triDither.io.x := in.coords(0).asUInt.resize(2 bits)
-    triDither.io.y := in.coords(1).asUInt.resize(2 bits)
-    triDither.io.enable := in.enableDithering
-    triDither.io.use2x2 := in.ditherAlgorithm
-
-    fbWord.color.r := triDither.io.ditR
-    fbWord.color.g := triDither.io.ditG
-    fbWord.color.b := triDither.io.ditB
-
-    // Depth or alpha planes: use newDepth from FramebufferAccess (already computed)
-    fbWord.depthAlpha := (in.enableAlphaPlanes ? in.alpha.resize(16 bits) | in.newDepth).asBits
-
-    out.toFb := fbWord
-    out.rgbWrite := in.rgbWrite
-    out.auxWrite := in.auxWrite
+  val trianglePreDither = fbAccess.io.output.translateWith {
+    val fbIn = fbAccess.io.output.payload
+    val out = Write.PreDither(c)
+    out.r := fbIn.color.r
+    out.g := fbIn.color.g
+    out.b := fbIn.color.b
+    out.coords := fbIn.coords
+    out.enableDithering := fbIn.enableDithering
+    out.ditherAlgorithm := fbIn.ditherAlgorithm
+    out.depthAlpha := (fbIn.enableAlphaPlanes ? fbIn.alpha.resize(16 bits) | fbIn.newDepth).asBits
+    out.rgbWrite := fbIn.rgbWrite
+    out.auxWrite := fbIn.auxWrite
     out.fbBaseAddr := drawBufferBase
     out
   }
 
   // ========================================================================
-  // Fastfill → Write path (direct color1/zaColor with dithering)
+  // Fastfill → Write.PreDither (direct color1/zaColor)
   // ========================================================================
   val fastfillWrite = FastfillWrite(c)
   fastfillWrite.io.pixels << fastfill.o
@@ -739,10 +724,44 @@ case class Core(c: Config) extends Component {
   fastfillWrite.io.regs.drawBufferBase := drawBufferBase
   fastfillWrite.io.regs.yOriginSwapValue := yOriginSwapValue
 
-  // Merge fastfill, triangle, and LFB paths — lowerFirst gives fastfill priority (index 0)
-  write.i.fromPipeline << StreamArbiterFactory.lowerFirst.on(
-    Seq(fastfillWrite.io.output, triangleWriteInput, lfb.io.writeOutput)
+  // ========================================================================
+  // Shared Dither: merge all three PreDither paths, dither, produce Write.Input
+  // ========================================================================
+  // lowerFirst gives fastfill priority (index 0), then triangle, then LFB bypass
+  val preDitherMerged = StreamArbiterFactory.lowerFirst.on(
+    Seq(fastfillWrite.io.output, trianglePreDither, lfb.io.writeOutput)
   )
+
+  val dither = Dither()
+  val (forDither, forPipe) = StreamFork2(preDitherMerged, synchronous = true)
+
+  dither.io.input.translateFrom(forDither) { (ditIn, pd) =>
+    ditIn.r := pd.r
+    ditIn.g := pd.g
+    ditIn.b := pd.b
+    ditIn.x := pd.coords(0).asUInt.resize(2 bits)
+    ditIn.y := pd.coords(1).asUInt.resize(2 bits)
+    ditIn.enable := pd.enableDithering
+    ditIn.use2x2 := pd.ditherAlgorithm
+  }
+
+  val preDitherPiped = forPipe.m2sPipe()
+  val ditherJoined = StreamJoin(dither.io.output, preDitherPiped)
+
+  write.i.fromPipeline << ditherJoined.translateWith {
+    val ditOut = dither.io.output.payload
+    val pd = preDitherPiped.payload
+    val out = Write.Input(c)
+    out.coords := pd.coords
+    out.toFb.color.r := ditOut.ditR
+    out.toFb.color.g := ditOut.ditG
+    out.toFb.color.b := ditOut.ditB
+    out.toFb.depthAlpha := pd.depthAlpha
+    out.rgbWrite := pd.rgbWrite
+    out.auxWrite := pd.auxWrite
+    out.fbBaseAddr := pd.fbBaseAddr
+    out
+  }
 
   // ========================================================================
   // Framebuffer arbiter (3 inputs → fbMem)

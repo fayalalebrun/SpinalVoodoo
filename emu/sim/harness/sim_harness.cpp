@@ -19,6 +19,23 @@
 #include "verilated_fst_c.h"
 #endif
 
+/* Promote Verilator warnings to fatal errors.
+ * verilated.cpp is compiled with -DVL_USER_WARN so its default vl_warn is
+ * excluded; we provide this replacement.  This catches $readmemb file-not-found
+ * (and any future warning) at model construction time instead of silently
+ * zeroing memories. */
+void vl_warn(const char* filename, int linenum, const char* hier,
+             const char* msg) {
+    if (strstr(msg, "$readmem")) {
+        vl_fatal(filename, linenum, hier, msg);
+    } else {
+        if (filename && filename[0])
+            VL_PRINTF("%%Warning: %s:%d: %s\n", filename, linenum, msg);
+        else
+            VL_PRINTF("%%Warning: %s\n", msg);
+    }
+}
+
 /* ------------------------------------------------------------------ */
 /* State                                                               */
 /* ------------------------------------------------------------------ */

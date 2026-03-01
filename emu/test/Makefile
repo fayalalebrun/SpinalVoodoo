@@ -23,7 +23,7 @@ EBOX_INC   = ../86Box/src/include
 # Verilator
 VERILATOR       = verilator
 VERILATOR_ROOT ?= $(shell $(VERILATOR) --getenv VERILATOR_ROOT)
-VERILATOR_FLAGS = --cc --output-split 20000 --output-split-cfuncs 5000 --decorations none --public-flat-rw --x-assign fast --x-initial fast --noassert -Wno-fatal
+VERILATOR_FLAGS = --cc --output-split 20000 --output-split-cfuncs 5000 --decorations none --public-flat-rw --x-assign fast --x-initial fast --noassert -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -Wno-CMPCONST -Wno-UNSIGNED
 
 # Native 64-bit compiler — prefer clang if available
 CXX ?= $(shell command -v clang++ 2>/dev/null || echo g++)
@@ -54,7 +54,9 @@ all: $(OBJ_DIR)/trace_test
 
 # Step 1: Generate Verilog (reuse existing or rebuild)
 $(VERILOG): $(SCALA_SRCS)
+	@rm -f $(dir $(VERILOG))*.bin
 	cd $(PROJ_ROOT) && java -Xmx2g -cp "$$(scala-cli compile . --print-class-path 2>/dev/null)" voodoo.CoreSimGen
+	@sed -i 's|\$$readmemb("\([^/"]*\.bin\)"|\$$readmemb("$(abspath $(dir $(VERILOG)))/\1"|g' $@
 
 # Step 2: Verilate (64-bit obj_dir, separate from 32-bit Glide build)
 $(VERILATE_STAMP): $(VERILOG)
@@ -91,13 +93,13 @@ $(OBJ_DIR)/ref_model.o: ref_model.c ref_model.h $(VERILATE_STAMP)
 	$(OBJCACHE) $(CC) $(CFLAGS) -c -o $@ $<
 
 # Step 5: C++ objects
-$(OBJ_DIR)/sim_harness.o: $(SIM_DIR)/harness/sim_harness.cpp $(SIM_DIR)/harness/sim_harness.h | $(VERILATE_STAMP)
+$(OBJ_DIR)/sim_harness.o: $(SIM_DIR)/harness/sim_harness.cpp $(SIM_DIR)/harness/sim_harness.h Makefile | $(VERILATE_STAMP)
 	$(OBJCACHE) $(CXX) $(CXXFLAGS) -c -o $@ $<
 
-$(OBJ_DIR)/verilated.o: $(VERILATOR_ROOT)/include/verilated.cpp | $(VERILATE_STAMP)
-	$(OBJCACHE) $(CXX) $(CXXFLAGS) -c -o $@ $<
+$(OBJ_DIR)/verilated.o: $(VERILATOR_ROOT)/include/verilated.cpp Makefile | $(VERILATE_STAMP)
+	$(OBJCACHE) $(CXX) $(CXXFLAGS) -DVL_USER_WARN -c -o $@ $<
 
-$(OBJ_DIR)/verilated_threads.o: $(VERILATOR_ROOT)/include/verilated_threads.cpp | $(VERILATE_STAMP)
+$(OBJ_DIR)/verilated_threads.o: $(VERILATOR_ROOT)/include/verilated_threads.cpp Makefile | $(VERILATE_STAMP)
 	$(OBJCACHE) $(CXX) $(CXXFLAGS) -c -o $@ $<
 
 $(OBJ_DIR)/trace_test.o: trace_test.cpp ref_model.h $(SIM_DIR)/harness/sim_harness.h stb_image_write.h | $(VERILATE_STAMP)

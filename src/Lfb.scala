@@ -20,7 +20,7 @@ case class Lfb(c: Config) extends Component {
     val bus = slave(Bmb(Lfb.bmbParams(c)))
 
     // Bypass mode output (pixelPipelineEnable=0)
-    val writeOutput = master Stream (Write.Input(c))
+    val writeOutput = master Stream (Write.PreDither(c))
 
     // Pipeline mode output (pixelPipelineEnable=1)
     val pipelineOutput = master Stream (ColorCombine.Output(c))
@@ -249,32 +249,30 @@ case class Lfb(c: Config) extends Component {
   }
 
   // ========================================================================
-  // Bypass mode: Dither and Write.Input
+  // Bypass mode: output Write.PreDither (dithering done by shared instance in Core)
   // ========================================================================
-  val dither = Dither()
+  val writePixelActive = (state === statePixel1) || (state === statePixel2)
   val currentX = (state === statePixel2) ? pixel2X | pixelX
-  dither.io.r := decodedR
-  dither.io.g := decodedG
-  dither.io.b := decodedB
-  dither.io.x := currentX.resize(2 bits)
-  dither.io.y := pixelY.resize(2 bits)
-  dither.io.enable := io.fbzMode.enableDithering
-  dither.io.use2x2 := io.fbzMode.ditherAlgorithm
 
-  // Build Write.Input (bypass mode)
-  val writeInput = Write.Input(c)
-  writeInput.coords(0) := (False ## currentX).asSInt.resize(c.vertexFormat.nonFraction bits)
-  writeInput.coords(1) := (False ## pixelY).asSInt.resize(c.vertexFormat.nonFraction bits)
-  writeInput.toFb.color.r := dither.io.ditR
-  writeInput.toFb.color.g := dither.io.ditG
-  writeInput.toFb.color.b := dither.io.ditB
-  writeInput.toFb.depthAlpha := decodedDepth
-  writeInput.rgbWrite := decodedRgbWrite
-  writeInput.auxWrite := decodedAuxWrite
-  writeInput.fbBaseAddr := io.fbWriteBaseAddr
+  io.writeOutput.valid := writePixelActive && !io.lfbMode.pixelPipelineEnable
+  io.writeOutput.payload.r := decodedR
+  io.writeOutput.payload.g := decodedG
+  io.writeOutput.payload.b := decodedB
+  io.writeOutput.payload.coords(0) := (False ## currentX).asSInt.resize(
+    c.vertexFormat.nonFraction bits
+  )
+  io.writeOutput.payload.coords(1) := (False ## pixelY).asSInt.resize(
+    c.vertexFormat.nonFraction bits
+  )
+  io.writeOutput.payload.enableDithering := io.fbzMode.enableDithering
+  io.writeOutput.payload.ditherAlgorithm := io.fbzMode.ditherAlgorithm
+  io.writeOutput.payload.depthAlpha := decodedDepth
+  io.writeOutput.payload.rgbWrite := decodedRgbWrite
+  io.writeOutput.payload.auxWrite := decodedAuxWrite
+  io.writeOutput.payload.fbBaseAddr := io.fbWriteBaseAddr
 
   // ========================================================================
-  // Pipeline mode: ColorCombine.Output
+  // Pipeline mode: ColorCombine.Output (no dither, no delay)
   // ========================================================================
   val pipelinePayload = ColorCombine.Output(c)
   pipelinePayload.coords(0) := (False ## currentX).asSInt.resize(c.vertexFormat.nonFraction bits)
@@ -295,20 +293,15 @@ case class Lfb(c: Config) extends Component {
   pipelinePayload.fogMode := io.fogMode
   pipelinePayload.fbzMode := io.fbzMode
 
-  // Write pixel output valid signals — mux based on pixelPipelineEnable
-  val writePixelActive = (state === statePixel1) || (state === statePixel2)
-
-  io.writeOutput.valid := writePixelActive && !io.lfbMode.pixelPipelineEnable
-  io.writeOutput.payload := writeInput
-
   io.pipelineOutput.valid := writePixelActive && io.lfbMode.pixelPipelineEnable
   io.pipelineOutput.payload := pipelinePayload
 
-  // Active output ready: whichever mode is selected
-  val activeReady = io.lfbMode.pixelPipelineEnable ? io.pipelineOutput.ready | io.writeOutput.ready
+  // Active output fire: bypass fires via downstream Stream handshake, pipeline fires immediately
+  val bypassFire = io.writeOutput.fire
+  val pipelineFire = writePixelActive && io.lfbMode.pixelPipelineEnable && io.pipelineOutput.ready
+  val activeOutputFire = bypassFire || pipelineFire
 
   // State transitions on active output fire
-  val activeOutputFire = writePixelActive && activeReady
   when(activeOutputFire) {
     when(state === statePixel1) {
       when(isDualPixel) {

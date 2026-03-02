@@ -817,6 +817,12 @@ case class Core(c: Config) extends Component {
   // When PciFifo drains a texture entry, translate PCI address to packed SRAM address
   val cpuTexWriteBus = Bmb(Core.cpuTexBmbParams)
 
+  // Discard texture writes targeting TMUs that don't exist.
+  // PCI texture address space: [21] = TMU1 select, [22] = TMU2 select.
+  // Voodoo1 has only TMU0, so writes with either bit set are discarded.
+  val pciAddr = pciFifo.io.texDrain.pciAddr
+  val tmuValid = pciAddr(22 downto 21) === 0 // Only TMU0 exists
+
   if (c.packedTexLayout) {
     // Compute tex layout tables from post-FIFO register bank values
     val texCfg = TexLayoutTables.TexConfig()
@@ -830,7 +836,6 @@ case class Core(c: Config) extends Component {
     val seq8 = regBank.tmuConfig.textureMode(31) // textureMode bit 31: SST_SEQ_8_DOWNLD
 
     // Extract LOD, T, S from PCI address (matching 86Box voodoo_tex_writel)
-    val pciAddr = pciFifo.io.texDrain.pciAddr
     val lod = pciAddr(20 downto 17)
     val t = pciAddr(16 downto 9)
 
@@ -844,8 +849,8 @@ case class Core(c: Config) extends Component {
       s := ((pciAddr >> 1) & 0xfc).resize(8 bits) // interleaved 8-bit
     }
 
-    // Guard: discard writes with lod > 8
-    val lodValid = lod <= 8
+    // Guard: discard writes with lod > 8 or targeting non-existent TMU
+    val drainValid = lod <= 8 && tmuValid
 
     // Compute SRAM address using tables
     val lodBase = writeTables.texBase(lod.resize(4 bits))
@@ -859,7 +864,7 @@ case class Core(c: Config) extends Component {
         .resize(c.addressWidth.value bits)
     }
 
-    cpuTexWriteBus.cmd.valid := pciFifo.io.texDrain.valid && lodValid
+    cpuTexWriteBus.cmd.valid := pciFifo.io.texDrain.valid && drainValid
     cpuTexWriteBus.cmd.address := sramAddr
     cpuTexWriteBus.cmd.opcode := Bmb.Cmd.Opcode.WRITE
     cpuTexWriteBus.cmd.data := pciFifo.io.texDrain.data
@@ -868,8 +873,8 @@ case class Core(c: Config) extends Component {
     cpuTexWriteBus.cmd.last := True
     cpuTexWriteBus.cmd.source := 0
 
-    // Consume drain: either lodValid (write fires) or !lodValid (discard)
-    pciFifo.io.texDrain.ready := (!lodValid) || cpuTexWriteBus.cmd.ready
+    // Consume drain: valid writes wait for bus, invalid writes are discarded immediately
+    pciFifo.io.texDrain.ready := (!drainValid) || cpuTexWriteBus.cmd.ready
 
     // Consume responses from texture write bus (not needed by CPU)
     cpuTexWriteBus.rsp.ready := True
@@ -879,7 +884,7 @@ case class Core(c: Config) extends Component {
     val drainPciAddr = pciFifo.io.texDrain.pciAddr
     val flatSramAddr = ((texBaseAddr << 3) +^ drainPciAddr).resize(26 bits)
 
-    cpuTexWriteBus.cmd.valid := pciFifo.io.texDrain.valid
+    cpuTexWriteBus.cmd.valid := pciFifo.io.texDrain.valid && tmuValid
     cpuTexWriteBus.cmd.address := flatSramAddr
     cpuTexWriteBus.cmd.opcode := Bmb.Cmd.Opcode.WRITE
     cpuTexWriteBus.cmd.data := pciFifo.io.texDrain.data
@@ -888,7 +893,7 @@ case class Core(c: Config) extends Component {
     cpuTexWriteBus.cmd.last := True
     cpuTexWriteBus.cmd.source := 0
 
-    pciFifo.io.texDrain.ready := cpuTexWriteBus.cmd.ready
+    pciFifo.io.texDrain.ready := (!tmuValid) || cpuTexWriteBus.cmd.ready
     cpuTexWriteBus.rsp.ready := True
   }
 

@@ -252,9 +252,66 @@ int main(int argc, char **argv) {
             }
             ptr += shdr->reg_count * sizeof(voodoo_state_reg_t);
 
-            /* Write framebuffer to sim — DISABLED: 86Box's 16-bit pixel pairs
-             * are incompatible with our 32-bit interleaved [depth:rgb] format. */
-            // sim_write_fb_bulk(0, (const uint32_t *)ptr, shdr->fb_size / 4);
+            /* Extract fbiInit2 for buffer offset calculations below. */
+            uint32_t fbiInit2_val = 0;
+            for (uint32_t i = 0; i < shdr->reg_count; i++) {
+                if ((regs[i].addr & 0x3fc) == 0x218) {
+                    fbiInit2_val = regs[i].value;
+                    break;
+                }
+            }
+
+            /* Convert 86Box framebuffer to sim's 32-bit interleaved format.
+             * 86Box: separate 16-bit color buffers + 16-bit aux/depth buffer
+             * Sim:   interleaved 32-bit [depth_16 : rgb565_16] per pixel
+             *
+             * We convert both front and back buffers so depth state is correct
+             * regardless of which buffer the trace renders into. */
+            {
+                const uint8_t *fb_mem = ptr;
+                uint32_t buffer_offset_86 = ((fbiInit2_val >> 11) & 0x1FF) * 4096;
+                uint32_t aux_off = shdr->aux_offset;
+                uint32_t rw = shdr->row_width;  /* bytes per row (16-bit pixels) */
+                int h = shdr->h_disp ? shdr->h_disp : disp_width;
+                int v = shdr->v_disp ? shdr->v_disp : disp_height;
+
+                /* Convert a color+depth buffer pair into sim's interleaved format.
+                 * color_off: 86Box byte offset of color buffer
+                 * sim_off:   sim byte offset (= color_off * 2, since 4 vs 2 bytes/pixel)
+                 * Sim stride matches 86Box: rw/2 pixels per row (rw bytes / 2 bytes per pixel). */
+                int stride_px = rw / 2;  /* pixels per row */
+                auto convert_buffer = [&](uint32_t color_off, uint32_t sim_off) {
+                    std::vector<uint32_t> sim_buf(stride_px * v);
+                    for (int y = 0; y < v; y++) {
+                        for (int x = 0; x < stride_px; x++) {
+                            uint32_t px_off = y * rw + x * 2;
+                            uint16_t color = 0, depth = 0;
+                            if (color_off + px_off + 1 < shdr->fb_size)
+                                color = fb_mem[color_off + px_off] |
+                                        (fb_mem[color_off + px_off + 1] << 8);
+                            if (aux_off + px_off + 1 < shdr->fb_size)
+                                depth = fb_mem[aux_off + px_off] |
+                                        (fb_mem[aux_off + px_off + 1] << 8);
+                            sim_buf[y * stride_px + x] = ((uint32_t)depth << 16) | color;
+                        }
+                    }
+                    sim_write_fb_bulk(sim_off, sim_buf.data(), sim_buf.size());
+                };
+
+                if (buffer_offset_86 > 0) {
+                    uint32_t front_off = shdr->draw_offset == 0 ? buffer_offset_86 : 0;
+                    uint32_t back_off  = shdr->draw_offset;
+                    /* Sim buffer offsets are 2x 86Box (32-bit vs 16-bit pixels) */
+                    convert_buffer(front_off, front_off * 2);
+                    convert_buffer(back_off,  back_off * 2);
+                    fprintf(stderr, "[trace_test] FB state loaded into sim: front=0x%x back=0x%x aux=0x%x (%dx%d)\n",
+                            front_off, back_off, aux_off, h, v);
+                } else {
+                    /* Single buffer — just convert at offset 0 */
+                    convert_buffer(0, 0);
+                    fprintf(stderr, "[trace_test] FB state loaded into sim: single buffer (%dx%d)\n", h, v);
+                }
+            }
             ptr += shdr->fb_size;
 
             /* Write texture memory to sim */
@@ -265,13 +322,6 @@ int main(int argc, char **argv) {
              * SpinalVoodoo: frontBufferBase = swapCount(0) ? buffer1 : buffer0
              * Mapping: swapCount(0) = 1 - draw_buffer */
             {
-                uint32_t fbiInit2_val = 0;
-                for (uint32_t i = 0; i < shdr->reg_count; i++) {
-                    if ((regs[i].addr & 0x3fc) == 0x218) {
-                        fbiInit2_val = regs[i].value;
-                        break;
-                    }
-                }
                 uint32_t buffer_offset = ((fbiInit2_val >> 11) & 0x1FF) * 4096;
                 if (buffer_offset > 0) {
                     uint32_t draw_buffer = shdr->draw_offset / buffer_offset;
@@ -296,6 +346,9 @@ int main(int argc, char **argv) {
     /* Replay trace entries */
     int tri_count = 0;
     int tex_write_count = 0;
+    int fb_write_count = 0;
+    uint32_t last_render_draw_offset = 0;
+    uint32_t last_fb_write_offset = 0;
     for (uint32_t i = 0; i < num_entries; i++) {
         const voodoo_trace_entry_t *e = &entries[i];
 
@@ -309,11 +362,17 @@ int main(int argc, char **argv) {
                 if (!ref_only) {
                     sim_write(addr, e->data);
 
-                    /* On triangle commands, wait for pipeline to drain */
-                    if (reg == 0x080 || reg == 0x100 || reg == 0x124) {
+                    /* On triangle/fastfill commands, wait for pipeline to drain */
+                    if (reg == 0x080 || reg == 0x100 || reg == 0x124)
                         sim_idle_wait();
-                        tri_count++;
-                    }
+                }
+
+                /* Track render commands and snapshot draw_offset so we know
+                 * where the last rendered content landed, regardless of
+                 * whether a swapbufferCMD follows. */
+                if (reg == 0x080 || reg == 0x100 || reg == 0x124) {
+                    tri_count++;
+                    last_render_draw_offset = ref_get_draw_offset();
                 }
                 break;
             }
@@ -332,6 +391,8 @@ int main(int argc, char **argv) {
                 ref_write_fb(offset, e->data);
                 if (!ref_only)
                     sim_write(0x400000 | offset, e->data);
+                fb_write_count++;
+                last_fb_write_offset = ref_get_fb_write_offset();
                 break;
             }
 
@@ -347,6 +408,8 @@ int main(int argc, char **argv) {
                 ref_write_fb_w(offset, (uint16_t)e->data);
                 if (!ref_only)
                     sim_write(0x400000 | offset, e->data);
+                fb_write_count++;
+                last_fb_write_offset = ref_get_fb_write_offset();
                 break;
             }
 
@@ -363,8 +426,8 @@ int main(int argc, char **argv) {
         }
     }
 
-    fprintf(stderr, "[trace_test] Replay complete: %u entries, %d triangles, %d tex writes\n",
-            num_entries, tri_count, tex_write_count);
+    fprintf(stderr, "[trace_test] Replay complete: %u entries, %d triangles, %d tex writes, %d fb writes\n",
+            num_entries, tri_count, tex_write_count, fb_write_count);
 
     /* Wait for pipeline to drain before reading back */
     if (!ref_only)
@@ -414,16 +477,26 @@ int main(int argc, char **argv) {
     uint32_t row_width   = ref_get_row_width();  /* bytes */
     int row_stride = row_width / 2;              /* pixels (16-bit) */
 
-    /* Use draw buffer for screenshot — the trace renders into the draw buffer
-     * and typically does not include a swapbufferCMD, so the rendered content
-     * remains in the draw buffer. */
-    uint32_t fb_offset = draw_offset;
+    /* Use the draw_offset that was active during the last render command.
+     * This handles both cases:
+     *   - Glide traces: render then swap → content at pre-swap draw_offset
+     *   - 86Box captures: swap then render → content at post-swap draw_offset
+     * For LFB-only frames (no triangles), use the fb_write_offset that was
+     * active during LFB writes — this is the buffer the CPU wrote into.
+     * Fall back to draw_offset if neither type of rendering occurred. */
+    uint32_t fb_offset;
+    if (tri_count > 0)
+        fb_offset = last_render_draw_offset;
+    else if (fb_write_count > 0)
+        fb_offset = last_fb_write_offset;
+    else
+        fb_offset = draw_offset;
     /* Sim uses 32-bit interleaved pixels with buffer_offset <<13 (vs 86Box <<12),
      * so sim buffer addresses are double the ref's 16-bit offsets. */
     uint32_t sim_fb_offset = fb_offset * 2;
 
-    fprintf(stderr, "[trace_test] FB layout: front=0x%x draw=0x%x row_width=%u (%d pixels)\n",
-            front_offset, draw_offset, row_width, row_stride);
+    fprintf(stderr, "[trace_test] FB layout: front=0x%x draw=0x%x fb_write=0x%x reading=0x%x row_width=%u (%d pixels)\n",
+            front_offset, draw_offset, last_fb_write_offset, fb_offset, row_width, row_stride);
 
     int mismatches = 0;
     int total_pixels = disp_width * disp_height;
@@ -509,6 +582,14 @@ int main(int argc, char **argv) {
                         if (mismatches <= 10) {
                             fprintf(stderr, "  MISMATCH at (%d,%d): ref=0x%04x sim=0x%04x\n",
                                     x, y, rp, sp);
+                        }
+                        /* Count sim-black pixels where ref has visible color */
+                        if (sp == 0x0000 && rp > 0x0000) {
+                            static int black_count = 0;
+                            if (black_count < 20) {
+                                fprintf(stderr, "  SIM-BLACK at (%d,%d): ref=0x%04x\n", x, y, rp);
+                            }
+                            black_count++;
                         }
                     }
                 }

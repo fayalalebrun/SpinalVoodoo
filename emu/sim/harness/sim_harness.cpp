@@ -59,6 +59,16 @@ static int fbwrite_phase = 0; /* 0=clear, 1=idle_after_clear, 2=text_render */
 /* TMU logging: log texture lookup details for cutoff analysis */
 static FILE *tmu_log = nullptr;
 
+/* Pixel pipeline trace: env-var-gated per-pixel debug logging.
+ * Set SIM_WATCH_X and SIM_WATCH_Y to trace a pixel through every stage.
+ * Coords are post-yOriginSwap (screen space). */
+static int watch_x = -1;
+static int watch_y = -1;
+
+/* Helper: sign-extend 12-bit SData coord to int16_t */
+static inline int16_t sext12(uint16_t v) {
+    return (int16_t)(v << 4) >> 4;
+}
 
 /* Signal flag — set asynchronously, polled in tick_one() */
 static volatile sig_atomic_t quit_requested = 0;
@@ -114,6 +124,127 @@ static void tick_one(void) {
                 int32_t wGrad = (int32_t)r->CoreSim__DOT__core_1__DOT__rasterizer_1_o_payload_grads_wGrad;
                 fprintf(tmu_log, "R %lu %d %d s=%d t=%d w=%d\n",
                         (unsigned long)(sim_time/2), rx, ry, sGrad, tGrad, wGrad);
+            }
+        }
+    }
+
+    /* Pixel pipeline trace: log every pipeline stage for the watched pixel.
+     * Gated by watch_x/watch_y (set from SIM_WATCH_X/Y env vars). */
+    if (watch_x >= 0) {
+        auto r = top->rootp;
+
+        /* --- TMU input (rasterizer fork to TMU: S/T/W before lookup) --- */
+        if (r->CoreSim__DOT__core_1__DOT__rasterFork_0_valid &&
+            r->CoreSim__DOT__core_1__DOT__tmu_1_io_input_ready) {
+            int16_t px = sext12(r->CoreSim__DOT__core_1__DOT__rasterFork_0_payload_coords_0);
+            int16_t py = sext12(r->CoreSim__DOT__core_1__DOT__rasterFork_0_payload_coords_1);
+            if (px == watch_x && py == watch_y) {
+                int32_t s = (int32_t)r->CoreSim__DOT__core_1__DOT__tmu_1_io_input_payload_s;
+                int32_t t = (int32_t)r->CoreSim__DOT__core_1__DOT__tmu_1_io_input_payload_t;
+                int32_t w = (int32_t)r->CoreSim__DOT__core_1__DOT__tmu_1_io_input_payload_w;
+                int32_t texS = (int32_t)r->CoreSim__DOT__core_1__DOT__tmu_1__DOT__texS;
+                int32_t texT = (int32_t)r->CoreSim__DOT__core_1__DOT__tmu_1__DOT__texT;
+                uint8_t lod = r->CoreSim__DOT__core_1__DOT__tmu_1__DOT__lodLevel;
+                uint32_t pointAddr = r->CoreSim__DOT__core_1__DOT__tmu_1__DOT__pointAddr;
+                fprintf(stderr, "[PIXEL %d,%d] TMU_IN: s=0x%08x t=0x%08x w=0x%08x texS=%d texT=%d lod=%d pointAddr=0x%06x\n",
+                        px, py, (uint32_t)s, (uint32_t)t, (uint32_t)w, texS, texT, lod, pointAddr);
+            }
+        }
+
+        /* --- TMU join (texture result + rasterizer coords reunited) --- */
+        if (r->CoreSim__DOT__core_1__DOT__tmuJoined_valid) {
+            int16_t px = sext12(r->CoreSim__DOT__core_1__DOT__tmuJoined_payload_2_coords_0);
+            int16_t py = sext12(r->CoreSim__DOT__core_1__DOT__tmuJoined_payload_2_coords_1);
+            if (px == watch_x && py == watch_y) {
+                fprintf(stderr, "[PIXEL %d,%d] TMU: tex=(%d,%d,%d) alpha=%d\n",
+                        px, py,
+                        r->CoreSim__DOT__core_1__DOT__tmu_1_io_output_payload_texture_r,
+                        r->CoreSim__DOT__core_1__DOT__tmu_1_io_output_payload_texture_g,
+                        r->CoreSim__DOT__core_1__DOT__tmu_1_io_output_payload_texture_b,
+                        r->CoreSim__DOT__core_1__DOT__tmu_1_io_output_payload_textureAlpha);
+            }
+        }
+
+        /* --- ColorCombine output --- */
+        if (r->CoreSim__DOT__core_1__DOT__colorCombine_1_io_output_valid &&
+            r->CoreSim__DOT__core_1__DOT__colorCombine_1_io_output_ready) {
+            int16_t px = sext12(r->CoreSim__DOT__core_1__DOT__colorCombine_1_io_output_payload_coords_0);
+            int16_t py = sext12(r->CoreSim__DOT__core_1__DOT__colorCombine_1_io_output_payload_coords_1);
+            if (px == watch_x && py == watch_y) {
+                fprintf(stderr, "[PIXEL %d,%d] CC:  rgb=(%d,%d,%d) alpha=%d ccMode=rgbSel%d,msel%d,texEn%d\n",
+                        px, py,
+                        r->CoreSim__DOT__core_1__DOT__colorCombine_1_io_output_payload_color_r,
+                        r->CoreSim__DOT__core_1__DOT__colorCombine_1_io_output_payload_color_g,
+                        r->CoreSim__DOT__core_1__DOT__colorCombine_1_io_output_payload_color_b,
+                        r->CoreSim__DOT__core_1__DOT__colorCombine_1_io_output_payload_alpha,
+                        r->CoreSim__DOT__core_1__DOT__colorCombine_1__DOT__io_input_payload_config_rgbSel,
+                        r->CoreSim__DOT__core_1__DOT__colorCombine_1__DOT__io_input_payload_config_mselect,
+                        r->CoreSim__DOT__core_1__DOT__colorCombine_1__DOT__io_input_payload_config_textureEnable);
+            }
+        }
+
+        /* --- Fog output --- */
+        if (r->CoreSim__DOT__core_1__DOT__fog_1_io_output_valid &&
+            r->CoreSim__DOT__core_1__DOT__fog_1_io_output_ready) {
+            int16_t px = sext12(r->CoreSim__DOT__core_1__DOT__fog_1_io_output_payload_coords_0);
+            int16_t py = sext12(r->CoreSim__DOT__core_1__DOT__fog_1_io_output_payload_coords_1);
+            if (px == watch_x && py == watch_y) {
+                fprintf(stderr, "[PIXEL %d,%d] FOG: rgb=(%d,%d,%d) alpha=%d\n",
+                        px, py,
+                        r->CoreSim__DOT__core_1__DOT__fog_1_io_output_payload_color_r,
+                        r->CoreSim__DOT__core_1__DOT__fog_1_io_output_payload_color_g,
+                        r->CoreSim__DOT__core_1__DOT__fog_1_io_output_payload_color_b,
+                        r->CoreSim__DOT__core_1__DOT__fog_1_io_output_payload_alpha);
+            }
+        }
+
+        /* --- FramebufferAccess output (after depth test + alpha blend) --- */
+        if (r->CoreSim__DOT__core_1__DOT__fbAccess_io_output_valid) {
+            int16_t px = sext12(r->CoreSim__DOT__core_1__DOT__fbAccess_io_output_payload_coords_0);
+            int16_t py = sext12(r->CoreSim__DOT__core_1__DOT__fbAccess_io_output_payload_coords_1);
+            if (px == watch_x && py == watch_y) {
+                uint32_t existingPixel = r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__afterDepthTest_payload_1;
+                fprintf(stderr, "[PIXEL %d,%d] FBA: rgb=(%d,%d,%d) alpha=%d blended=(%d,%d,%d) existing=0x%08x blend=%d srcF=%d dstF=%d depthF=%d\n",
+                        px, py,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess_io_output_payload_color_r,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess_io_output_payload_color_g,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess_io_output_payload_color_b,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess_io_output_payload_alpha,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__blended_r,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__blended_g,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__blended_b,
+                        existingPixel,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__io_input_payload_alphaMode_alphaBlendEnable,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__io_input_payload_alphaMode_rgbSrcFact,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__io_input_payload_alphaMode_rgbDstFact,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__io_input_payload_fbzMode_depthFunction);
+            }
+        }
+
+        /* --- Pre-dither (RGB888 entering dither) --- */
+        if (r->CoreSim__DOT__core_1__DOT__ditherJoined_valid) {
+            int16_t px = sext12(r->CoreSim__DOT__core_1__DOT__ditherJoined_payload_2_coords_0);
+            int16_t py = sext12(r->CoreSim__DOT__core_1__DOT__ditherJoined_payload_2_coords_1);
+            if (px == watch_x && py == watch_y) {
+                fprintf(stderr, "[PIXEL %d,%d] DIT: rgb888=(%d,%d,%d)\n",
+                        px, py,
+                        r->CoreSim__DOT__core_1__DOT__ditherJoined_payload_2_r,
+                        r->CoreSim__DOT__core_1__DOT__ditherJoined_payload_2_g,
+                        r->CoreSim__DOT__core_1__DOT__ditherJoined_payload_2_b);
+            }
+        }
+
+        /* --- Write stage (final RGB565 + FB address) --- */
+        if (r->CoreSim__DOT__core_1__DOT__write_1__DOT__i_fromPipeline_valid) {
+            int16_t px = sext12(r->CoreSim__DOT__core_1__DOT__write_1__DOT__i_fromPipeline_payload_coords_0);
+            int16_t py = sext12(r->CoreSim__DOT__core_1__DOT__write_1__DOT__i_fromPipeline_payload_coords_1);
+            if (px == watch_x && py == watch_y) {
+                fprintf(stderr, "[PIXEL %d,%d] WR:  rgb565=(%d,%d,%d) depth=0x%04x\n",
+                        px, py,
+                        r->CoreSim__DOT__core_1__DOT__write_1__DOT__i_fromPipeline_payload_toFb_color_r,
+                        r->CoreSim__DOT__core_1__DOT__write_1__DOT__i_fromPipeline_payload_toFb_color_g,
+                        r->CoreSim__DOT__core_1__DOT__write_1__DOT__i_fromPipeline_payload_toFb_color_b,
+                        r->CoreSim__DOT__core_1__DOT__write_1__DOT__i_fromPipeline_payload_toFb_depthAlpha);
             }
         }
     }
@@ -387,6 +518,16 @@ int sim_init(void) {
         if (cycle_limit)
             fprintf(stderr, "[sim_harness] Cycle limit set to %lu ticks\n",
                     (unsigned long)cycle_limit);
+    }
+
+    /* Pixel pipeline trace: SIM_WATCH_X + SIM_WATCH_Y */
+    const char *wx_str = getenv("SIM_WATCH_X");
+    const char *wy_str = getenv("SIM_WATCH_Y");
+    if (wx_str && wy_str) {
+        watch_x = atoi(wx_str);
+        watch_y = atoi(wy_str);
+        fprintf(stderr, "[sim_harness] Pixel trace enabled for (%d, %d)\n",
+                watch_x, watch_y);
     }
 
     fprintf(stderr, "[sim_harness] Initialized CoreSim Verilator model\n");

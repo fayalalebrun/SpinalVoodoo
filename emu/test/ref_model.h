@@ -46,6 +46,9 @@ uint32_t ref_get_front_offset(void);
 /* Get current row width in bytes. */
 uint32_t ref_get_row_width(void);
 
+/* Get current LFB write offset (byte offset where LFB writes land). */
+uint32_t ref_get_fb_write_offset(void);
+
 /* Get pointer to raw texture memory (TMU 0). */
 uint8_t *ref_get_tex(void);
 

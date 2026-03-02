@@ -432,6 +432,12 @@ uint32_t ref_get_row_width(void)
     return voodoo->row_width;
 }
 
+uint32_t ref_get_fb_write_offset(void)
+{
+    if (!voodoo) return 0;
+    return voodoo->fb_write_offset;
+}
+
 uint8_t *ref_get_tex(void)
 {
     if (!voodoo) return NULL;
@@ -486,12 +492,13 @@ int ref_load_state(const uint8_t *data, uint32_t size)
     }
     ptr += reg_data_size;
 
-    /* Copy framebuffer */
-    /* Framebuffer copy disabled — initial FB state not needed for trace replay,
-     * and 86Box's 16-bit layout is incompatible with sim's 32-bit interleaved format. */
-    // uint32_t fb_copy = (hdr->fb_size <= (uint32_t)voodoo->fb_size) ?
-    //                    hdr->fb_size : (uint32_t)voodoo->fb_size;
-    // memcpy(voodoo->fb_mem, ptr, fb_copy);
+    /* Copy framebuffer — ref model uses 86Box's native 16-bit layout.
+     * (Sim's 32-bit interleaved format is handled separately in trace_test.cpp.) */
+    {
+        uint32_t fb_copy = (hdr->fb_size <= (uint32_t)voodoo->fb_size) ?
+                            hdr->fb_size : (uint32_t)voodoo->fb_size;
+        memcpy(voodoo->fb_mem, ptr, fb_copy);
+    }
     ptr += hdr->fb_size;
 
     /* Copy texture memory */
@@ -523,6 +530,9 @@ int ref_load_state(const uint8_t *data, uint32_t size)
         /* Also set front_offset/back_offset consistently */
         voodoo->params.front_offset = voodoo->disp_buffer * buffer_offset;
         voodoo->back_offset         = voodoo->draw_buffer * buffer_offset;
+        /* Recompute fb_write_offset, fb_read_offset, etc. from the
+         * corrected buffer assignments. */
+        voodoo_recalc(voodoo);
     }
 
     fprintf(stderr, "[ref_model] State loaded: %u regs, fb=%u tex=%u draw=0x%x aux=0x%x row=%u\n",

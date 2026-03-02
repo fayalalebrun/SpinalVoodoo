@@ -46,6 +46,12 @@ uint32_t ref_get_front_offset(void);
 /* Get current row width in bytes. */
 uint32_t ref_get_row_width(void);
 
+/* Get pointer to raw texture memory (TMU 0). */
+uint8_t *ref_get_tex(void);
+
+/* Get texture memory size in bytes. */
+uint32_t ref_get_tex_size(void);
+
 /* Load a state snapshot into the reference model.
  * data points to the raw state.bin file contents, size is the file length.
  * Returns 0 on success, -1 on error. */

@@ -136,10 +136,15 @@ case class Core(c: Config) extends Component {
   val isTexRead = isTex && !cpuCmd.opcode(0)
 
   // Internal register bus (22-bit address, includes bit 21 for remap detection)
+  // Strip Voodoo chip-select bits [13:10] from PCI register address.
+  // 86Box uses (addr >> 10) & 0xF as chip select (FBI=1, TREX0=2, TREX1=4).
+  // Our unified RegisterBank handles all chips, so only the register offset matters.
   val internalRegBus = Bmb(RegisterBank.externalBmbParams(c))
   internalRegBus.cmd.valid := cpuCmd.valid && isReg
   internalRegBus.cmd.opcode := cpuCmd.opcode
-  internalRegBus.cmd.address := cpuCmd.address.resize(22 bits)
+  internalRegBus.cmd.address := (cpuCmd.address(21 downto 14) ## U"4'0" ## cpuCmd.address(
+    9 downto 0
+  )).asUInt
   internalRegBus.cmd.data := cpuCmd.data
   internalRegBus.cmd.mask := cpuCmd.mask
   internalRegBus.cmd.length := cpuCmd.length
@@ -264,11 +269,19 @@ case class Core(c: Config) extends Component {
   io.swapsPending := swapBuffer.io.swapsPending
 
   // ========================================================================
+  // Framebuffer pixel stride (runtime, from fbiInit1[7:4])
+  // ========================================================================
+  // fbiInit1[7:4] = video tiles in X / 2; row_width_bytes = val * 128
+  // stride_pixels = row_width_bytes / 2 = val * 64 (real HW is 16-bit; we use 32-bit interleaved)
+  val fbPixelStride = (regBank.init.fbiInit1_videoTilesX << 6).resize(11 bits)
+
+  // ========================================================================
   // Draw buffer selection (double-buffering)
   // ========================================================================
   // fbiInit2[20:11] = buffer offset in 4KB units
+  // Shift by 13 (not 12) because SpinalVoodoo uses 32-bit pixels (4 bytes each)
   val bufferOffsetBytes =
-    regBank.init.fbiInit2_bufferOffset.resize(c.addressWidth.value bits) |<< 12
+    regBank.init.fbiInit2_bufferOffset.resize(c.addressWidth.value bits) |<< 13
   val buffer0Base = io.fbBaseAddr
   val buffer1Base = io.fbBaseAddr + bufferOffsetBytes
   val frontBufferBase = swapBuffer.io.swapCount(0) ? buffer1Base | buffer0Base
@@ -458,6 +471,7 @@ case class Core(c: Config) extends Component {
   lfb.io.zaColor := regBank.renderConfig.zaColor
   lfb.io.fbWriteBaseAddr := lfbWriteBufferBase
   lfb.io.fbReadBaseAddr := lfbReadBufferBase
+  lfb.io.fbPixelStride := fbPixelStride
 
   // ========================================================================
   // Color Combine Unit
@@ -687,6 +701,7 @@ case class Core(c: Config) extends Component {
   val fbAccess = FramebufferAccess(c)
   fbAccess.io.input << afterAlphaTest
   fbAccess.io.fbBaseAddr := drawBufferBase
+  fbAccess.io.fbPixelStride := fbPixelStride
 
   // fbzMode fields are now per-pixel (carried through pipeline in Fog.Output.fbzMode)
   // alphaMode blend fields are now per-pixel (carried through pipeline in Fog.Output.alphaMode)
@@ -708,6 +723,7 @@ case class Core(c: Config) extends Component {
     out.rgbWrite := fbIn.rgbWrite
     out.auxWrite := fbIn.auxWrite
     out.fbBaseAddr := drawBufferBase
+    out.fbPixelStride := fbPixelStride
     out
   }
 
@@ -723,6 +739,7 @@ case class Core(c: Config) extends Component {
   fastfillWrite.io.regs.fbzMode := regBank.renderConfig.fbzModeBundle
   fastfillWrite.io.regs.drawBufferBase := drawBufferBase
   fastfillWrite.io.regs.yOriginSwapValue := yOriginSwapValue
+  fastfillWrite.io.regs.fbPixelStride := fbPixelStride
 
   // ========================================================================
   // Shared Dither: merge all three PreDither paths, dither, produce Write.Input
@@ -760,6 +777,7 @@ case class Core(c: Config) extends Component {
     out.rgbWrite := pd.rgbWrite
     out.auxWrite := pd.auxWrite
     out.fbBaseAddr := pd.fbBaseAddr
+    out.fbPixelStride := pd.fbPixelStride
     out
   }
 

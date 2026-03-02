@@ -26,6 +26,7 @@ case class FramebufferAccess(c: Config) extends Component {
     // Other registers (not yet per-triangle)
     val zaColor = in Bits (32 bits)
     val fbBaseAddr = in UInt (c.addressWidth)
+    val fbPixelStride = in UInt (11 bits)
 
     // Pipeline busy: pixels in flight inside fork-queue-join
     val busy = out Bool ()
@@ -108,7 +109,8 @@ case class FramebufferAccess(c: Config) extends Component {
 
   val internalStream = io.input.translateWith {
     val data = Internal()
-    val pixelFlat = (payload.coords(1) * c.fbPixelStride + payload.coords(0)).asUInt
+    val strideSInt = (False ## io.fbPixelStride).asSInt
+    val pixelFlat = (payload.coords(1) * strideSInt + payload.coords(0)).asUInt
     data.address := (io.fbBaseAddr + (pixelFlat << 2)).resized
     data.passthrough.coords := payload.coords
     data.passthrough.color := payload.color

@@ -114,15 +114,16 @@ trace/%:
 # Replay a .bin trace through both 86Box ref model and Verilator CoreSim.
 # Produces _ref.png, _sim.png, _diff.png in test-output/<name>/.
 check/%: $(TRACE_TEST_BIN)
-	@test -f traces/$*.bin || { echo "ERROR: traces/$*.bin not found. Run 'make trace/$*' first."; exit 1; }
 	@mkdir -p test-output/$*
-	$(TRACE_TEST_BIN) traces/$*.bin --output-dir test-output/$*
-
-# Replay a directory trace (with state.bin)
-check-dir/%: $(TRACE_TEST_BIN)
-	@test -d traces/$* || { echo "ERROR: traces/$*/ not found."; exit 1; }
-	@mkdir -p test-output/$*
-	$(TRACE_TEST_BIN) traces/$*/ --output-dir test-output/$*
+	@if [ -f traces/$*.bin ]; then \
+	  src=traces/$*.bin; \
+	elif [ -d traces/$* ]; then \
+	  src=traces/$*/; \
+	else \
+	  echo "ERROR: neither traces/$*.bin nor traces/$*/ found. Run 'make trace/$*' first."; exit 1; \
+	fi; \
+	$(if $(filter 1,$(TRACE)),SIM_FST=$(abspath test-output)/$*/trace.fst) \
+	$(TRACE_TEST_BIN) "$$src" --output-dir test-output/$*
 
 # Capture + check in one step (sequential: trace must finish before check starts)
 test/%:

@@ -11,7 +11,6 @@ case class Config(
     texCoordsFormat: QFormat,
     wFormat: QFormat,
     maxFbDims: (Int, Int),
-    fbPixelStride: Int,
     addressWidth: BitCount,
     packedTexLayout: Boolean = true
 )
@@ -27,7 +26,6 @@ object Config {
     texCoordsFormat = SQ(32, 18), // Datasheet: 14.18 format = 14 integer + 18 frac = SQ(32, 18)
     wFormat = SQ(32, 30), // Datasheet: 2.30 format = 2 integer + 30 frac = SQ(32, 30)
     maxFbDims = (800, 600),
-    fbPixelStride = 1024,
     addressWidth = 26 bits
   )
 

@@ -152,12 +152,19 @@ case class Tmu(c: voodoo.Config) extends Component {
     val validOow = !oowRaw.msb && (absOow =/= 0)
     val safeInterp = validOow ? interp | U(0, 17 bits)
 
-    // Per-pixel LOD adjustment: log2(W) = 30 - log2(oow_raw)
+    // Per-pixel LOD adjustment matching 86Box:
+    //   86Box: _w = (1ULL << 48) / state->tmu0_w, where tmu0_w = raw_W << 2
+    //   adjustment = fastlog(_w) - (19 << 8)
+    // SpinalVoodoo uses raw_W (no <<2), so:
+    //   _w = (1ULL << 48) / (raw_W << 2) = (1ULL << 46) / raw_W
+    //   fastlog(_w) = log2(2^46 / raw_W) * 256 = (46 - log2(raw_W)) * 256
+    //   adjustment = (46 - log2(raw_W)) * 256 - 19*256 = (27 - log2(raw_W)) * 256
     when(validOow) {
-      val adjInt = (U(30, 6 bits) - msbPos).resize(8 bits)
+      // Signed subtraction: adjSInt can be negative when raw_W >= 2^27
+      val adjSInt = (S(27, 8 bits) - (False ## msbPos).asSInt.resize(8 bits))
       val logFrac = logTable(index)
-      perspLodAdjust := ((False ## adjInt ## U(0, 8 bits)).asSInt
-        - (False ## U(0, 8 bits) ## logFrac).asSInt).resize(16 bits)
+      perspLodAdjust := ((adjSInt << 8).resize(16 bits)
+        - (False ## U(0, 8 bits) ## logFrac).asSInt.resize(16 bits))
     }
 
     // Multiply: product = sow_raw * interp (signed × unsigned)
@@ -179,40 +186,58 @@ case class Tmu(c: voodoo.Config) extends Component {
   // LOD Calculation
   val tLOD = Tmu.TLOD.decode(io.input.payload.config.tLOD)
 
-  // Compute absolute gradients
-  def absAFix(v: AFix, fmt: QFormat): AFix = {
-    val result = AFix(fmt)
-    when(v.raw.msb) {
-      result.raw := (-v).raw.resized
-    }.otherwise {
-      result.raw := v.raw
-    }
-    result
-  }
+  // Base LOD computation matching 86Box voodoo_queue_triangle:
+  //   tempdx = dSdX^2 + dTdX^2
+  //   tempdy = dSdY^2 + dTdY^2
+  //   tempLOD = max(tempdx, tempdy)
+  //   LOD = log2(tempLOD / 2^36) * 256
+  //   LOD >>= 2
+  //
+  // 86Box stores gradients as (val << 14) then shifts back (>> 14) before squaring,
+  // so it squares the original 32-bit register values. We must do the same: use the
+  // raw 32-bit SQ(14,18) values directly without any pre-shift.
+  // The normalization constant 2^36 = (2^18)^2 accounts for the 18-bit fractional
+  // part of SQ(14,18), converting "texel-fractions per pixel" to "texels per pixel".
 
-  val absDSdX = absAFix(io.input.payload.dSdX, c.texCoordsFormat)
-  val absDTdX = absAFix(io.input.payload.dTdX, c.texCoordsFormat)
-  val absDSdY = absAFix(io.input.payload.dSdY, c.texCoordsFormat)
-  val absDTdY = absAFix(io.input.payload.dTdY, c.texCoordsFormat)
+  val dSdX_raw = io.input.payload.dSdX.raw.asSInt
+  val dTdX_raw = io.input.payload.dTdX.raw.asSInt
+  val dSdY_raw = io.input.payload.dSdY.raw.asSInt
+  val dTdY_raw = io.input.payload.dTdY.raw.asSInt
 
-  // Find maximum gradient and compute LOD
-  val maxGradX = absDSdX.max(absDTdX)
-  val maxGradY = absDSdY.max(absDTdY)
-  val maxGrad = maxGradX.max(maxGradY)
-  val maxGradRaw = maxGrad.raw.asUInt.resize(32 bits)
+  // Sum of squares: 32*32=64 bit products, sum fits in 64 bits (always positive).
+  val tempdx =
+    (dSdX_raw * dSdX_raw).resize(64 bits).asUInt + (dTdX_raw * dTdX_raw).resize(64 bits).asUInt
+  val tempdy =
+    (dSdY_raw * dSdY_raw).resize(64 bits).asUInt + (dTdY_raw * dTdY_raw).resize(64 bits).asUInt
+  val tempLOD = Mux(tempdx > tempdy, tempdx, tempdy).resize(64 bits)
 
+  // Compute log2(tempLOD) in 8.8 format using CLZ + logTable
   val baseLod_8_8 = SInt(16 bits)
-  when(maxGradRaw === 0) {
-    baseLod_8_8 := S(-18 * 256, 16 bits)
+  when(tempLOD === 0) {
+    baseLod_8_8 := S(0, 16 bits) // Will be clamped to lodmin
   }.otherwise {
-    val gradClz = clz32(maxGradRaw)
-    val gradMsbPos = (U(31, 6 bits) - gradClz).resize(6 bits)
-    val gradNorm = (maxGradRaw |<< gradClz).resize(32 bits)
-    val gradIndex = gradNorm(30 downto 23)
+    // CLZ on 64-bit value: find MSB position
+    val tempLOD32hi = tempLOD(63 downto 32)
+    val tempLOD32lo = tempLOD(31 downto 0)
+    val useHi = tempLOD32hi =/= 0
+    val clzInput = Mux(useHi, tempLOD32hi, tempLOD32lo)
+    val clz32val = clz32(clzInput)
+    val msbPos64 =
+      Mux(useHi, U(63, 7 bits) - clz32val.resize(7 bits), U(31, 7 bits) - clz32val.resize(7 bits))
 
-    val lodIntPart = ((False ## gradMsbPos).asSInt.resize(8 bits) - S(18, 8 bits)).resize(8 bits)
-    val lodFracPart = logTable(gradIndex)
-    baseLod_8_8 := (lodIntPart.asBits ## lodFracPart.asBits).asSInt
+    // Normalize to get 8-bit index for logTable
+    // We need bits [msb-1 : msb-8] of tempLOD
+    val shiftAmt = Mux(msbPos64 >= 8, (msbPos64 - 8).resize(6 bits), U(0, 6 bits))
+    val shifted = (tempLOD >> shiftAmt).resize(16 bits)
+    val lodIndex = shifted(7 downto 0)
+
+    // log2(tempLOD) * 256 = msbPos64 * 256 + logTable[index]
+    // Subtract 36*256 for the /2^36 normalization (matching 86Box)
+    // Then >>2 to match 86Box's LOD >>= 2
+    val rawLod = ((False ## msbPos64).asSInt.resize(16 bits) << 8).resize(16 bits) +
+      (False ## U(0, 8 bits) ## logTable(lodIndex)).asSInt.resize(16 bits) -
+      S(36 * 256, 16 bits)
+    baseLod_8_8 := (rawLod >> 2).resize(16 bits)
   }
 
   // 8.8 fixed-point LOD pipeline

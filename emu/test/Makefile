@@ -24,6 +24,9 @@ EBOX_INC   = ../86Box/src/include
 VERILATOR       = verilator
 VERILATOR_ROOT ?= $(shell $(VERILATOR) --getenv VERILATOR_ROOT)
 VERILATOR_FLAGS = --cc --output-split 20000 --output-split-cfuncs 5000 --decorations none --public-flat-rw --x-assign fast --x-initial fast --noassert -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -Wno-CMPCONST -Wno-UNSIGNED
+ifeq ($(TRACE),1)
+VERILATOR_FLAGS += --trace-fst --trace-structs --trace-underscore
+endif
 
 # Native 64-bit compiler — prefer clang if available
 CXX ?= $(shell command -v clang++ 2>/dev/null || echo g++)
@@ -38,6 +41,10 @@ endif
 CFLAGS   = -O2 -fwrapv -w -I$(STUBS_DIR) -I$(EBOX_INC)
 CXXFLAGS = -O2 -std=c++17 -I$(OBJ_DIR) -I$(VERILATOR_ROOT)/include -I$(VERILATOR_ROOT)/include/vltstd \
            -I$(SIM_DIR)/harness -I. -DVL_TIME_CONTEXT
+DEPFLAGS = -MMD -MP
+ifeq ($(TRACE),1)
+CXXFLAGS += -DVM_TRACE_FST
+endif
 
 # SpinalHDL Verilog source
 VERILOG = $(SIM_DIR)/rtl/CoreSim.v
@@ -45,6 +52,12 @@ SCALA_SRCS := $(shell find $(PROJ_ROOT)/src -name '*.scala') $(PROJ_ROOT)/projec
 
 # Stamps
 VERILATE_STAMP = $(OBJ_DIR)/.verilate.stamp
+
+# Trace mode sentinel: forces rebuild when TRACE= setting changes.
+TRACE_MODE_FILE = $(OBJ_DIR)/.trace_mode
+TRACE_MODE_VAL  = $(if $(filter 1,$(TRACE)),trace,notrace)
+$(shell mkdir -p $(OBJ_DIR))
+$(shell [ -f $(TRACE_MODE_FILE) ] && [ "$$(cat $(TRACE_MODE_FILE))" = "$(TRACE_MODE_VAL)" ] || echo "$(TRACE_MODE_VAL)" > $(TRACE_MODE_FILE))
 
 ###############################################################################
 # Targets
@@ -59,53 +72,58 @@ $(VERILOG): $(SCALA_SRCS)
 	@sed -i 's|\$$readmemb("\([^/"]*\.bin\)"|\$$readmemb("$(abspath $(dir $(VERILOG)))/\1"|g' $@
 
 # Step 2: Verilate (64-bit obj_dir, separate from 32-bit Glide build)
-$(VERILATE_STAMP): $(VERILOG)
+$(VERILATE_STAMP): $(VERILOG) $(TRACE_MODE_FILE)
 	@mkdir -p $(OBJ_DIR)
 	$(VERILATOR) $(VERILATOR_FLAGS) $(VERILOG) --Mdir $(OBJ_DIR)
 	@touch $@
 
-# Step 3: Build Verilator model library (64-bit)
-$(OBJ_DIR)/VCoreSim__ALL.a: $(VERILATE_STAMP)
+# Step 3: Build Verilator model + runtime libraries (64-bit)
+# OPT_GLOBAL passes -DVL_USER_WARN to the verilated runtime compilation,
+# suppressing its default vl_warn so our override in sim_harness.cpp wins.
+# Use a stamp file so parallel make doesn't invoke VCoreSim.mk twice.
+VERILATOR_LIBS_STAMP = $(OBJ_DIR)/.verilator_libs.stamp
+$(VERILATOR_LIBS_STAMP): $(VERILATE_STAMP)
 	$(MAKE) -j$(shell nproc) -C $(OBJ_DIR) -f VCoreSim.mk \
 		CXX="$(CXX)" \
 		OBJCACHE="$(OBJCACHE)" \
 		OPT_FAST="-O3" \
-		OPT_SLOW=""
+		OPT_SLOW="" \
+		OPT_GLOBAL="-DVL_USER_WARN"
+	@touch $@
+$(OBJ_DIR)/VCoreSim__ALL.a: $(VERILATOR_LIBS_STAMP)
+$(OBJ_DIR)/libverilated.a: $(VERILATOR_LIBS_STAMP)
 
 # Step 4: 86Box reference objects (compiled as C)
-$(OBJ_DIR)/vid_voodoo_render.o: $(EBOX_SRC)/vid_voodoo_render.c $(VERILATE_STAMP)
-	$(OBJCACHE) $(CC) $(CFLAGS) -Dvoodoo_queue_triangle=_voodoo_queue_triangle_86box \
+$(OBJ_DIR)/vid_voodoo_render.o: $(EBOX_SRC)/vid_voodoo_render.c | $(VERILATE_STAMP)
+	$(OBJCACHE) $(CC) $(CFLAGS) $(DEPFLAGS) -Dvoodoo_queue_triangle=_voodoo_queue_triangle_86box \
 		-c -o $@ $<
 
-$(OBJ_DIR)/vid_voodoo_texture.o: $(EBOX_SRC)/vid_voodoo_texture.c $(VERILATE_STAMP)
-	$(OBJCACHE) $(CC) $(CFLAGS) -c -o $@ $<
+$(OBJ_DIR)/vid_voodoo_texture.o: $(EBOX_SRC)/vid_voodoo_texture.c | $(VERILATE_STAMP)
+	$(OBJCACHE) $(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ $<
 
-$(OBJ_DIR)/vid_voodoo_reg.o: $(EBOX_SRC)/vid_voodoo_reg.c $(VERILATE_STAMP)
-	$(OBJCACHE) $(CC) $(CFLAGS) -c -o $@ $<
+$(OBJ_DIR)/vid_voodoo_reg.o: $(EBOX_SRC)/vid_voodoo_reg.c | $(VERILATE_STAMP)
+	$(OBJCACHE) $(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ $<
 
-$(OBJ_DIR)/vid_voodoo_fb.o: $(EBOX_SRC)/vid_voodoo_fb.c $(VERILATE_STAMP)
-	$(OBJCACHE) $(CC) $(CFLAGS) -c -o $@ $<
+$(OBJ_DIR)/vid_voodoo_fb.o: $(EBOX_SRC)/vid_voodoo_fb.c | $(VERILATE_STAMP)
+	$(OBJCACHE) $(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ $<
 
-$(OBJ_DIR)/vid_voodoo_blitter.o: $(EBOX_SRC)/vid_voodoo_blitter.c $(VERILATE_STAMP)
-	$(OBJCACHE) $(CC) $(CFLAGS) -c -o $@ $<
+$(OBJ_DIR)/vid_voodoo_blitter.o: $(EBOX_SRC)/vid_voodoo_blitter.c | $(VERILATE_STAMP)
+	$(OBJCACHE) $(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ $<
 
-$(OBJ_DIR)/ref_model.o: ref_model.c ref_model.h $(VERILATE_STAMP)
-	$(OBJCACHE) $(CC) $(CFLAGS) -c -o $@ $<
+$(OBJ_DIR)/ref_model.o: ref_model.c | $(VERILATE_STAMP)
+	$(OBJCACHE) $(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ $<
 
 # Step 5: C++ objects
-$(OBJ_DIR)/sim_harness.o: $(SIM_DIR)/harness/sim_harness.cpp $(SIM_DIR)/harness/sim_harness.h Makefile | $(VERILATE_STAMP)
-	$(OBJCACHE) $(CXX) $(CXXFLAGS) -c -o $@ $<
+$(OBJ_DIR)/sim_harness.o: $(SIM_DIR)/harness/sim_harness.cpp Makefile $(TRACE_MODE_FILE) | $(VERILATE_STAMP)
+	$(OBJCACHE) $(CXX) $(CXXFLAGS) $(DEPFLAGS) -c -o $@ $<
 
-$(OBJ_DIR)/verilated.o: $(VERILATOR_ROOT)/include/verilated.cpp Makefile | $(VERILATE_STAMP)
-	$(OBJCACHE) $(CXX) $(CXXFLAGS) -DVL_USER_WARN -c -o $@ $<
-
-$(OBJ_DIR)/verilated_threads.o: $(VERILATOR_ROOT)/include/verilated_threads.cpp Makefile | $(VERILATE_STAMP)
-	$(OBJCACHE) $(CXX) $(CXXFLAGS) -c -o $@ $<
-
-$(OBJ_DIR)/trace_test.o: trace_test.cpp ref_model.h $(SIM_DIR)/harness/sim_harness.h stb_image_write.h | $(VERILATE_STAMP)
-	$(OBJCACHE) $(CXX) $(CXXFLAGS) $(CFLAGS) -c -o $@ $<
+$(OBJ_DIR)/trace_test.o: trace_test.cpp Makefile $(TRACE_MODE_FILE) | $(VERILATE_STAMP)
+	$(OBJCACHE) $(CXX) $(CXXFLAGS) $(CFLAGS) $(DEPFLAGS) -c -o $@ $<
 
 # Step 6: Link
+# Verilator runtime (verilated.o, verilated_threads.o, verilated_dpi.o) is in
+# libverilated.a, built by VCoreSim.mk with OPT_GLOBAL="-DVL_USER_WARN" so
+# the default vl_warn is excluded and our override in sim_harness.cpp takes effect.
 OBJS = $(OBJ_DIR)/trace_test.o \
        $(OBJ_DIR)/ref_model.o \
        $(OBJ_DIR)/vid_voodoo_render.o \
@@ -113,12 +131,13 @@ OBJS = $(OBJ_DIR)/trace_test.o \
        $(OBJ_DIR)/vid_voodoo_reg.o \
        $(OBJ_DIR)/vid_voodoo_fb.o \
        $(OBJ_DIR)/vid_voodoo_blitter.o \
-       $(OBJ_DIR)/sim_harness.o \
-       $(OBJ_DIR)/verilated.o \
-       $(OBJ_DIR)/verilated_threads.o
+       $(OBJ_DIR)/sim_harness.o
 
-$(OBJ_DIR)/trace_test: $(OBJS) $(OBJ_DIR)/VCoreSim__ALL.a
-	$(CXX) -o $@ $(OBJS) $(OBJ_DIR)/VCoreSim__ALL.a -lm -lz -lpthread
+$(OBJ_DIR)/trace_test: $(OBJS) $(OBJ_DIR)/VCoreSim__ALL.a $(OBJ_DIR)/libverilated.a
+	$(CXX) -o $@ $(OBJS) $(OBJ_DIR)/VCoreSim__ALL.a $(OBJ_DIR)/libverilated.a -lm -lz -lpthread
 
 clean:
 	rm -rf $(OBJ_DIR)
+
+# Auto-generated header dependencies (created by -MMD -MP)
+-include $(wildcard $(OBJ_DIR)/*.d)

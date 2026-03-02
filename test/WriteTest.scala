@@ -9,10 +9,14 @@ import org.scalatest.funsuite.AnyFunSuite
 
 class WriteTest extends AnyFunSuite {
 
+  // Default stride: fbiInit1[7:4]=5 → 5*128=640 pixels
+  val defaultStride = 640
+
   def setupDut(dut: Write): Unit = {
     dut.clockDomain.forkStimulus(period = 10)
     dut.i.fromPipeline.valid #= false
     dut.i.fromPipeline.fbBaseAddr #= 0
+    dut.i.fromPipeline.fbPixelStride #= defaultStride
     dut.o.fbWrite.rsp.valid #= false
     dut.clockDomain.waitSampling()
   }
@@ -38,6 +42,7 @@ class WriteTest extends AnyFunSuite {
     dut.i.fromPipeline.rgbWrite #= true
     dut.i.fromPipeline.auxWrite #= true
     dut.i.fromPipeline.fbBaseAddr #= pixel.fbBaseAddr
+    dut.i.fromPipeline.fbPixelStride #= defaultStride
     dut.clockDomain.waitSampling()
   }
 
@@ -57,8 +62,13 @@ class WriteTest extends AnyFunSuite {
     clearPixel(dut)
   }
 
-  def calculateExpectedAddress(config: Config, fbBaseAddr: Long, x: Int, y: Int): Long = {
-    val pixelOffset = y * config.fbPixelStride + x
+  def calculateExpectedAddress(
+      fbBaseAddr: Long,
+      x: Int,
+      y: Int,
+      stride: Int = defaultStride
+  ): Long = {
+    val pixelOffset = y * stride + x
     fbBaseAddr + pixelOffset * 4
   }
 
@@ -88,7 +98,7 @@ class WriteTest extends AnyFunSuite {
 
       assert(dut.o.fbWrite.cmd.valid.toBoolean, "BMB cmd should be valid")
 
-      val expectedAddr = calculateExpectedAddress(config, fbBaseAddr, pixel.x, pixel.y)
+      val expectedAddr = calculateExpectedAddress(fbBaseAddr, pixel.x, pixel.y)
       val actualAddr = dut.o.fbWrite.cmd.address.toInt
 
       assert(
@@ -213,7 +223,7 @@ class WriteTest extends AnyFunSuite {
       for ((x, y) <- testCoords) {
         sendPixel(dut, PixelWrite(x, y, 0, 0, 0, 0, fbBaseAddr = fbBaseAddr))
 
-        val expectedAddr = calculateExpectedAddress(config, fbBaseAddr, x, y)
+        val expectedAddr = calculateExpectedAddress(fbBaseAddr, x, y)
         val actualAddr = dut.o.fbWrite.cmd.address.toInt
 
         assert(
@@ -256,7 +266,7 @@ class WriteTest extends AnyFunSuite {
         clearPixel(dut)
         dut.clockDomain.waitSampling(10)
 
-        val memAddr = (pixel.y * config.fbPixelStride + pixel.x) * 4
+        val memAddr = (pixel.y * defaultStride + pixel.x) * 4
         val expectedData = calculateExpectedData(pixel.r, pixel.g, pixel.b, pixel.depthAlpha)
         val actualData = readMemoryWord(memory, memAddr)
 

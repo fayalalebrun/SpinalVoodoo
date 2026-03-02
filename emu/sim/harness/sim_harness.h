@@ -53,6 +53,14 @@ void sim_write_fb_bulk(uint32_t byte_offset, const uint32_t *src, uint32_t word_
 /* Bulk write to CoreSim's texRam (bypasses bus protocol). */
 void sim_write_tex_bulk(uint32_t byte_offset, const uint32_t *src, uint32_t word_count);
 
+/* Bulk read from CoreSim's texRam (bypasses bus protocol).
+ * Reads word_count 32-bit words starting at byte_offset into dst. */
+void sim_read_tex(uint32_t byte_offset, uint32_t *dst, uint32_t word_count);
+
+/* Set the swap buffer count register directly (bypasses bus protocol).
+ * Only the low 2 bits are used. Bit 0 determines front/back buffer assignment. */
+void sim_set_swap_count(uint32_t count);
+
 #ifdef __cplusplus
 }
 #endif

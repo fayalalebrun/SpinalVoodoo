@@ -653,6 +653,15 @@ case class RegisterBank(config: Config) extends Component {
       .asOutput()
     val fbiInit1_multiSst =
       fbiInit1Reg.fieldAt(2, Bool(), AccessType.RW, 0, "Multi-SST (SLI) mode [V1]").asOutput()
+    val fbiInit1_videoTilesX = fbiInit1Reg
+      .fieldAt(
+        4,
+        UInt(4 bits),
+        AccessType.RW,
+        10,
+        "Video tiles in X / 2 (stride = val * 64 pixels)"
+      )
+      .asOutput()
     val fbiInit1_videoReset =
       fbiInit1Reg.fieldAt(8, Bool(), AccessType.RW, 0, "Video timing reset").asOutput()
     // Note: yOriginSwap is in fbiInit3 (0x21C), not fbiInit1 — see below
@@ -669,7 +678,7 @@ case class RegisterBank(config: Config) extends Component {
       )
       .asOutput()
     val fbiInit2_bufferOffset = fbiInit2Reg
-      .fieldAt(11, UInt(10 bits), AccessType.RW, 0, "Buffer offset in 4KB units")
+      .fieldAt(11, UInt(9 bits), AccessType.RW, 0, "Buffer offset in 4KB units")
       .asOutput()
 
     // fbiInit3 (0x21C) - Register remapping and Y origin

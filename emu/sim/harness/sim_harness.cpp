@@ -59,6 +59,7 @@ static int fbwrite_phase = 0; /* 0=clear, 1=idle_after_clear, 2=text_render */
 /* TMU logging: log texture lookup details for cutoff analysis */
 static FILE *tmu_log = nullptr;
 
+
 /* Signal flag — set asynchronously, polled in tick_one() */
 static volatile sig_atomic_t quit_requested = 0;
 
@@ -86,10 +87,11 @@ static void tick_one(void) {
         if (valid) {
             uint32_t addr = r->CoreSim__DOT__core_1__DOT__write_1_o_fbWrite_cmd_payload_fragment_address;
             uint32_t data = r->CoreSim__DOT__core_1__DOT__write_1_o_fbWrite_cmd_payload_fragment_data;
-            /* Decode pixel coords: addr = (y*1024 + x)*4 */
+            /* Decode pixel coords: addr = (y*stride + x)*4, stride from fbiInit1[7:4]*128 */
             uint32_t pixel = addr >> 2;
-            uint32_t y = pixel >> 10;
-            uint32_t x = pixel & 0x3FF;
+            /* Approximate decode for logging (stride may vary) */
+            uint32_t y = pixel / 640;
+            uint32_t x = pixel % 640;
             /* Log text area pixels (y=0-19, x=0-220) during text rendering */
             if (fbwrite_phase == 2 || (fbwrite_phase == 0 && y < 20 && x < 220)) {
                 fprintf(fbwrite_log, "%lu %u %u 0x%08x\n",
@@ -504,4 +506,19 @@ void sim_write_tex_bulk(uint32_t byte_offset, const uint32_t *src, uint32_t word
         r->CoreSim__DOT__texRam__DOT__ram_symbol2[idx + i] = (src[i] >> 16) & 0xff;
         r->CoreSim__DOT__texRam__DOT__ram_symbol3[idx + i] = (src[i] >> 24) & 0xff;
     }
+}
+
+void sim_read_tex(uint32_t byte_offset, uint32_t *dst, uint32_t word_count) {
+    auto r = top->rootp;
+    uint32_t idx = byte_offset / 4;
+    for (uint32_t i = 0; i < word_count && (idx + i) < TEX_WORD_COUNT; i++) {
+        dst[i] = (uint32_t)r->CoreSim__DOT__texRam__DOT__ram_symbol0[idx + i]
+               | ((uint32_t)r->CoreSim__DOT__texRam__DOT__ram_symbol1[idx + i] << 8)
+               | ((uint32_t)r->CoreSim__DOT__texRam__DOT__ram_symbol2[idx + i] << 16)
+               | ((uint32_t)r->CoreSim__DOT__texRam__DOT__ram_symbol3[idx + i] << 24);
+    }
+}
+
+void sim_set_swap_count(uint32_t count) {
+    top->rootp->CoreSim__DOT__core_1__DOT__swapBuffer_1__DOT__swapCountReg = count & 0x3;
 }

@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cstdint>
+#include <cmath>
 #include <string>
 #include <vector>
 #include <sys/stat.h>
@@ -54,16 +55,31 @@ static uint8_t *read_file(const char *path, uint32_t *out_size) {
     return buf;
 }
 
-/* Convert RGB565 to 24-bit RGB for PNG output */
+/* sRGB gamma encoding LUT — built once, maps linear 0-255 to sRGB 0-255.
+ * Voodoo1 framebuffer stores linear values meant for a CRT with ~2.2 gamma.
+ * PNG viewers assume sRGB, so we apply the sRGB transfer function. */
+static uint8_t srgb_lut[256];
+
+static void init_srgb_lut(void) {
+    for (int i = 0; i < 256; i++) {
+        double v = i / 255.0;
+        double s = (v <= 0.0031308)
+            ? v * 12.92
+            : 1.055 * pow(v, 1.0 / 2.4) - 0.055;
+        srgb_lut[i] = (uint8_t)(s * 255.0 + 0.5);
+    }
+}
+
+/* Convert RGB565 to 24-bit sRGB for PNG output */
 static void rgb565_to_rgb24(const uint16_t *src, uint8_t *dst, int count) {
     for (int i = 0; i < count; i++) {
         uint16_t px = src[i];
         uint8_t r = (px >> 8) & 0xf8; r |= r >> 5;
         uint8_t g = (px >> 3) & 0xfc; g |= g >> 6;
         uint8_t b = (px << 3) & 0xf8; b |= b >> 5;
-        dst[i * 3 + 0] = r;
-        dst[i * 3 + 1] = g;
-        dst[i * 3 + 2] = b;
+        dst[i * 3 + 0] = srgb_lut[r];
+        dst[i * 3 + 1] = srgb_lut[g];
+        dst[i * 3 + 2] = srgb_lut[b];
     }
 }
 
@@ -86,6 +102,8 @@ static std::string basename_no_ext(const char *path) {
  * ------------------------------------------------------------------- */
 
 int main(int argc, char **argv) {
+    init_srgb_lut();
+
     /* Parse arguments */
     const char *trace_path = nullptr;
     const char *output_dir = nullptr;
@@ -222,16 +240,51 @@ int main(int argc, char **argv) {
                     reg_addr == 0x080 || reg_addr == 0x100 ||  /* triangleCMD, ftriangleCMD */
                     reg_addr == 0x120)                          /* nopCMD */
                     continue;
-                sim_write(regs[i].addr, regs[i].value);
+                uint32_t value = regs[i].value;
+                /* 86Box stores texBaseAddr registers pre-shifted: (raw & 0x7ffff) << 3.
+                 * The sim's TexLayoutTables applies its own <<3, so undo the
+                 * 86Box shift to avoid double-shifting. */
+                if (reg_addr == 0x30C || reg_addr == 0x310 ||
+                    reg_addr == 0x314 || reg_addr == 0x318) {
+                    value >>= 3;
+                }
+                sim_write(regs[i].addr, value);
             }
             ptr += shdr->reg_count * sizeof(voodoo_state_reg_t);
 
-            /* Write framebuffer to sim */
-            sim_write_fb_bulk(0, (const uint32_t *)ptr, shdr->fb_size / 4);
+            /* Write framebuffer to sim — DISABLED: 86Box's 16-bit pixel pairs
+             * are incompatible with our 32-bit interleaved [depth:rgb] format. */
+            // sim_write_fb_bulk(0, (const uint32_t *)ptr, shdr->fb_size / 4);
             ptr += shdr->fb_size;
 
             /* Write texture memory to sim */
             sim_write_tex_bulk(0, (const uint32_t *)ptr, shdr->tex_size / 4);
+
+            /* Align sim's swap count with 86Box's draw_buffer assignment.
+             * 86Box: front_offset = (!draw_buffer) * buffer_offset
+             * SpinalVoodoo: frontBufferBase = swapCount(0) ? buffer1 : buffer0
+             * Mapping: swapCount(0) = 1 - draw_buffer */
+            {
+                uint32_t fbiInit2_val = 0;
+                for (uint32_t i = 0; i < shdr->reg_count; i++) {
+                    if ((regs[i].addr & 0x3fc) == 0x218) {
+                        fbiInit2_val = regs[i].value;
+                        break;
+                    }
+                }
+                uint32_t buffer_offset = ((fbiInit2_val >> 11) & 0x1FF) * 4096;
+                if (buffer_offset > 0) {
+                    uint32_t draw_buffer = shdr->draw_offset / buffer_offset;
+                    uint32_t swap_count = 1 - draw_buffer;
+                    sim_set_swap_count(swap_count);
+                    fprintf(stderr, "[trace_test] Buffer alignment: draw_offset=0x%x buffer_offset=0x%x draw_buffer=%u swap_count=%u\n",
+                            shdr->draw_offset, buffer_offset, draw_buffer, swap_count);
+                }
+            }
+
+            /* Ensure all state registers are drained from PciFifo before
+             * reading back or proceeding to trace replay. */
+            sim_idle_wait();
 
             fprintf(stderr, "[trace_test] State loaded into sim\n");
         }
@@ -242,19 +295,21 @@ int main(int argc, char **argv) {
 
     /* Replay trace entries */
     int tri_count = 0;
+    int tex_write_count = 0;
     for (uint32_t i = 0; i < num_entries; i++) {
         const voodoo_trace_entry_t *e = &entries[i];
 
         switch (e->cmd_type) {
             case VOODOO_TRACE_WRITE_REG_L: {
                 uint32_t addr = e->addr & 0x3FFFFF;
+                uint32_t reg = addr & 0x3fc;
+
                 ref_write_reg(addr, e->data);
 
                 if (!ref_only) {
                     sim_write(addr, e->data);
 
                     /* On triangle commands, wait for pipeline to drain */
-                    uint32_t reg = addr & 0x3fc;
                     if (reg == 0x080 || reg == 0x100 || reg == 0x124) {
                         sim_idle_wait();
                         tri_count++;
@@ -268,6 +323,7 @@ int main(int argc, char **argv) {
                 ref_write_tex(offset, e->data);
                 if (!ref_only)
                     sim_write(0x800000 | offset, e->data);
+                tex_write_count++;
                 break;
             }
 
@@ -307,8 +363,47 @@ int main(int argc, char **argv) {
         }
     }
 
-    fprintf(stderr, "[trace_test] Replay complete: %u entries, %d triangles\n",
-            num_entries, tri_count);
+    fprintf(stderr, "[trace_test] Replay complete: %u entries, %d triangles, %d tex writes\n",
+            num_entries, tri_count, tex_write_count);
+
+    /* Wait for pipeline to drain before reading back */
+    if (!ref_only)
+        sim_idle_wait();
+
+    /* ---------------------------------------------------------------
+     * Texture memory comparison (sim vs ref)
+     * --------------------------------------------------------------- */
+    if (!ref_only) {
+        uint8_t *ref_tex = ref_get_tex();
+        uint32_t tex_size = ref_get_tex_size();
+        uint32_t tex_words = tex_size / 4;
+        if (tex_words > 2 * 1024 * 1024) tex_words = 2 * 1024 * 1024; /* cap at 8MB */
+
+        uint32_t *sim_tex = (uint32_t *)malloc(tex_words * 4);
+        sim_read_tex(0, sim_tex, tex_words);
+
+        uint32_t tex_mismatches = 0;
+        uint32_t first_mismatch_addr = 0;
+        for (uint32_t i = 0; i < tex_words; i++) {
+            uint32_t ref_word = *(uint32_t *)(ref_tex + i * 4);
+            if (sim_tex[i] != ref_word) {
+                if (tex_mismatches < 10) {
+                    fprintf(stderr, "[tex_cmp] MISMATCH at 0x%06x: sim=0x%08x ref=0x%08x\n",
+                            i * 4, sim_tex[i], ref_word);
+                }
+                if (tex_mismatches == 0) first_mismatch_addr = i * 4;
+                tex_mismatches++;
+            }
+        }
+        fprintf(stderr, "[tex_cmp] Compared %u words (%u bytes): %u mismatches\n",
+                tex_words, tex_words * 4, tex_mismatches);
+        if (tex_mismatches == 0)
+            fprintf(stderr, "[tex_cmp] Texture memory MATCHES between sim and ref\n");
+        else
+            fprintf(stderr, "[tex_cmp] First mismatch at 0x%06x, total %u/%u words differ\n",
+                    first_mismatch_addr, tex_mismatches, tex_words);
+        free(sim_tex);
+    }
 
     /* ---------------------------------------------------------------
      * Comparison
@@ -319,10 +414,13 @@ int main(int argc, char **argv) {
     uint32_t row_width   = ref_get_row_width();  /* bytes */
     int row_stride = row_width / 2;              /* pixels (16-bit) */
 
-    /* Use front buffer for screenshot — contains the last completed frame.
-     * After swapbufferCMD, draw_offset points to the next render target,
-     * while front_offset points to the just-rendered content. */
-    uint32_t fb_offset = front_offset;
+    /* Use draw buffer for screenshot — the trace renders into the draw buffer
+     * and typically does not include a swapbufferCMD, so the rendered content
+     * remains in the draw buffer. */
+    uint32_t fb_offset = draw_offset;
+    /* Sim uses 32-bit interleaved pixels with buffer_offset <<13 (vs 86Box <<12),
+     * so sim buffer addresses are double the ref's 16-bit offsets. */
+    uint32_t sim_fb_offset = fb_offset * 2;
 
     fprintf(stderr, "[trace_test] FB layout: front=0x%x draw=0x%x row_width=%u (%d pixels)\n",
             front_offset, draw_offset, row_width, row_stride);
@@ -336,25 +434,34 @@ int main(int argc, char **argv) {
 
     /* Get sim framebuffer.
      * CoreSim stores pixels as 32-bit words: [depth:16][rgb565:16]
-     * with a fixed stride of 1024 pixels (4096 bytes) per row.
+     * with a runtime stride derived from fbiInit1[7:4] * 64 pixels
+     * (val * 128 bytes row width / 2 bytes per 16-bit pixel).
      * We extract just the RGB565 color from each word. */
-    static const int SIM_PIXEL_STRIDE = 1024;
+    int sim_pixel_stride = 640; /* default for 640x480 */
+    if (!ref_only) {
+        /* Read fbiInit1 from sim — has the final value after state + trace */
+        uint32_t fbiInit1_val = sim_read(0x214);
+        int tiles = (fbiInit1_val >> 4) & 0xF;
+        if (tiles > 0) sim_pixel_stride = tiles * 64;
+        fprintf(stderr, "[trace_test] Sim pixel stride: %d (fbiInit1=0x%08x)\n",
+                sim_pixel_stride, fbiInit1_val);
+    }
     std::vector<uint16_t> sim_fb_extracted;
     uint16_t *sim_fb = nullptr;
 
     if (!ref_only) {
         /* Read the sim framebuffer region covering all display rows */
-        uint32_t sim_row_bytes = SIM_PIXEL_STRIDE * 4;  /* 4 bytes per pixel */
-        uint32_t sim_total_words = SIM_PIXEL_STRIDE * disp_height;
+        uint32_t sim_row_bytes = sim_pixel_stride * 4;  /* 4 bytes per pixel */
+        uint32_t sim_total_words = sim_pixel_stride * disp_height;
         std::vector<uint32_t> sim_fb_raw(sim_total_words);
-        sim_read_fb(fb_offset, sim_fb_raw.data(), sim_total_words);
+        sim_read_fb(sim_fb_offset, sim_fb_raw.data(), sim_total_words);
 
         /* Extract RGB565 color from each 32-bit word into a flat buffer
          * with the same row_stride as the ref, for easy comparison. */
         sim_fb_extracted.resize(row_stride * disp_height, 0);
         for (int y = 0; y < disp_height; y++) {
             for (int x = 0; x < disp_width; x++) {
-                uint32_t word = sim_fb_raw[y * SIM_PIXEL_STRIDE + x];
+                uint32_t word = sim_fb_raw[y * sim_pixel_stride + x];
                 sim_fb_extracted[y * row_stride + x] = (uint16_t)(word & 0xFFFF);
             }
         }

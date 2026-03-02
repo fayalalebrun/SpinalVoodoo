@@ -14,7 +14,8 @@ case class Write(c: Config) extends Component {
   }
 
   o.fbWrite.cmd.translateFrom(i.fromPipeline) { (out, in) =>
-    val pixelFlat = (in.coords(1) * c.fbPixelStride + in.coords(0)).asUInt
+    val strideSInt = (False ## in.fbPixelStride).asSInt
+    val pixelFlat = (in.coords(1) * strideSInt + in.coords(0)).asUInt
 
     out.fragment.address := (in.fbBaseAddr + (pixelFlat << 2)).resized
     out.fragment.data := in.toFb.asBits.resized
@@ -38,6 +39,7 @@ object Write {
     val rgbWrite = Bool()
     val auxWrite = Bool()
     val fbBaseAddr = UInt(c.addressWidth)
+    val fbPixelStride = UInt(11 bits)
   }
 
   /** Pre-dither payload: RGB888 color + all Write.Input pass-through fields.
@@ -55,6 +57,7 @@ object Write {
     val rgbWrite = Bool()
     val auxWrite = Bool()
     val fbBaseAddr = UInt(c.addressWidth)
+    val fbPixelStride = UInt(11 bits)
   }
 
   case class FbWord() extends Bundle {

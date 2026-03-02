@@ -432,6 +432,18 @@ uint32_t ref_get_row_width(void)
     return voodoo->row_width;
 }
 
+uint8_t *ref_get_tex(void)
+{
+    if (!voodoo) return NULL;
+    return voodoo->tex_mem[0];
+}
+
+uint32_t ref_get_tex_size(void)
+{
+    if (!voodoo) return 0;
+    return voodoo->texture_size;
+}
+
 /* -------------------------------------------------------------------
  * State loading
  * ------------------------------------------------------------------- */
@@ -475,9 +487,11 @@ int ref_load_state(const uint8_t *data, uint32_t size)
     ptr += reg_data_size;
 
     /* Copy framebuffer */
-    uint32_t fb_copy = (hdr->fb_size <= (uint32_t)voodoo->fb_size) ?
-                       hdr->fb_size : (uint32_t)voodoo->fb_size;
-    memcpy(voodoo->fb_mem, ptr, fb_copy);
+    /* Framebuffer copy disabled — initial FB state not needed for trace replay,
+     * and 86Box's 16-bit layout is incompatible with sim's 32-bit interleaved format. */
+    // uint32_t fb_copy = (hdr->fb_size <= (uint32_t)voodoo->fb_size) ?
+    //                    hdr->fb_size : (uint32_t)voodoo->fb_size;
+    // memcpy(voodoo->fb_mem, ptr, fb_copy);
     ptr += hdr->fb_size;
 
     /* Copy texture memory */

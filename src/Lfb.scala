@@ -40,6 +40,8 @@ case class Lfb(c: Config) extends Component {
     val fbWriteBaseAddr = in UInt (c.addressWidth)
     val fbReadBaseAddr = in UInt (c.addressWidth)
 
+    val fbPixelStride = in UInt (11 bits)
+
     // LFB reads stall until FIFO is empty and pipeline is idle (SST-1 spec)
     val pciFifoEmpty = in Bool ()
     val pipelineBusy = in Bool ()
@@ -270,6 +272,7 @@ case class Lfb(c: Config) extends Component {
   io.writeOutput.payload.rgbWrite := decodedRgbWrite
   io.writeOutput.payload.auxWrite := decodedAuxWrite
   io.writeOutput.payload.fbBaseAddr := io.fbWriteBaseAddr
+  io.writeOutput.payload.fbPixelStride := io.fbPixelStride
 
   // ========================================================================
   // Pipeline mode: ColorCombine.Output (no dither, no delay)
@@ -336,7 +339,7 @@ case class Lfb(c: Config) extends Component {
     val cmdAddr = io.bus.cmd.address
     val rx = (cmdAddr >> 1).resize(10 bits)
     val ry = (cmdAddr >> 11).resize(10 bits)
-    val pixelFlat1 = (ry.resize(20 bits) * c.fbPixelStride + rx.resize(20 bits))
+    val pixelFlat1 = (ry.resize(20 bits) * io.fbPixelStride + rx.resize(20 bits))
     fbReadAddr := (io.fbReadBaseAddr + (pixelFlat1 << 2).resize(c.addressWidth.value bits)).resized
   }
 
@@ -358,7 +361,7 @@ case class Lfb(c: Config) extends Component {
       state := stateRfetch2
       // Set up address for second read (x+1)
       val pixelFlat2 =
-        (readPixelY.resize(20 bits) * c.fbPixelStride + (readPixelX + 1).resize(20 bits))
+        (readPixelY.resize(20 bits) * io.fbPixelStride + (readPixelX + 1).resize(20 bits))
       fbReadAddr := (io.fbReadBaseAddr + (pixelFlat2 << 2).resize(
         c.addressWidth.value bits
       )).resized

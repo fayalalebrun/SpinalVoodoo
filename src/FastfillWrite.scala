@@ -45,6 +45,7 @@ case class FastfillWrite(c: Config) extends Component {
     out.rgbWrite := regs.fbzMode.rgbBufferMask
     out.auxWrite := regs.fbzMode.auxBufferMask
     out.fbBaseAddr := regs.drawBufferBase
+    out.fbPixelStride := regs.fbPixelStride
   }
 }
 
@@ -55,5 +56,6 @@ object FastfillWrite {
     val fbzMode = FbzMode()
     val drawBufferBase = UInt(c.addressWidth)
     val yOriginSwapValue = UInt(10 bits)
+    val fbPixelStride = UInt(11 bits)
   }
 }

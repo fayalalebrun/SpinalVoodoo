@@ -41,12 +41,46 @@ emu/86box.cfg
 emu/config.txt
 emu/result
 
-# Trace files
+# Trace captures
 emu/voodoo_trace.trace/
+emu/voodoo_capture_*/
+
+# Trace text dumps (regeneratable)
+traces/**/*.txt
 
 # Test output
 output/
+test-output/
+emu/test/obj_dir/
 
 # Java/Scala artifacts
 META-INF/
 .tmp/
+
+# IDE / editor config
+.idea
+.vscode
+.mcp.json
+
+# Nix build output
+result
+
+# Devenv / nix shell artifacts
+.bash_profile
+.bashrc
+.gitconfig
+.profile
+.ripgreprc
+.zprofile
+.zshrc
+HEAD
+config
+hooks
+objects
+refs
+
+# Claude Code
+.claude/
+
+# Local overrides
+spinal/

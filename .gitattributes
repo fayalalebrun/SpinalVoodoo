@@ -1,0 +1,4 @@
+# Git LFS tracking for binary trace/reference files
+traces/**/*.bin filter=lfs diff=lfs merge=lfs -text
+traces/**/*.bmp filter=lfs diff=lfs merge=lfs -text
+traces/*.bin filter=lfs diff=lfs merge=lfs -text

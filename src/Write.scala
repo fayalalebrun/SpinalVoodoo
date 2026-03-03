@@ -16,14 +16,22 @@ case class Write(c: Config) extends Component {
   o.fbWrite.cmd.translateFrom(i.fromPipeline) { (out, in) =>
     val strideSInt = (False ## in.fbPixelStride).asSInt
     val pixelFlat = (in.coords(1) * strideSInt + in.coords(0)).asUInt
+    val planeAddress = (in.fbBaseAddr + (pixelFlat << 1)).resized
+    val laneHi = planeAddress(1)
+    val alignedAddress = (planeAddress(c.addressWidth.value - 1 downto 2) ## U"2'b00").asUInt
+    val laneData = Bits(32 bits)
+    when(laneHi) {
+      laneData := in.data ## B(0, 16 bits)
+    }.otherwise {
+      laneData := B(0, 16 bits) ## in.data
+    }
 
-    out.fragment.address := (in.fbBaseAddr + (pixelFlat << 2)).resized
-    out.fragment.data := in.toFb.asBits.resized
+    out.fragment.address := alignedAddress
+    out.fragment.data := laneData
     out.fragment.opcode := Bmb.Cmd.Opcode.WRITE
     out.fragment.length := 3 // 4 bytes - 1
     out.fragment.source := 0 // Single source
-    // bytes 0-1 = RGB565 color, bytes 2-3 = depth/alpha
-    out.fragment.mask := in.auxWrite ## in.auxWrite ## in.rgbWrite ## in.rgbWrite
+    out.fragment.mask := laneHi ? B"4'b1100" | B"4'b0011"
     out.last := True
   }
 
@@ -35,9 +43,7 @@ object Write {
   case class Input(c: Config) extends Bundle {
     val coords = Vec.fill(2)(SInt(c.vertexFormat.nonFraction bits))
 
-    val toFb = FbWord()
-    val rgbWrite = Bool()
-    val auxWrite = Bool()
+    val data = Bits(16 bits)
     val fbBaseAddr = UInt(c.addressWidth)
     val fbPixelStride = UInt(11 bits)
   }
@@ -57,12 +63,8 @@ object Write {
     val rgbWrite = Bool()
     val auxWrite = Bool()
     val fbBaseAddr = UInt(c.addressWidth)
+    val auxBaseAddr = UInt(c.addressWidth)
     val fbPixelStride = UInt(11 bits)
-  }
-
-  case class FbWord() extends Bundle {
-    val color = rgb565()
-    val depthAlpha = Bits(16 bits)
   }
 
   def baseBmbParams(c: Config) = BmbParameter(
@@ -70,7 +72,7 @@ object Write {
     dataWidth = 32,
     sourceWidth = 1,
     contextWidth = 0,
-    lengthWidth = 2, // Need at least 2 bits for length=3 (4 bytes)
+    lengthWidth = 2,
     canRead = false,
     canWrite = true,
     alignment = BmbParameter.BurstAlignement.BYTE

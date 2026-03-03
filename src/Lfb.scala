@@ -37,8 +37,10 @@ case class Lfb(c: Config) extends Component {
 
     // Framebuffer read bus (for LFB reads)
     val fbReadBus = master(Bmb(Lfb.fbReadBmbParams(c)))
-    val fbWriteBaseAddr = in UInt (c.addressWidth)
-    val fbReadBaseAddr = in UInt (c.addressWidth)
+    val fbWriteColorBaseAddr = in UInt (c.addressWidth)
+    val fbWriteAuxBaseAddr = in UInt (c.addressWidth)
+    val fbReadColorBaseAddr = in UInt (c.addressWidth)
+    val fbReadAuxBaseAddr = in UInt (c.addressWidth)
 
     val fbPixelStride = in UInt (11 bits)
 
@@ -56,6 +58,8 @@ case class Lfb(c: Config) extends Component {
   // Captured FB read results for read path
   val capturedRead1 = Reg(Bits(32 bits))
   val capturedRead2 = Reg(Bits(32 bits))
+  val capturedRead1LaneHi = Reg(Bool()) init (False)
+  val capturedRead2LaneHi = Reg(Bool()) init (False)
 
   // Is this a dual-pixel format?
   val isDualPixel =
@@ -271,7 +275,8 @@ case class Lfb(c: Config) extends Component {
   io.writeOutput.payload.depthAlpha := decodedDepth
   io.writeOutput.payload.rgbWrite := decodedRgbWrite
   io.writeOutput.payload.auxWrite := decodedAuxWrite
-  io.writeOutput.payload.fbBaseAddr := io.fbWriteBaseAddr
+  io.writeOutput.payload.fbBaseAddr := io.fbWriteColorBaseAddr
+  io.writeOutput.payload.auxBaseAddr := io.fbWriteAuxBaseAddr
   io.writeOutput.payload.fbPixelStride := io.fbPixelStride
 
   // ========================================================================
@@ -340,7 +345,11 @@ case class Lfb(c: Config) extends Component {
     val rx = (cmdAddr >> 1).resize(10 bits)
     val ry = (cmdAddr >> 11).resize(10 bits)
     val pixelFlat1 = (ry.resize(20 bits) * io.fbPixelStride + rx.resize(20 bits))
-    fbReadAddr := (io.fbReadBaseAddr + (pixelFlat1 << 2).resize(c.addressWidth.value bits)).resized
+    val readBase =
+      (io.lfbMode.readBufferSelect === 2) ? io.fbReadAuxBaseAddr | io.fbReadColorBaseAddr
+    val planeAddr1 = (readBase + (pixelFlat1 << 1).resize(c.addressWidth.value bits)).resized
+    capturedRead1LaneHi := planeAddr1(1)
+    fbReadAddr := (planeAddr1(c.addressWidth.value - 1 downto 2) ## U"2'b00").asUInt
   }
 
   // Wait for FIFO empty + pipeline idle before issuing FB reads (SST-1 spec)
@@ -362,9 +371,11 @@ case class Lfb(c: Config) extends Component {
       // Set up address for second read (x+1)
       val pixelFlat2 =
         (readPixelY.resize(20 bits) * io.fbPixelStride + (readPixelX + 1).resize(20 bits))
-      fbReadAddr := (io.fbReadBaseAddr + (pixelFlat2 << 2).resize(
-        c.addressWidth.value bits
-      )).resized
+      val readBase =
+        (io.lfbMode.readBufferSelect === 2) ? io.fbReadAuxBaseAddr | io.fbReadColorBaseAddr
+      val planeAddr2 = (readBase + (pixelFlat2 << 1).resize(c.addressWidth.value bits)).resized
+      capturedRead2LaneHi := planeAddr2(1)
+      fbReadAddr := (planeAddr2(c.addressWidth.value - 1 downto 2) ## U"2'b00").asUInt
       fbReadCmdPending := True
     }
   }
@@ -379,17 +390,9 @@ case class Lfb(c: Config) extends Component {
     }
   }
 
-  // Build read response data
-  // readBufferSelect: 0/1 → lo16 (RGB565), 2 → hi16 (depth/alpha)
-  val readData1 = Bits(16 bits)
-  val readData2 = Bits(16 bits)
-  when(io.lfbMode.readBufferSelect === 2) {
-    readData1 := capturedRead1(31 downto 16)
-    readData2 := capturedRead2(31 downto 16)
-  } otherwise {
-    readData1 := capturedRead1(15 downto 0)
-    readData2 := capturedRead2(15 downto 0)
-  }
+  // Build read response data from selected plane (always low 16 bits)
+  val readData1 = capturedRead1LaneHi ? capturedRead1(31 downto 16) | capturedRead1(15 downto 0)
+  val readData2 = capturedRead2LaneHi ? capturedRead2(31 downto 16) | capturedRead2(15 downto 0)
 
   // Pack: lo16 = pixel(x), hi16 = pixel(x+1)
   val readResponseRaw = readData2 ## readData1

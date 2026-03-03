@@ -21,7 +21,7 @@ object Core {
   def fbMemBmbParams(c: Config) = BmbParameter(
     addressWidth = c.addressWidth.value,
     dataWidth = 32,
-    sourceWidth = 1 + log2Up(3), // 3 arbiter inputs
+    sourceWidth = 1 + log2Up(5), // 5 arbiter inputs
     contextWidth = 0,
     lengthWidth = 2,
     canRead = true,
@@ -58,7 +58,7 @@ case class Core(c: Config) extends Component {
     // Unified CPU bus (24-bit address covers 16MB PCI BAR)
     val cpuBus = slave(Bmb(Core.cpuBmbParams))
 
-    // Framebuffer memory bus (R/W, internal 3-port arbitration)
+    // Framebuffer memory bus (R/W, internal 5-port arbitration)
     val fbMem = master(Bmb(Core.fbMemBmbParams(c)))
 
     // Texture memory bus (R/W, internal 2-port arbitration with texBaseAddr relocation)
@@ -106,7 +106,8 @@ case class Core(c: Config) extends Component {
   val rasterizer = Rasterizer(c)
   val tmu = Tmu(c) // Single TMU (Voodoo 1 level)
   val colorCombine = ColorCombine(c)
-  val write = Write(c)
+  val writeColor = Write(c)
+  val writeAux = Write(c)
 
   // Make triangle command streams accessible for simulation monitoring
   regBank.commands.triangleCmd.simPublic()
@@ -272,29 +273,34 @@ case class Core(c: Config) extends Component {
   // Framebuffer pixel stride (runtime, from fbiInit1[7:4])
   // ========================================================================
   // fbiInit1[7:4] = video tiles in X / 2; row_width_bytes = val * 128
-  // stride_pixels = row_width_bytes / 2 = val * 64 (real HW is 16-bit; we use 32-bit interleaved)
+  // stride_pixels = row_width_bytes / 2 = val * 64
   val fbPixelStride = (regBank.init.fbiInit1_videoTilesX << 6).resize(11 bits)
 
   // ========================================================================
   // Draw buffer selection (double-buffering)
   // ========================================================================
   // fbiInit2[20:11] = buffer offset in 4KB units
-  // Shift by 13 (not 12) because SpinalVoodoo uses 32-bit pixels (4 bytes each)
+  // Shift by 12 to convert 4KB units to bytes
   val bufferOffsetBytes =
-    regBank.init.fbiInit2_bufferOffset.resize(c.addressWidth.value bits) |<< 13
+    regBank.init.fbiInit2_bufferOffset.resize(c.addressWidth.value bits) |<< 12
   val buffer0Base = io.fbBaseAddr
   val buffer1Base = io.fbBaseAddr + bufferOffsetBytes
+  val auxBufferBase = io.fbBaseAddr + (bufferOffsetBytes << 1).resized
   val frontBufferBase = swapBuffer.io.swapCount(0) ? buffer1Base | buffer0Base
   val backBufferBase = swapBuffer.io.swapCount(0) ? buffer0Base | buffer1Base
 
   // Triangle/fastfill draw target: fbzMode[15:14] drawBuffer (0=front, 1=back)
-  val drawBufferBase = regBank.renderConfig.fbzMode.drawBuffer(0) ? backBufferBase | frontBufferBase
+  val drawColorBufferBase =
+    regBank.renderConfig.fbzMode.drawBuffer(0) ? backBufferBase | frontBufferBase
+  val drawAuxBufferBase = auxBufferBase
 
-  // LFB buffer bases: lfbMode[5:4] writeBufferSelect, lfbMode[7:6] readBufferSelect
-  val lfbWriteBufferBase =
+  // LFB color buffer bases: lfbMode[5:4] writeBufferSelect, lfbMode[7:6] readBufferSelect
+  val lfbWriteColorBufferBase =
     regBank.renderConfig.lfbMode.writeBufferSelect(0) ? backBufferBase | frontBufferBase
-  val lfbReadBufferBase =
+  val lfbReadColorBufferBase =
     regBank.renderConfig.lfbMode.readBufferSelect(0) ? backBufferBase | frontBufferBase
+  val lfbWriteAuxBufferBase = auxBufferBase
+  val lfbReadAuxBufferBase = auxBufferBase
 
   // ========================================================================
   // Triangle Command Handling
@@ -428,14 +434,16 @@ case class Core(c: Config) extends Component {
   triangleSetup.o.simPublic()
   rasterizer.i.simPublic()
   rasterizer.o.simPublic()
-  write.o.fbWrite.simPublic()
+  writeColor.o.fbWrite.simPublic()
+  writeAux.o.fbWrite.simPublic()
 
   // Make TMU and ColorCombine streams accessible for stall monitoring
   tmu.io.input.simPublic()
   tmu.io.output.simPublic()
   colorCombine.io.input.simPublic()
   colorCombine.io.output.simPublic()
-  write.i.fromPipeline.simPublic()
+  writeColor.i.fromPipeline.simPublic()
+  writeAux.i.fromPipeline.simPublic()
 
   // Connect triangle setup directly to rasterizer
   // Gradients are now captured at command time and flow through TriangleSetup
@@ -469,8 +477,10 @@ case class Core(c: Config) extends Component {
   lfb.io.fogMode := regBank.renderConfig.fogModeBundle
   lfb.io.fogColor := regBank.renderConfig.fogColor
   lfb.io.zaColor := regBank.renderConfig.zaColor
-  lfb.io.fbWriteBaseAddr := lfbWriteBufferBase
-  lfb.io.fbReadBaseAddr := lfbReadBufferBase
+  lfb.io.fbWriteColorBaseAddr := lfbWriteColorBufferBase
+  lfb.io.fbWriteAuxBaseAddr := lfbWriteAuxBufferBase
+  lfb.io.fbReadColorBaseAddr := lfbReadColorBufferBase
+  lfb.io.fbReadAuxBaseAddr := lfbReadAuxBufferBase
   lfb.io.fbPixelStride := fbPixelStride
 
   // ========================================================================
@@ -700,7 +710,8 @@ case class Core(c: Config) extends Component {
   // ========================================================================
   val fbAccess = FramebufferAccess(c)
   fbAccess.io.input << afterAlphaTest
-  fbAccess.io.fbBaseAddr := drawBufferBase
+  fbAccess.io.fbColorBaseAddr := drawColorBufferBase
+  fbAccess.io.fbAuxBaseAddr := drawAuxBufferBase
   fbAccess.io.fbPixelStride := fbPixelStride
 
   // fbzMode fields are now per-pixel (carried through pipeline in Fog.Output.fbzMode)
@@ -722,7 +733,8 @@ case class Core(c: Config) extends Component {
     out.depthAlpha := (fbIn.enableAlphaPlanes ? fbIn.alpha.resize(16 bits) | fbIn.newDepth).asBits
     out.rgbWrite := fbIn.rgbWrite
     out.auxWrite := fbIn.auxWrite
-    out.fbBaseAddr := drawBufferBase
+    out.fbBaseAddr := drawColorBufferBase
+    out.auxBaseAddr := drawAuxBufferBase
     out.fbPixelStride := fbPixelStride
     out
   }
@@ -737,12 +749,13 @@ case class Core(c: Config) extends Component {
   fastfillWrite.io.regs.color1 := regBank.renderConfig.color1
   fastfillWrite.io.regs.zaColor := regBank.renderConfig.zaColor
   fastfillWrite.io.regs.fbzMode := regBank.renderConfig.fbzModeBundle
-  fastfillWrite.io.regs.drawBufferBase := drawBufferBase
+  fastfillWrite.io.regs.drawColorBufferBase := drawColorBufferBase
+  fastfillWrite.io.regs.drawAuxBufferBase := drawAuxBufferBase
   fastfillWrite.io.regs.yOriginSwapValue := yOriginSwapValue
   fastfillWrite.io.regs.fbPixelStride := fbPixelStride
 
   // ========================================================================
-  // Shared Dither: merge all three PreDither paths, dither, produce Write.Input
+  // Shared Dither: merge all three PreDither paths, dither, produce plane writes
   // ========================================================================
   // lowerFirst gives fastfill priority (index 0), then triangle, then LFB bypass
   val preDitherMerged = StreamArbiterFactory.lowerFirst.on(
@@ -765,50 +778,63 @@ case class Core(c: Config) extends Component {
   val preDitherPiped = forPipe.m2sPipe()
   val ditherJoined = StreamJoin(dither.io.output, preDitherPiped)
 
-  write.i.fromPipeline << ditherJoined.translateWith {
-    val ditOut = dither.io.output.payload
-    val pd = preDitherPiped.payload
-    val out = Write.Input(c)
-    out.coords := pd.coords
-    out.toFb.color.r := ditOut.ditR
-    out.toFb.color.g := ditOut.ditG
-    out.toFb.color.b := ditOut.ditB
-    out.toFb.depthAlpha := pd.depthAlpha
-    out.rgbWrite := pd.rgbWrite
-    out.auxWrite := pd.auxWrite
-    out.fbBaseAddr := pd.fbBaseAddr
-    out.fbPixelStride := pd.fbPixelStride
-    out
-  }
+  val (forColorWrite, forAuxWrite) = StreamFork2(ditherJoined, synchronous = true)
+
+  writeColor.i.fromPipeline << forColorWrite
+    .throwWhen(!forColorWrite.payload._2.rgbWrite)
+    .translateWith {
+      val ditOut = forColorWrite.payload._1
+      val pd = forColorWrite.payload._2
+      val out = Write.Input(c)
+      out.coords := pd.coords
+      out.data := (ditOut.ditR ## ditOut.ditG ## ditOut.ditB).asBits
+      out.fbBaseAddr := pd.fbBaseAddr
+      out.fbPixelStride := pd.fbPixelStride
+      out
+    }
+
+  writeAux.i.fromPipeline << forAuxWrite
+    .throwWhen(!forAuxWrite.payload._2.auxWrite)
+    .translateWith {
+      val pd = forAuxWrite.payload._2
+      val out = Write.Input(c)
+      out.coords := pd.coords
+      out.data := pd.depthAlpha
+      out.fbBaseAddr := pd.auxBaseAddr
+      out.fbPixelStride := pd.fbPixelStride
+      out
+    }
 
   // ========================================================================
-  // Framebuffer arbiter (3 inputs → fbMem)
+  // Framebuffer arbiter (5 inputs → fbMem)
   // ========================================================================
   val fbArbiter = BmbArbiter(
     inputsParameter = Seq(
       Write.baseBmbParams(c),
+      Write.baseBmbParams(c),
+      FramebufferAccess.bmbParams(c),
       FramebufferAccess.bmbParams(c),
       Lfb.fbReadBmbParams(c)
     ),
     outputParameter = Core.fbMemBmbParams(c),
-    lowerFirstPriority = true // fbWrite gets priority
+    lowerFirstPriority = true // write/color gets highest priority
   )
 
-  // Pipe fbWrite cmd.ready to break combinational loop: Core's fbAccess has
-  // a combinational path from fbWrite.cmd.ready -> fbRead.rsp.ready, which
-  // loops back through the arbiter and BmbOnChipRam's !rsp.isStall gating.
-  fbArbiter.io.inputs(0).cmd << write.o.fbWrite.cmd.s2mPipe()
-  fbArbiter.io.inputs(0).rsp >> write.o.fbWrite.rsp
+  // Pipe cmd.ready to break combinational loops around arbiter readiness.
+  fbArbiter.io.inputs(0).cmd << writeColor.o.fbWrite.cmd.s2mPipe()
+  fbArbiter.io.inputs(0).rsp >> writeColor.o.fbWrite.rsp
 
-  // Buffer fbRead response to prevent deadlock: FramebufferAccess does
-  // read-then-write (fbRead -> pipeline -> fbWrite). With single-ported RAM,
-  // the read response blocks the RAM until consumed, but consumption requires
-  // the write to complete (backpressure through the pipeline). The s2mPipe
-  // decouples the response handshake, freeing the RAM for the write.
-  fbArbiter.io.inputs(1).cmd << fbAccess.io.fbRead.cmd
-  fbAccess.io.fbRead.rsp << fbArbiter.io.inputs(1).rsp.s2mPipe()
+  fbArbiter.io.inputs(1).cmd << writeAux.o.fbWrite.cmd.s2mPipe()
+  fbArbiter.io.inputs(1).rsp >> writeAux.o.fbWrite.rsp
 
-  fbArbiter.io.inputs(2) <> lfb.io.fbReadBus
+  // Buffer fbRead responses to prevent deadlock in read-then-write flow.
+  fbArbiter.io.inputs(2).cmd << fbAccess.io.fbReadColor.cmd
+  fbAccess.io.fbReadColor.rsp << fbArbiter.io.inputs(2).rsp.s2mPipe()
+
+  fbArbiter.io.inputs(3).cmd << fbAccess.io.fbReadAux.cmd
+  fbAccess.io.fbReadAux.rsp << fbArbiter.io.inputs(3).rsp.s2mPipe()
+
+  fbArbiter.io.inputs(4) <> lfb.io.fbReadBus
   fbArbiter.io.output <> io.fbMem
 
   // ========================================================================
@@ -859,43 +885,40 @@ case class Core(c: Config) extends Component {
     when(is16bit) {
       sramAddr := (lodBase + (s << 1).resize(22 bits) + (t.resize(22 bits) << (lodShift +^ U(1))
         .resize(5 bits)).resize(22 bits)).resize(c.addressWidth.value bits)
-    } otherwise {
+    }.otherwise {
       sramAddr := (lodBase + s.resize(22 bits) + (t.resize(22 bits) << lodShift).resize(22 bits))
         .resize(c.addressWidth.value bits)
     }
 
+    // Build BMB write command
     cpuTexWriteBus.cmd.valid := pciFifo.io.texDrain.valid && drainValid
-    cpuTexWriteBus.cmd.address := sramAddr
     cpuTexWriteBus.cmd.opcode := Bmb.Cmd.Opcode.WRITE
+    cpuTexWriteBus.cmd.address := sramAddr
     cpuTexWriteBus.cmd.data := pciFifo.io.texDrain.data
     cpuTexWriteBus.cmd.mask := pciFifo.io.texDrain.mask
-    cpuTexWriteBus.cmd.length := 3
-    cpuTexWriteBus.cmd.last := True
+    cpuTexWriteBus.cmd.length := 3 // 4 bytes
     cpuTexWriteBus.cmd.source := 0
+    cpuTexWriteBus.cmd.last := True
 
-    // Consume drain: valid writes wait for bus, invalid writes are discarded immediately
-    pciFifo.io.texDrain.ready := (!drainValid) || cpuTexWriteBus.cmd.ready
-
-    // Consume responses from texture write bus (not needed by CPU)
-    cpuTexWriteBus.rsp.ready := True
+    pciFifo.io.texDrain.ready := cpuTexWriteBus.cmd.ready || !drainValid
   } else {
-    // Flat addressing fallback (non-packed layout)
+    // Fallback: linear texture write mapping (legacy mode)
     val texBaseAddr = regBank.tmuConfig.texBaseAddr(18 downto 0)
-    val drainPciAddr = pciFifo.io.texDrain.pciAddr
-    val flatSramAddr = ((texBaseAddr << 3) +^ drainPciAddr).resize(26 bits)
+    val flatSramAddr = ((texBaseAddr << 3) +^ pciAddr).resize(26 bits)
 
     cpuTexWriteBus.cmd.valid := pciFifo.io.texDrain.valid && tmuValid
-    cpuTexWriteBus.cmd.address := flatSramAddr
     cpuTexWriteBus.cmd.opcode := Bmb.Cmd.Opcode.WRITE
+    cpuTexWriteBus.cmd.address := flatSramAddr
     cpuTexWriteBus.cmd.data := pciFifo.io.texDrain.data
     cpuTexWriteBus.cmd.mask := pciFifo.io.texDrain.mask
-    cpuTexWriteBus.cmd.length := 3
-    cpuTexWriteBus.cmd.last := True
+    cpuTexWriteBus.cmd.length := 3 // 4 bytes
     cpuTexWriteBus.cmd.source := 0
+    cpuTexWriteBus.cmd.last := True
 
-    pciFifo.io.texDrain.ready := (!tmuValid) || cpuTexWriteBus.cmd.ready
-    cpuTexWriteBus.rsp.ready := True
+    pciFifo.io.texDrain.ready := cpuTexWriteBus.cmd.ready || !tmuValid
   }
+
+  cpuTexWriteBus.rsp.ready := True
 
   // ========================================================================
   // Texture arbiter (3 inputs → texMem: TMU read, CPU write drain, CPU read)
@@ -930,7 +953,8 @@ case class Core(c: Config) extends Component {
   colorCombine.io.input.valid.simPublic()
   fog.io.input.valid.simPublic()
   fbAccess.io.input.valid.simPublic()
-  write.i.fromPipeline.valid.simPublic()
+  writeColor.i.fromPipeline.valid.simPublic()
+  writeAux.i.fromPipeline.valid.simPublic()
   fastfill.running.simPublic()
   swapBuffer.io.waiting.simPublic()
   lfb.io.busy.simPublic()
@@ -943,7 +967,8 @@ case class Core(c: Config) extends Component {
     triangleSetup.o.valid || rasterizer.running || tmu.io.input.valid ||
       tmu.io.busy || fbAccess.io.busy ||
       colorCombine.io.input.valid || fog.io.input.valid || fbAccess.io.input.valid ||
-      write.i.fromPipeline.valid || fastfill.running || swapBuffer.io.waiting || lfb.io.busy
+      writeColor.i.fromPipeline.valid || writeAux.i.fromPipeline.valid || fastfill.running ||
+      swapBuffer.io.waiting || lfb.io.busy
   regBank.io.pipelineBusy := pipelineBusySignal
   lfb.io.pciFifoEmpty := pciFifo.io.fifoEmpty
   lfb.io.pipelineBusy := pipelineBusySignal

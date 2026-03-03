@@ -2,14 +2,12 @@ package voodoo
 
 import spinal.core._
 import spinal.core.sim._
-import spinal.lib._
-import spinal.lib.bus.bmb._
 import spinal.lib.bus.bmb.sim._
 import org.scalatest.funsuite.AnyFunSuite
 
 class WriteTest extends AnyFunSuite {
 
-  // Default stride: fbiInit1[7:4]=5 → 5*128=640 pixels
+  // Default stride: fbiInit1[7:4]=5 → 5*128 bytes/row → 640 pixels/row
   val defaultStride = 640
 
   def setupDut(dut: Write): Unit = {
@@ -24,10 +22,7 @@ class WriteTest extends AnyFunSuite {
   case class PixelWrite(
       x: Int,
       y: Int,
-      r: Int,
-      g: Int,
-      b: Int,
-      depthAlpha: Int = 0xffff,
+      data16: Int,
       fbBaseAddr: Long = 0
   )
 
@@ -35,12 +30,7 @@ class WriteTest extends AnyFunSuite {
     dut.i.fromPipeline.valid #= true
     dut.i.fromPipeline.coords(0) #= pixel.x
     dut.i.fromPipeline.coords(1) #= pixel.y
-    dut.i.fromPipeline.toFb.color.r #= pixel.r
-    dut.i.fromPipeline.toFb.color.g #= pixel.g
-    dut.i.fromPipeline.toFb.color.b #= pixel.b
-    dut.i.fromPipeline.toFb.depthAlpha #= pixel.depthAlpha
-    dut.i.fromPipeline.rgbWrite #= true
-    dut.i.fromPipeline.auxWrite #= true
+    dut.i.fromPipeline.data #= pixel.data16
     dut.i.fromPipeline.fbBaseAddr #= pixel.fbBaseAddr
     dut.i.fromPipeline.fbPixelStride #= defaultStride
     dut.clockDomain.waitSampling()
@@ -57,11 +47,6 @@ class WriteTest extends AnyFunSuite {
     }
   }
 
-  def sendAndClearPixel(dut: Write, pixel: PixelWrite): Unit = {
-    sendPixel(dut, pixel)
-    clearPixel(dut)
-  }
-
   def calculateExpectedAddress(
       fbBaseAddr: Long,
       x: Int,
@@ -69,37 +54,39 @@ class WriteTest extends AnyFunSuite {
       stride: Int = defaultStride
   ): Long = {
     val pixelOffset = y * stride + x
-    fbBaseAddr + pixelOffset * 4
+    fbBaseAddr + pixelOffset * 2
   }
 
-  def calculateExpectedData(r: Int, g: Int, b: Int, depthAlpha: Int): Long = {
-    val rgb565 = (r << 11) | (g << 5) | b
-    (depthAlpha.toLong << 16) | rgb565
-  }
+  def alignToWord(addr: Long): Long = addr & ~0x3L
 
-  def readMemoryWord(memory: BmbMemoryAgent, addr: Int): Long = {
+  def laneHi(addr: Long): Boolean = (addr & 0x2L) != 0
+
+  def expectedMask(addr: Long): Int = if (laneHi(addr)) 0xc else 0x3
+
+  def expectedDataWord(data16: Int, addr: Long): Long =
+    if (laneHi(addr)) (data16.toLong << 16) else (data16.toLong & 0xffffL)
+
+  def readMemoryHalf(memory: BmbMemoryAgent, addr: Int): Int = {
     val byte0 = memory.getByte(addr + 0) & 0xff
     val byte1 = memory.getByte(addr + 1) & 0xff
-    val byte2 = memory.getByte(addr + 2) & 0xff
-    val byte3 = memory.getByte(addr + 3) & 0xff
-    ((byte3 << 24) | (byte2 << 16) | (byte1 << 8) | byte0) & 0xffffffffL
+    (byte1 << 8) | byte0
   }
 
-  test("Write converts pixel coordinates to framebuffer address") {
+  test("Write converts pixel coordinates to aligned command address") {
     val config = Config.voodoo1()
 
     SimConfig.withIVerilog.withWave.compile(Write(config)).doSim { dut =>
       setupDut(dut)
 
       val fbBaseAddr = 0x1000000L
-
-      val pixel = PixelWrite(x = 10, y = 5, r = 0x1f, g = 0x3f, b = 0x1f, fbBaseAddr = fbBaseAddr)
+      val pixel = PixelWrite(x = 11, y = 5, data16 = 0xabcd, fbBaseAddr = fbBaseAddr)
       sendPixel(dut, pixel)
 
       assert(dut.o.fbWrite.cmd.valid.toBoolean, "BMB cmd should be valid")
 
-      val expectedAddr = calculateExpectedAddress(fbBaseAddr, pixel.x, pixel.y)
-      val actualAddr = dut.o.fbWrite.cmd.address.toInt
+      val planeAddr = calculateExpectedAddress(fbBaseAddr, pixel.x, pixel.y)
+      val expectedAddr = alignToWord(planeAddr)
+      val actualAddr = dut.o.fbWrite.cmd.address.toLong
 
       assert(
         actualAddr == expectedAddr,
@@ -107,6 +94,10 @@ class WriteTest extends AnyFunSuite {
       )
       assert(dut.o.fbWrite.cmd.opcode.toInt == 1, "Opcode should be WRITE")
       assert(dut.o.fbWrite.cmd.length.toInt == 3, "Length should be 3 (4 bytes)")
+      assert(
+        dut.o.fbWrite.cmd.mask.toInt == expectedMask(planeAddr),
+        f"Mask mismatch at lane=${if (laneHi(planeAddr)) "hi" else "lo"}"
+      )
       assert(dut.o.fbWrite.cmd.last.toBoolean, "Last flag should be set")
 
       clearPixel(dut)
@@ -119,67 +110,44 @@ class WriteTest extends AnyFunSuite {
 
     SimConfig.withIVerilog.withWave.compile(Write(config)).doSim { dut =>
       setupDut(dut)
-      // cmd should not be valid when input is invalid
-      assert(
-        !dut.o.fbWrite.cmd.valid.toBoolean,
-        "BMB cmd should not be valid when input is invalid"
-      )
 
-      // cmd should become valid when input is valid
-      sendPixel(dut, PixelWrite(0, 0, 0, 0, 0, 0))
-      assert(dut.o.fbWrite.cmd.valid.toBoolean, "BMB cmd should be valid when input is valid")
+      assert(!dut.o.fbWrite.cmd.valid.toBoolean, "cmd should be invalid when input invalid")
+
+      sendPixel(dut, PixelWrite(0, 0, 0x1234))
+      assert(dut.o.fbWrite.cmd.valid.toBoolean, "cmd should be valid when input is valid")
 
       clearPixel(dut)
       dut.clockDomain.waitSampling(3)
     }
   }
 
-  test("Write encodes RGB565 and depth/alpha correctly") {
-    val config = Config.voodoo1()
-
-    SimConfig.withIVerilog.withWave.compile(Write(config)).doSim { dut =>
-      setupDut(dut)
-      val pixel = PixelWrite(x = 100, y = 50, r = 0x15, g = 0x2a, b = 0x0f, depthAlpha = 0xabcd)
-      sendPixel(dut, pixel)
-
-      val expectedData = calculateExpectedData(pixel.r, pixel.g, pixel.b, pixel.depthAlpha)
-      val actualData = dut.o.fbWrite.cmd.data.toLong
-
-      assert(
-        actualData == expectedData,
-        f"Data mismatch: expected 0x$expectedData%08X, got 0x$actualData%08X"
-      )
-
-      clearPixel(dut)
-      dut.clockDomain.waitSampling(3)
-    }
-  }
-
-  test("Write handles multiple pixels in sequence") {
+  test("Write places 16-bit payload in the correct BMB lane") {
     val config = Config.voodoo1()
 
     SimConfig.withIVerilog.withWave.compile(Write(config)).doSim { dut =>
       setupDut(dut)
       val pixels = Seq(
-        PixelWrite(0, 0, 0x1f, 0x00, 0x00),
-        PixelWrite(1, 0, 0x00, 0x3f, 0x00),
-        PixelWrite(2, 0, 0x00, 0x00, 0x1f),
-        PixelWrite(0, 1, 0x1f, 0x3f, 0x1f)
+        PixelWrite(x = 100, y = 50, data16 = 0xbeef), // low lane
+        PixelWrite(x = 101, y = 50, data16 = 0xcafe) // high lane
       )
 
-      var sentCount = 0
       for (pixel <- pixels) {
         sendPixel(dut, pixel)
-        if (dut.o.fbWrite.cmd.valid.toBoolean) {
-          sentCount += 1
-        }
-        clearPixel(dut)
-      }
+        val planeAddr = calculateExpectedAddress(pixel.fbBaseAddr, pixel.x, pixel.y)
+        val actualData = dut.o.fbWrite.cmd.data.toLong
+        val expectedData = expectedDataWord(pixel.data16, planeAddr)
+        assert(
+          actualData == expectedData,
+          f"Data mismatch at (${pixel.x},${pixel.y}): expected 0x$expectedData%08X, got 0x$actualData%08X"
+        )
+        assert(
+          dut.o.fbWrite.cmd.mask.toInt == expectedMask(planeAddr),
+          f"Mask mismatch at (${pixel.x},${pixel.y})"
+        )
 
-      assert(
-        sentCount == pixels.length,
-        s"Should have sent ${pixels.length} pixels, but sent $sentCount"
-      )
+        clearPixel(dut)
+        dut.clockDomain.waitSampling(3)
+      }
     }
   }
 
@@ -188,51 +156,19 @@ class WriteTest extends AnyFunSuite {
 
     SimConfig.withIVerilog.withWave.compile(Write(config)).doSim { dut =>
       setupDut(dut)
-      val pixel = PixelWrite(50, 50, 0x10, 0x20, 0x10, 0x8000, fbBaseAddr = 0x300000)
+      val pixel = PixelWrite(50, 50, data16 = 0x8001, fbBaseAddr = 0x300000)
       dut.o.fbWrite.cmd.ready #= false
       sendPixel(dut, pixel)
 
-      // cmd should be valid but not transferred due to backpressure
       assert(dut.o.fbWrite.cmd.valid.toBoolean, "cmd should be valid")
-      assert(
-        !dut.i.fromPipeline.ready.toBoolean,
-        "input should not be ready when BMB is backpressured"
-      )
+      assert(!dut.i.fromPipeline.ready.toBoolean, "input should be backpressured")
 
-      // Release backpressure
       dut.o.fbWrite.cmd.ready #= true
       dut.clockDomain.waitSampling()
-
-      assert(dut.i.fromPipeline.ready.toBoolean, "input should be ready when BMB accepts")
+      assert(dut.i.fromPipeline.ready.toBoolean, "input should recover when cmd accepted")
 
       clearPixel(dut)
       dut.clockDomain.waitSampling(3)
-    }
-  }
-
-  test("Write calculates address for various pixel coordinates") {
-    val config = Config.voodoo1()
-
-    SimConfig.withIVerilog.withWave.compile(Write(config)).doSim { dut =>
-      setupDut(dut)
-
-      val fbBaseAddr = 0x1000000L
-
-      val testCoords = Seq((0, 0), (127, 0), (0, 127), (127, 127), (64, 64))
-
-      for ((x, y) <- testCoords) {
-        sendPixel(dut, PixelWrite(x, y, 0, 0, 0, 0, fbBaseAddr = fbBaseAddr))
-
-        val expectedAddr = calculateExpectedAddress(fbBaseAddr, x, y)
-        val actualAddr = dut.o.fbWrite.cmd.address.toInt
-
-        assert(
-          actualAddr == expectedAddr,
-          f"Address for ($x,$y): expected 0x$expectedAddr%08X, got 0x$actualAddr%08X"
-        )
-
-        clearPixel(dut)
-      }
     }
   }
 
@@ -255,9 +191,9 @@ class WriteTest extends AnyFunSuite {
       )
 
       val testPixels = Seq(
-        PixelWrite(10, 20, 0x1f, 0x00, 0x00, 0x1234, fbBaseAddr = fbBaseAddr),
-        PixelWrite(11, 20, 0x00, 0x3f, 0x00, 0x5678, fbBaseAddr = fbBaseAddr),
-        PixelWrite(12, 20, 0x00, 0x00, 0x1f, 0x9abc, fbBaseAddr = fbBaseAddr)
+        PixelWrite(10, 20, 0x1234, fbBaseAddr),
+        PixelWrite(11, 20, 0x5678, fbBaseAddr),
+        PixelWrite(12, 20, 0x9abc, fbBaseAddr)
       )
 
       for (pixel <- testPixels) {
@@ -266,13 +202,12 @@ class WriteTest extends AnyFunSuite {
         clearPixel(dut)
         dut.clockDomain.waitSampling(10)
 
-        val memAddr = (pixel.y * defaultStride + pixel.x) * 4
-        val expectedData = calculateExpectedData(pixel.r, pixel.g, pixel.b, pixel.depthAlpha)
-        val actualData = readMemoryWord(memory, memAddr)
+        val memAddr = (pixel.y * defaultStride + pixel.x) * 2
+        val actualData = readMemoryHalf(memory, memAddr)
 
         assert(
-          actualData == expectedData,
-          f"Memory data mismatch at (${pixel.x},${pixel.y}): expected 0x$expectedData%08X, got 0x$actualData%08X"
+          actualData == pixel.data16,
+          f"Memory data mismatch at (${pixel.x},${pixel.y}): expected 0x${pixel.data16}%04X, got 0x$actualData%04X"
         )
       }
 

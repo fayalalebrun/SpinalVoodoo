@@ -93,12 +93,14 @@ static void tick_one(void) {
     /* fbWrite logging: capture on rising edge */
     if (fbwrite_log) {
         auto r = top->rootp;
-        uint8_t valid = r->CoreSim__DOT__core_1__DOT__write_1_o_fbWrite_cmd_valid;
+        uint8_t valid = r->CoreSim__DOT__core_1__DOT__writeColor_o_fbWrite_cmd_valid;
         if (valid) {
-            uint32_t addr = r->CoreSim__DOT__core_1__DOT__write_1_o_fbWrite_cmd_payload_fragment_address;
-            uint32_t data = r->CoreSim__DOT__core_1__DOT__write_1_o_fbWrite_cmd_payload_fragment_data;
-            /* Decode pixel coords: addr = (y*stride + x)*4, stride from fbiInit1[7:4]*128 */
-            uint32_t pixel = addr >> 2;
+            uint32_t addr = r->CoreSim__DOT__core_1__DOT__writeColor_o_fbWrite_cmd_payload_fragment_address;
+            uint32_t data = r->CoreSim__DOT__core_1__DOT__writeColor_o_fbWrite_cmd_payload_fragment_data;
+            uint8_t mask = r->CoreSim__DOT__core_1__DOT__writeColor_o_fbWrite_cmd_payload_fragment_mask;
+            /* Split-plane writes are 32-bit aligned, with lane selected by byte mask. */
+            uint32_t planeAddr = addr + ((mask & 0xC) ? 2 : 0);
+            uint32_t pixel = planeAddr >> 1;
             /* Approximate decode for logging (stride may vary) */
             uint32_t y = pixel / 640;
             uint32_t x = pixel % 640;
@@ -203,7 +205,7 @@ static void tick_one(void) {
             int16_t px = sext12(r->CoreSim__DOT__core_1__DOT__fbAccess_io_output_payload_coords_0);
             int16_t py = sext12(r->CoreSim__DOT__core_1__DOT__fbAccess_io_output_payload_coords_1);
             if (px == watch_x && py == watch_y) {
-                uint32_t existingPixel = r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__afterDepthTest_payload_1;
+                uint32_t existingPixel = r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__afterDepthTest_payload_1_1;
                 fprintf(stderr, "[PIXEL %d,%d] FBA: rgb=(%d,%d,%d) alpha=%d blended=(%d,%d,%d) existing=0x%08x blend=%d srcF=%d dstF=%d depthF=%d\n",
                         px, py,
                         r->CoreSim__DOT__core_1__DOT__fbAccess_io_output_payload_color_r,
@@ -234,17 +236,18 @@ static void tick_one(void) {
             }
         }
 
-        /* --- Write stage (final RGB565 + FB address) --- */
-        if (r->CoreSim__DOT__core_1__DOT__write_1__DOT__i_fromPipeline_valid) {
-            int16_t px = sext12(r->CoreSim__DOT__core_1__DOT__write_1__DOT__i_fromPipeline_payload_coords_0);
-            int16_t py = sext12(r->CoreSim__DOT__core_1__DOT__write_1__DOT__i_fromPipeline_payload_coords_1);
+        /* --- Write stage (final RGB565 on color plane) --- */
+        if (r->CoreSim__DOT__core_1__DOT__writeColor__DOT__i_fromPipeline_valid) {
+            int16_t px = sext12(r->CoreSim__DOT__core_1__DOT__writeColor__DOT__i_fromPipeline_payload_coords_0);
+            int16_t py = sext12(r->CoreSim__DOT__core_1__DOT__writeColor__DOT__i_fromPipeline_payload_coords_1);
             if (px == watch_x && py == watch_y) {
-                fprintf(stderr, "[PIXEL %d,%d] WR:  rgb565=(%d,%d,%d) depth=0x%04x\n",
+                uint16_t rgb565 = r->CoreSim__DOT__core_1__DOT__writeColor__DOT__i_fromPipeline_payload_data;
+                fprintf(stderr, "[PIXEL %d,%d] WR:  rgb565=0x%04x (r5=%d g6=%d b5=%d)\n",
                         px, py,
-                        r->CoreSim__DOT__core_1__DOT__write_1__DOT__i_fromPipeline_payload_toFb_color_r,
-                        r->CoreSim__DOT__core_1__DOT__write_1__DOT__i_fromPipeline_payload_toFb_color_g,
-                        r->CoreSim__DOT__core_1__DOT__write_1__DOT__i_fromPipeline_payload_toFb_color_b,
-                        r->CoreSim__DOT__core_1__DOT__write_1__DOT__i_fromPipeline_payload_toFb_depthAlpha);
+                        rgb565,
+                        (rgb565 >> 11) & 0x1f,
+                        (rgb565 >> 5) & 0x3f,
+                        rgb565 & 0x1f);
             }
         }
     }

@@ -261,56 +261,16 @@ int main(int argc, char **argv) {
                 }
             }
 
-            /* Convert 86Box framebuffer to sim's 32-bit interleaved format.
-             * 86Box: separate 16-bit color buffers + 16-bit aux/depth buffer
-             * Sim:   interleaved 32-bit [depth_16 : rgb565_16] per pixel
-             *
-             * We convert both front and back buffers so depth state is correct
-             * regardless of which buffer the trace renders into. */
+            /* Load framebuffer state directly.
+             * With split color/aux planes, sim memory layout matches 86Box state
+             * layout, so no per-pixel interleaving conversion is required. */
             {
                 const uint8_t *fb_mem = ptr;
-                uint32_t buffer_offset_86 = ((fbiInit2_val >> 11) & 0x1FF) * 4096;
-                uint32_t aux_off = shdr->aux_offset;
-                uint32_t rw = shdr->row_width;  /* bytes per row (16-bit pixels) */
-                int h = shdr->h_disp ? shdr->h_disp : disp_width;
-                int v = shdr->v_disp ? shdr->v_disp : disp_height;
-
-                /* Convert a color+depth buffer pair into sim's interleaved format.
-                 * color_off: 86Box byte offset of color buffer
-                 * sim_off:   sim byte offset (= color_off * 2, since 4 vs 2 bytes/pixel)
-                 * Sim stride matches 86Box: rw/2 pixels per row (rw bytes / 2 bytes per pixel). */
-                int stride_px = rw / 2;  /* pixels per row */
-                auto convert_buffer = [&](uint32_t color_off, uint32_t sim_off) {
-                    std::vector<uint32_t> sim_buf(stride_px * v);
-                    for (int y = 0; y < v; y++) {
-                        for (int x = 0; x < stride_px; x++) {
-                            uint32_t px_off = y * rw + x * 2;
-                            uint16_t color = 0, depth = 0;
-                            if (color_off + px_off + 1 < shdr->fb_size)
-                                color = fb_mem[color_off + px_off] |
-                                        (fb_mem[color_off + px_off + 1] << 8);
-                            if (aux_off + px_off + 1 < shdr->fb_size)
-                                depth = fb_mem[aux_off + px_off] |
-                                        (fb_mem[aux_off + px_off + 1] << 8);
-                            sim_buf[y * stride_px + x] = ((uint32_t)depth << 16) | color;
-                        }
-                    }
-                    sim_write_fb_bulk(sim_off, sim_buf.data(), sim_buf.size());
-                };
-
-                if (buffer_offset_86 > 0) {
-                    uint32_t front_off = shdr->draw_offset == 0 ? buffer_offset_86 : 0;
-                    uint32_t back_off  = shdr->draw_offset;
-                    /* Sim buffer offsets are 2x 86Box (32-bit vs 16-bit pixels) */
-                    convert_buffer(front_off, front_off * 2);
-                    convert_buffer(back_off,  back_off * 2);
-                    fprintf(stderr, "[trace_test] FB state loaded into sim: front=0x%x back=0x%x aux=0x%x (%dx%d)\n",
-                            front_off, back_off, aux_off, h, v);
-                } else {
-                    /* Single buffer — just convert at offset 0 */
-                    convert_buffer(0, 0);
-                    fprintf(stderr, "[trace_test] FB state loaded into sim: single buffer (%dx%d)\n", h, v);
-                }
+                std::vector<uint32_t> fb_words((shdr->fb_size + 3) / 4, 0);
+                memcpy(fb_words.data(), fb_mem, shdr->fb_size);
+                sim_write_fb_bulk(0, fb_words.data(), fb_words.size());
+                fprintf(stderr, "[trace_test] FB state loaded into sim: raw copy (%u bytes, aux_off=0x%x)\n",
+                        shdr->fb_size, shdr->aux_offset);
             }
             ptr += shdr->fb_size;
 
@@ -491,9 +451,8 @@ int main(int argc, char **argv) {
         fb_offset = last_fb_write_offset;
     else
         fb_offset = draw_offset;
-    /* Sim uses 32-bit interleaved pixels with buffer_offset <<13 (vs 86Box <<12),
-     * so sim buffer addresses are double the ref's 16-bit offsets. */
-    uint32_t sim_fb_offset = fb_offset * 2;
+    /* Sim color plane now matches the 16-bit RGB565 layout: one pixel = 2 bytes. */
+    uint32_t sim_fb_offset = fb_offset;
 
     fprintf(stderr, "[trace_test] FB layout: front=0x%x draw=0x%x fb_write=0x%x reading=0x%x row_width=%u (%d pixels)\n",
             front_offset, draw_offset, last_fb_write_offset, fb_offset, row_width, row_stride);
@@ -506,10 +465,9 @@ int main(int argc, char **argv) {
     uint16_t *ref_fb = (uint16_t *)((uint8_t *)ref_fb_base + fb_offset);
 
     /* Get sim framebuffer.
-     * CoreSim stores pixels as 32-bit words: [depth:16][rgb565:16]
-     * with a runtime stride derived from fbiInit1[7:4] * 64 pixels
-     * (val * 128 bytes row width / 2 bytes per 16-bit pixel).
-     * We extract just the RGB565 color from each word. */
+     * CoreSim now uses split planes (color + aux), with RGB565 packed in the
+     * color plane as two 16-bit pixels per 32-bit word. Runtime stride is still
+     * derived from fbiInit1[7:4] * 64 pixels. */
     int sim_pixel_stride = 640; /* default for 640x480 */
     if (!ref_only) {
         /* Read fbiInit1 from sim — has the final value after state + trace */
@@ -523,19 +481,24 @@ int main(int argc, char **argv) {
     uint16_t *sim_fb = nullptr;
 
     if (!ref_only) {
-        /* Read the sim framebuffer region covering all display rows */
-        uint32_t sim_row_bytes = sim_pixel_stride * 4;  /* 4 bytes per pixel */
-        uint32_t sim_total_words = sim_pixel_stride * disp_height;
+        /* sim_read_fb() is word-addressed. Support 2-byte offsets by aligning
+         * down and tracking the initial halfword lane. */
+        uint32_t aligned_sim_fb_offset = sim_fb_offset & ~0x3u;
+        uint32_t start_halfword = (sim_fb_offset >> 1) & 0x1u;
+        uint32_t total_halfwords = (uint32_t)sim_pixel_stride * (uint32_t)disp_height + start_halfword;
+        uint32_t sim_total_words = (total_halfwords + 1) / 2;
         std::vector<uint32_t> sim_fb_raw(sim_total_words);
-        sim_read_fb(sim_fb_offset, sim_fb_raw.data(), sim_total_words);
+        sim_read_fb(aligned_sim_fb_offset, sim_fb_raw.data(), sim_total_words);
 
-        /* Extract RGB565 color from each 32-bit word into a flat buffer
-         * with the same row_stride as the ref, for easy comparison. */
+        /* Extract RGB565 pixels from packed 32-bit words into a flat buffer
+         * with the same row_stride as the reference. */
         sim_fb_extracted.resize(row_stride * disp_height, 0);
         for (int y = 0; y < disp_height; y++) {
             for (int x = 0; x < disp_width; x++) {
-                uint32_t word = sim_fb_raw[y * sim_pixel_stride + x];
-                sim_fb_extracted[y * row_stride + x] = (uint16_t)(word & 0xFFFF);
+                uint32_t p = start_halfword + (uint32_t)y * (uint32_t)sim_pixel_stride + (uint32_t)x;
+                uint32_t word = sim_fb_raw[p >> 1];
+                uint16_t pixel = (p & 1) ? (uint16_t)((word >> 16) & 0xFFFF) : (uint16_t)(word & 0xFFFF);
+                sim_fb_extracted[y * row_stride + x] = pixel;
             }
         }
         sim_fb = sim_fb_extracted.data();

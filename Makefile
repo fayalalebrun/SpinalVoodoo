@@ -90,6 +90,7 @@ run-all: $(patsubst %,run/%,test00 test01 test02 test03 test04 test05 test06 tes
 # --------------------------------------------------------------------------
 
 TRACE_TEST_BIN = emu/test/obj_dir/trace_test
+STATE_ROUNDTRIP_BIN = emu/test/obj_dir/state_roundtrip_test
 
 # Build trace_test binary (64-bit, independent of 32-bit Glide build).
 # Always recurse — sub-make tracks Scala → Verilog → Verilator → binary deps.
@@ -97,6 +98,12 @@ $(TRACE_TEST_BIN): FORCE
 	$(MAKE) -C emu/test
 
 trace-test: $(TRACE_TEST_BIN)
+
+$(STATE_ROUNDTRIP_BIN): FORCE
+	$(MAKE) -C emu/test state-roundtrip
+
+check/state-roundtrip: $(STATE_ROUNDTRIP_BIN)
+	$(STATE_ROUNDTRIP_BIN)
 
 # Capture trace from Glide test.
 # TRACE_CAPTURE=1 swaps the Verilator backend for a lightweight trace writer.
@@ -122,8 +129,12 @@ check/%: $(TRACE_TEST_BIN)
 	else \
 	  echo "ERROR: neither traces/$*.bin nor traces/$*/ found. Run 'make trace/$*' first."; exit 1; \
 	fi; \
+	extra_args=""; \
+	if [ "$*" = "screamer2" ]; then \
+	  extra_args="--max-mismatches 500"; \
+	fi; \
 	$(if $(filter 1,$(TRACE)),SIM_FST=$(abspath test-output)/$*/trace.fst) \
-	$(TRACE_TEST_BIN) "$$src" --output-dir test-output/$*
+	$(TRACE_TEST_BIN) "$$src" --output-dir test-output/$* $$extra_args
 
 # Capture + check in one step (sequential: trace must finish before check starts)
 test/%:

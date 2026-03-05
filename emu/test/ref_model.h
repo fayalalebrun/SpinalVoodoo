@@ -55,6 +55,30 @@ uint8_t *ref_get_tex(void);
 /* Get texture memory size in bytes. */
 uint32_t ref_get_tex_size(void);
 
+/* Debug/state helpers used by roundtrip validation tests. */
+uint32_t ref_get_clip_left_right(void);
+uint32_t ref_get_clip_lowy_highy(void);
+uint32_t ref_get_swapbuffer_cmd(void);
+uint32_t ref_get_tex_base_addr(int tmu, int which);
+uint32_t ref_get_clut_rgb(int index);
+int ref_dump_state_to_dir(const char *dir, uint32_t frame_num);
+uint32_t ref_get_fbi_pixels_in(void);
+uint32_t ref_get_fbi_pixels_out(void);
+uint32_t ref_get_fbi_zfunc_fail(void);
+uint32_t ref_get_fbi_afunc_fail(void);
+uint32_t ref_get_fbi_chroma_fail(void);
+uint32_t ref_get_fbz_mode(void);
+uint32_t ref_get_za_color(void);
+uint32_t ref_get_triangle_coverage_pixels(void);
+uint32_t ref_get_triangle_coverage_total(void);
+uint32_t ref_get_triangle_color_writes(void);
+uint32_t ref_get_triangle_black_writes(void);
+uint32_t ref_get_triangle_depth_only_updates(void);
+uint32_t ref_get_triangles_textured(void);
+uint32_t ref_get_triangles_untextured(void);
+uint32_t ref_get_triangles_all_black_writes(void);
+uint32_t ref_get_palette_nonzero_count(int tmu);
+
 /* Load a state snapshot into the reference model.
  * data points to the raw state.bin file contents, size is the file length.
  * Returns 0 on success, -1 on error. */

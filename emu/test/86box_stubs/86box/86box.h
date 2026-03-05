@@ -17,6 +17,10 @@
 
 /* Logging — no-op */
 static inline void pclog_ex(const char *fmt, ...) { (void)fmt; }
+static inline void pclog(const char *fmt, ...) { (void)fmt; }
+
+/* Global cycle counter used by trace code. */
+extern uint64_t tsc;
 
 /* Fatal error */
 static inline void fatal(const char *fmt, ...) {

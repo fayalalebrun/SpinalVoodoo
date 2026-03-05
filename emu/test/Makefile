@@ -9,7 +9,7 @@
 #   make              # build trace_test
 #   make clean        # remove build artifacts
 
-.PHONY: all clean
+.PHONY: all clean state-roundtrip
 
 PROJ_ROOT  = ../..
 SIM_DIR    = ../sim
@@ -19,6 +19,7 @@ STUBS_DIR  = 86box_stubs
 # 86Box paths
 EBOX_SRC   = ../86Box/src/video
 EBOX_INC   = ../86Box/src/include
+TRACE_DIR  = ../trace
 
 # Verilator
 VERILATOR       = verilator
@@ -38,7 +39,7 @@ ifdef CCACHE
   OBJCACHE = ccache
 endif
 
-CFLAGS   = -O2 -fwrapv -w -I$(STUBS_DIR) -I$(EBOX_INC)
+CFLAGS   = -O2 -fwrapv -w -I$(STUBS_DIR) -I$(EBOX_INC) -I$(TRACE_DIR)
 CXXFLAGS = -O2 -std=c++17 -I$(OBJ_DIR) -I$(VERILATOR_ROOT)/include -I$(VERILATOR_ROOT)/include/vltstd \
            -I$(SIM_DIR)/harness -I. -DVL_TIME_CONTEXT
 DEPFLAGS = -MMD -MP
@@ -64,6 +65,7 @@ $(shell [ -f $(TRACE_MODE_FILE) ] && [ "$$(cat $(TRACE_MODE_FILE))" = "$(TRACE_M
 ###############################################################################
 
 all: $(OBJ_DIR)/trace_test
+state-roundtrip: $(OBJ_DIR)/state_roundtrip_test
 
 # Step 1: Generate Verilog (reuse existing or rebuild)
 $(VERILOG): $(SCALA_SRCS)
@@ -94,30 +96,39 @@ $(OBJ_DIR)/VCoreSim__ALL.a: $(VERILATOR_LIBS_STAMP)
 $(OBJ_DIR)/libverilated.a: $(VERILATOR_LIBS_STAMP)
 
 # Step 4: 86Box reference objects (compiled as C)
-$(OBJ_DIR)/vid_voodoo_render.o: $(EBOX_SRC)/vid_voodoo_render.c | $(VERILATE_STAMP)
-	$(OBJCACHE) $(CC) $(CFLAGS) $(DEPFLAGS) -Dvoodoo_queue_triangle=_voodoo_queue_triangle_86box \
+$(OBJ_DIR)/vid_voodoo_render.o: $(EBOX_SRC)/vid_voodoo_render.c
+	$(OBJCACHE) $(CC) $(CFLAGS) $(DEPFLAGS) -Dvoodoo_queue_triangle=_voodoo_queue_triangle_86box -DREF_TRIANGLE_COVERAGE_HOOK \
 		-c -o $@ $<
 
-$(OBJ_DIR)/vid_voodoo_texture.o: $(EBOX_SRC)/vid_voodoo_texture.c | $(VERILATE_STAMP)
+$(OBJ_DIR)/vid_voodoo_texture.o: $(EBOX_SRC)/vid_voodoo_texture.c
 	$(OBJCACHE) $(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ $<
 
-$(OBJ_DIR)/vid_voodoo_reg.o: $(EBOX_SRC)/vid_voodoo_reg.c | $(VERILATE_STAMP)
+$(OBJ_DIR)/vid_voodoo_reg.o: $(EBOX_SRC)/vid_voodoo_reg.c
 	$(OBJCACHE) $(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ $<
 
-$(OBJ_DIR)/vid_voodoo_fb.o: $(EBOX_SRC)/vid_voodoo_fb.c | $(VERILATE_STAMP)
+$(OBJ_DIR)/vid_voodoo_fb.o: $(EBOX_SRC)/vid_voodoo_fb.c
 	$(OBJCACHE) $(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ $<
 
-$(OBJ_DIR)/vid_voodoo_blitter.o: $(EBOX_SRC)/vid_voodoo_blitter.c | $(VERILATE_STAMP)
+$(OBJ_DIR)/vid_voodoo_blitter.o: $(EBOX_SRC)/vid_voodoo_blitter.c
 	$(OBJCACHE) $(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ $<
 
-$(OBJ_DIR)/ref_model.o: ref_model.c | $(VERILATE_STAMP)
+$(OBJ_DIR)/vid_voodoo_trace.o: $(EBOX_SRC)/vid_voodoo_trace.c
+	$(OBJCACHE) $(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ $<
+
+$(OBJ_DIR)/voodoo_trace_writer.o: $(TRACE_DIR)/voodoo_trace_writer.c
+	$(OBJCACHE) $(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ $<
+
+$(OBJ_DIR)/ref_model.o: ref_model.c
 	$(OBJCACHE) $(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ $<
 
 # Step 5: C++ objects
 $(OBJ_DIR)/sim_harness.o: $(SIM_DIR)/harness/sim_harness.cpp Makefile $(TRACE_MODE_FILE) | $(VERILATE_STAMP)
-	$(OBJCACHE) $(CXX) $(CXXFLAGS) $(DEPFLAGS) -c -o $@ $<
+	$(OBJCACHE) $(CXX) $(CXXFLAGS) $(DEPFLAGS) -DVL_USER_WARN -c -o $@ $<
 
 $(OBJ_DIR)/trace_test.o: trace_test.cpp Makefile $(TRACE_MODE_FILE) | $(VERILATE_STAMP)
+	$(OBJCACHE) $(CXX) $(CXXFLAGS) $(CFLAGS) $(DEPFLAGS) -c -o $@ $<
+
+$(OBJ_DIR)/state_roundtrip_test.o: state_roundtrip_test.cpp Makefile
 	$(OBJCACHE) $(CXX) $(CXXFLAGS) $(CFLAGS) $(DEPFLAGS) -c -o $@ $<
 
 # Step 6: Link
@@ -131,10 +142,25 @@ OBJS = $(OBJ_DIR)/trace_test.o \
        $(OBJ_DIR)/vid_voodoo_reg.o \
        $(OBJ_DIR)/vid_voodoo_fb.o \
        $(OBJ_DIR)/vid_voodoo_blitter.o \
+       $(OBJ_DIR)/vid_voodoo_trace.o \
+       $(OBJ_DIR)/voodoo_trace_writer.o \
        $(OBJ_DIR)/sim_harness.o
 
 $(OBJ_DIR)/trace_test: $(OBJS) $(OBJ_DIR)/VCoreSim__ALL.a $(OBJ_DIR)/libverilated.a
 	$(CXX) -o $@ $(OBJS) $(OBJ_DIR)/VCoreSim__ALL.a $(OBJ_DIR)/libverilated.a -lm -lz -lpthread
+
+ROUNDTRIP_OBJS = $(OBJ_DIR)/state_roundtrip_test.o \
+                 $(OBJ_DIR)/ref_model.o \
+                 $(OBJ_DIR)/vid_voodoo_render.o \
+                 $(OBJ_DIR)/vid_voodoo_texture.o \
+                 $(OBJ_DIR)/vid_voodoo_reg.o \
+                 $(OBJ_DIR)/vid_voodoo_fb.o \
+                 $(OBJ_DIR)/vid_voodoo_blitter.o \
+                 $(OBJ_DIR)/vid_voodoo_trace.o \
+                 $(OBJ_DIR)/voodoo_trace_writer.o
+
+$(OBJ_DIR)/state_roundtrip_test: $(ROUNDTRIP_OBJS)
+	$(CXX) -o $@ $(ROUNDTRIP_OBJS) -lm -lpthread
 
 clean:
 	rm -rf $(OBJ_DIR)

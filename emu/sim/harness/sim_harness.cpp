@@ -19,11 +19,9 @@
 #include "verilated_fst_c.h"
 #endif
 
-/* Promote Verilator warnings to fatal errors.
- * verilated.cpp is compiled with -DVL_USER_WARN so its default vl_warn is
- * excluded; we provide this replacement.  This catches $readmemb file-not-found
- * (and any future warning) at model construction time instead of silently
- * zeroing memories. */
+/* Optional warning override.  Only define vl_warn when verilated.cpp is
+ * built with -DVL_USER_WARN, otherwise Verilator provides its own symbol. */
+#ifdef VL_USER_WARN
 void vl_warn(const char* filename, int linenum, const char* hier,
              const char* msg) {
     if (strstr(msg, "$readmem")) {
@@ -35,6 +33,7 @@ void vl_warn(const char* filename, int linenum, const char* hier,
             VL_PRINTF("%%Warning: %s\n", msg);
     }
 }
+#endif
 
 /* ------------------------------------------------------------------ */
 /* State                                                               */
@@ -575,9 +574,15 @@ uint32_t sim_read(uint32_t addr) {
 uint32_t sim_idle_wait(void) {
     /* Poll status register until FIFO has space and pipeline not busy,
      * matching sst1InitIdleLoop's approach of reading through the bus.
-     * Status register bits: [5:0]=pciFifoFree, [7]=fbiBusy, [9]=sstBusy */
+     * Also wait for swap queue to drain so final framebuffer selection
+     * cannot race a pending swap.
+     * Status register bits:
+     *   [5:0]  = pciFifoFree
+     *   [9]    = sstBusy
+     *   [30:28]= swapsPending */
     #define SST_BUSY       (1u << 9)
     #define SST_FIFOFREE_MASK 0x3Fu
+    #define SST_SWAPS_PENDING_MASK (7u << 28)
 
     int timeout = 5000000;  /* 5M reads — generous for slow pipelines */
     uint64_t t0 = sim_time;
@@ -586,8 +591,9 @@ uint32_t sim_idle_wait(void) {
         uint32_t status = bus_read(0x000000);
         int busy = (status & SST_BUSY) != 0;
         int fifo_free = status & SST_FIFOFREE_MASK;
+        int swaps_pending = (status & SST_SWAPS_PENDING_MASK) >> 28;
 
-        if (!busy && fifo_free == 0x3F) {
+        if (!busy && fifo_free == 0x3F && swaps_pending == 0) {
             if (++idle_count >= 3) {  /* Match sst1InitIdleLoop: 3 consecutive idle reads */
                 return status;
             }
@@ -599,8 +605,11 @@ uint32_t sim_idle_wait(void) {
     }
 
     uint32_t status = bus_read(0x000000);
-    fprintf(stderr, "[sim_harness] WARNING: idle_wait timeout after %lu ticks! status=0x%08x\n",
-            (unsigned long)((sim_time - t0) / 2), status);
+    fprintf(stderr, "[sim_harness] WARNING: idle_wait timeout after %lu ticks! status=0x%08x fifo=%u busy=%u swaps=%u\n",
+            (unsigned long)((sim_time - t0) / 2), status,
+            status & SST_FIFOFREE_MASK,
+            (status & SST_BUSY) ? 1u : 0u,
+            (status & SST_SWAPS_PENDING_MASK) >> 28);
     return status;
 }
 

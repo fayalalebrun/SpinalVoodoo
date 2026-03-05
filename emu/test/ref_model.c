@@ -31,6 +31,7 @@
 #include <86box/vid_voodoo_regs.h>
 #include <86box/vid_voodoo_render.h>
 #include <86box/vid_voodoo_texture.h>
+#include <86box/vid_voodoo_trace.h>
 
 #include "ref_model.h"
 #include "../../emu/trace/voodoo_trace_format.h"
@@ -40,6 +41,22 @@
  * ------------------------------------------------------------------- */
 
 int tris = 0;
+uint64_t tsc = 0;
+static uint64_t ref_total_pixels_in = 0;
+static uint64_t ref_total_pixels_out = 0;
+static uint64_t ref_total_zfunc_fail = 0;
+static uint64_t ref_total_afunc_fail = 0;
+static uint64_t ref_total_chroma_fail = 0;
+static uint8_t *ref_triangle_coverage_bits = NULL;
+static uint32_t ref_triangle_coverage_w = 0;
+static uint32_t ref_triangle_coverage_h = 0;
+static uint32_t ref_triangle_coverage_unique = 0;
+static uint64_t ref_triangle_color_writes = 0;
+static uint64_t ref_triangle_black_writes = 0;
+static uint64_t ref_triangle_depth_only_updates = 0;
+static uint64_t ref_triangles_textured = 0;
+static uint64_t ref_triangles_untextured = 0;
+static uint64_t ref_triangles_all_black_writes = 0;
 
 /* Lookup tables — defined here, declared extern in vid_voodoo_common.h */
 rgba8_t rgb332[0x100];
@@ -54,6 +71,72 @@ rgba8_t ai88[0x10000];
  * ------------------------------------------------------------------- */
 
 static voodoo_t *voodoo = NULL;
+
+static void ref_coverage_reset(void)
+{
+    free(ref_triangle_coverage_bits);
+    ref_triangle_coverage_bits = NULL;
+    ref_triangle_coverage_w = 0;
+    ref_triangle_coverage_h = 0;
+    ref_triangle_coverage_unique = 0;
+    ref_triangle_color_writes = 0;
+    ref_triangle_black_writes = 0;
+    ref_triangle_depth_only_updates = 0;
+    ref_triangles_textured = 0;
+    ref_triangles_untextured = 0;
+    ref_triangles_all_black_writes = 0;
+}
+
+/* Hook called from vid_voodoo_render.c when REF_TRIANGLE_COVERAGE_HOOK is enabled. */
+void ref_coverage_mark_pixel(int x, int y)
+{
+    if (!voodoo)
+        return;
+    if (x < 0 || y < 0)
+        return;
+    if (voodoo->h_disp <= 0 || voodoo->v_disp <= 0)
+        return;
+    if (x >= voodoo->h_disp || y >= voodoo->v_disp)
+        return;
+
+    uint32_t w = (uint32_t)voodoo->h_disp;
+    uint32_t h = (uint32_t)voodoo->v_disp;
+    uint64_t total = (uint64_t)w * (uint64_t)h;
+    uint64_t bytes = (total + 7u) / 8u;
+
+    if (!ref_triangle_coverage_bits ||
+        ref_triangle_coverage_w != w ||
+        ref_triangle_coverage_h != h) {
+        uint8_t *new_bits = (uint8_t *)calloc(1, (size_t)bytes);
+        if (!new_bits)
+            return;
+        free(ref_triangle_coverage_bits);
+        ref_triangle_coverage_bits = new_bits;
+        ref_triangle_coverage_w = w;
+        ref_triangle_coverage_h = h;
+        ref_triangle_coverage_unique = 0;
+    }
+
+    uint64_t idx = (uint64_t)(uint32_t)y * (uint64_t)w + (uint64_t)(uint32_t)x;
+    uint8_t mask = (uint8_t)(1u << (idx & 7u));
+    uint8_t *cell = &ref_triangle_coverage_bits[idx >> 3];
+    if (!(*cell & mask)) {
+        *cell |= mask;
+        ref_triangle_coverage_unique++;
+    }
+}
+
+void ref_coverage_note_color_write(int is_black)
+{
+    ref_triangle_color_writes++;
+    if (is_black)
+        ref_triangle_black_writes++;
+}
+
+void ref_coverage_note_depth_only(void)
+{
+    ref_triangle_depth_only_updates++;
+}
 
 /* -------------------------------------------------------------------
  * voodoo_update_ncc — copied from vid_voodoo_display.c
@@ -176,12 +259,27 @@ extern void voodoo_triangle(voodoo_t *voodoo, voodoo_params_t *params, int odd_e
 
 void voodoo_queue_triangle(voodoo_t *voodoo, voodoo_params_t *params)
 {
+    uint64_t before_writes = ref_triangle_color_writes;
+    uint64_t before_black = ref_triangle_black_writes;
+
     voodoo_use_texture(voodoo, params, 0);
     if (voodoo->dual_tmus)
         voodoo_use_texture(voodoo, params, 1);
 
     memcpy(&voodoo->params_buffer[0], params, sizeof(voodoo_params_t));
     voodoo_triangle(voodoo, &voodoo->params_buffer[0], 0);
+
+    if (params->fbzColorPath & FBZCP_TEXTURE_ENABLED)
+        ref_triangles_textured++;
+    else
+        ref_triangles_untextured++;
+
+    {
+        uint64_t delta_w = ref_triangle_color_writes - before_writes;
+        uint64_t delta_b = ref_triangle_black_writes - before_black;
+        if (delta_w > 0 && delta_w == delta_b)
+            ref_triangles_all_black_writes++;
+    }
     tris++;
 }
 
@@ -276,6 +374,12 @@ int ref_init(int fb_size_mb, int tex_size_mb)
     voodoo->type           = VOODOO_1;
     voodoo->dual_tmus      = 0;
     voodoo->render_threads = 1;
+    ref_total_pixels_in = 0;
+    ref_total_pixels_out = 0;
+    ref_total_zfunc_fail = 0;
+    ref_total_afunc_fail = 0;
+    ref_total_chroma_fail = 0;
+    ref_coverage_reset();
 
     /* Framebuffer */
     voodoo->fb_size    = fb_size_mb * 1024 * 1024;
@@ -318,6 +422,16 @@ int ref_init(int fb_size_mb, int tex_size_mb)
     return 0;
 }
 
+static void ref_accumulate_fbi_counters(void)
+{
+    if (!voodoo) return;
+    ref_total_pixels_in += voodoo->fbiPixelsIn;
+    ref_total_pixels_out += voodoo->fbiPixelsOut;
+    ref_total_zfunc_fail += voodoo->fbiZFuncFail;
+    ref_total_afunc_fail += voodoo->fbiAFuncFail;
+    ref_total_chroma_fail += voodoo->fbiChromaFail;
+}
+
 void ref_shutdown(void)
 {
     if (!voodoo) return;
@@ -330,6 +444,7 @@ void ref_shutdown(void)
     free(voodoo->fb_mem);
     free(voodoo);
     voodoo = NULL;
+    ref_coverage_reset();
 }
 
 /* -------------------------------------------------------------------
@@ -367,6 +482,11 @@ void ref_write_reg(uint32_t addr, uint32_t val)
             if ((voodoo->v_disp == 386) || (voodoo->v_disp == 402) ||
                 (voodoo->v_disp == 482) || (voodoo->v_disp == 602))
                 voodoo->v_disp -= 2;
+            return;
+        case SST_nopCMD:
+            /* 86Box resets FBI counters on nopCMD; keep cumulative totals too. */
+            ref_accumulate_fbi_counters();
+            voodoo_reg_writel(addr, val, voodoo);
             return;
         default:
             break;
@@ -450,6 +570,170 @@ uint32_t ref_get_tex_size(void)
     return voodoo->texture_size;
 }
 
+uint32_t ref_get_clip_left_right(void)
+{
+    if (!voodoo) return 0;
+    return (uint32_t)(voodoo->params.clipRight | (voodoo->params.clipLeft << 16));
+}
+
+uint32_t ref_get_clip_lowy_highy(void)
+{
+    if (!voodoo) return 0;
+    return (uint32_t)(voodoo->params.clipHighY | (voodoo->params.clipLowY << 16));
+}
+
+uint32_t ref_get_swapbuffer_cmd(void)
+{
+    if (!voodoo) return 0;
+    return voodoo->params.swapbufferCMD;
+}
+
+uint32_t ref_get_tex_base_addr(int tmu, int which)
+{
+    if (!voodoo) return 0;
+    if (tmu < 0 || tmu > 1) return 0;
+
+    switch (which) {
+        case 0: return voodoo->params.texBaseAddr[tmu];
+        case 1: return voodoo->params.texBaseAddr1[tmu];
+        case 2: return voodoo->params.texBaseAddr2[tmu];
+        case 3: return voodoo->params.texBaseAddr38[tmu];
+        default: return 0;
+    }
+}
+
+uint32_t ref_get_clut_rgb(int index)
+{
+    if (!voodoo) return 0;
+    if (index < 0 || index >= 33) return 0;
+
+    return ((uint32_t)voodoo->clutData[index].r << 16) |
+           ((uint32_t)voodoo->clutData[index].g << 8) |
+           ((uint32_t)voodoo->clutData[index].b);
+}
+
+uint32_t ref_get_fbi_pixels_in(void)
+{
+    if (!voodoo) return 0;
+    return (uint32_t)(ref_total_pixels_in + voodoo->fbiPixelsIn);
+}
+
+uint32_t ref_get_fbi_pixels_out(void)
+{
+    if (!voodoo) return 0;
+    return (uint32_t)(ref_total_pixels_out + voodoo->fbiPixelsOut);
+}
+
+uint32_t ref_get_fbi_zfunc_fail(void)
+{
+    if (!voodoo) return 0;
+    return (uint32_t)(ref_total_zfunc_fail + voodoo->fbiZFuncFail);
+}
+
+uint32_t ref_get_fbi_afunc_fail(void)
+{
+    if (!voodoo) return 0;
+    return (uint32_t)(ref_total_afunc_fail + voodoo->fbiAFuncFail);
+}
+
+uint32_t ref_get_fbi_chroma_fail(void)
+{
+    if (!voodoo) return 0;
+    return (uint32_t)(ref_total_chroma_fail + voodoo->fbiChromaFail);
+}
+
+uint32_t ref_get_fbz_mode(void)
+{
+    if (!voodoo) return 0;
+    return voodoo->params.fbzMode;
+}
+
+uint32_t ref_get_za_color(void)
+{
+    if (!voodoo) return 0;
+    return voodoo->params.zaColor;
+}
+
+uint32_t ref_get_triangle_coverage_pixels(void)
+{
+    return ref_triangle_coverage_unique;
+}
+
+uint32_t ref_get_triangle_coverage_total(void)
+{
+    if (ref_triangle_coverage_w == 0 || ref_triangle_coverage_h == 0)
+        return 0;
+    return ref_triangle_coverage_w * ref_triangle_coverage_h;
+}
+
+uint32_t ref_get_triangle_color_writes(void)
+{
+    return (uint32_t)ref_triangle_color_writes;
+}
+
+uint32_t ref_get_triangle_black_writes(void)
+{
+    return (uint32_t)ref_triangle_black_writes;
+}
+
+uint32_t ref_get_triangle_depth_only_updates(void)
+{
+    return (uint32_t)ref_triangle_depth_only_updates;
+}
+
+uint32_t ref_get_triangles_textured(void)
+{
+    return (uint32_t)ref_triangles_textured;
+}
+
+uint32_t ref_get_triangles_untextured(void)
+{
+    return (uint32_t)ref_triangles_untextured;
+}
+
+uint32_t ref_get_triangles_all_black_writes(void)
+{
+    return (uint32_t)ref_triangles_all_black_writes;
+}
+
+uint32_t ref_get_palette_nonzero_count(int tmu)
+{
+    if (!voodoo)
+        return 0;
+    if (tmu < 0 || tmu > 1)
+        return 0;
+    uint32_t nz = 0;
+    for (int i = 0; i < 256; i++) {
+        if (voodoo->palette[tmu][i].u != 0)
+            nz++;
+    }
+    return nz;
+}
+
+int ref_dump_state_to_dir(const char *dir, uint32_t frame_num)
+{
+    if (!voodoo || !dir || !dir[0])
+        return -1;
+
+    uint32_t saved_fb_size = voodoo->fb_size;
+    uint32_t saved_tex_size = voodoo->texture_size;
+
+    /* 86Box writer expects these fields in MB; ref model stores bytes. */
+    voodoo->fb_size = saved_fb_size / (1024 * 1024);
+    voodoo->texture_size = saved_tex_size / (1024 * 1024);
+
+    voodoo_trace_t trace;
+    memset(&trace, 0, sizeof(trace));
+    trace.voodoo = voodoo;
+    trace.dump_state = 1;
+    snprintf(trace.trace_dir, sizeof(trace.trace_dir), "%s", dir);
+    voodoo_trace_dump_state(&trace, frame_num);
+
+    voodoo->fb_size = saved_fb_size;
+    voodoo->texture_size = saved_tex_size;
+    return 0;
+}
+
 /* -------------------------------------------------------------------
  * State loading
  * ------------------------------------------------------------------- */
@@ -460,9 +744,20 @@ int ref_load_state(const uint8_t *data, uint32_t size)
         return -1;
 
     const voodoo_state_header_t *hdr = (const voodoo_state_header_t *)data;
+    ref_total_pixels_in = 0;
+    ref_total_pixels_out = 0;
+    ref_total_zfunc_fail = 0;
+    ref_total_afunc_fail = 0;
+    ref_total_chroma_fail = 0;
+    ref_coverage_reset();
 
     if (hdr->magic != VOODOO_STATE_MAGIC)
         return -1;
+    if (hdr->version != VOODOO_STATE_VERSION) {
+        fprintf(stderr, "[ref_model] ERROR: Unsupported state version %u (expected %u). v1 is not supported.\n",
+                hdr->version, VOODOO_STATE_VERSION);
+        return -1;
+    }
 
     uint32_t reg_data_size = hdr->reg_count * sizeof(voodoo_state_reg_t);
     uint32_t expected = sizeof(voodoo_state_header_t) + reg_data_size +
@@ -474,9 +769,7 @@ int ref_load_state(const uint8_t *data, uint32_t size)
 
     /* Apply register entries.
      * Skip command registers that have side effects (swap, triangle, fastfill)
-     * — the state dump stores their values but isn't meant to trigger them.
-     * Also skip fake buffer layout registers (0x300-0x314 for FBI) since they
-     * overlap with TMU register space and are just informational. */
+     * — the state dump stores their values but isn't meant to trigger them. */
     const voodoo_state_reg_t *regs = (const voodoo_state_reg_t *)ptr;
     for (uint32_t i = 0; i < hdr->reg_count; i++) {
         uint32_t reg_addr = regs[i].addr & 0x3fc;
@@ -492,8 +785,7 @@ int ref_load_state(const uint8_t *data, uint32_t size)
     }
     ptr += reg_data_size;
 
-    /* Copy framebuffer — ref model uses 86Box's native 16-bit layout.
-     * (Sim's 32-bit interleaved format is handled separately in trace_test.cpp.) */
+    /* Restore framebuffer state from state.bin. */
     {
         uint32_t fb_copy = (hdr->fb_size <= (uint32_t)voodoo->fb_size) ?
                             hdr->fb_size : (uint32_t)voodoo->fb_size;
@@ -534,7 +826,6 @@ int ref_load_state(const uint8_t *data, uint32_t size)
          * corrected buffer assignments. */
         voodoo_recalc(voodoo);
     }
-
     fprintf(stderr, "[ref_model] State loaded: %u regs, fb=%u tex=%u draw=0x%x aux=0x%x row=%u\n",
             hdr->reg_count, hdr->fb_size, hdr->tex_size,
             hdr->draw_offset, hdr->aux_offset, hdr->row_width);

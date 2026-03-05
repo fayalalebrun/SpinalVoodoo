@@ -89,7 +89,8 @@ $(OBJ_DIR)/VCoreSim__ALL.a: $(VERILATE_STAMP)
 		CXX="$(CXX32)" \
 		OBJCACHE="$(OBJCACHE)" \
 		OPT_FAST="-O3" \
-		OPT_SLOW=""
+		OPT_SLOW="" \
+		OPT_GLOBAL="-DVL_USER_WARN"
 
 # Step 4: Build harness object + verilated runtime
 HARNESS_OBJS = $(OBJ_DIR)/sim_harness.o $(OBJ_DIR)/verilated.o
@@ -103,7 +104,7 @@ harness: $(HARNESS_OBJS)
 # Using order-only deps on the stamp so these compile in parallel with the model.
 # TRACE_MODE_FILE forces recompilation when TRACE= changes (CXXFLAGS differ).
 $(OBJ_DIR)/sim_harness.o: $(HARNESS_DIR)/sim_harness.cpp $(HARNESS_DIR)/sim_harness.h $(TRACE_MODE_FILE) | $(VERILATE_STAMP)
-	$(OBJCACHE) $(CXX32) $(CXXFLAGS) -c -o $@ $<
+	$(OBJCACHE) $(CXX32) $(CXXFLAGS) -DVL_USER_WARN -c -o $@ $<
 
 $(OBJ_DIR)/verilated.o: $(VERILATOR_ROOT)/include/verilated.cpp $(TRACE_MODE_FILE) | $(VERILATE_STAMP)
 	$(OBJCACHE) $(CXX32) $(CXXFLAGS) -DVL_USER_WARN -c -o $@ $<

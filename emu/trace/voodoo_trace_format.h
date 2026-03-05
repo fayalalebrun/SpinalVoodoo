@@ -18,7 +18,7 @@ extern "C" {
 /* Magic constants */
 #define VOODOO_TRACE_MAGIC   0x564F4F44  /* "VOOD" */
 #define VOODOO_STATE_MAGIC   0x41545356  /* "VSTA" */
-#define VOODOO_STATE_VERSION 1
+#define VOODOO_STATE_VERSION 2
 
 /* Trace command types */
 typedef enum {
@@ -41,7 +41,7 @@ typedef enum {
 /* Trace file header (64 bytes) */
 typedef struct {
     uint32_t magic;           /* 0x564F4F44 "VOOD" */
-    uint32_t version;         /* Format version (1) */
+    uint32_t version;         /* Trace format version */
     uint32_t voodoo_type;     /* VOODOO_1, VOODOO_2, etc */
     uint32_t fb_size_mb;      /* Framebuffer size in MB */
     uint32_t tex_size_mb;     /* Texture size in MB (per TMU) */

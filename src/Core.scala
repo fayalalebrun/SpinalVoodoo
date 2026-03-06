@@ -315,9 +315,9 @@ case class Core(c: Config) extends Component {
   ): Rasterizer.GradientBundle[Rasterizer.InputGradient] = {
     val grads = Rasterizer.GradientBundle(Rasterizer.InputGradient(_), c)
     grads.all.zip(sources).foreach { case (grad, (start, dx, dy)) =>
-      grad.start.raw := start
-      grad.d(0).raw := dx
-      grad.d(1).raw := dy
+      grad.start.raw := start.asSInt.resize(grad.start.raw.getWidth bits).asBits
+      grad.d(0).raw := dx.asSInt.resize(grad.d(0).raw.getWidth bits).asBits
+      grad.d(1).raw := dy.asSInt.resize(grad.d(1).raw.getWidth bits).asBits
     }
     grads
   }
@@ -625,7 +625,7 @@ case class Core(c: Config) extends Component {
     out.depth := rasterOut.grads.depthGrad
 
     // Pass through raw W value for fog wDepth calculation (SQ(32,30) → raw 32-bit SInt)
-    out.rawW := rasterOut.grads.wGrad.asSInt
+    out.rawW := rasterOut.grads.wGrad.asSInt.resize(32 bits)
 
     // Use texture from TMU (single TMU output)
     out.texture := tmuOut.texture

@@ -58,9 +58,9 @@ case class Tmu(c: voodoo.Config) extends Component {
   val texMode = Tmu.TextureMode.decode(io.input.payload.config.textureMode)
 
   // Perspective Correction
-  val oow = io.input.payload.w // 1/W in 2.30 format
-  val sow = io.input.payload.s // S/W in 14.18 format
-  val tow = io.input.payload.t // T/W in 14.18 format
+  val oow = io.input.payload.w // 1/W in 2.30 format (wider internal accumulator)
+  val sow = io.input.payload.s // S/W in 14.18 format (wider internal accumulator)
+  val tow = io.input.payload.t // T/W in 14.18 format (wider internal accumulator)
 
   // CLZ32: count leading zeros on 32-bit unsigned value (binary search)
   def clz32(v: UInt): UInt = {
@@ -84,6 +84,17 @@ case class Tmu(c: voodoo.Config) extends Component {
 
     val test4 = !s3(31)
     (n3 + (test4 ? U(1, 6 bits) | U(0, 6 bits))).resize(6 bits)
+  }
+
+  // CLZ64 built from CLZ32
+  def clz64(v: UInt): UInt = {
+    val v0 = v.resize(64 bits)
+    val hi = v0(63 downto 32)
+    val lo = v0(31 downto 0)
+    val hiZero = hi === 0
+    val clzHi = clz32(hi)
+    val clzLo = clz32(lo)
+    Mux(hiZero, (U(32, 7 bits) + clzLo.resize(7 bits)).resize(7 bits), clzHi.resize(7 bits))
   }
 
   // Reciprocal LUT: 257 entries, 17-bit values
@@ -132,15 +143,15 @@ case class Tmu(c: voodoo.Config) extends Component {
     texT := (tow.raw.asSInt >> 14).resized
   } otherwise {
     // Perspective: S = (S/W) / (1/W) via reciprocal LUT
-    val oowRaw = oow.raw.asSInt // SInt(32 bits)
-    val absOow = oowRaw.abs.resize(32 bits) // UInt(32 bits)
-    val clz = clz32(absOow)
-    val msbPos = U(31, 6 bits) - clz // UInt(6 bits)
+    val oowRaw = oow.raw.asSInt
+    val absOow = oowRaw.abs.resize(64 bits)
+    val clz = clz64(absOow)
+    val msbPos = U(63, 7 bits) - clz // UInt(7 bits)
 
-    // Normalize: shift left so MSB is at bit 31
-    val norm = (absOow |<< clz).resize(32 bits)
-    val index = norm(30 downto 23) // 8-bit table index
-    val frac = norm(22 downto 15) // 8-bit interpolation fraction
+    // Normalize: shift left so MSB is at bit 63
+    val norm = (absOow |<< clz).resize(64 bits)
+    val index = norm(62 downto 55) // 8-bit table index
+    val frac = norm(54 downto 47) // 8-bit interpolation fraction
 
     // LUT lookup + linear interpolation
     val base = recipTable(index.resize(9 bits))
@@ -168,11 +179,11 @@ case class Tmu(c: voodoo.Config) extends Component {
     }
 
     // Multiply: product = sow_raw * interp (signed × unsigned)
-    val sowRaw = sow.raw.asSInt // SInt(32 bits)
-    val towRaw = tow.raw.asSInt // SInt(32 bits)
+    val sowRaw = sow.raw.asSInt
+    val towRaw = tow.raw.asSInt
     val interpSigned = (False ## safeInterp).asSInt // 18-bit signed (always positive)
-    val productS = sowRaw * interpSigned // 50-bit signed
-    val productT = towRaw * interpSigned // 50-bit signed
+    val productS = sowRaw * interpSigned
+    val productT = towRaw * interpSigned
 
     // Shift to get X.4 texel coordinate: product >> msbPos (was >> msbPos+4 for integer)
     texS := (productS >> msbPos).resized
@@ -843,9 +854,9 @@ object Tmu {
 
   /** TMU input bundle */
   case class Input(c: voodoo.Config) extends Bundle {
-    val s = AFix(c.texCoordsFormat)
-    val t = AFix(c.texCoordsFormat)
-    val w = AFix(c.wFormat)
+    val s = AFix(c.texCoordsAccumFormat)
+    val t = AFix(c.texCoordsAccumFormat)
+    val w = AFix(c.wAccumFormat)
     val cOther = Color.u8()
     val aOther = UInt(8 bits)
     val config = TmuConfig(c)

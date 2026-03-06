@@ -90,9 +90,9 @@ case class Rasterizer(c: Config) extends Component {
         c.vColorFormat,
         c.vDepthFormat,
         c.vColorFormat,
-        c.wFormat,
-        c.texCoordsFormat,
-        c.texCoordsFormat
+        c.wAccumFormat,
+        c.texCoordsAccumFormat,
+        c.texCoordsAccumFormat
       )
 
       // Helper: update edges and gradients with selected deltas
@@ -159,10 +159,10 @@ object Rasterizer {
     val blueGrad = mk(c.vColorFormat)
     val depthGrad = mk(c.vDepthFormat)
     val alphaGrad = mk(c.vColorFormat)
-    val wGrad = mk(c.wFormat)
+    val wGrad = mk(c.wAccumFormat)
     // TMU texture coordinates (14.18 format) - single TMU support (Voodoo 1 level)
-    val sGrad = mk(c.texCoordsFormat)
-    val tGrad = mk(c.texCoordsFormat)
+    val sGrad = mk(c.texCoordsAccumFormat)
+    val tGrad = mk(c.texCoordsAccumFormat)
 
     def all: Seq[T] =
       Seq(redGrad, greenGrad, blueGrad, depthGrad, alphaGrad, wGrad, sGrad, tGrad)

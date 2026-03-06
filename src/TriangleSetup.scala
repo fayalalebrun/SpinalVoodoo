@@ -98,24 +98,16 @@ case class TriangleSetup(c: Config) extends Component {
     val fracAy = tri(0)(1).raw(3 downto 0).asUInt
     val dySubRaw = (U(8, 5 bits) - fracAy.resize(5 bits))(3 downto 0)
 
-    // Adjust gradient start values for origin shift from bbox corner to vertex A
-    // 86Box uses vertex A as gradient origin; SpinalVoodoo rasterizer starts at (xmin, ymin)
-    // adjustedStart = start + (xmin - Ax) * dX + (ymin - Ay) * dY
-    val dx = out.xrange(0) - tri(0)(0) // xmin - Ax
-    val dy = out.yrange(0) - tri(0)(1) // ymin - Ay
+    // 86Box applies subpixel correction first, then shifts gradients by integer pixel deltas
+    // from rounded vertex A to the raster start point.
+    val startXPix = out.xrange(0).floor(0).asSInt
+    val startYPix = out.yrange(0).floor(0).asSInt
+    val aXPix = tri(0)(0).roundHalfDown(0).asSInt
+    val aYPix = tri(0)(1).roundHalfDown(0).asSInt
+    val dxPix = (startXPix - aXPix).resize(16 bits)
+    val dyPix = (startYPix - aYPix).resize(16 bits)
 
-    val gradFormats = Seq(
-      c.vColorFormat,
-      c.vColorFormat,
-      c.vColorFormat,
-      c.vDepthFormat,
-      c.vColorFormat,
-      c.wFormat,
-      c.texCoordsFormat,
-      c.texCoordsFormat
-    )
-
-    out.grads.all.zip(input.grads.all).zip(gradFormats).foreach { case ((outG, inG), fmt) =>
+    out.grads.all.zip(input.grads.all).foreach { case (outG, inG) =>
       outG.d := inG.d // pass through per-pixel gradients unchanged
 
       // Subpixel correction: (dxSub * dX_raw + dySub * dY_raw) >> 4
@@ -132,8 +124,10 @@ case class TriangleSetup(c: Config) extends Component {
       val adjustedStart = cloneOf(inG.start)
       adjustedStart.raw := Mux(paramAdjust, correctedRaw.asBits, inG.start.raw)
 
-      // Then apply origin shift (xmin-Ax, ymin-Ay)
-      outG.start := (adjustedStart + dx * inG.d(0) + dy * inG.d(1)).fixTo(fmt)
+      // Then apply integer origin shift with wrapping semantics (matches 86Box style).
+      val shiftedRaw = (adjustedStart.raw.asSInt +
+        (dxPix * dxGrad + dyPix * dyGrad).resize(N))(N - 1 downto 0)
+      outG.start.raw := shiftedRaw.asBits
     }
 
     out.config := input.config

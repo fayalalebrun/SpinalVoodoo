@@ -71,6 +71,171 @@ rgba8_t ai88[0x10000];
  * ------------------------------------------------------------------- */
 
 static voodoo_t *voodoo = NULL;
+static FILE *ref_trace_file = NULL;
+static uint64_t ref_trace_event_index = 0;
+static uint32_t ref_trace_draw_id = 0;
+static uint32_t ref_trace_next_primitive_id = 0;
+static uint32_t ref_trace_active_primitive_id = 0;
+static uint32_t ref_trace_pixel_seq = 0;
+static int ref_trace_triangle_active = 0;
+
+void ref_trace_close(void);
+
+int ref_trace_open(const char *path)
+{
+    ref_trace_close();
+    ref_trace_event_index = 0;
+    ref_trace_draw_id = 0;
+    ref_trace_next_primitive_id = 0;
+    ref_trace_active_primitive_id = 0;
+    ref_trace_pixel_seq = 0;
+    ref_trace_triangle_active = 0;
+
+    if (!path || !path[0])
+        return 0;
+
+    ref_trace_file = fopen(path, "w");
+    if (!ref_trace_file) {
+        fprintf(stderr, "[ref_model] ERROR: failed to open ref trace export: %s\n", path);
+        return -1;
+    }
+
+    setvbuf(ref_trace_file, NULL, _IOFBF, 1 << 20);
+    fprintf(stderr, "[ref_model] Reference trace export: %s\n", path);
+    return 0;
+}
+
+void ref_trace_close(void)
+{
+    if (!ref_trace_file)
+        return;
+    fclose(ref_trace_file);
+    ref_trace_file = NULL;
+}
+
+static void ref_trace_reset_ids(void)
+{
+    ref_trace_event_index = 0;
+    ref_trace_draw_id = 0;
+    ref_trace_next_primitive_id = 0;
+    ref_trace_active_primitive_id = 0;
+    ref_trace_pixel_seq = 0;
+    ref_trace_triangle_active = 0;
+}
+
+static void ref_trace_begin_triangle(void)
+{
+    ref_trace_active_primitive_id = ref_trace_next_primitive_id++;
+    ref_trace_pixel_seq = 0;
+    ref_trace_triangle_active = 1;
+}
+
+static void ref_trace_end_triangle(void)
+{
+    ref_trace_triangle_active = 0;
+}
+
+static void ref_trace_note_swapbuffer(void)
+{
+    ref_trace_draw_id++;
+}
+
+static void ref_trace_triangle(const voodoo_params_t *params)
+{
+    if (!ref_trace_file || !ref_trace_triangle_active)
+        return;
+
+    fprintf(ref_trace_file,
+            "{\"stage\":\"triangle\",\"origin\":0,\"draw_id\":%u,\"primitive_id\":%u,"
+            "\"textured\":%u,\"sign\":%d,"
+            "\"vertex_ax\":%d,\"vertex_ay\":%d,\"vertex_bx\":%d,\"vertex_by\":%d,\"vertex_cx\":%d,\"vertex_cy\":%d,"
+            "\"fbz_color_path\":%u,\"texture_mode_0\":%u,\"tlod_0\":%u,\"tex_base_addr_0\":%u,"
+            "\"tex_base_addr_1_0\":%u,\"tex_base_addr_2_0\":%u,\"tex_base_addr_38_0\":%u,\"tformat_0\":%d,"
+            "\"start_s\":%lld,\"start_t\":%lld,\"start_w\":%lld,"
+            "\"dsdx\":%lld,\"dtdx\":%lld,\"dwdx\":%lld,"
+            "\"dsdy\":%lld,\"dtdy\":%lld,\"dwdy\":%lld}\n",
+            ref_trace_draw_id,
+            ref_trace_active_primitive_id,
+            (params->fbzColorPath & FBZCP_TEXTURE_ENABLED) ? 1u : 0u,
+            params->sign,
+            params->vertexAx,
+            params->vertexAy,
+            params->vertexBx,
+            params->vertexBy,
+            params->vertexCx,
+            params->vertexCy,
+            params->fbzColorPath,
+            params->textureMode[0],
+            params->tLOD[0],
+            params->texBaseAddr[0],
+            params->texBaseAddr1[0],
+            params->texBaseAddr2[0],
+            params->texBaseAddr38[0],
+            params->tformat[0],
+            (long long)params->tmu[0].startS,
+            (long long)params->tmu[0].startT,
+            (long long)params->tmu[0].startW,
+            (long long)params->tmu[0].dSdX,
+            (long long)params->tmu[0].dTdX,
+            (long long)params->tmu[0].dWdX,
+            (long long)params->tmu[0].dSdY,
+            (long long)params->tmu[0].dTdY,
+            (long long)params->tmu[0].dWdY);
+}
+
+void ref_trace_tmu_input(int tmu, int x, int y, int64_t s, int64_t t, int64_t w)
+{
+    if (!ref_trace_file || !ref_trace_triangle_active)
+        return;
+
+    int64_t dut_s = s >> 14;
+    int64_t dut_t = t >> 14;
+    int64_t dut_w = w >> 2;
+
+    fprintf(ref_trace_file,
+            "{\"event_index\":%llu,\"stage\":\"tmu_input\",\"tmu\":%d,\"origin\":0,"
+            "\"draw_id\":%u,\"primitive_id\":%u,\"pixel_seq\":%u,\"x\":%d,\"y\":%d,"
+            "\"s\":%lld,\"t\":%lld,\"w\":%lld}\n",
+            (unsigned long long)ref_trace_event_index++,
+            tmu,
+            ref_trace_draw_id,
+            ref_trace_active_primitive_id,
+            ref_trace_pixel_seq,
+            x,
+            y,
+            (long long)dut_s,
+            (long long)dut_t,
+            (long long)dut_w);
+}
+
+void ref_trace_tmu_output(int tmu, int x, int y, int tex_s, int tex_t, int lod,
+                          int texture_r, int texture_g, int texture_b, int texture_a)
+{
+    if (!ref_trace_file || !ref_trace_triangle_active)
+        return;
+
+    fprintf(ref_trace_file,
+            "{\"event_index\":%llu,\"stage\":\"tmu_output\",\"tmu\":%d,\"origin\":0,"
+            "\"draw_id\":%u,\"primitive_id\":%u,\"pixel_seq\":%u,\"x\":%d,\"y\":%d,"
+            "\"tex_s\":%d,\"tex_t\":%d,\"lod\":%d,\"texture_r\":%d,\"texture_g\":%d,"
+            "\"texture_b\":%d,\"texture_a\":%d}\n",
+            (unsigned long long)ref_trace_event_index++,
+            tmu,
+            ref_trace_draw_id,
+            ref_trace_active_primitive_id,
+            ref_trace_pixel_seq,
+            x,
+            y,
+            tex_s,
+            tex_t,
+            lod,
+            texture_r,
+            texture_g,
+            texture_b,
+            texture_a);
+
+    ref_trace_pixel_seq++;
+}
 
 static void ref_coverage_reset(void)
 {
@@ -262,9 +427,13 @@ void voodoo_queue_triangle(voodoo_t *voodoo, voodoo_params_t *params)
     uint64_t before_writes = ref_triangle_color_writes;
     uint64_t before_black = ref_triangle_black_writes;
 
+    ref_trace_begin_triangle();
+
     voodoo_use_texture(voodoo, params, 0);
     if (voodoo->dual_tmus)
         voodoo_use_texture(voodoo, params, 1);
+
+    ref_trace_triangle(params);
 
     memcpy(&voodoo->params_buffer[0], params, sizeof(voodoo_params_t));
     voodoo_triangle(voodoo, &voodoo->params_buffer[0], 0);
@@ -280,6 +449,7 @@ void voodoo_queue_triangle(voodoo_t *voodoo, voodoo_params_t *params)
         if (delta_w > 0 && delta_w == delta_b)
             ref_triangles_all_black_writes++;
     }
+    ref_trace_end_triangle();
     tris++;
 }
 
@@ -380,6 +550,7 @@ int ref_init(int fb_size_mb, int tex_size_mb)
     ref_total_afunc_fail = 0;
     ref_total_chroma_fail = 0;
     ref_coverage_reset();
+    ref_trace_reset_ids();
 
     /* Framebuffer */
     voodoo->fb_size    = fb_size_mb * 1024 * 1024;
@@ -435,6 +606,8 @@ static void ref_accumulate_fbi_counters(void)
 void ref_shutdown(void)
 {
     if (!voodoo) return;
+
+    ref_trace_close();
 
     for (int i = 0; i < TEX_CACHE_MAX; i++) {
         free(voodoo->texture_cache[0][i].data);
@@ -494,6 +667,9 @@ void ref_write_reg(uint32_t addr, uint32_t val)
 
     /* Everything else: forward to 86Box's register handler */
     voodoo_reg_writel(addr, val, voodoo);
+
+    if (reg == SST_swapbufferCMD)
+        ref_trace_note_swapbuffer();
 }
 
 /* Declared in vid_voodoo_texture.h */

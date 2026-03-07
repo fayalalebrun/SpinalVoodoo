@@ -64,11 +64,11 @@ $(shell [ -f $(TRACE_MODE_FILE) ] && [ "$$(cat $(TRACE_MODE_FILE))" = "$(TRACE_M
 
 all: model harness
 
-# Step 1: Generate Verilog from SpinalHDL (rebuilds when Scala sources change)
+# Step 1: Generate Verilog from SpinalHDL (rebuilds when Scala sources or TRACE mode change)
 # scala-cli run has a LibC native-image bug; use java -cp workaround
-$(RTL_DIR)/CoreSim.v: $(SCALA_SRCS)
+$(RTL_DIR)/CoreSim.v: $(SCALA_SRCS) $(TRACE_MODE_FILE)
 	@rm -f $(RTL_DIR)/*.bin
-	cd $(PROJ_ROOT) && java -Xmx2g -cp "$$(scala-cli compile . --print-class-path 2>/dev/null)" voodoo.CoreSimGen
+	cd $(PROJ_ROOT) && java -Xmx2g -cp "$$(scala-cli compile . --print-class-path 2>/dev/null)" voodoo.CoreSimGen $(if $(filter 1,$(TRACE)),--trace-pipeline)
 	@# Fix $readmemb paths: SpinalHDL emits bare filenames resolved relative to
 	@# the process cwd.  Prepend the absolute RTL path so the Verilator model
 	@# finds the .bin files regardless of where the binary runs from.

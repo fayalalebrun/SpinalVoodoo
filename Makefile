@@ -20,6 +20,7 @@ CC32 ?= gcc -m32
 export CXX32 ?= $(shell d=$$(dirname "$(firstword $(CC32))") && [ -x "$$d/g++" ] && echo "$$d/g++" || echo "g++ -m32")
 export CC32
 export TRACE
+export REF_TRACE
 
 SIM_DIR       = emu/sim
 GLIDE_SRC_DIR = emu/glide/glide2x/sst1/glide/src
@@ -133,6 +134,9 @@ check/%: $(TRACE_TEST_BIN)
 	if [ "$*" = "screamer2" ]; then \
 	  extra_args="--max-mismatches 500"; \
 	fi; \
+	if [ "$(REF_TRACE)" = "1" ]; then \
+	  extra_args="$$extra_args --ref-trace-jsonl test-output/$*/ref_trace.jsonl"; \
+	fi; \
 	$(if $(filter 1,$(TRACE)),SIM_FST=$(abspath test-output)/$*/trace.fst) \
 	$(TRACE_TEST_BIN) "$$src" --output-dir test-output/$* $$extra_args
 
@@ -148,14 +152,18 @@ check-all: $(TRACE_TEST_BIN)
 	    name=$$(basename $$f .bin); \
 	    echo "=== $$name ==="; \
 	    mkdir -p test-output/$$name; \
-	    $(TRACE_TEST_BIN) $$f --output-dir test-output/$$name || exit 1; \
+	    extra_args=""; \
+	    if [ "$(REF_TRACE)" = "1" ]; then extra_args="--ref-trace-jsonl test-output/$$name/ref_trace.jsonl"; fi; \
+	    $(TRACE_TEST_BIN) $$f --output-dir test-output/$$name $$extra_args || exit 1; \
 	done
 	@for d in traces/*/trace.bin; do \
 	    [ -f "$$d" ] || continue; \
 	    name=$$(basename $$(dirname $$d)); \
 	    echo "=== $$name ==="; \
 	    mkdir -p test-output/$$name; \
-	    $(TRACE_TEST_BIN) traces/$$name/ --output-dir test-output/$$name || exit 1; \
+	    extra_args=""; \
+	    if [ "$(REF_TRACE)" = "1" ]; then extra_args="--ref-trace-jsonl test-output/$$name/ref_trace.jsonl"; fi; \
+	    $(TRACE_TEST_BIN) traces/$$name/ --output-dir test-output/$$name $$extra_args || exit 1; \
 	done
 
 clean-trace-test:

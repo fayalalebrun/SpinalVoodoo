@@ -109,6 +109,13 @@ case class Core(c: Config) extends Component {
   val writeColor = Write(c)
   val writeAux = Write(c)
 
+  val floatShadowStartS = Reg(SInt(60 bits)) init (0)
+  val floatShadowStartT = Reg(SInt(60 bits)) init (0)
+  val floatShadowDSdX = Reg(SInt(60 bits)) init (0)
+  val floatShadowDTdX = Reg(SInt(60 bits)) init (0)
+  val floatShadowDSdY = Reg(SInt(60 bits)) init (0)
+  val floatShadowDTdY = Reg(SInt(60 bits)) init (0)
+
   // Make triangle command streams accessible for simulation monitoring
   regBank.commands.triangleCmd.simPublic()
   regBank.commands.ftriangleCmd.simPublic()
@@ -246,6 +253,38 @@ case class Core(c: Config) extends Component {
   addressRemapper.io.input <> internalRegBus
   addressRemapper.io.output <> pciFifo.io.cpuSide
   pciFifo.io.regSide <> regBank.io.bus
+
+  when(pciFifo.io.floatShadow.valid) {
+    switch(pciFifo.io.floatShadow.address) {
+      is(U(0x034, 12 bits)) { floatShadowStartS := pciFifo.io.floatShadow.raw.resize(60 bits) }
+      is(U(0x038, 12 bits)) { floatShadowStartT := pciFifo.io.floatShadow.raw.resize(60 bits) }
+      is(U(0x054, 12 bits)) { floatShadowDSdX := pciFifo.io.floatShadow.raw.resize(60 bits) }
+      is(U(0x058, 12 bits)) { floatShadowDTdX := pciFifo.io.floatShadow.raw.resize(60 bits) }
+      is(U(0x074, 12 bits)) { floatShadowDSdY := pciFifo.io.floatShadow.raw.resize(60 bits) }
+      is(U(0x078, 12 bits)) { floatShadowDTdY := pciFifo.io.floatShadow.raw.resize(60 bits) }
+    }
+  }.elsewhen(regBank.io.bus.cmd.fire && regBank.io.bus.cmd.opcode === Bmb.Cmd.Opcode.WRITE) {
+    switch(regBank.io.bus.cmd.address) {
+      is(U(0x034, 12 bits)) {
+        floatShadowStartS := (regBank.io.bus.cmd.data.asSInt.resize(60 bits) |<< 12)
+      }
+      is(U(0x038, 12 bits)) {
+        floatShadowStartT := (regBank.io.bus.cmd.data.asSInt.resize(60 bits) |<< 12)
+      }
+      is(U(0x054, 12 bits)) {
+        floatShadowDSdX := (regBank.io.bus.cmd.data.asSInt.resize(60 bits) |<< 12)
+      }
+      is(U(0x058, 12 bits)) {
+        floatShadowDTdX := (regBank.io.bus.cmd.data.asSInt.resize(60 bits) |<< 12)
+      }
+      is(U(0x074, 12 bits)) {
+        floatShadowDSdY := (regBank.io.bus.cmd.data.asSInt.resize(60 bits) |<< 12)
+      }
+      is(U(0x078, 12 bits)) {
+        floatShadowDTdY := (regBank.io.bus.cmd.data.asSInt.resize(60 bits) |<< 12)
+      }
+    }
+  }
   regBank.io.statusInputs <> io.statusInputs
   regBank.io.statisticsIn <> io.statisticsIn
 
@@ -320,6 +359,24 @@ case class Core(c: Config) extends Component {
       grad.d(1).raw := dy.asSInt.resize(grad.d(1).raw.getWidth bits).asBits
     }
     grads
+  }
+
+  def captureHiTexCoords(useFloatShadow: Bool): TriangleSetup.HiTexCoords = {
+    val hi = TriangleSetup.HiTexCoords(c)
+    val startSInt = regBank.triangleGeometry.startS.resize(60 bits) |<< 12
+    val startTInt = regBank.triangleGeometry.startT.resize(60 bits) |<< 12
+    val dSdXInt = regBank.triangleGeometry.dSdX.resize(60 bits) |<< 12
+    val dTdXInt = regBank.triangleGeometry.dTdX.resize(60 bits) |<< 12
+    val dSdYInt = regBank.triangleGeometry.dSdY.resize(60 bits) |<< 12
+    val dTdYInt = regBank.triangleGeometry.dTdY.resize(60 bits) |<< 12
+
+    hi.sStart.raw := Mux(useFloatShadow, floatShadowStartS.asBits, startSInt.asBits)
+    hi.tStart.raw := Mux(useFloatShadow, floatShadowStartT.asBits, startTInt.asBits)
+    hi.dSdX.raw := Mux(useFloatShadow, floatShadowDSdX.asBits, dSdXInt.asBits)
+    hi.dTdX.raw := Mux(useFloatShadow, floatShadowDTdX.asBits, dTdXInt.asBits)
+    hi.dSdY.raw := Mux(useFloatShadow, floatShadowDSdY.asBits, dSdYInt.asBits)
+    hi.dTdY.raw := Mux(useFloatShadow, floatShadowDTdY.asBits, dTdYInt.asBits)
+    hi
   }
 
   // Capture gradients from integer registers at command time
@@ -400,7 +457,7 @@ case class Core(c: Config) extends Component {
   }
 
   // Shared helper: build TriangleSetup.Input from integer registers
-  def buildTriangleInput(signBit: Bool): TriangleSetup.Input = {
+  def buildTriangleInput(signBit: Bool, useFloatShadow: Bool): TriangleSetup.Input = {
     val out = TriangleSetup.Input(c)
     out.triWithSign.tri(0)(0).raw := regBank.triangleGeometry.vertexAx.asBits
     out.triWithSign.tri(0)(1).raw := regBank.triangleGeometry.vertexAy.asBits
@@ -410,16 +467,34 @@ case class Core(c: Config) extends Component {
     out.triWithSign.tri(2)(1).raw := regBank.triangleGeometry.vertexCy.asBits
     out.triWithSign.signBit := signBit
     out.grads := captureGradients()
+    out.texHi := captureHiTexCoords(useFloatShadow)
     out.config := capturePerTriangleConfig()
+    if (c.trace.enabled) {
+      out.trace.valid := True
+      out.trace.origin := Trace.Origin.triangle
+      out.trace.drawId := drawTraceId
+      out.trace.primitiveId := primitiveTraceId
+    }
     out
   }
 
+  val drawTraceId = if (c.trace.enabled) Reg(UInt(32 bits)) init (0) else null
+  val primitiveTraceId = if (c.trace.enabled) Reg(UInt(32 bits)) init (0) else null
+  if (c.trace.enabled) {
+    when(regBank.commands.swapbufferCmd.fire) {
+      drawTraceId := drawTraceId + 1
+    }
+    when(regBank.commands.triangleCmd.fire || regBank.commands.ftriangleCmd.fire) {
+      primitiveTraceId := primitiveTraceId + 1
+    }
+  }
+
   val triangleCmdPath = regBank.commands.triangleCmd.translateWith {
-    buildTriangleInput(regBank.commands.triangleSignBit)
+    buildTriangleInput(regBank.commands.triangleSignBit, False)
   }
 
   val ftriangleCmdPath = regBank.commands.ftriangleCmd.translateWith {
-    buildTriangleInput(regBank.commands.ftriangleSignBit)
+    buildTriangleInput(regBank.commands.ftriangleSignBit, True)
   }
 
   // Merge integer and float triangle paths
@@ -557,6 +632,7 @@ case class Core(c: Config) extends Component {
     }
     result
   }
+  rasterYTransformed.simPublic()
 
   // Fork rasterizer output: one to TMU, one to a queue for synchronization
   val rasterFork = StreamFork2(rasterYTransformed, synchronous = true)
@@ -587,10 +663,20 @@ case class Core(c: Config) extends Component {
     out.dTdX := in.config.tmudTdX
     out.dSdY := in.config.tmudSdY
     out.dTdY := in.config.tmudTdY
+    if (c.trace.enabled) {
+      out.trace := in.trace
+    }
   }
 
   // Join TMU output with queued gradients
   val tmuJoined = StreamJoin(tmu.io.output, tmuGradQueue)
+  if (c.trace.enabled) {
+    tmuGradQueue.simPublic()
+    tmuJoined.simPublic()
+    when(tmuJoined.valid) {
+      assert(tmuJoined.payload._1.trace.asBits === tmuJoined.payload._2.trace.asBits)
+    }
+  }
 
   // Connect TMU joined output to ColorCombine
   colorCombine.io.input.translateFrom(tmuJoined) { (out, payload) =>
@@ -653,6 +739,9 @@ case class Core(c: Config) extends Component {
     out.alphaMode := rasterOut.config.alphaMode
     out.fogMode := rasterOut.config.fogMode
     out.fbzMode := rasterOut.config.fbzMode
+    if (c.trace.enabled) {
+      out.trace := rasterOut.trace
+    }
   }
 
   // ========================================================================
@@ -678,6 +767,8 @@ case class Core(c: Config) extends Component {
 
   val fog = Fog(c)
   fog.io.fogTable := fogTableVec
+  fog.io.input.simPublic()
+  fog.io.output.simPublic()
   // Arbiter: CC output (after chromakey, priority) and LFB pipeline output feed into Fog
   fog.io.input << StreamArbiterFactory.lowerFirst.on(
     Seq(afterChromaKey, lfb.io.pipelineOutput)
@@ -710,6 +801,8 @@ case class Core(c: Config) extends Component {
   // ========================================================================
   val fbAccess = FramebufferAccess(c)
   fbAccess.io.input << afterAlphaTest
+  fbAccess.io.input.simPublic()
+  fbAccess.io.output.simPublic()
   fbAccess.io.fbColorBaseAddr := drawColorBufferBase
   fbAccess.io.fbAuxBaseAddr := drawAuxBufferBase
   fbAccess.io.fbPixelStride := fbPixelStride
@@ -736,6 +829,9 @@ case class Core(c: Config) extends Component {
     out.fbBaseAddr := drawColorBufferBase
     out.auxBaseAddr := drawAuxBufferBase
     out.fbPixelStride := fbPixelStride
+    if (c.trace.enabled) {
+      out.trace := fbIn.trace
+    }
     out
   }
 
@@ -790,6 +886,9 @@ case class Core(c: Config) extends Component {
       out.data := (ditOut.ditR ## ditOut.ditG ## ditOut.ditB).asBits
       out.fbBaseAddr := pd.fbBaseAddr
       out.fbPixelStride := pd.fbPixelStride
+      if (c.trace.enabled) {
+        out.trace := pd.trace
+      }
       out
     }
 
@@ -802,6 +901,9 @@ case class Core(c: Config) extends Component {
       out.data := pd.depthAlpha
       out.fbBaseAddr := pd.auxBaseAddr
       out.fbPixelStride := pd.fbPixelStride
+      if (c.trace.enabled) {
+        out.trace := pd.trace
+      }
       out
     }
 

@@ -47,6 +47,9 @@ case class FastfillWrite(c: Config) extends Component {
     out.fbBaseAddr := regs.drawColorBufferBase
     out.auxBaseAddr := regs.drawAuxBufferBase
     out.fbPixelStride := regs.fbPixelStride
+    if (c.trace.enabled) {
+      out.trace := Trace.originPixelKey(Trace.Origin.fastfill)
+    }
   }
 }
 

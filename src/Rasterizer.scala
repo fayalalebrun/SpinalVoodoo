@@ -7,6 +7,8 @@ import voodoo.utils.StreamWhile
 case class Rasterizer(c: Config) extends Component {
   val i = slave Stream (TriangleSetup.Output(c))
   val o = master Stream (Rasterizer.Output(c))
+  val pixelSeqCounter = if (c.trace.enabled) Reg(UInt(24 bits)) init (0) else null
+  val currentPixelSeq = if (c.trace.enabled) Mux(i.fire, U(0, 24 bits), pixelSeqCounter) else null
 
   // Scissor clip inputs
   val enableClipping = in Bool ()
@@ -35,9 +37,12 @@ case class Rasterizer(c: Config) extends Component {
       state.edge := input.edgeStart
 
       // Initialize gradient values
-      state.grads.all.zip(input.grads.all).foreach { case (out, in) =>
+      state.grads.all.take(6).zip(input.grads.all.take(6)).foreach { case (out, in) =>
         out := in.start
       }
+      state.texHi := input.texHi
+      state.grads.sGrad := input.texHi.sStart.fixTo(c.texCoordsAccumFormat)
+      state.grads.tGrad := input.texHi.tStart.fixTo(c.texCoordsAccumFormat)
 
       state
     },
@@ -53,8 +58,19 @@ case class Rasterizer(c: Config) extends Component {
       val intY = state.coords(1).floor(0).asSInt
       output.data.coords(0) := intX
       output.data.coords(1) := intY
-      output.data.grads := state.grads
+      output.data.grads.redGrad := state.grads.redGrad
+      output.data.grads.greenGrad := state.grads.greenGrad
+      output.data.grads.blueGrad := state.grads.blueGrad
+      output.data.grads.depthGrad := state.grads.depthGrad
+      output.data.grads.alphaGrad := state.grads.alphaGrad
+      output.data.grads.wGrad := state.grads.wGrad
+      output.data.grads.sGrad := state.texHi.sStart.fixTo(c.texCoordsAccumFormat)
+      output.data.grads.tGrad := state.texHi.tStart.fixTo(c.texCoordsAccumFormat)
       output.data.config := state.input.config // Pass through per-triangle config
+      if (c.trace.enabled) {
+        output.data.trace.primitive := state.input.trace
+        output.data.trace.pixelSeq := currentPixelSeq
+      }
 
       // Scissor clip test: inclusive of left/lowY, exclusive of right/highY
       // Widen UInt(10) clip bounds to SInt for comparison with signed coords
@@ -90,9 +106,7 @@ case class Rasterizer(c: Config) extends Component {
         c.vColorFormat,
         c.vDepthFormat,
         c.vColorFormat,
-        c.wAccumFormat,
-        c.texCoordsAccumFormat,
-        c.texCoordsAccumFormat
+        c.wAccumFormat
       )
 
       // Helper: update edges and gradients with selected deltas
@@ -103,10 +117,14 @@ case class Rasterizer(c: Config) extends Component {
         next.edge.zip(state.edge).zip(state.input.coeffs).foreach { case ((nxt, cur), coeff) =>
           nxt := (cur + edgeDelta(coeff)).fixTo(c.coefficientFormat)
         }
-        next.grads.all.zip(state.grads.all).zip(state.input.grads.all).zipWithIndex.foreach {
-          case (((nxt, cur), grad), idx) =>
+        next.grads.all
+          .take(6)
+          .zip(state.grads.all.take(6))
+          .zip(state.input.grads.all.take(6))
+          .zipWithIndex
+          .foreach { case (((nxt, cur), grad), idx) =>
             nxt := (cur + gradDelta(grad)).fixTo(gradFormats(idx))
-        }
+          }
       }
 
       when(atEdge) {
@@ -115,6 +133,10 @@ case class Rasterizer(c: Config) extends Component {
         next.coords(1) := (state.coords(1) + one).fixTo(c.vertexFormat)
         next.goingRight := !state.goingRight
         updateEdgesAndGrads(_.b, _.d(1))
+        next.texHi.sStart := (state.texHi.sStart + state.input.texHi.dSdY)
+          .fixTo(c.texCoordsHiFormat)
+        next.texHi.tStart := (state.texHi.tStart + state.input.texHi.dTdY)
+          .fixTo(c.texCoordsHiFormat)
       }.otherwise {
         // Move horizontally
         val dx = state.goingRight ? one | negOne
@@ -125,9 +147,21 @@ case class Rasterizer(c: Config) extends Component {
           co => state.goingRight ? co.a | (-co.a),
           g => state.goingRight ? g.d(0) | (-g.d(0))
         )
+        next.texHi.sStart := (state.texHi.sStart +
+          (state.goingRight ? state.input.texHi.dSdX | (-state.input.texHi.dSdX)))
+          .fixTo(c.texCoordsHiFormat)
+        next.texHi.tStart := (state.texHi.tStart +
+          (state.goingRight ? state.input.texHi.dTdX | (-state.input.texHi.dTdX)))
+          .fixTo(c.texCoordsHiFormat)
       }
 
       next.input := state.input
+      next.texHi.dSdX := state.input.texHi.dSdX
+      next.texHi.dTdX := state.input.texHi.dTdX
+      next.texHi.dSdY := state.input.texHi.dSdY
+      next.texHi.dTdY := state.input.texHi.dTdY
+      next.grads.sGrad := next.texHi.sStart.fixTo(c.texCoordsAccumFormat)
+      next.grads.tGrad := next.texHi.tStart.fixTo(c.texCoordsAccumFormat)
 
       // Check if this is the last pixel: either next Y is out of bounds, or at max iterations
       // yrange(1) is the exclusive upper bound, so >= means next scanline is past the end
@@ -145,6 +179,15 @@ case class Rasterizer(c: Config) extends Component {
 
   // Drop samples outside triangle and remove flag
   o << withInsideFlag.takeWhen(withInsideFlag.payload.insideTriangle).map(_.data)
+
+  if (c.trace.enabled) {
+    when(i.fire) {
+      pixelSeqCounter := 0
+    }
+    when(withInsideFlag.fire && withInsideFlag.payload.insideTriangle) {
+      pixelSeqCounter := currentPixelSeq + 1
+    }
+  }
 }
 
 object Rasterizer {
@@ -175,6 +218,7 @@ object Rasterizer {
     val grads = GradientBundle(AFix(_), c)
     val coords = Vec.fill(2)(SInt(c.vertexFormat.nonFraction bits))
     val config = TriangleSetup.PerTriangleConfig(c) // Per-triangle render configuration
+    val trace = if (c.trace.enabled) Trace.PixelKey() else null
   }
 
   case class OutputWithFlag(c: Config) extends Bundle {
@@ -185,6 +229,7 @@ object Rasterizer {
   case class State(c: Config) extends Bundle {
     val coords = vertex2d(c.vertexFormat) // Internal fixed-point coordinates
     val grads = GradientBundle(AFix(_), c)
+    val texHi = TriangleSetup.HiTexCoords(c)
     val edge = Vec.fill(3)(AFix(c.coefficientFormat))
     val goingRight = Bool() // Direction flag for serpentine scanning
     val input = TriangleSetup.Output(c) // Keep input for iteration

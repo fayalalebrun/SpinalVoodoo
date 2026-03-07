@@ -72,6 +72,7 @@ object ColorCombine {
     val alphaMode = AlphaMode()
     val fogMode = FogMode()
     val fbzMode = FbzMode()
+    val trace = if (c.trace.enabled) Trace.PixelKey() else null
   }
 
   /** Output from Color Combine Unit */
@@ -90,6 +91,7 @@ object ColorCombine {
     val alphaMode = AlphaMode()
     val fogMode = FogMode()
     val fbzMode = FbzMode()
+    val trace = if (c.trace.enabled) Trace.PixelKey() else null
   }
 }
 
@@ -116,6 +118,7 @@ case class ColorCombine(c: voodoo.Config) extends Component {
   val ALPHA_MODE = Payload(AlphaMode())
   val FOG_MODE = Payload(FogMode())
   val FBZ_MODE = Payload(FbzMode())
+  val TRACE = if (c.trace.enabled) Payload(Trace.PixelKey()) else null
 
   // Color payloads at various precisions
   val C_OTHER = Payload(Color.s9())
@@ -213,6 +216,9 @@ case class ColorCombine(c: voodoo.Config) extends Component {
     self(ALPHA_MODE) := payload.alphaMode
     self(FOG_MODE) := payload.fogMode
     self(FBZ_MODE) := payload.fbzMode
+    if (c.trace.enabled) {
+      self(TRACE) := payload.trace
+    }
 
     // Helper to convert UInt(8) to SInt(9) by zero-extending
     def u8ToS9(v: UInt): SInt = (False ## v).asSInt
@@ -451,6 +457,9 @@ case class ColorCombine(c: voodoo.Config) extends Component {
     payload.alphaMode := self(ALPHA_MODE)
     payload.fogMode := self(FOG_MODE)
     payload.fbzMode := self(FBZ_MODE)
+    if (c.trace.enabled) {
+      payload.trace := self(TRACE)
+    }
 
     // Stage 8: Invert Output
     (payload.color.channels, self(C_CLAMPED).channels).zipped.foreach { (dst, src) =>

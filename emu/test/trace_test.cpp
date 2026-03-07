@@ -3,7 +3,7 @@
  * and Verilator CoreSim, comparing framebuffer output pixel-by-pixel.
  *
  * Usage:
- *   trace_test <path> [--ref-only] [--output-dir DIR] [--max-mismatches N]
+ *   trace_test <path> [--ref-only] [--output-dir DIR] [--ref-trace-jsonl PATH] [--max-mismatches N]
  *                     [--color-tolerance N] [--width W] [--height H]
  *
  *   path: .bin trace file, or directory containing trace.bin + optional state.bin
@@ -107,6 +107,7 @@ int main(int argc, char **argv) {
     /* Parse arguments */
     const char *trace_path = nullptr;
     const char *output_dir = nullptr;
+    const char *ref_trace_jsonl = nullptr;
     bool ref_only = false;
     int max_mismatches = 0;
     int color_tolerance = 0;
@@ -118,6 +119,8 @@ int main(int argc, char **argv) {
             ref_only = true;
         } else if (strcmp(argv[i], "--output-dir") == 0 && i + 1 < argc) {
             output_dir = argv[++i];
+        } else if (strcmp(argv[i], "--ref-trace-jsonl") == 0 && i + 1 < argc) {
+            ref_trace_jsonl = argv[++i];
         } else if (strcmp(argv[i], "--max-mismatches") == 0 && i + 1 < argc) {
             max_mismatches = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--color-tolerance") == 0 && i + 1 < argc) {
@@ -135,7 +138,7 @@ int main(int argc, char **argv) {
     }
 
     if (!trace_path) {
-        fprintf(stderr, "Usage: trace_test <path> [--ref-only] [--output-dir DIR] "
+        fprintf(stderr, "Usage: trace_test <path> [--ref-only] [--output-dir DIR] [--ref-trace-jsonl PATH] "
                 "[--max-mismatches N] [--color-tolerance N] [--width W] [--height H]\n");
         return 1;
     }
@@ -230,6 +233,10 @@ int main(int argc, char **argv) {
     /* Initialize reference model */
     if (ref_init(fb_mb, tex_mb) != 0) {
         fprintf(stderr, "ERROR: ref_init failed\n");
+        return 1;
+    }
+    if (ref_trace_open(ref_trace_jsonl) != 0) {
+        fprintf(stderr, "ERROR: ref_trace_open failed\n");
         return 1;
     }
 
@@ -787,6 +794,7 @@ int main(int argc, char **argv) {
 
     /* Cleanup */
     free(trace_data);
+    ref_trace_close();
     ref_shutdown();
     if (!ref_only) sim_shutdown();
 

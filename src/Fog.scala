@@ -20,6 +20,7 @@ object Fog {
     // Per-triangle FIFO registers (pass-through for alpha test and framebuffer access)
     val alphaMode = AlphaMode()
     val fbzMode = FbzMode()
+    val trace = if (c.trace.enabled) Trace.PixelKey() else null
   }
 }
 
@@ -48,6 +49,9 @@ case class Fog(c: Config) extends Component {
   io.output.payload.colorBeforeFog := payload.color
   io.output.payload.alphaMode := payload.alphaMode
   io.output.payload.fbzMode := payload.fbzMode
+  if (c.trace.enabled) {
+    io.output.payload.trace := payload.trace
+  }
 
   // Fog mode bits (from per-triangle captured config, not live register)
   val fogEnable = payload.fogMode.fogEnable

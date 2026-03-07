@@ -16,6 +16,10 @@ extern "C" {
 /* Initialize the reference model. Returns 0 on success. */
 int ref_init(int fb_size_mb, int tex_size_mb);
 
+/* Optional per-pixel reference trace export. */
+int ref_trace_open(const char *path);
+void ref_trace_close(void);
+
 /* Shut down and free all memory. */
 void ref_shutdown(void);
 

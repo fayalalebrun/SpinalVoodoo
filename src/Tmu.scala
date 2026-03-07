@@ -416,6 +416,7 @@ case class Tmu(c: voodoo.Config) extends Component {
     val dt = UInt(4 bits)
     val readIdx = UInt(2 bits)
     val ncc = Tmu.NccTableData()
+    val trace = if (c.trace.enabled) Trace.PixelKey() else null
   }
 
   case class TmuExpanded() extends Bundle {
@@ -446,6 +447,9 @@ case class Tmu(c: voodoo.Config) extends Component {
   inputPassthrough.dt := finalDt
   inputPassthrough.readIdx := 0
   inputPassthrough.ncc := io.input.payload.config.ncc
+  if (c.trace.enabled) {
+    inputPassthrough.trace := io.input.payload.trace
+  }
 
   // Select address and passthrough based on expansion state.
   // Fields must be assigned individually to avoid SpinalHDL ASSIGNMENT OVERLAP errors
@@ -457,6 +461,9 @@ case class Tmu(c: voodoo.Config) extends Component {
     expandedStream.payload.passthrough.dt := regPassthrough.dt
     expandedStream.payload.passthrough.readIdx := expandCount
     expandedStream.payload.passthrough.ncc := regPassthrough.ncc
+    if (c.trace.enabled) {
+      expandedStream.payload.passthrough.trace := regPassthrough.trace
+    }
     switch(expandCount) {
       is(1) { expandedStream.payload.address := regAddr1 }
       is(2) { expandedStream.payload.address := regAddr2 }
@@ -715,6 +722,9 @@ case class Tmu(c: voodoo.Config) extends Component {
   // Output stream
   io.output.valid := decoded.valid && !bilinearAccumulating
   decoded.ready := bilinearAccumulating || io.output.ready
+  if (c.trace.enabled) {
+    io.output.payload.trace := decoded.payload.passthrough.trace
+  }
 
   Seq(
     io.output.payload.texture.r,
@@ -864,12 +874,14 @@ object Tmu {
     val dTdX = AFix(c.texCoordsFormat)
     val dSdY = AFix(c.texCoordsFormat)
     val dTdY = AFix(c.texCoordsFormat)
+    val trace = if (c.trace.enabled) Trace.PixelKey() else null
   }
 
   /** TMU output bundle */
   case class Output(c: voodoo.Config) extends Bundle {
     val texture = Color.u8()
     val textureAlpha = UInt(8 bits)
+    val trace = if (c.trace.enabled) Trace.PixelKey() else null
   }
 
   /** BMB parameters for texture memory access */

@@ -97,6 +97,8 @@ case class TriangleSetup(c: Config) extends Component {
     val dxSubRaw = (U(8, 5 bits) - fracAx.resize(5 bits))(3 downto 0) // (8 - frac) mod 16
     val fracAy = tri(0)(1).raw(3 downto 0).asUInt
     val dySubRaw = (U(8, 5 bits) - fracAy.resize(5 bits))(3 downto 0)
+    val dxSubS = (False ## dxSubRaw).asSInt // 5-bit signed (0-15)
+    val dySubS = (False ## dySubRaw).asSInt
 
     // 86Box applies subpixel correction first, then shifts gradients by integer pixel deltas
     // from rounded vertex A to the raster start point.
@@ -113,8 +115,6 @@ case class TriangleSetup(c: Config) extends Component {
       // Subpixel correction: (dxSub * dX_raw + dySub * dY_raw) >> 4
       val dxGrad = inG.d(0).raw.asSInt
       val dyGrad = inG.d(1).raw.asSInt
-      val dxSubS = (False ## dxSubRaw).asSInt // 5-bit signed (0-15)
-      val dySubS = (False ## dySubRaw).asSInt
       val corrRaw = (dxSubS * dxGrad + dySubS * dyGrad) >> 4
 
       // Conditionally apply: wrapping add to match 86Box trunc32 behavior
@@ -130,13 +130,58 @@ case class TriangleSetup(c: Config) extends Component {
       outG.start.raw := shiftedRaw.asBits
     }
 
+    out.texHi.dSdX := input.texHi.dSdX
+    out.texHi.dTdX := input.texHi.dTdX
+    out.texHi.dSdY := input.texHi.dSdY
+    out.texHi.dTdY := input.texHi.dTdY
+
+    for (
+      (outStart, inStart, dxRaw, dyRaw) <- Seq(
+        (
+          out.texHi.sStart,
+          input.texHi.sStart,
+          input.texHi.dSdX.raw.asSInt,
+          input.texHi.dSdY.raw.asSInt
+        ),
+        (
+          out.texHi.tStart,
+          input.texHi.tStart,
+          input.texHi.dTdX.raw.asSInt,
+          input.texHi.dTdY.raw.asSInt
+        )
+      )
+    ) {
+      val corrRaw = (dxSubS * dxRaw + dySubS * dyRaw) >> 4
+      val startRaw = inStart.raw.asSInt
+      val N = startRaw.getWidth
+      val correctedRaw = (startRaw + corrRaw.resize(N))(N - 1 downto 0)
+      val adjustedStart = cloneOf(inStart)
+      adjustedStart.raw := Mux(paramAdjust, correctedRaw.asBits, inStart.raw)
+
+      val shiftedRaw = (adjustedStart.raw.asSInt +
+        (dxPix * dxRaw + dyPix * dyRaw).resize(N))(N - 1 downto 0)
+      outStart.raw := shiftedRaw.asBits
+    }
+
     out.config := input.config
+    if (c.trace.enabled) {
+      out.trace := input.trace
+    }
 
     out
   }
 }
 
 object TriangleSetup {
+
+  case class HiTexCoords(c: Config) extends Bundle {
+    val sStart = AFix(c.texCoordsHiFormat)
+    val tStart = AFix(c.texCoordsHiFormat)
+    val dSdX = AFix(c.texCoordsHiFormat)
+    val dTdX = AFix(c.texCoordsHiFormat)
+    val dSdY = AFix(c.texCoordsHiFormat)
+    val dTdY = AFix(c.texCoordsHiFormat)
+  }
 
   /** Per-triangle configuration captured at command time. These are registers with FIFO=Yes,
     * Sync=No in the datasheet, meaning they must be captured when the triangle command is issued to
@@ -174,7 +219,9 @@ object TriangleSetup {
   case class Input(c: Config) extends Bundle {
     val triWithSign = TriangleWithSign(c.vertexFormat)
     val grads = Rasterizer.GradientBundle(Rasterizer.InputGradient(_), c)
+    val texHi = HiTexCoords(c)
     val config = PerTriangleConfig(c)
+    val trace = if (c.trace.enabled) Trace.PrimitiveKey() else null
   }
 
   /** Output bundle - includes computed edge setup, pass-through gradients and config */
@@ -184,6 +231,8 @@ object TriangleSetup {
     val yrange = vertex2d(c.vertexFormat)
     val edgeStart = Vec.fill(3)(AFix(c.coefficientFormat))
     val grads = Rasterizer.GradientBundle(Rasterizer.InputGradient(_), c)
+    val texHi = HiTexCoords(c)
     val config = PerTriangleConfig(c)
+    val trace = if (c.trace.enabled) Trace.PrimitiveKey() else null
   }
 }

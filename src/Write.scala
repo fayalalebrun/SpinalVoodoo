@@ -46,6 +46,7 @@ object Write {
     val data = Bits(16 bits)
     val fbBaseAddr = UInt(c.addressWidth)
     val fbPixelStride = UInt(11 bits)
+    val trace = if (c.trace.enabled) Trace.PixelKey() else null
   }
 
   /** Pre-dither payload: RGB888 color + all Write.Input pass-through fields.
@@ -65,6 +66,7 @@ object Write {
     val fbBaseAddr = UInt(c.addressWidth)
     val auxBaseAddr = UInt(c.addressWidth)
     val fbPixelStride = UInt(11 bits)
+    val trace = if (c.trace.enabled) Trace.PixelKey() else null
   }
 
   def baseBmbParams(c: Config) = BmbParameter(

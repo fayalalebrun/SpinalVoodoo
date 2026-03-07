@@ -103,6 +103,7 @@ case class FramebufferAccess(c: Config) extends Component {
     val fbzMode = FbzMode()
     val colorLaneHi = Bool()
     val auxLaneHi = Bool()
+    val trace = if (c.trace.enabled) Trace.PixelKey() else null
   }
 
   // Create internal stream with computed address and passthrough data
@@ -129,6 +130,9 @@ case class FramebufferAccess(c: Config) extends Component {
     data.passthrough.fbzMode := fbzMode
     data.passthrough.colorLaneHi := colorPlaneAddress(1)
     data.passthrough.auxLaneHi := auxPlaneAddress(1)
+    if (c.trace.enabled) {
+      data.passthrough.trace := payload.trace
+    }
     data
   }
 
@@ -331,6 +335,9 @@ case class FramebufferAccess(c: Config) extends Component {
     out.enableAlphaPlanes := pd.fbzMode.enableAlphaPlanes
     out.enableDithering := pd.fbzMode.enableDithering
     out.ditherAlgorithm := pd.fbzMode.ditherAlgorithm
+    if (c.trace.enabled) {
+      out.trace := pd.trace
+    }
   }
 }
 
@@ -345,6 +352,7 @@ object FramebufferAccess {
     val enableAlphaPlanes = Bool()
     val enableDithering = Bool()
     val ditherAlgorithm = Bool()
+    val trace = if (c.trace.enabled) Trace.PixelKey() else null
   }
 
   def bmbParams(c: Config) = BmbParameter(

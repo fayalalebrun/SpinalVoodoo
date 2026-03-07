@@ -13,6 +13,11 @@ case class TexWritePayload() extends Bundle {
   val mask = Bits(4 bits)
 }
 
+case class FloatShadowWrite(busAddrWidth: Int) extends Bundle {
+  val address = UInt(busAddrWidth bits)
+  val raw = SInt(50 bits)
+}
+
 /** PCI FIFO — sits on the BMB bus between AddressRemapper and RegisterBank.
   *
   * Handles write ordering, float conversion, FIFO queueing, drain blocking, and texture write
@@ -61,6 +66,7 @@ case class PciFifo(
     val wasEnqueued = out Bool () // swapCmdEnqueued detection
     val wasEnqueuedAddr = in UInt (busAddrWidth bits) // which address to watch
     val syncDrained = out Bool () // Sync=Yes register was drained
+    val floatShadow = master Flow (FloatShadowWrite(busAddrWidth))
   }
 
   // ========================================================================
@@ -73,6 +79,8 @@ case class PciFifo(
     val syncRequired = Bool()
     val isTexture = Bool()
     val texPciAddr = UInt(23 bits)
+    val hasFloatShadow = Bool()
+    val floatShadowRaw = SInt(50 bits)
   }
 
   // ========================================================================
@@ -140,6 +148,8 @@ case class PciFifo(
     queuedWriteTx.syncRequired := False // geometry regs are always NoSync
     queuedWriteTx.isTexture := False
     queuedWriteTx.texPciAddr := 0
+    queuedWriteTx.hasFloatShadow := True
+    queuedWriteTx.floatShadowRaw := rawSInt.resize(50 bits)
   } otherwise {
     // Normal register write or texture write from texWrite input
     // Texture writes are only enqueued when no register write is pending
@@ -152,6 +162,8 @@ case class PciFifo(
       queuedWriteTx.syncRequired := False
       queuedWriteTx.isTexture := True
       queuedWriteTx.texPciAddr := io.texWrite.pciAddr
+      queuedWriteTx.hasFloatShadow := False
+      queuedWriteTx.floatShadowRaw := 0
     } otherwise {
       queuedWriteTx.valid := shouldQueue
       queuedWriteTx.address := io.cpuSide.cmd.address
@@ -160,6 +172,8 @@ case class PciFifo(
       queuedWriteTx.syncRequired := syncRequired
       queuedWriteTx.isTexture := False
       queuedWriteTx.texPciAddr := 0
+      queuedWriteTx.hasFloatShadow := False
+      queuedWriteTx.floatShadowRaw := 0
     }
   }
 
@@ -235,6 +249,9 @@ case class PciFifo(
   io.texDrain.pciAddr := drainedWrite.texPciAddr
   io.texDrain.data := drainedWrite.data
   io.texDrain.mask := drainedWrite.mask
+  io.floatShadow.valid := isRegDrain && drainedWrite.fire && drainedWrite.hasFloatShadow
+  io.floatShadow.address := drainedWrite.address
+  io.floatShadow.raw := drainedWrite.floatShadowRaw
 
   // syncDrained: pulse when a Sync=Yes register write is drained
   io.syncDrained := isRegDrain && drainedWrite.fire && drainedWrite.syncRequired

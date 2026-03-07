@@ -70,7 +70,7 @@ state-roundtrip: $(OBJ_DIR)/state_roundtrip_test
 # Step 1: Generate Verilog (reuse existing or rebuild)
 $(VERILOG): $(SCALA_SRCS)
 	@rm -f $(dir $(VERILOG))*.bin
-	cd $(PROJ_ROOT) && java -Xmx2g -cp "$$(scala-cli compile . --print-class-path 2>/dev/null)" voodoo.CoreSimGen
+	cd $(PROJ_ROOT) && java -Xmx2g -cp "$$(scala-cli compile . --print-class-path 2>/dev/null)" voodoo.CoreSimGen $(if $(filter 1,$(TRACE)),--trace-pipeline)
 	@sed -i 's|\$$readmemb("\([^/"]*\.bin\)"|\$$readmemb("$(abspath $(dir $(VERILOG)))/\1"|g' $@
 
 # Step 2: Verilate (64-bit obj_dir, separate from 32-bit Glide build)
@@ -97,7 +97,7 @@ $(OBJ_DIR)/libverilated.a: $(VERILATOR_LIBS_STAMP)
 
 # Step 4: 86Box reference objects (compiled as C)
 $(OBJ_DIR)/vid_voodoo_render.o: $(EBOX_SRC)/vid_voodoo_render.c
-	$(OBJCACHE) $(CC) $(CFLAGS) $(DEPFLAGS) -Dvoodoo_queue_triangle=_voodoo_queue_triangle_86box -DREF_TRIANGLE_COVERAGE_HOOK \
+	$(OBJCACHE) $(CC) $(CFLAGS) $(DEPFLAGS) -Dvoodoo_queue_triangle=_voodoo_queue_triangle_86box -DREF_TRIANGLE_COVERAGE_HOOK -DREF_TRACE_EXPORT_HOOK \
 		-c -o $@ $<
 
 $(OBJ_DIR)/vid_voodoo_texture.o: $(EBOX_SRC)/vid_voodoo_texture.c

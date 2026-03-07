@@ -278,6 +278,9 @@ case class Lfb(c: Config) extends Component {
   io.writeOutput.payload.fbBaseAddr := io.fbWriteColorBaseAddr
   io.writeOutput.payload.auxBaseAddr := io.fbWriteAuxBaseAddr
   io.writeOutput.payload.fbPixelStride := io.fbPixelStride
+  if (c.trace.enabled) {
+    io.writeOutput.payload.trace := Trace.originPixelKey(Trace.Origin.lfb)
+  }
 
   // ========================================================================
   // Pipeline mode: ColorCombine.Output (no dither, no delay)
@@ -300,6 +303,9 @@ case class Lfb(c: Config) extends Component {
   pipelinePayload.alphaMode := io.alphaMode
   pipelinePayload.fogMode := io.fogMode
   pipelinePayload.fbzMode := io.fbzMode
+  if (c.trace.enabled) {
+    pipelinePayload.trace := Trace.originPixelKey(Trace.Origin.lfb)
+  }
 
   io.pipelineOutput.valid := writePixelActive && io.lfbMode.pixelPipelineEnable
   io.pipelineOutput.payload := pipelinePayload

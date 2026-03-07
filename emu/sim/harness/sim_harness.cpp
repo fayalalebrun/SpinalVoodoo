@@ -323,14 +323,14 @@ static void print_periodic_stats(void) {
  * This is necessary because some slaves (e.g., Lfb) deassert cmd_ready
  * on the same posedge that fires the cmd (state changes immediately).
  * Checking cmd_ready AFTER tick_one() would miss the acceptance. */
-static void bus_write(uint32_t addr, uint32_t data) {
+static void bus_write_masked(uint32_t addr, uint32_t data, uint8_t mask, uint8_t length) {
     uint64_t t0 = sim_time;
     top->io_cpuBus_cmd_valid = 1;
     top->io_cpuBus_cmd_payload_fragment_opcode = BMB_OPCODE_WRITE;
     top->io_cpuBus_cmd_payload_fragment_address = addr & 0xFFFFFF;
     top->io_cpuBus_cmd_payload_fragment_data = data;
-    top->io_cpuBus_cmd_payload_fragment_mask = 0xF;
-    top->io_cpuBus_cmd_payload_fragment_length = 3;  /* 4 bytes - 1 */
+    top->io_cpuBus_cmd_payload_fragment_mask = mask;
+    top->io_cpuBus_cmd_payload_fragment_length = length;
     top->io_cpuBus_cmd_payload_last = 1;
     top->io_cpuBus_cmd_payload_fragment_source = 0;
 
@@ -377,6 +377,10 @@ static void bus_write(uint32_t addr, uint32_t data) {
     total_write_ticks += (sim_time - t0) / 2;
     total_write_count++;
     print_periodic_stats();
+}
+
+static void bus_write(uint32_t addr, uint32_t data) {
+    bus_write_masked(addr, data, 0xF, 3);
 }
 
 /* Drive a read command on the unified CPU bus, return data.
@@ -564,6 +568,13 @@ void sim_shutdown(void) {
 
 void sim_write(uint32_t addr, uint32_t data) {
     bus_write(addr, data);
+}
+
+void sim_write16(uint32_t addr, uint16_t data) {
+    const int lane_hi = (addr & 0x2) != 0;
+    const uint32_t packed_data = lane_hi ? ((uint32_t)data << 16) : (uint32_t)data;
+    const uint8_t mask = lane_hi ? 0xC : 0x3;
+    bus_write_masked(addr, packed_data, mask, 1);
 }
 
 uint32_t sim_read(uint32_t addr) {

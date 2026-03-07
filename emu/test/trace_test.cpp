@@ -411,7 +411,7 @@ int main(int argc, char **argv) {
                 case VOODOO_TRACE_WRITE_REG_W: {
                     /* 16-bit register writes — sim only (ref model doesn't need them) */
                     if (!ref_only)
-                        sim_write(e->addr & 0x3FFFFF, e->data);
+                        sim_write16(e->addr & 0x3FFFFF, (uint16_t)e->data);
                     break;
                 }
 
@@ -419,7 +419,7 @@ int main(int argc, char **argv) {
                     uint32_t offset = e->addr & 0x3FFFFF;
                     ref_write_fb_w(offset, (uint16_t)e->data);
                     if (!ref_only)
-                        sim_write(0x400000 | offset, e->data);
+                        sim_write16(0x400000 | offset, (uint16_t)e->data);
                     fb_write_count++;
                     break;
                 }

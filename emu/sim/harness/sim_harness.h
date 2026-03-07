@@ -28,6 +28,11 @@ void sim_shutdown(void);
  */
 void sim_write(uint32_t addr, uint32_t data);
 
+/* Write a 16-bit halfword to the unified CPU bus.
+ * addr keeps its byte address so sub-word destinations can decode the lane.
+ */
+void sim_write16(uint32_t addr, uint16_t data);
+
 /* Read a 32-bit word from the unified CPU bus.
  * addr: 24-bit address (same layout as sim_write)
  * Returns the read data.

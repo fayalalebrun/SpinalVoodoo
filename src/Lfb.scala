@@ -52,6 +52,7 @@ case class Lfb(c: Config) extends Component {
   // Capture BMB command data
   val capturedAddr = Reg(UInt(22 bits))
   val capturedData = Reg(Bits(32 bits))
+  val capturedMask = Reg(Bits(4 bits)) init (0)
   val capturedIsRead = Reg(Bool()) init (False)
   val rspPending = Reg(Bool()) init (False)
 
@@ -93,6 +94,7 @@ case class Lfb(c: Config) extends Component {
     } otherwise {
       capturedIsRead := False
       capturedData := afterByteSwizzle
+      capturedMask := io.bus.cmd.mask
       state := statePixel1
     }
   }
@@ -119,9 +121,11 @@ case class Lfb(c: Config) extends Component {
   // Select 16-bit pixel data: PIXEL1 = lo16, PIXEL2 = hi16
   val lo16 = capturedData(15 downto 0).asUInt
   val hi16 = capturedData(31 downto 16).asUInt
+  val isHalfWordWrite = capturedMask === B"4'b0011" || capturedMask === B"4'b1100"
+  val useHiHalfForPixel1 = capturedMask === B"4'b1100"
 
   val pixelData16 = UInt(16 bits)
-  pixelData16 := (state === statePixel2) ? hi16 | lo16
+  pixelData16 := (state === statePixel2 || useHiHalfForPixel1) ? hi16 | lo16
 
   // Full 32-bit data for XRGB8888/ARGB8888
   val pixelData32 = capturedData
@@ -318,7 +322,7 @@ case class Lfb(c: Config) extends Component {
   // State transitions on active output fire
   when(activeOutputFire) {
     when(state === statePixel1) {
-      when(isDualPixel) {
+      when(isDualPixel && !isHalfWordWrite) {
         state := statePixel2
       } otherwise {
         state := stateIdle

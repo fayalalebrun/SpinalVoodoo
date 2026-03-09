@@ -104,6 +104,11 @@ static std::string basename_no_ext(const char *path) {
 int main(int argc, char **argv) {
     init_srgb_lut();
 
+    int watch_x = -1;
+    int watch_y = -1;
+    if (const char *wx = getenv("SIM_WATCH_X")) watch_x = atoi(wx);
+    if (const char *wy = getenv("SIM_WATCH_Y")) watch_y = atoi(wy);
+
     /* Parse arguments */
     const char *trace_path = nullptr;
     const char *output_dir = nullptr;
@@ -363,6 +368,17 @@ int main(int argc, char **argv) {
                 if (reg == 0x304) { texmode1_writes++; texmode1_last = e->data; }
                 if ((reg == 0x34c || reg == 0x350) && (e->data & 0x80000000u))
                     pal_index_writes++;
+                if (reg == 0x124 && watch_x >= 0 && watch_y >= 0) {
+                    uint16_t *fb = ref_get_fb();
+                    uint32_t row_width = ref_get_row_width();
+                    uint32_t draw_off = ref_get_draw_offset();
+                    uint32_t row_stride = row_width / 2;
+                    uint32_t p = (uint32_t)watch_y * row_stride + (uint32_t)watch_x;
+                    uint16_t before = *((uint16_t *)((uint8_t *)fb + draw_off) + p);
+                    fprintf(stderr,
+                            "[trace_test] REF watch before fastfill (%d,%d): draw=0x%x pixel=0x%04x rowWidth=%u\n",
+                            watch_x, watch_y, draw_off, before, row_width);
+                }
                 /* swapbufferCMD presents the buffer that was being drawn
                  * immediately before the command write. */
                 uint32_t pre_swap_draw_offset = 0;
@@ -381,6 +397,17 @@ int main(int argc, char **argv) {
 
                     if (reg == 0x080 || reg == 0x100 || reg == 0x124) {
                         tri_count++;
+                        if (reg == 0x124 && watch_x >= 0 && watch_y >= 0) {
+                            uint16_t *fb = ref_get_fb();
+                            uint32_t row_width = ref_get_row_width();
+                            uint32_t draw_off = ref_get_draw_offset();
+                            uint32_t row_stride = row_width / 2;
+                            uint32_t p = (uint32_t)watch_y * row_stride + (uint32_t)watch_x;
+                            uint16_t after = *((uint16_t *)((uint8_t *)fb + draw_off) + p);
+                            fprintf(stderr,
+                                    "[trace_test] REF watch after fastfill (%d,%d): draw=0x%x pixel=0x%04x rowWidth=%u\n",
+                                    watch_x, watch_y, draw_off, after, row_width);
+                        }
                     }
                     if (reg == 0x128) {
                         swap_cmd_count++;
@@ -514,6 +541,9 @@ int main(int argc, char **argv) {
     /* Wait for pipeline to drain before reading back */
     if (!ref_only)
         sim_idle_wait();
+
+    if (!ref_only)
+        sim_flush_fb_cache();
 
     /* ---------------------------------------------------------------
      * Texture memory comparison (sim vs ref)

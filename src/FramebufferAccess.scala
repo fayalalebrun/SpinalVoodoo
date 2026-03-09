@@ -2,7 +2,6 @@ package voodoo
 
 import spinal.core._
 import spinal.lib._
-import spinal.lib.bus.bmb._
 
 /** Framebuffer Access stage — reads existing FB contents for depth test and alpha blend.
   *
@@ -21,8 +20,10 @@ case class FramebufferAccess(c: Config) extends Component {
   val io = new Bundle {
     val input = slave Stream (Fog.Output(c))
     val output = master Stream (FramebufferAccess.Output(c))
-    val fbReadColor = master(Bmb(FramebufferAccess.bmbParams(c)))
-    val fbReadAux = master(Bmb(FramebufferAccess.bmbParams(c)))
+    val fbReadColorReq = master Stream (FramebufferPlaneCache.ReadReq(c))
+    val fbReadColorRsp = slave Stream (FramebufferPlaneCache.ReadRsp())
+    val fbReadAuxReq = master Stream (FramebufferPlaneCache.ReadReq(c))
+    val fbReadAuxRsp = slave Stream (FramebufferPlaneCache.ReadRsp())
 
     // Other registers (not yet per-triangle)
     val zaColor = in Bits (32 bits)
@@ -34,17 +35,7 @@ case class FramebufferAccess(c: Config) extends Component {
     val busy = out Bool ()
   }
 
-  // Track in-flight pixels (max 4 in queue)
-  // Pixels exit via joined.fire (covers both depth-test pass and discard).
-  // The exitFire signal is assigned later after the joined stream is defined.
-  val inFlightCount = Reg(UInt(3 bits)) init 0
-  val exitFire = Bool()
-  when(io.input.fire && !exitFire) {
-    inFlightCount := inFlightCount + 1
-  }.elsewhen(!io.input.fire && exitFire) {
-    inFlightCount := inFlightCount - 1
-  }
-  io.busy := inFlightCount =/= 0
+  val inFlightCount = Reg(UInt(5 bits)) init 0
 
   val payload = io.input.payload
   val fbzMode = payload.fbzMode
@@ -89,10 +80,9 @@ case class FramebufferAccess(c: Config) extends Component {
   val compDepth = fbzMode.enableDepthBias ? biasedDepth | compDepthPreBias
 
   // ========================================================================
-  // Step 2: Fork-Queue-Join
+  // Step 2: Framebuffer fetch adapter
   // ========================================================================
 
-  // Bundle to pass through the queue
   case class Passthrough() extends Bundle {
     val coords = Vec.fill(2)(SInt(c.vertexFormat.nonFraction bits))
     val color = Color(UInt(8 bits), UInt(8 bits), UInt(8 bits))
@@ -113,88 +103,70 @@ case class FramebufferAccess(c: Config) extends Component {
     val passthrough = Passthrough()
   }
 
-  val internalStream = io.input.translateWith {
-    val data = Internal()
-    val strideSInt = (False ## io.fbPixelStride).asSInt
-    val pixelFlat = (payload.coords(1) * strideSInt + payload.coords(0)).asUInt
-    val colorPlaneAddress = (io.fbColorBaseAddr + (pixelFlat << 1)).resized
-    val auxPlaneAddress = (io.fbAuxBaseAddr + (pixelFlat << 1)).resized
-    data.colorAddress := (colorPlaneAddress(c.addressWidth.value - 1 downto 2) ## U"2'b00").asUInt
-    data.auxAddress := (auxPlaneAddress(c.addressWidth.value - 1 downto 2) ## U"2'b00").asUInt
-    data.passthrough.coords := payload.coords
-    data.passthrough.color := payload.color
-    data.passthrough.alpha := payload.alpha
-    data.passthrough.colorBeforeFog := payload.colorBeforeFog
-    data.passthrough.newDepth := compDepth
-    data.passthrough.alphaMode := payload.alphaMode
-    data.passthrough.fbzMode := fbzMode
-    data.passthrough.colorLaneHi := colorPlaneAddress(1)
-    data.passthrough.auxLaneHi := auxPlaneAddress(1)
-    if (c.trace.enabled) {
-      data.passthrough.trace := payload.trace
-    }
-    data
+  val request = Internal()
+  val strideSInt = (False ## io.fbPixelStride).asSInt
+  val rowStartPixel = (payload.coords(1) * strideSInt).asUInt
+  val pixelFlat = (rowStartPixel + payload.coords(0).asUInt).resized
+  val colorPlaneAddress = (io.fbColorBaseAddr + (pixelFlat << 1)).resized
+  val auxPlaneAddress = (io.fbAuxBaseAddr + (pixelFlat << 1)).resized
+  request.colorAddress := (colorPlaneAddress(c.addressWidth.value - 1 downto 2) ## U"2'b00").asUInt
+  request.auxAddress := (auxPlaneAddress(c.addressWidth.value - 1 downto 2) ## U"2'b00").asUInt
+  request.passthrough.coords := payload.coords
+  request.passthrough.color := payload.color
+  request.passthrough.alpha := payload.alpha
+  request.passthrough.colorBeforeFog := payload.colorBeforeFog
+  request.passthrough.newDepth := compDepth
+  request.passthrough.alphaMode := payload.alphaMode
+  request.passthrough.fbzMode := fbzMode
+  request.passthrough.colorLaneHi := colorPlaneAddress(1)
+  request.passthrough.auxLaneHi := auxPlaneAddress(1)
+  if (c.trace.enabled) {
+    request.passthrough.trace := payload.trace
   }
 
-  // Fork into two streams
-  val (toMemory, toQueue) = StreamFork2(internalStream)
-
-  // ========================================================================
-  // Step 2a: Memory request path (color + aux reads)
-  // ========================================================================
-
-  val (toColorCmd, toAuxCmd) = StreamFork2(toMemory)
-
-  val colorCmdStream = toColorCmd.translateWith {
-    val cmd = Fragment(BmbCmd(FramebufferAccess.bmbParams(c)))
-    cmd.fragment.address := toColorCmd.payload.colorAddress
-    cmd.fragment.opcode := Bmb.Cmd.Opcode.READ
-    cmd.fragment.length := 3 // 4 bytes - 1
-    cmd.fragment.source := 0
-    cmd.last := True
-    cmd
+  case class FetchResult() extends Bundle {
+    val colorData = Bits(32 bits)
+    val auxData = Bits(32 bits)
+    val passthrough = Passthrough()
   }
 
-  val auxCmdStream = toAuxCmd.translateWith {
-    val cmd = Fragment(BmbCmd(FramebufferAccess.bmbParams(c)))
-    cmd.fragment.address := toAuxCmd.payload.auxAddress
-    cmd.fragment.opcode := Bmb.Cmd.Opcode.READ
-    cmd.fragment.length := 3 // 4 bytes - 1
-    cmd.fragment.source := 0
-    cmd.last := True
-    cmd
+  val fetched = Stream(FetchResult())
+  val requestStream = io.input.translateWith(request)
+  val (forReads, queuedReqsRaw) = StreamFork2(requestStream, synchronous = true)
+  val (forColorReads, forAuxReads) = StreamFork2(forReads, synchronous = true)
+
+  io.fbReadColorReq.translateFrom(forColorReads) { (out, in) =>
+    out.address := in.colorAddress
+  }
+  io.fbReadAuxReq.translateFrom(forAuxReads) { (out, in) =>
+    out.address := in.auxAddress
   }
 
-  io.fbReadColor.cmd << colorCmdStream
-  io.fbReadAux.cmd << auxCmdStream
+  val queuedReqs = queuedReqsRaw.queue(16)
+  val readJoined = StreamJoin(io.fbReadColorRsp, io.fbReadAuxRsp)
+  val fetchedJoined = StreamJoin(readJoined, queuedReqs)
 
-  // ========================================================================
-  // Step 2b: Passthrough queue
-  // ========================================================================
+  fetched.valid := fetchedJoined.valid
+  fetched.payload.colorData := fetchedJoined.payload._1._1.data
+  fetched.payload.auxData := fetchedJoined.payload._1._2.data
+  fetched.payload.passthrough := fetchedJoined.payload._2.passthrough
+  fetchedJoined.ready := fetched.ready
 
-  val queuedPassthrough = toQueue.map(_.passthrough).queue(4)
-
-  // ========================================================================
-  // Step 2c: Join memory response with queued data
-  // ========================================================================
-
-  val colorRspStream = io.fbReadColor.rsp.takeWhen(io.fbReadColor.rsp.last).translateWith {
-    io.fbReadColor.rsp.fragment.data
+  val exitFire = fetched.fire
+  when(io.input.fire && !exitFire) {
+    inFlightCount := inFlightCount + 1
+  }.elsewhen(!io.input.fire && exitFire) {
+    inFlightCount := inFlightCount - 1
   }
-  val auxRspStream = io.fbReadAux.rsp.takeWhen(io.fbReadAux.rsp.last).translateWith {
-    io.fbReadAux.rsp.fragment.data
-  }
-  val joinedRsp = StreamJoin(colorRspStream, auxRspStream)
-  val joined = StreamJoin(joinedRsp, queuedPassthrough)
-  exitFire := joined.fire // Pixel exits fork-queue-join (pass or discard)
+  io.busy := inFlightCount =/= 0
 
   // ========================================================================
   // Step 3: Depth test (per-pixel fbzMode)
   // ========================================================================
 
-  val colorData = joined.payload._1._1
-  val auxData = joined.payload._1._2
-  val pdata = joined.payload._2
+  val colorData = fetched.payload.colorData
+  val auxData = fetched.payload.auxData
+  val pdata = fetched.payload.passthrough
   val oldDepth =
     pdata.auxLaneHi ? auxData(31 downto 16).asUInt | auxData(15 downto 0).asUInt
 
@@ -210,14 +182,14 @@ case class FramebufferAccess(c: Config) extends Component {
   )
 
   val depthKill = pdata.fbzMode.enableDepthBuffer && !depthPassed
-  val afterDepthTest = joined.throwWhen(depthKill)
+  val afterDepthTest = fetched.throwWhen(depthKill)
 
   // ========================================================================
   // Step 4: Alpha blend
   // ========================================================================
 
-  val afterColorData = afterDepthTest.payload._1._1
-  val afterPdata = afterDepthTest.payload._2
+  val afterColorData = afterDepthTest.payload.colorData
+  val afterPdata = afterDepthTest.payload.passthrough
 
   val oldColor565 =
     afterPdata.colorLaneHi ? afterColorData(31 downto 16).asUInt | afterColorData(
@@ -321,7 +293,7 @@ case class FramebufferAccess(c: Config) extends Component {
   // ========================================================================
 
   io.output.translateFrom(afterDepthTest) { (out, in) =>
-    val pd = in._2
+    val pd = in.passthrough
     out.coords := pd.coords
     when(pd.alphaMode.alphaBlendEnable) {
       out.color := blended
@@ -354,15 +326,4 @@ object FramebufferAccess {
     val ditherAlgorithm = Bool()
     val trace = if (c.trace.enabled) Trace.PixelKey() else null
   }
-
-  def bmbParams(c: Config) = BmbParameter(
-    addressWidth = c.addressWidth.value,
-    dataWidth = 32,
-    sourceWidth = 1,
-    contextWidth = 0,
-    lengthWidth = 2,
-    canRead = true,
-    canWrite = false,
-    alignment = BmbParameter.BurstAlignement.BYTE
-  )
 }

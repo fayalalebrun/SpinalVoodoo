@@ -41,6 +41,7 @@ case class Rasterizer(c: Config) extends Component {
         out := in.start
       }
       state.texHi := input.texHi
+      state.alphaHi := input.hiAlpha
       state.grads.sGrad := input.texHi.sStart.fixTo(c.texCoordsAccumFormat)
       state.grads.tGrad := input.texHi.tStart.fixTo(c.texCoordsAccumFormat)
 
@@ -63,6 +64,7 @@ case class Rasterizer(c: Config) extends Component {
       output.data.grads.blueGrad := state.grads.blueGrad
       output.data.grads.depthGrad := state.grads.depthGrad
       output.data.grads.alphaGrad := state.grads.alphaGrad
+      output.data.alphaGradHi := state.alphaHi.start
       output.data.grads.wGrad := state.grads.wGrad
       output.data.grads.sGrad := state.texHi.sStart.fixTo(c.texCoordsAccumFormat)
       output.data.grads.tGrad := state.texHi.tStart.fixTo(c.texCoordsAccumFormat)
@@ -137,6 +139,8 @@ case class Rasterizer(c: Config) extends Component {
           .fixTo(c.texCoordsHiFormat)
         next.texHi.tStart := (state.texHi.tStart + state.input.texHi.dTdY)
           .fixTo(c.texCoordsHiFormat)
+        next.alphaHi.start := (state.alphaHi.start + state.input.hiAlpha.dAdY)
+          .fixTo(c.texCoordsHiFormat)
       }.otherwise {
         // Move horizontally
         val dx = state.goingRight ? one | negOne
@@ -153,6 +157,9 @@ case class Rasterizer(c: Config) extends Component {
         next.texHi.tStart := (state.texHi.tStart +
           (state.goingRight ? state.input.texHi.dTdX | (-state.input.texHi.dTdX)))
           .fixTo(c.texCoordsHiFormat)
+        next.alphaHi.start := (state.alphaHi.start +
+          (state.goingRight ? state.input.hiAlpha.dAdX | (-state.input.hiAlpha.dAdX)))
+          .fixTo(c.texCoordsHiFormat)
       }
 
       next.input := state.input
@@ -160,6 +167,8 @@ case class Rasterizer(c: Config) extends Component {
       next.texHi.dTdX := state.input.texHi.dTdX
       next.texHi.dSdY := state.input.texHi.dSdY
       next.texHi.dTdY := state.input.texHi.dTdY
+      next.alphaHi.dAdX := state.input.hiAlpha.dAdX
+      next.alphaHi.dAdY := state.input.hiAlpha.dAdY
       next.grads.sGrad := next.texHi.sStart.fixTo(c.texCoordsAccumFormat)
       next.grads.tGrad := next.texHi.tStart.fixTo(c.texCoordsAccumFormat)
 
@@ -216,6 +225,7 @@ object Rasterizer {
 
   case class Output(c: Config) extends Bundle {
     val grads = GradientBundle(AFix(_), c)
+    val alphaGradHi = AFix(c.texCoordsHiFormat)
     val coords = Vec.fill(2)(SInt(c.vertexFormat.nonFraction bits))
     val config = TriangleSetup.PerTriangleConfig(c) // Per-triangle render configuration
     val trace = if (c.trace.enabled) Trace.PixelKey() else null
@@ -229,6 +239,7 @@ object Rasterizer {
   case class State(c: Config) extends Bundle {
     val coords = vertex2d(c.vertexFormat) // Internal fixed-point coordinates
     val grads = GradientBundle(AFix(_), c)
+    val alphaHi = TriangleSetup.HiAlpha(c)
     val texHi = TriangleSetup.HiTexCoords(c)
     val edge = Vec.fill(3)(AFix(c.coefficientFormat))
     val goingRight = Bool() // Direction flag for serpentine scanning

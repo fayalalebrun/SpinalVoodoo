@@ -11,22 +11,25 @@ import spinal.lib.bus.bmb._
   *   - Unified 24-bit CPU bus matching PCI BAR layout (address decode inside Core)
   *   - Status outputs for fast idle polling
   */
-case class CoreSim(c: Config) extends Component {
+case class CoreSim(c: Config, memTiming: SimMemoryTiming = SimMemoryTiming()) extends Component {
   val io = new Bundle {
     // Unified CPU bus (24-bit address covers 16MB PCI BAR)
     val cpuBus = slave(Bmb(Core.cpuBmbParams))
 
     // Vsync input (driven by C++ harness)
     val vRetrace = in Bool ()
+
+    // Simulation-only framebuffer cache flush request
+    val flushFbCaches = in Bool ()
   }
 
   val core = Core(c)
   core.io.cpuBus <> io.cpuBus
 
-  val fbRam = BmbOnChipRam(p = Core.fbMemBmbParams(c), size = 4 * 1024 * 1024)
+  val fbRam = SimBmbMemory(p = Core.fbMemBmbParams(c), size = 4 * 1024 * 1024, timing = memTiming)
   core.io.fbMem <> fbRam.io.bus
 
-  val texRam = BmbOnChipRam(p = Core.texMemBmbParams(c), size = 8 * 1024 * 1024)
+  val texRam = SimBmbMemory(p = Core.texMemBmbParams(c), size = 8 * 1024 * 1024, timing = memTiming)
   core.io.texMem <> texRam.io.bus
 
   core.io.statusInputs.vRetrace := io.vRetrace
@@ -40,6 +43,7 @@ case class CoreSim(c: Config) extends Component {
   core.io.statisticsIn.pixelsOut := 0
 
   core.io.fbBaseAddr := 0
+  core.io.flushFbCaches := io.flushFbCaches
 }
 
 object CoreSim {

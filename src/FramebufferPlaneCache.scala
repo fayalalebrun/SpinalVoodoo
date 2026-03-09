@@ -1,0 +1,485 @@
+package voodoo
+
+import spinal.core._
+import spinal.core.sim._
+import spinal.lib._
+import spinal.lib.bus.bmb._
+
+case class FramebufferPlaneCache(c: Config) extends Component {
+  import FramebufferPlaneCache._
+
+  val io = new Bundle {
+    val readReq = slave Stream (ReadReq(c))
+    val readRsp = master Stream (ReadRsp())
+    val writeReq = slave Stream (WriteReq(c))
+    val flush = in Bool ()
+    val mem = master(Bmb(bmbParams(c)))
+    val busy = out Bool ()
+    val fillHits = out UInt (32 bits)
+    val fillMisses = out UInt (32 bits)
+    val fillBurstCount = out UInt (32 bits)
+    val fillBurstBeats = out UInt (32 bits)
+    val fillStallCycles = out UInt (32 bits)
+  }
+
+  require(c.fbFillLineWords > 0 && ((c.fbFillLineWords & (c.fbFillLineWords - 1)) == 0))
+  require(c.fbFillLineWords >= 1)
+
+  val lineWords = c.fbFillLineWords
+  val lineShift = log2Up(lineWords)
+  val slotCount = 2
+  val slotIndexWidth = log2Up(slotCount)
+  val lineWordAddrWidth = c.addressWidth.value - 2
+  val lineBaseWidth = c.addressWidth.value
+  val lineBytes = lineWords * 4
+  val lineLength = U(lineBytes - 1, c.memBurstLengthWidth bits)
+
+  def lineBaseOf(address: UInt): UInt = {
+    val shifted = (address >> (lineShift + 2)).resize(lineWordAddrWidth bits)
+    ((shifted << (lineShift + 2)).resize(lineBaseWidth bits))
+  }
+
+  def wordIndexOf(address: UInt): UInt = ((address >> 2).resize(lineShift bits))
+
+  def memIndex(slot: UInt, word: UInt): UInt = {
+    ((slot.resize(slotIndexWidth bits) ## U(0, lineShift bits)) | word
+      .resize(slotIndexWidth + lineShift bits)
+      .asBits).asUInt
+  }
+
+  val lineData = Seq.fill(4)(Mem(Bits(8 bits), slotCount * lineWords))
+  val lineReadPort = lineData.map(_.readSyncPort(readUnderWrite = readFirst))
+  val lineReadRsp =
+    lineReadPort(3).rsp ## lineReadPort(2).rsp ## lineReadPort(1).rsp ## lineReadPort(0).rsp
+
+  val slotValid = Vec(Reg(Bool()) init (False), slotCount)
+  val slotDirty = Vec(Reg(Bool()) init (False), slotCount)
+  val slotBase = Vec(Reg(UInt(c.addressWidth.value bits)) init (0), slotCount)
+  val slotKnownMask = Vec(
+    (0 until slotCount).map(_ => Vec((0 until lineWords).map(_ => Reg(Bits(4 bits)) init (0))))
+  )
+  val slotDirtyMask = Vec(
+    (0 until slotCount).map(_ => Vec((0 until lineWords).map(_ => Reg(Bits(4 bits)) init (0))))
+  )
+  val nextVictim = Reg(UInt(slotIndexWidth bits)) init (0)
+
+  val fillHits = Reg(UInt(32 bits)) init (0)
+  val fillMisses = Reg(UInt(32 bits)) init (0)
+  val fillBurstCount = Reg(UInt(32 bits)) init (0)
+  val fillBurstBeats = Reg(UInt(32 bits)) init (0)
+  val fillStallCycles = Reg(UInt(32 bits)) init (0)
+  if (c.trace.enabled) {
+    fillHits.simPublic()
+    fillMisses.simPublic()
+    fillBurstCount.simPublic()
+    fillBurstBeats.simPublic()
+    fillStallCycles.simPublic()
+  }
+  io.fillHits := fillHits
+  io.fillMisses := fillMisses
+  io.fillBurstCount := fillBurstCount
+  io.fillBurstBeats := fillBurstBeats
+  io.fillStallCycles := fillStallCycles
+
+  object OpState extends SpinalEnum {
+    val Idle, ReadWait, EvictRsp, EvictRead, EvictSend, FillCmd, FillWait, FillRead, DirectReadCmd,
+        DirectReadRsp, DirectWriteCmd, DirectWriteRsp = newElement()
+  }
+  val state = RegInit(OpState.Idle)
+
+  val pendingReadReq = Reg(ReadReq(c))
+  val pendingWriteReq = Reg(WriteReq(c))
+  val pendingSlot = Reg(UInt(slotIndexWidth bits)) init (0)
+  val pendingIsRead = Reg(Bool()) init (False)
+  val pendingFlushOnly = Reg(Bool()) init (False)
+  val evictBeat = Reg(UInt(lineShift bits)) init (0)
+  val evictData = Reg(Bits(32 bits)) init (0)
+  val evictDataValid = Reg(Bool()) init (False)
+  val fillRspCount = Reg(UInt(log2Up(lineWords + 1) bits)) init (0)
+  val directRspData = Reg(Bits(32 bits)) init (0)
+  val readRspValid = Reg(Bool()) init (False)
+  val readRspData = Reg(Bits(32 bits)) init (0)
+  val lineReadRspValid = Reg(Bool()) init (False)
+  val pendingReadWasHit = Reg(Bool()) init (False)
+
+  val readReqLineBase = lineBaseOf(io.readReq.address)
+  val readReqWordIndex = wordIndexOf(io.readReq.address)
+  val writeReqLineBase = lineBaseOf(io.writeReq.address)
+  val writeReqWordIndex = wordIndexOf(io.writeReq.address)
+
+  val readHitVec = Bits(slotCount bits)
+  val readFullHitVec = Bits(slotCount bits)
+  val writeHitVec = Bits(slotCount bits)
+  for (i <- 0 until slotCount) {
+    val readTagHit = slotValid(i) && slotBase(i) === readReqLineBase
+    readHitVec(i) := io.readReq.valid && readTagHit
+    readFullHitVec(i) := io.readReq.valid && readTagHit && slotKnownMask(i)(
+      readReqWordIndex
+    ) === B"1111"
+    writeHitVec(i) := io.writeReq.valid && slotValid(i) && slotBase(i) === writeReqLineBase
+  }
+  val readHit = readFullHitVec.orR
+  val writeHit = writeHitVec.orR
+  val readHitSlot = OHToUInt(readFullHitVec)
+  val writeHitSlot = OHToUInt(writeHitVec)
+
+  val victimSlot = UInt(slotIndexWidth bits)
+  victimSlot := nextVictim
+  when(!slotValid(0)) {
+    victimSlot := 0
+  }.elsewhen(!slotValid(1)) {
+    victimSlot := 1
+  }
+
+  val readMissSlot = UInt(slotIndexWidth bits)
+  readMissSlot := victimSlot
+  when(readHitVec.orR) {
+    readMissSlot := OHToUInt(readHitVec)
+  }
+
+  val dirtySlotAvailable = slotDirty(0) || slotDirty(1)
+  val dirtySlot = UInt(slotIndexWidth bits)
+  dirtySlot := 0
+  when(!slotDirty(0) && slotDirty(1)) {
+    dirtySlot := 1
+  }
+
+  val lineWriteValid = Bool()
+  val lineWriteAddress = UInt((slotIndexWidth + lineShift) bits)
+  val lineWriteData = Bits(32 bits)
+  val lineWriteMask = Bits(4 bits)
+  lineWriteValid := False
+  lineWriteAddress := 0
+  lineWriteData := 0
+  lineWriteMask := 0
+  for (lane <- 0 until 4) {
+    lineData(lane).write(
+      address = lineWriteAddress,
+      data = lineWriteData(8 * lane + 7 downto 8 * lane),
+      enable = lineWriteValid && lineWriteMask(lane)
+    )
+  }
+
+  val readPortCmdValid = Bool()
+  val readPortCmdAddress = UInt((slotIndexWidth + lineShift) bits)
+  readPortCmdValid := False
+  readPortCmdAddress := 0
+  for (lane <- 0 until 4) {
+    lineReadPort(lane).cmd.valid := readPortCmdValid
+    lineReadPort(lane).cmd.payload := readPortCmdAddress
+  }
+
+  io.readRsp.valid := readRspValid
+  io.readRsp.data := readRspData
+  when(io.readRsp.fire) {
+    readRspValid := False
+  }
+
+  io.mem.cmd.valid := False
+  io.mem.cmd.fragment.address := 0
+  io.mem.cmd.fragment.opcode := Bmb.Cmd.Opcode.READ
+  io.mem.cmd.fragment.length := 3
+  io.mem.cmd.fragment.source := 0
+  io.mem.cmd.fragment.data := 0
+  io.mem.cmd.fragment.mask := 0
+  io.mem.cmd.last := True
+  io.mem.rsp.ready := False
+
+  io.readReq.ready := False
+  io.writeReq.ready := False
+
+  def clearSlot(slot: UInt): Unit = {
+    slotValid(slot) := False
+    slotDirty(slot) := False
+    for (w <- 0 until lineWords) {
+      slotKnownMask(slot)(w) := B(0, 4 bits)
+      slotDirtyMask(slot)(w) := B(0, 4 bits)
+    }
+  }
+
+  def allocateLine(slot: UInt, base: UInt): Unit = {
+    slotValid(slot) := True
+    slotDirty(slot) := False
+    slotBase(slot) := base
+    for (w <- 0 until lineWords) {
+      slotKnownMask(slot)(w) := B(0, 4 bits)
+      slotDirtyMask(slot)(w) := B(0, 4 bits)
+    }
+  }
+
+  lineReadRspValid := readPortCmdValid
+
+  if (c.useFbFillCache) {
+    when(lineReadRspValid && state === OpState.ReadWait) {
+      readRspData := lineReadRsp
+      readRspValid := True
+      when(pendingReadWasHit) {
+        fillHits := fillHits + 1
+      }
+      state := OpState.Idle
+    }
+
+    when(state === OpState.Idle) {
+      when(io.writeReq.valid) {
+        when(writeHit) {
+          io.writeReq.ready := True
+          pendingFlushOnly := False
+          val slot = writeHitSlot
+          lineWriteValid := True
+          lineWriteAddress := memIndex(slot, writeReqWordIndex)
+          lineWriteData := io.writeReq.data
+          lineWriteMask := io.writeReq.mask
+          slotKnownMask(slot)(writeReqWordIndex) := slotKnownMask(slot)(
+            writeReqWordIndex
+          ) | io.writeReq.mask
+          slotDirtyMask(slot)(writeReqWordIndex) := slotDirtyMask(slot)(
+            writeReqWordIndex
+          ) | io.writeReq.mask
+          slotDirty(slot) := True
+        }.otherwise {
+          io.writeReq.ready := True
+          pendingIsRead := False
+          pendingFlushOnly := False
+          pendingWriteReq := io.writeReq.payload
+          pendingSlot := victimSlot
+          when(slotValid(victimSlot) && slotDirty(victimSlot)) {
+            evictBeat := 0
+            state := OpState.EvictRead
+          }.otherwise {
+            allocateLine(victimSlot, writeReqLineBase)
+            nextVictim := nextVictim + 1
+            lineWriteValid := True
+            lineWriteAddress := memIndex(victimSlot, writeReqWordIndex)
+            lineWriteData := io.writeReq.data
+            lineWriteMask := io.writeReq.mask
+            slotKnownMask(victimSlot)(writeReqWordIndex) := io.writeReq.mask
+            slotDirtyMask(victimSlot)(writeReqWordIndex) := io.writeReq.mask
+            slotDirty(victimSlot) := True
+          }
+        }
+      } elsewhen (!readRspValid && io.readReq.valid) {
+        when(readHit) {
+          io.readReq.ready := True
+          pendingReadWasHit := True
+          pendingFlushOnly := False
+          readPortCmdValid := True
+          readPortCmdAddress := memIndex(readHitSlot, readReqWordIndex)
+          state := OpState.ReadWait
+        }.otherwise {
+          io.readReq.ready := True
+          pendingReadWasHit := False
+          pendingIsRead := True
+          pendingFlushOnly := False
+          pendingReadReq := io.readReq.payload
+          pendingSlot := readMissSlot
+          fillMisses := fillMisses + 1
+          fillStallCycles := fillStallCycles + 1
+          when(
+            slotValid(readMissSlot) && slotDirty(readMissSlot) && slotBase(
+              readMissSlot
+            ) =/= readReqLineBase
+          ) {
+            evictBeat := 0
+            state := OpState.EvictRead
+          }.otherwise {
+            when(!(slotValid(readMissSlot) && slotBase(readMissSlot) === readReqLineBase)) {
+              allocateLine(readMissSlot, readReqLineBase)
+              nextVictim := nextVictim + 1
+            }
+            fillRspCount := 0
+            state := OpState.FillCmd
+          }
+        }
+      } elsewhen (io.flush && dirtySlotAvailable) {
+        pendingIsRead := False
+        pendingFlushOnly := True
+        pendingSlot := dirtySlot
+        evictBeat := 0
+        state := OpState.EvictRead
+      }
+    }
+
+    when(state === OpState.EvictRead) {
+      readPortCmdValid := True
+      readPortCmdAddress := memIndex(pendingSlot, evictBeat)
+      evictDataValid := False
+      state := OpState.EvictSend
+    }
+
+    when(state === OpState.EvictSend) {
+      when(lineReadRspValid) {
+        evictData := lineReadRsp
+        evictDataValid := True
+      }
+      io.mem.cmd.fragment.address := (slotBase(pendingSlot) + (evictBeat << 2).resized).resized
+      io.mem.cmd.fragment.opcode := Bmb.Cmd.Opcode.WRITE
+      io.mem.cmd.fragment.length := lineLength
+      io.mem.cmd.fragment.source := 0
+      io.mem.cmd.fragment.data := evictData
+      io.mem.cmd.fragment.mask := slotDirtyMask(pendingSlot)(evictBeat)
+      io.mem.cmd.last := evictBeat === (lineWords - 1)
+      io.mem.cmd.valid := evictDataValid
+      when(io.mem.cmd.fire) {
+        evictDataValid := False
+        slotDirtyMask(pendingSlot)(evictBeat) := B(0, 4 bits)
+        when(evictBeat === (lineWords - 1)) {
+          slotDirty(pendingSlot) := False
+          state := OpState.EvictRsp
+        }.otherwise {
+          evictBeat := evictBeat + 1
+          state := OpState.EvictRead
+        }
+      }
+    }
+
+    when(state === OpState.EvictRsp) {
+      io.mem.rsp.ready := True
+      when(io.mem.rsp.fire) {
+        when(pendingFlushOnly) {
+          pendingFlushOnly := False
+          state := OpState.Idle
+        }.otherwise {
+          when(pendingIsRead) {
+            when(slotBase(pendingSlot) =/= lineBaseOf(pendingReadReq.address)) {
+              allocateLine(pendingSlot, lineBaseOf(pendingReadReq.address))
+              nextVictim := nextVictim + 1
+            }
+            fillRspCount := 0
+            state := OpState.FillCmd
+          }.otherwise {
+            allocateLine(pendingSlot, lineBaseOf(pendingWriteReq.address))
+            nextVictim := nextVictim + 1
+            lineWriteValid := True
+            lineWriteAddress := memIndex(pendingSlot, wordIndexOf(pendingWriteReq.address))
+            lineWriteData := pendingWriteReq.data
+            lineWriteMask := pendingWriteReq.mask
+            slotKnownMask(pendingSlot)(wordIndexOf(pendingWriteReq.address)) := pendingWriteReq.mask
+            slotDirtyMask(pendingSlot)(wordIndexOf(pendingWriteReq.address)) := pendingWriteReq.mask
+            slotDirty(pendingSlot) := True
+            state := OpState.Idle
+          }
+        }
+      }
+    }
+
+    when(state === OpState.FillCmd) {
+      io.mem.cmd.valid := True
+      io.mem.cmd.fragment.address := slotBase(pendingSlot)
+      io.mem.cmd.fragment.opcode := Bmb.Cmd.Opcode.READ
+      io.mem.cmd.fragment.length := lineLength
+      io.mem.cmd.fragment.source := 0
+      io.mem.cmd.last := True
+      when(io.mem.cmd.fire) {
+        fillBurstCount := fillBurstCount + 1
+        fillBurstBeats := fillBurstBeats + U(lineWords, 32 bits)
+        state := OpState.FillWait
+      }
+    }
+
+    when(state === OpState.FillWait) {
+      io.mem.rsp.ready := True
+      when(io.mem.rsp.fire) {
+        val beat = fillRspCount.resize(lineShift bits)
+        val fillMask = ~slotDirtyMask(pendingSlot)(beat)
+        lineWriteValid := fillMask.orR
+        lineWriteAddress := memIndex(pendingSlot, beat)
+        lineWriteData := io.mem.rsp.fragment.data
+        lineWriteMask := fillMask
+        slotKnownMask(pendingSlot)(beat) := B"1111"
+        fillRspCount := fillRspCount + 1
+        when(io.mem.rsp.last) {
+          state := OpState.FillRead
+        }
+      }
+    }
+
+    when(state === OpState.FillRead) {
+      readPortCmdValid := True
+      readPortCmdAddress := memIndex(pendingSlot, wordIndexOf(pendingReadReq.address))
+      state := OpState.ReadWait
+    }
+  } else {
+    when(state === OpState.Idle) {
+      when(io.writeReq.valid) {
+        io.writeReq.ready := True
+        pendingWriteReq := io.writeReq.payload
+        state := OpState.DirectWriteCmd
+      } elsewhen (!readRspValid && io.readReq.valid) {
+        io.readReq.ready := True
+        pendingReadReq := io.readReq.payload
+        state := OpState.DirectReadCmd
+      }
+    }
+
+    when(state === OpState.DirectReadCmd) {
+      io.mem.cmd.valid := True
+      io.mem.cmd.fragment.address := pendingReadReq.address
+      io.mem.cmd.fragment.opcode := Bmb.Cmd.Opcode.READ
+      io.mem.cmd.fragment.length := 3
+      io.mem.cmd.fragment.source := 0
+      io.mem.cmd.last := True
+      when(io.mem.cmd.fire) {
+        state := OpState.DirectReadRsp
+      }
+    }
+
+    when(state === OpState.DirectReadRsp) {
+      io.mem.rsp.ready := !readRspValid
+      when(io.mem.rsp.fire) {
+        readRspValid := True
+        readRspData := io.mem.rsp.fragment.data
+        state := OpState.Idle
+      }
+    }
+
+    when(state === OpState.DirectWriteCmd) {
+      io.mem.cmd.valid := True
+      io.mem.cmd.fragment.address := pendingWriteReq.address
+      io.mem.cmd.fragment.opcode := Bmb.Cmd.Opcode.WRITE
+      io.mem.cmd.fragment.length := 3
+      io.mem.cmd.fragment.source := 0
+      io.mem.cmd.fragment.data := pendingWriteReq.data
+      io.mem.cmd.fragment.mask := pendingWriteReq.mask
+      io.mem.cmd.last := True
+      when(io.mem.cmd.fire) {
+        state := OpState.DirectWriteRsp
+      }
+    }
+
+    when(state === OpState.DirectWriteRsp) {
+      io.mem.rsp.ready := True
+      when(io.mem.rsp.fire) {
+        state := OpState.Idle
+      }
+    }
+  }
+
+  io.busy := state =/= OpState.Idle || readRspValid || (io.flush && dirtySlotAvailable)
+}
+
+object FramebufferPlaneCache {
+  case class ReadReq(c: Config) extends Bundle {
+    val address = UInt(c.addressWidth)
+  }
+
+  case class ReadRsp() extends Bundle {
+    val data = Bits(32 bits)
+  }
+
+  case class WriteReq(c: Config) extends Bundle {
+    val address = UInt(c.addressWidth)
+    val data = Bits(32 bits)
+    val mask = Bits(4 bits)
+  }
+
+  def bmbParams(c: Config) = BmbParameter(
+    addressWidth = c.addressWidth.value,
+    dataWidth = 32,
+    sourceWidth = 1,
+    contextWidth = 0,
+    lengthWidth = c.memBurstLengthWidth,
+    canRead = true,
+    canWrite = true,
+    alignment = BmbParameter.BurstAlignement.BYTE
+  )
+}

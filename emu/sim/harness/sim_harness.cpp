@@ -50,6 +50,7 @@ static uint64_t cycle_limit = 0;  /* 0 = no limit; set via SIM_CYCLE_LIMIT */
 #define VSYNC_PERIOD     5000
 #define VSYNC_HIGH_TICKS 200
 static uint32_t vsync_counter = 0;
+static int32_t debug_fb_addr = -1;
 
 /* fbWrite logging: log addresses written to framebuffer */
 static FILE *fbwrite_log = nullptr;
@@ -69,8 +70,38 @@ static inline int16_t sext12(uint16_t v) {
     return (int16_t)(v << 4) >> 4;
 }
 
+static inline int64_t sext48(uint64_t v) {
+    return (int64_t)(v << 16) >> 16;
+}
+
+static const char *predither_source_name(uint8_t chosen) {
+    switch (chosen) {
+        case 0: return "fastfill";
+        case 1: return "triangle";
+        case 2: return "lfb";
+        default: return "unknown";
+    }
+}
+
 /* Signal flag — set asynchronously, polled in tick_one() */
 static volatile sig_atomic_t quit_requested = 0;
+
+static void dump_fb_word(uint32_t byte_addr, const char *tag) {
+    auto r = top->rootp;
+    uint32_t idx = byte_addr / 4;
+    uint32_t word = (uint32_t)r->CoreSim__DOT__fbRam__DOT__ram_symbol0[idx]
+                  | ((uint32_t)r->CoreSim__DOT__fbRam__DOT__ram_symbol1[idx] << 8)
+                  | ((uint32_t)r->CoreSim__DOT__fbRam__DOT__ram_symbol2[idx] << 16)
+                  | ((uint32_t)r->CoreSim__DOT__fbRam__DOT__ram_symbol3[idx] << 24);
+    fprintf(stderr, "[sim_harness] %s fbRam[0x%06x] = 0x%08x\n", tag, byte_addr, word);
+}
+
+static void dump_fb_debug(const char *tag) {
+    if (debug_fb_addr < 0)
+        return;
+    fprintf(stderr, "[sim_harness] ==== FB debug %s ====\n", tag);
+    dump_fb_word((uint32_t)debug_fb_addr & ~0x3u, tag);
+}
 
 static void signal_handler(int sig) {
     quit_requested = sig;  /* async-signal-safe */
@@ -92,11 +123,11 @@ static void tick_one(void) {
     /* fbWrite logging: capture on rising edge */
     if (fbwrite_log) {
         auto r = top->rootp;
-        uint8_t valid = r->CoreSim__DOT__core_1__DOT__writeColor_o_fbWrite_cmd_valid;
+        uint8_t valid = r->CoreSim__DOT__core_1__DOT__writeColor_o_fbWrite_valid;
         if (valid) {
-            uint32_t addr = r->CoreSim__DOT__core_1__DOT__writeColor_o_fbWrite_cmd_payload_fragment_address;
-            uint32_t data = r->CoreSim__DOT__core_1__DOT__writeColor_o_fbWrite_cmd_payload_fragment_data;
-            uint8_t mask = r->CoreSim__DOT__core_1__DOT__writeColor_o_fbWrite_cmd_payload_fragment_mask;
+            uint32_t addr = r->CoreSim__DOT__core_1__DOT__writeColor_o_fbWrite_payload_address;
+            uint32_t data = r->CoreSim__DOT__core_1__DOT__writeColor_o_fbWrite_payload_data;
+            uint8_t mask = r->CoreSim__DOT__core_1__DOT__writeColor_o_fbWrite_payload_mask;
             /* Split-plane writes are 32-bit aligned, with lane selected by byte mask. */
             uint32_t planeAddr = addr + ((mask & 0xC) ? 2 : 0);
             uint32_t pixel = planeAddr >> 1;
@@ -140,15 +171,22 @@ static void tick_one(void) {
             int16_t px = sext12(r->CoreSim__DOT__core_1__DOT__rasterFork_0_payload_coords_0);
             int16_t py = sext12(r->CoreSim__DOT__core_1__DOT__rasterFork_0_payload_coords_1);
             if (px == watch_x && py == watch_y) {
-                int32_t s = (int32_t)r->CoreSim__DOT__core_1__DOT__tmu_1_io_input_payload_s;
-                int32_t t = (int32_t)r->CoreSim__DOT__core_1__DOT__tmu_1_io_input_payload_t;
-                int32_t w = (int32_t)r->CoreSim__DOT__core_1__DOT__tmu_1_io_input_payload_w;
+                int64_t s = sext48(r->CoreSim__DOT__core_1__DOT__tmu_1_io_input_payload_s);
+                int64_t t = sext48(r->CoreSim__DOT__core_1__DOT__tmu_1_io_input_payload_t);
+                int64_t w = sext48(r->CoreSim__DOT__core_1__DOT__tmu_1_io_input_payload_w);
                 int32_t texS = (int32_t)r->CoreSim__DOT__core_1__DOT__tmu_1__DOT__texS;
                 int32_t texT = (int32_t)r->CoreSim__DOT__core_1__DOT__tmu_1__DOT__texT;
+                int32_t sPoint = (int16_t)r->CoreSim__DOT__core_1__DOT__tmu_1__DOT__sPoint;
+                int32_t tPoint = (int16_t)r->CoreSim__DOT__core_1__DOT__tmu_1__DOT__tPoint;
                 uint8_t lod = r->CoreSim__DOT__core_1__DOT__tmu_1__DOT__lodLevel;
                 uint32_t pointAddr = r->CoreSim__DOT__core_1__DOT__tmu_1__DOT__pointAddr;
-                fprintf(stderr, "[PIXEL %d,%d] TMU_IN: s=0x%08x t=0x%08x w=0x%08x texS=%d texT=%d lod=%d pointAddr=0x%06x\n",
-                        px, py, (uint32_t)s, (uint32_t)t, (uint32_t)w, texS, texT, lod, pointAddr);
+                fprintf(stderr, "[PIXEL %d,%d] TMU_IN: s=0x%012llx t=0x%012llx w=0x%012llx sDec=%lld tDec=%lld wDec=%lld texS=%d texT=%d sPoint=%d tPoint=%d lod=%d pointAddr=0x%06x\n",
+                        px, py,
+                        (unsigned long long)(r->CoreSim__DOT__core_1__DOT__tmu_1_io_input_payload_s & 0xffffffffffffULL),
+                        (unsigned long long)(r->CoreSim__DOT__core_1__DOT__tmu_1_io_input_payload_t & 0xffffffffffffULL),
+                        (unsigned long long)(r->CoreSim__DOT__core_1__DOT__tmu_1_io_input_payload_w & 0xffffffffffffULL),
+                        (long long)s, (long long)t, (long long)w,
+                        texS, texT, sPoint, tPoint, lod, pointAddr);
             }
         }
 
@@ -199,12 +237,96 @@ static void tick_one(void) {
             }
         }
 
+        /* --- FramebufferAccess input --- */
+        if (r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__io_input_valid &&
+            r->CoreSim__DOT__core_1__DOT__fbAccess_io_input_ready) {
+            int16_t px = sext12(r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__io_input_payload_coords_0);
+            int16_t py = sext12(r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__io_input_payload_coords_1);
+            if (px == watch_x && py == watch_y) {
+                fprintf(stderr,
+                        "[PIXEL %d,%d] FBA_IN: rgb=(%d,%d,%d) alpha=%d depth=0x%08x wDepth=0x%04x depthFn=%d zbuf=%d wbuf=%d depthSrc=%d depthBias=%d blend=%d\n",
+                        px, py,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__io_input_payload_color_r,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__io_input_payload_color_g,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__io_input_payload_color_b,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__io_input_payload_alpha,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess_io_input_payload_depth,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__io_input_payload_wDepth,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__io_input_payload_fbzMode_depthFunction,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__io_input_payload_fbzMode_enableDepthBuffer,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__io_input_payload_fbzMode_wBufferSelect,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__io_input_payload_fbzMode_depthSourceSelect,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__io_input_payload_fbzMode_enableDepthBias,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__io_input_payload_alphaMode_alphaBlendEnable);
+            }
+        }
+
+        /* --- FramebufferAccess request fire --- */
+        if (r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__io_fbReadColorReq_valid &&
+            r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__io_fbReadColorReq_ready &&
+            r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__io_fbReadAuxReq_valid &&
+            r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__io_fbReadAuxReq_ready) {
+            int16_t px = sext12(r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__request_passthrough_coords_0);
+            int16_t py = sext12(r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__request_passthrough_coords_1);
+            if (px == watch_x && py == watch_y) {
+                fprintf(stderr,
+                        "[PIXEL %d,%d] FBA_REQ: colorAddr=0x%06x auxAddr=0x%06x newDepth=0x%04x q=%u readJoin=%d fetchedJoin=%d\n",
+                        px, py,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__request_colorAddress,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__request_auxAddress,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__request_passthrough_newDepth,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__queuedReqsRaw_fifo_io_occupancy,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__readJoined_valid,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__fetchedJoined_valid);
+            }
+        }
+
+        /* --- FramebufferAccess fetched/joined pixel --- */
+        if (r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__fetched_valid &&
+            r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__fetched_ready) {
+            int16_t px = sext12(r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__fetched_payload_passthrough_coords_0);
+            int16_t py = sext12(r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__fetched_payload_passthrough_coords_1);
+            if (px == watch_x && py == watch_y) {
+                fprintf(stderr,
+                        "[PIXEL %d,%d] FBA_FETCH: colorData=0x%08x auxData=0x%08x newDepth=0x%04x oldDepth=0x%04x depthPassed=%d depthKill=%d laneHi(c=%d a=%d) wbuf=%d depthSrc=%d depthBias=%d\n",
+                        px, py,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__fetched_payload_colorData,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__fetched_payload_auxData,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__fetched_payload_passthrough_newDepth,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__oldDepth,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__depthPassed,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__depthKill,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__fetched_payload_passthrough_colorLaneHi,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__fetched_payload_passthrough_auxLaneHi,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__fetched_payload_passthrough_fbzMode_wBufferSelect,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__fetched_payload_passthrough_fbzMode_depthSourceSelect,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__fetched_payload_passthrough_fbzMode_enableDepthBias);
+            }
+        }
+
+        /* --- FramebufferAccess after depth test --- */
+        if (r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__afterDepthTest_valid &&
+            r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__afterDepthTest_ready) {
+            int16_t px = sext12(r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__afterDepthTest_payload_passthrough_coords_0);
+            int16_t py = sext12(r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__afterDepthTest_payload_passthrough_coords_1);
+            if (px == watch_x && py == watch_y) {
+                fprintf(stderr,
+                        "[PIXEL %d,%d] FBA_PASS: rgb=(%d,%d,%d) alpha=%d depthPassed=%d depthKill=%d\n",
+                        px, py,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__afterDepthTest_payload_passthrough_color_r,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__afterDepthTest_payload_passthrough_color_g,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__afterDepthTest_payload_passthrough_color_b,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__afterDepthTest_payload_passthrough_alpha,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__depthPassed,
+                        r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__depthKill);
+            }
+        }
+
         /* --- FramebufferAccess output (after depth test + alpha blend) --- */
         if (r->CoreSim__DOT__core_1__DOT__fbAccess_io_output_valid) {
             int16_t px = sext12(r->CoreSim__DOT__core_1__DOT__fbAccess_io_output_payload_coords_0);
             int16_t py = sext12(r->CoreSim__DOT__core_1__DOT__fbAccess_io_output_payload_coords_1);
             if (px == watch_x && py == watch_y) {
-                uint32_t existingPixel = r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__afterDepthTest_payload_1_1;
                 fprintf(stderr, "[PIXEL %d,%d] FBA: rgb=(%d,%d,%d) alpha=%d blended=(%d,%d,%d) existing=0x%08x blend=%d srcF=%d dstF=%d depthF=%d\n",
                         px, py,
                         r->CoreSim__DOT__core_1__DOT__fbAccess_io_output_payload_color_r,
@@ -214,11 +336,38 @@ static void tick_one(void) {
                         r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__blended_r,
                         r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__blended_g,
                         r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__blended_b,
-                        existingPixel,
+                        0u,
                         r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__io_input_payload_alphaMode_alphaBlendEnable,
                         r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__io_input_payload_alphaMode_rgbSrcFact,
                         r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__io_input_payload_alphaMode_rgbDstFact,
                         r->CoreSim__DOT__core_1__DOT__fbAccess__DOT__io_input_payload_fbzMode_depthFunction);
+            }
+        }
+
+        /* --- Pre-dither arbiter output --- */
+        if (r->CoreSim__DOT__core_1__DOT__preDitherMerged_valid) {
+            int16_t px = sext12(r->CoreSim__DOT__core_1__DOT__preDitherMerged_payload_coords_0);
+            int16_t py = sext12(r->CoreSim__DOT__core_1__DOT__preDitherMerged_payload_coords_1);
+            if (px == watch_x && py == watch_y) {
+                uint8_t chosen = r->CoreSim__DOT__core_1__DOT__streamArbiter_7__DOT__io_chosen;
+                fprintf(stderr,
+                        "[PIXEL %d,%d] PRE: src=%s chosen=%u valids=%d%d%d readies=%d%d%d rgb888=(%d,%d,%d) rgbWrite=%d auxWrite=%d fbBase=0x%06x auxBase=0x%06x stride=%u\n",
+                        px, py,
+                        predither_source_name(chosen), chosen,
+                        r->CoreSim__DOT__core_1__DOT__streamArbiter_7__DOT__io_inputs_0_valid,
+                        r->CoreSim__DOT__core_1__DOT__streamArbiter_7__DOT__io_inputs_1_valid,
+                        r->CoreSim__DOT__core_1__DOT__streamArbiter_7__DOT__io_inputs_2_valid,
+                        r->CoreSim__DOT__core_1__DOT__streamArbiter_7__DOT__io_inputs_0_ready,
+                        r->CoreSim__DOT__core_1__DOT__streamArbiter_7__DOT__io_inputs_1_ready,
+                        r->CoreSim__DOT__core_1__DOT__streamArbiter_7__DOT__io_inputs_2_ready,
+                        r->CoreSim__DOT__core_1__DOT__preDitherMerged_payload_r,
+                        r->CoreSim__DOT__core_1__DOT__preDitherMerged_payload_g,
+                        r->CoreSim__DOT__core_1__DOT__preDitherMerged_payload_b,
+                        r->CoreSim__DOT__core_1__DOT__preDitherMerged_payload_rgbWrite,
+                        r->CoreSim__DOT__core_1__DOT__preDitherMerged_payload_auxWrite,
+                        r->CoreSim__DOT__core_1__DOT__preDitherMerged_payload_fbBaseAddr,
+                        r->CoreSim__DOT__core_1__DOT__preDitherMerged_payload_auxBaseAddr,
+                        r->CoreSim__DOT__core_1__DOT__preDitherMerged_payload_fbPixelStride);
             }
         }
 
@@ -227,11 +376,13 @@ static void tick_one(void) {
             int16_t px = sext12(r->CoreSim__DOT__core_1__DOT__ditherJoined_payload_2_coords_0);
             int16_t py = sext12(r->CoreSim__DOT__core_1__DOT__ditherJoined_payload_2_coords_1);
             if (px == watch_x && py == watch_y) {
-                fprintf(stderr, "[PIXEL %d,%d] DIT: rgb888=(%d,%d,%d)\n",
+                fprintf(stderr, "[PIXEL %d,%d] DIT: rgb888=(%d,%d,%d) fbBase=0x%06x stride=%u\n",
                         px, py,
                         r->CoreSim__DOT__core_1__DOT__ditherJoined_payload_2_r,
                         r->CoreSim__DOT__core_1__DOT__ditherJoined_payload_2_g,
-                        r->CoreSim__DOT__core_1__DOT__ditherJoined_payload_2_b);
+                        r->CoreSim__DOT__core_1__DOT__ditherJoined_payload_2_b,
+                        r->CoreSim__DOT__core_1__DOT__ditherJoined_payload_2_fbBaseAddr,
+                        r->CoreSim__DOT__core_1__DOT__ditherJoined_payload_2_fbPixelStride);
             }
         }
 
@@ -241,12 +392,16 @@ static void tick_one(void) {
             int16_t py = sext12(r->CoreSim__DOT__core_1__DOT__writeColor__DOT__i_fromPipeline_payload_coords_1);
             if (px == watch_x && py == watch_y) {
                 uint16_t rgb565 = r->CoreSim__DOT__core_1__DOT__writeColor__DOT__i_fromPipeline_payload_data;
-                fprintf(stderr, "[PIXEL %d,%d] WR:  rgb565=0x%04x (r5=%d g6=%d b5=%d)\n",
+                fprintf(stderr, "[PIXEL %d,%d] WR:  rgb565=0x%04x (r5=%d g6=%d b5=%d) fbBase=0x%06x front=0x%06x back=0x%06x swapCount=%u\n",
                         px, py,
                         rgb565,
                         (rgb565 >> 11) & 0x1f,
                         (rgb565 >> 5) & 0x3f,
-                        rgb565 & 0x1f);
+                        rgb565 & 0x1f,
+                        r->CoreSim__DOT__core_1__DOT__writeColor__DOT__i_fromPipeline_payload_fbBaseAddr,
+                        r->CoreSim__DOT__core_1__DOT__frontBufferBase,
+                        r->CoreSim__DOT__core_1__DOT__backBufferBase,
+                        r->CoreSim__DOT__core_1__DOT__swapBuffer_1__DOT__swapCountReg);
             }
         }
     }
@@ -469,6 +624,15 @@ int sim_init(void) {
     top->clk = 0;
     top->reset = 1;
     top->io_vRetrace = 0;
+    top->io_flushFbCaches = 0;
+
+    const char *debug_fb_addr_env = getenv("SIM_DEBUG_FB_ADDR");
+    if (debug_fb_addr_env && debug_fb_addr_env[0]) {
+        debug_fb_addr = (int32_t)strtoul(debug_fb_addr_env, nullptr, 0);
+        fprintf(stderr, "[sim_harness] SIM_DEBUG_FB_ADDR=0x%06x\n", (uint32_t)debug_fb_addr);
+    } else {
+        debug_fb_addr = -1;
+    }
     top->io_cpuBus_cmd_valid = 0;
     top->io_cpuBus_rsp_ready = 1;
     /* Hold reset for 10 cycles */
@@ -557,6 +721,20 @@ void sim_shutdown(void) {
     }
 #endif
     if (top) {
+        auto r = top->rootp;
+        fprintf(stderr,
+                "[sim_harness] Fill stats: tmu hit=%u miss=%u burst=%u beats=%u stall=%u fastBi=%u | fb hit=%u miss=%u burst=%u beats=%u stall=%u\n",
+                r->CoreSim__DOT__core_1__DOT__tmu_1__DOT__texFillHits,
+                r->CoreSim__DOT__core_1__DOT__tmu_1__DOT__texFillMisses,
+                r->CoreSim__DOT__core_1__DOT__tmu_1__DOT__texFillBurstCount,
+                r->CoreSim__DOT__core_1__DOT__tmu_1__DOT__texFillBurstBeats,
+                r->CoreSim__DOT__core_1__DOT__tmu_1__DOT__texFillStallCycles,
+                r->CoreSim__DOT__core_1__DOT__tmu_1__DOT__texFastBilinearHits,
+                r->CoreSim__DOT__core_1__DOT__fbFillHits,
+                r->CoreSim__DOT__core_1__DOT__fbFillMisses,
+                r->CoreSim__DOT__core_1__DOT__fbFillBurstCount,
+                r->CoreSim__DOT__core_1__DOT__fbFillBurstBeats,
+                r->CoreSim__DOT__core_1__DOT__fbFillStallCycles);
         top->final();
         delete top;
         top = nullptr;
@@ -595,7 +773,7 @@ uint32_t sim_idle_wait(void) {
     #define SST_FIFOFREE_MASK 0x3Fu
     #define SST_SWAPS_PENDING_MASK (7u << 28)
 
-    int timeout = 5000000;  /* 5M reads — generous for slow pipelines */
+    int timeout = 5000000;
     uint64_t t0 = sim_time;
     int idle_count = 0;
     while (timeout > 0) {
@@ -616,11 +794,26 @@ uint32_t sim_idle_wait(void) {
     }
 
     uint32_t status = bus_read(0x000000);
+    auto r = top->rootp;
     fprintf(stderr, "[sim_harness] WARNING: idle_wait timeout after %lu ticks! status=0x%08x fifo=%u busy=%u swaps=%u\n",
             (unsigned long)((sim_time - t0) / 2), status,
             status & SST_FIFOFREE_MASK,
             (status & SST_BUSY) ? 1u : 0u,
             (status & SST_SWAPS_PENDING_MASK) >> 28);
+    fprintf(stderr,
+            "[sim_harness] Busy detail: pipe=%u regPipe=%u pciPipe=%u rastRun=%u tmuBusy=%u fbBusy=%u fbColorBusy=%u fbAuxBusy=%u lfbBusy=%u swapWait=%u fbOut=%u writeIn=%u\n",
+            r->CoreSim__DOT__core_1__DOT__pipelineBusySignal,
+            r->CoreSim__DOT__core_1__DOT__regBank__DOT__io_pipelineBusy,
+            r->CoreSim__DOT__core_1__DOT__pciFifo_1__DOT__io_pipelineBusy,
+            r->CoreSim__DOT__core_1__DOT__rasterizer_1_running,
+            r->CoreSim__DOT__core_1__DOT__tmu_1_io_busy,
+            r->CoreSim__DOT__core_1__DOT__fbAccess_io_busy,
+            r->CoreSim__DOT__core_1__DOT__fbColorBusy,
+            r->CoreSim__DOT__core_1__DOT__fbAuxBusy,
+            r->CoreSim__DOT__core_1__DOT__lfb_1_io_busy,
+            r->CoreSim__DOT__core_1__DOT__swapBuffer_1_io_waiting,
+            r->CoreSim__DOT__core_1__DOT__fbAccess_io_output_valid,
+            r->CoreSim__DOT__core_1__DOT__writeColor__DOT__i_fromPipeline_valid);
     return status;
 }
 
@@ -628,6 +821,16 @@ void sim_tick(int n) {
     for (int i = 0; i < n; i++) {
         tick_one();
     }
+}
+
+void sim_flush_fb_cache(void) {
+    dump_fb_debug("before_flush");
+    top->io_flushFbCaches = 1;
+    sim_idle_wait();
+    dump_fb_debug("after_idle_wait");
+    top->io_flushFbCaches = 0;
+    tick_one();
+    dump_fb_debug("after_flush_release");
 }
 
 /* ------------------------------------------------------------------ */

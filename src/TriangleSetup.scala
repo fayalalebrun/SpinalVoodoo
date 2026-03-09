@@ -134,6 +134,8 @@ case class TriangleSetup(c: Config) extends Component {
     out.texHi.dTdX := input.texHi.dTdX
     out.texHi.dSdY := input.texHi.dSdY
     out.texHi.dTdY := input.texHi.dTdY
+    out.hiAlpha.dAdX := input.hiAlpha.dAdX
+    out.hiAlpha.dAdY := input.hiAlpha.dAdY
 
     for (
       (outStart, inStart, dxRaw, dyRaw) <- Seq(
@@ -163,6 +165,21 @@ case class TriangleSetup(c: Config) extends Component {
       outStart.raw := shiftedRaw.asBits
     }
 
+    {
+      val dxRaw = input.hiAlpha.dAdX.raw.asSInt
+      val dyRaw = input.hiAlpha.dAdY.raw.asSInt
+      val corrRaw = (dxSubS * dxRaw + dySubS * dyRaw) >> 4
+      val startRaw = input.hiAlpha.start.raw.asSInt
+      val N = startRaw.getWidth
+      val correctedRaw = (startRaw + corrRaw.resize(N))(N - 1 downto 0)
+      val adjustedStart = cloneOf(input.hiAlpha.start)
+      adjustedStart.raw := Mux(paramAdjust, correctedRaw.asBits, input.hiAlpha.start.raw)
+
+      val shiftedRaw = (adjustedStart.raw.asSInt +
+        (dxPix * dxRaw + dyPix * dyRaw).resize(N))(N - 1 downto 0)
+      out.hiAlpha.start.raw := shiftedRaw.asBits
+    }
+
     out.config := input.config
     if (c.trace.enabled) {
       out.trace := input.trace
@@ -173,6 +190,12 @@ case class TriangleSetup(c: Config) extends Component {
 }
 
 object TriangleSetup {
+
+  case class HiAlpha(c: Config) extends Bundle {
+    val start = AFix(c.texCoordsHiFormat)
+    val dAdX = AFix(c.texCoordsHiFormat)
+    val dAdY = AFix(c.texCoordsHiFormat)
+  }
 
   case class HiTexCoords(c: Config) extends Bundle {
     val sStart = AFix(c.texCoordsHiFormat)
@@ -219,6 +242,7 @@ object TriangleSetup {
   case class Input(c: Config) extends Bundle {
     val triWithSign = TriangleWithSign(c.vertexFormat)
     val grads = Rasterizer.GradientBundle(Rasterizer.InputGradient(_), c)
+    val hiAlpha = HiAlpha(c)
     val texHi = HiTexCoords(c)
     val config = PerTriangleConfig(c)
     val trace = if (c.trace.enabled) Trace.PrimitiveKey() else null
@@ -231,6 +255,7 @@ object TriangleSetup {
     val yrange = vertex2d(c.vertexFormat)
     val edgeStart = Vec.fill(3)(AFix(c.coefficientFormat))
     val grads = Rasterizer.GradientBundle(Rasterizer.InputGradient(_), c)
+    val hiAlpha = HiAlpha(c)
     val texHi = HiTexCoords(c)
     val config = PerTriangleConfig(c)
     val trace = if (c.trace.enabled) Trace.PrimitiveKey() else null

@@ -1,6 +1,7 @@
 package voodoo
 
 import spinal.core._
+import spinal.core.sim._
 import spinal.lib._
 import spinal.lib.bus.bmb._
 
@@ -35,14 +36,7 @@ case class Tmu(c: voodoo.Config) extends Component {
     val busy = out Bool ()
   }
 
-  // Track in-flight pixels (max 16 in queue + bilinear expansion)
   val inFlightCount = Reg(UInt(5 bits)) init 0
-  when(io.input.fire && !io.output.fire) {
-    inFlightCount := inFlightCount + 1
-  }.elsewhen(!io.input.fire && io.output.fire) {
-    inFlightCount := inFlightCount - 1
-  }
-  io.busy := inFlightCount =/= 0
 
   // Palette RAM: 256 entries x 24-bit RGB
   val paletteRam = Mem(Bits(24 bits), 256)
@@ -424,9 +418,20 @@ case class Tmu(c: voodoo.Config) extends Component {
     val passthrough = TmuPassthrough()
   }
 
+  case class SampleRequest() extends Bundle {
+    val pointAddr = UInt(c.addressWidth.value bits)
+    val biAddr0 = UInt(c.addressWidth.value bits)
+    val biAddr1 = UInt(c.addressWidth.value bits)
+    val biAddr2 = UInt(c.addressWidth.value bits)
+    val biAddr3 = UInt(c.addressWidth.value bits)
+    val bilinear = Bool()
+    val passthrough = TmuPassthrough()
+  }
+
   val expandedStream = Stream(TmuExpanded())
   val expandCount = Reg(UInt(2 bits)) init 0
   val isExpanding = expandCount =/= 0
+  val useFastBilinear = Bool()
 
   // Capture registers for bilinear expansion (addresses 1-3)
   val regAddr1 = Reg(UInt(c.addressWidth.value bits))
@@ -434,10 +439,8 @@ case class Tmu(c: voodoo.Config) extends Component {
   val regAddr3 = Reg(UInt(c.addressWidth.value bits))
   val regPassthrough = Reg(TmuPassthrough())
 
-  // Input is ready only when not in the middle of expanding
-  io.input.ready := !isExpanding && expandedStream.ready
-
-  expandedStream.valid := io.input.valid || isExpanding
+  val fastHoldValid = Reg(Bool()) init False
+  val fastHoldPayload = Reg(Tmu.Output(c)) init (Tmu.Output(c).getZero)
 
   // Build passthrough from input
   val inputPassthrough = TmuPassthrough()
@@ -450,6 +453,22 @@ case class Tmu(c: voodoo.Config) extends Component {
   if (c.trace.enabled) {
     inputPassthrough.trace := io.input.payload.trace
   }
+
+  val sampleRequest = io.input
+    .translateWith {
+      val req = SampleRequest()
+      req.pointAddr := pointAddr
+      req.biAddr0 := biAddr0
+      req.biAddr1 := biAddr1
+      req.biAddr2 := biAddr2
+      req.biAddr3 := biAddr3
+      req.bilinear := bilinearEnable
+      req.passthrough := inputPassthrough
+      req
+    }
+    .queue(16)
+
+  expandedStream.valid := (sampleRequest.valid && !useFastBilinear && !isExpanding) || isExpanding
 
   // Select address and passthrough based on expansion state.
   // Fields must be assigned individually to avoid SpinalHDL ASSIGNMENT OVERLAP errors
@@ -470,18 +489,20 @@ case class Tmu(c: voodoo.Config) extends Component {
       default { expandedStream.payload.address := regAddr3 }
     }
   }.otherwise {
-    expandedStream.payload.passthrough := inputPassthrough
-    expandedStream.payload.address := bilinearEnable ? biAddr0 | pointAddr
+    expandedStream.payload.passthrough := sampleRequest.payload.passthrough
+    expandedStream.payload.address := sampleRequest.payload.bilinear ? sampleRequest.payload.biAddr0 | sampleRequest.payload.pointAddr
   }
 
+  sampleRequest.ready := (!isExpanding && expandedStream.fire) || (useFastBilinear && !fastHoldValid)
+
   when(expandedStream.fire) {
-    when(!isExpanding && bilinearEnable) {
+    when(!isExpanding && sampleRequest.payload.bilinear) {
       // First bilinear item fired; start expansion for items 1-3
       expandCount := 1
-      regAddr1 := biAddr1
-      regAddr2 := biAddr2
-      regAddr3 := biAddr3
-      regPassthrough := inputPassthrough
+      regAddr1 := sampleRequest.payload.biAddr1
+      regAddr2 := sampleRequest.payload.biAddr2
+      regAddr3 := sampleRequest.payload.biAddr3
+      regPassthrough := sampleRequest.payload.passthrough
     }.elsewhen(isExpanding && expandCount < 3) {
       expandCount := expandCount + 1
     }.elsewhen(isExpanding) {
@@ -490,50 +511,319 @@ case class Tmu(c: voodoo.Config) extends Component {
   }
 
   // ========================================================================
-  // Stage 3: Fork into memory request and passthrough queue
+  // Stage 3: Texture fetch adapter
   // ========================================================================
 
-  val (toMemory, toQueue) = StreamFork2(expandedStream)
-
-  // Memory request path
-  val cmdStream = toMemory.translateWith {
-    val cmd = Fragment(BmbCmd(Tmu.bmbParams(c)))
-    cmd.fragment.address := toMemory.payload.address
-    cmd.fragment.opcode := Bmb.Cmd.Opcode.READ
-    cmd.fragment.length := 1 // 2 bytes - 1
-    cmd.fragment.source := 0
-    cmd.last := True
-    cmd
-  }
-  io.texRead.cmd << cmdStream
-
-  // Passthrough queue — carries passthrough data plus address bit 1 for byte-lane selection.
-  // The address is the single source of truth; we extract the relevant bit here at the fork
-  // point rather than duplicating it into the passthrough bundle.
   case class QueuedData() extends Bundle {
     val passthrough = TmuPassthrough()
     val addrHalf = Bool() // address(1): selects upper/lower 16-bit half of 32-bit BMB response
     val addrByte = Bool() // address(0): selects byte within 16-bit half (for 8-bit formats)
   }
-  val queuedData = toQueue
-    .map { e =>
-      val d = QueuedData()
-      d.passthrough := e.passthrough
-      d.addrHalf := e.address(1)
-      d.addrByte := e.address(0)
-      d
-    }
-    .queue(16)
 
-  // ========================================================================
-  // Stage 4: Join memory response with queued passthrough data
-  // ========================================================================
-
-  val rspStream = io.texRead.rsp.takeWhen(io.texRead.rsp.last).translateWith {
-    io.texRead.rsp.fragment.data
+  case class CachedReq(bankEntryWidth: Int) extends Bundle {
+    val lineBase = UInt(c.addressWidth.value bits)
+    val bankSel = UInt(2 bits)
+    val bankEntry = UInt(bankEntryWidth bits)
+    val queued = QueuedData()
   }
 
-  val joined = StreamJoin(rspStream, queuedData)
+  val texFillHits = Reg(UInt(32 bits)) init (0)
+  val texFillMisses = Reg(UInt(32 bits)) init (0)
+  val texFillBurstCount = Reg(UInt(32 bits)) init (0)
+  val texFillBurstBeats = Reg(UInt(32 bits)) init (0)
+  val texFillStallCycles = Reg(UInt(32 bits)) init (0)
+  val texFastBilinearHits = Reg(UInt(32 bits)) init (0)
+  if (c.trace.enabled) {
+    texFillHits.simPublic()
+    texFillMisses.simPublic()
+    texFillBurstCount.simPublic()
+    texFillBurstBeats.simPublic()
+    texFillStallCycles.simPublic()
+    texFastBilinearHits.simPublic()
+  }
+
+  case class FetchResult() extends Bundle {
+    val rspData32 = Bits(32 bits)
+    val queued = QueuedData()
+  }
+
+  val fetchBusy = Bool()
+  val joined = Stream(FetchResult())
+
+  if (c.useTexFillCache) {
+    require(c.texFillLineWords > 0 && ((c.texFillLineWords & (c.texFillLineWords - 1)) == 0))
+    require(c.texFillLineWords >= 4 && (c.texFillLineWords % 4) == 0)
+    require((c.texFillLineWords * 4 - 1) < (1 << c.memBurstLengthWidth))
+
+    val lineWords = c.texFillLineWords
+    val lineShift = log2Up(lineWords)
+    val bankCount = 4
+    val bankEntries = lineWords / bankCount
+    val bankEntryWidth = log2Up(bankEntries)
+    val slotCount = c.texFillCacheSlots
+    val slotIndexWidth = scala.math.max(1, log2Up(slotCount))
+
+    require(slotCount > 0)
+    require(c.texFillRequestWindow > 0)
+
+    val requestStream = expandedStream
+      .translateWith {
+        val req = CachedReq(bankEntryWidth)
+        val wordAddress = (expandedStream.payload.address >> 2).resize(c.addressWidth.value bits)
+        val lineBaseWord =
+          ((wordAddress >> lineShift) << lineShift).resize(c.addressWidth.value bits)
+        val wordIndexInLine = wordAddress(lineShift - 1 downto 0)
+        req.lineBase := (lineBaseWord << 2).resized
+        req.bankSel := wordIndexInLine(1 downto 0)
+        req.bankEntry := (wordIndexInLine >> 2).resize(bankEntryWidth bits)
+        req.queued.passthrough := expandedStream.payload.passthrough
+        req.queued.addrHalf := expandedStream.payload.address(1)
+        req.queued.addrByte := expandedStream.payload.address(0)
+        req
+      }
+      .queue(c.texFillRequestWindow)
+
+    val activeValid = requestStream.valid
+    val activeReq = requestStream.payload
+
+    val slotTagValid = Vec(Reg(Bool()) init (False), slotCount)
+    val slotBase = Vec(Reg(UInt(c.addressWidth.value bits)) init (0), slotCount)
+    val slotBanks = Vec(
+      (0 until slotCount).map(_ =>
+        Vec(
+          (0 until bankCount).map(_ =>
+            Vec((0 until bankEntries).map(_ => Reg(Bits(32 bits)) init (0)))
+          )
+        )
+      )
+    )
+    val slotWordValid = Vec(
+      (0 until slotCount).map(_ =>
+        Vec(
+          (0 until bankCount).map(_ =>
+            Vec((0 until bankEntries).map(_ => Reg(Bool()) init (False)))
+          )
+        )
+      )
+    )
+    val nextVictim = Reg(UInt(slotIndexWidth bits)) init (0)
+
+    def cachedWordForLine(lineBase: UInt, bankSel: UInt, bankEntry: UInt): (Bool, Bits) = {
+      val hit = Bool()
+      val data = Bits(32 bits)
+      hit := False
+      data := 0
+      for (i <- 0 until slotCount) {
+        when(slotTagValid(i) && slotBase(i) === lineBase && slotWordValid(i)(bankSel)(bankEntry)) {
+          hit := True
+          val bankWords = Vec(Bits(32 bits), bankCount)
+          for (b <- 0 until bankCount) {
+            bankWords(b) := slotBanks(i)(b)(bankEntry)
+          }
+          data := bankWords(bankSel)
+        }
+      }
+      (hit, data)
+    }
+
+    val (hitAny, hitWord) =
+      cachedWordForLine(activeReq.lineBase, activeReq.bankSel, activeReq.bankEntry)
+
+    val fillActive = Reg(Bool()) init False
+    val fillSlot = Reg(UInt(slotIndexWidth bits)) init (0)
+    val fillCmdIssued = Reg(Bool()) init (False)
+    val fillRspCount = Reg(UInt(log2Up(lineWords + 1) bits)) init (0)
+
+    val fillStartSlot = UInt(slotIndexWidth bits)
+    fillStartSlot := nextVictim
+    val freeSlots = Vec(Bool(), slotCount)
+    for (i <- 0 until slotCount) {
+      freeSlots(i) := !slotTagValid(i)
+    }
+    for (i <- 0 until slotCount) {
+      val earlierFree = if (i == 0) False else freeSlots.take(i).reduce(_ || _)
+      when(freeSlots(i) && !earlierFree) {
+        fillStartSlot := i
+      }
+    }
+
+    val startFill = activeValid && !hitAny && !fillActive
+    when(startFill) {
+      fillActive := True
+      fillSlot := fillStartSlot
+      fillCmdIssued := False
+      fillRspCount := 0
+      slotTagValid(fillStartSlot) := True
+      slotBase(fillStartSlot) := activeReq.lineBase
+      nextVictim := nextVictim + 1
+      for (b <- 0 until bankCount) {
+        for (e <- 0 until bankEntries) {
+          slotWordValid(fillStartSlot)(b)(e) := False
+        }
+      }
+    }
+
+    val fillLength = U(lineWords * 4 - 1, c.memBurstLengthWidth bits)
+    io.texRead.cmd.valid := fillActive && !fillCmdIssued
+    io.texRead.cmd.fragment.address := slotBase(fillSlot)
+    io.texRead.cmd.fragment.opcode := Bmb.Cmd.Opcode.READ
+    io.texRead.cmd.fragment.length := fillLength
+    io.texRead.cmd.fragment.source := 0
+    io.texRead.cmd.last := True
+    when(io.texRead.cmd.fire) {
+      fillCmdIssued := True
+    }
+
+    io.texRead.rsp.ready := fillActive
+    when(io.texRead.rsp.fire) {
+      val rspWordIndex = fillRspCount.resize(lineShift bits)
+      val rspBank = rspWordIndex(1 downto 0)
+      val rspEntry = (rspWordIndex >> 2).resize(bankEntryWidth bits)
+      slotBanks(fillSlot)(rspBank)(rspEntry) := io.texRead.rsp.fragment.data
+      slotWordValid(fillSlot)(rspBank)(rspEntry) := True
+      fillRspCount := fillRspCount + 1
+      when(io.texRead.rsp.last) {
+        fillActive := False
+      }
+    }
+
+    when(startFill) {
+      texFillMisses := texFillMisses + 1
+      texFillBurstCount := texFillBurstCount + 1
+      texFillBurstBeats := texFillBurstBeats + U(lineWords, 32 bits)
+    }
+    when(activeValid && !hitAny) {
+      texFillStallCycles := texFillStallCycles + 1
+    }
+
+    joined.valid := activeValid && hitAny
+    joined.payload.rspData32 := hitWord
+    joined.payload.queued := activeReq.queued
+    requestStream.ready := joined.ready && hitAny
+    when(joined.fire) {
+      texFillHits := texFillHits + 1
+    }
+
+    def cachedWordForAddr(addr: UInt): (Bool, Bits) = {
+      val wordAddr = (addr >> 2).resize(c.addressWidth.value bits)
+      val localLineBaseWord =
+        ((wordAddr >> lineShift) << lineShift).resize(c.addressWidth.value bits)
+      val localWordIndex = wordAddr(lineShift - 1 downto 0)
+      val localBankSel = localWordIndex(1 downto 0)
+      val localBankEntry = (localWordIndex >> 2).resize(bankEntryWidth bits)
+      cachedWordForLine((localLineBaseWord << 2).resized, localBankSel, localBankEntry)
+    }
+
+    val (fastHit0, fastWord0) = cachedWordForAddr(sampleRequest.payload.biAddr0)
+    val (fastHit1, fastWord1) = cachedWordForAddr(sampleRequest.payload.biAddr1)
+    val (fastHit2, fastWord2) = cachedWordForAddr(sampleRequest.payload.biAddr2)
+    val (fastHit3, fastWord3) = cachedWordForAddr(sampleRequest.payload.biAddr3)
+    val fastBilinearReady =
+      sampleRequest.valid && sampleRequest.payload.bilinear && !isExpanding && !activeValid && !fastHoldValid &&
+        fastHit0 && fastHit1 && fastHit2 && fastHit3
+    useFastBilinear := fastBilinearReady
+
+    val (fastR0, fastG0, fastB0, fastA0) =
+      decodeTexelWord(
+        fastWord0,
+        sampleRequest.payload.biAddr0(1),
+        sampleRequest.payload.biAddr0(0),
+        sampleRequest.payload.passthrough.format,
+        sampleRequest.payload.passthrough.ncc
+      )
+    val (fastR1, fastG1, fastB1, fastA1) =
+      decodeTexelWord(
+        fastWord1,
+        sampleRequest.payload.biAddr1(1),
+        sampleRequest.payload.biAddr1(0),
+        sampleRequest.payload.passthrough.format,
+        sampleRequest.payload.passthrough.ncc
+      )
+    val (fastR2, fastG2, fastB2, fastA2) =
+      decodeTexelWord(
+        fastWord2,
+        sampleRequest.payload.biAddr2(1),
+        sampleRequest.payload.biAddr2(0),
+        sampleRequest.payload.passthrough.format,
+        sampleRequest.payload.passthrough.ncc
+      )
+    val (fastR3, fastG3, fastB3, fastA3) =
+      decodeTexelWord(
+        fastWord3,
+        sampleRequest.payload.biAddr3(1),
+        sampleRequest.payload.biAddr3(0),
+        sampleRequest.payload.passthrough.format,
+        sampleRequest.payload.passthrough.ncc
+      )
+
+    val fastDs = sampleRequest.payload.passthrough.ds
+    val fastDt = sampleRequest.payload.passthrough.dt
+    val fastW0 = (U(16, 5 bits) - fastDs.resize(5 bits)) * (U(16, 5 bits) - fastDt.resize(5 bits))
+    val fastW1 = fastDs.resize(5 bits) * (U(16, 5 bits) - fastDt.resize(5 bits))
+    val fastW2 = (U(16, 5 bits) - fastDs.resize(5 bits)) * fastDt.resize(5 bits)
+    val fastW3 = fastDs.resize(5 bits) * fastDt.resize(5 bits)
+    def blendFastChannel(t0: UInt, t1: UInt, t2: UInt, t3: UInt): UInt = {
+      val sum = (t0.resize(18 bits) * fastW0.resize(10 bits)) +
+        (t1.resize(18 bits) * fastW1.resize(10 bits)) +
+        (t2.resize(18 bits) * fastW2.resize(10 bits)) +
+        (t3.resize(18 bits) * fastW3.resize(10 bits))
+      (sum >> 8).resize(8 bits)
+    }
+
+    val fastOutput = Tmu.Output(c)
+    fastOutput.texture.r := blendFastChannel(fastR0, fastR1, fastR2, fastR3)
+    fastOutput.texture.g := blendFastChannel(fastG0, fastG1, fastG2, fastG3)
+    fastOutput.texture.b := blendFastChannel(fastB0, fastB1, fastB2, fastB3)
+    fastOutput.textureAlpha := blendFastChannel(fastA0, fastA1, fastA2, fastA3)
+    if (c.trace.enabled) {
+      fastOutput.trace := sampleRequest.payload.passthrough.trace
+    }
+    when(sampleRequest.fire && useFastBilinear) {
+      fastHoldValid := True
+      fastHoldPayload := fastOutput
+      texFillHits := texFillHits + U(4, 32 bits)
+      texFastBilinearHits := texFastBilinearHits + 1
+    }
+
+    fetchBusy := activeValid || fillActive
+  } else {
+    useFastBilinear := False
+    fetchBusy := False
+    val (toMemory, toQueue) = StreamFork2(expandedStream)
+
+    val cmdStream = toMemory.translateWith {
+      val cmd = Fragment(BmbCmd(Tmu.bmbParams(c)))
+      cmd.fragment.address := toMemory.payload.address
+      cmd.fragment.opcode := Bmb.Cmd.Opcode.READ
+      cmd.fragment.length := 3
+      cmd.fragment.source := 0
+      cmd.last := True
+      cmd
+    }
+    io.texRead.cmd << cmdStream
+
+    val queuedData = toQueue
+      .map { e =>
+        val d = QueuedData()
+        d.passthrough := e.passthrough
+        d.addrHalf := e.address(1)
+        d.addrByte := e.address(0)
+        d
+      }
+      .queue(16)
+
+    val rspStream = io.texRead.rsp.takeWhen(io.texRead.rsp.last).translateWith {
+      io.texRead.rsp.fragment.data
+    }
+
+    val joinedRaw = StreamJoin(rspStream, queuedData)
+    joined << joinedRaw.translateWith {
+      val result = FetchResult()
+      result.rspData32 := joinedRaw.payload._1
+      result.queued := joinedRaw.payload._2
+      result
+    }
+  }
 
   // ========================================================================
   // Stage 5: Format decode
@@ -547,25 +837,24 @@ case class Tmu(c: voodoo.Config) extends Component {
     val passthrough = TmuPassthrough()
   }
 
-  val decoded = Stream(DecodedTexel())
-  decoded << joined.translateWith {
-    val rspData32 = joined.payload._1
-    val queued = joined.payload._2
-    val pass = queued.passthrough
-    // Select correct 16-bit half of 32-bit BMB response based on texel address alignment
-    val texelData = Mux(queued.addrHalf, rspData32(31 downto 16), rspData32(15 downto 0))
-    // For 8-bit formats: select correct byte within 16-bit half using address bit 0
-    val texelByte = Mux(queued.addrByte, texelData(15 downto 8), texelData(7 downto 0))
+  def decodeTexelWord(
+      rspData32: Bits,
+      addrHalf: Bool,
+      addrByte: Bool,
+      format: UInt,
+      ncc: Tmu.NccTableData
+  ): (UInt, UInt, UInt, UInt) = {
+    val texelData = Mux(addrHalf, rspData32(31 downto 16), rspData32(15 downto 0))
+    val texelByte = Mux(addrByte, texelData(15 downto 8), texelData(7 downto 0))
     val dr = UInt(8 bits)
     val dg = UInt(8 bits)
     val db = UInt(8 bits)
     val da = UInt(8 bits)
 
-    // NCC decode: Y + I + Q chrominance lookup
-    def nccDecode(texByte: Bits, ncc: Tmu.NccTableData): (UInt, UInt, UInt) = {
-      val yVal = ncc.y(texByte(7 downto 4).asUInt)
-      val iEntry = ncc.i(texByte(3 downto 2).asUInt)
-      val qEntry = ncc.q(texByte(1 downto 0).asUInt)
+    def nccDecode(texByte: Bits, nccData: Tmu.NccTableData): (UInt, UInt, UInt) = {
+      val yVal = nccData.y(texByte(7 downto 4).asUInt)
+      val iEntry = nccData.i(texByte(3 downto 2).asUInt)
+      val qEntry = nccData.q(texByte(1 downto 0).asUInt)
       val iR = iEntry(26 downto 18).asSInt; val iG = iEntry(17 downto 9).asSInt;
       val iB = iEntry(8 downto 0).asSInt
       val qR = qEntry(26 downto 18).asSInt; val qG = qEntry(17 downto 9).asSInt;
@@ -576,10 +865,9 @@ case class Tmu(c: voodoo.Config) extends Component {
       (clampToU8(rRaw), clampToU8(gRaw), clampToU8(bRaw))
     }
 
-    // Palette lookup: read 8-bit index from texelByte (used by P8 and AP88)
     val paletteColor = paletteRam.readAsync(texelByte.asUInt)
 
-    switch(pass.format) {
+    switch(format) {
       is(Tmu.TextureFormat.RGB332) {
         dr := expandTo8(texelByte(7 downto 5).asUInt, 3)
         dg := expandTo8(texelByte(4 downto 2).asUInt, 3)
@@ -587,23 +875,16 @@ case class Tmu(c: voodoo.Config) extends Component {
         da := U(255, 8 bits)
       }
       is(Tmu.TextureFormat.YIQ422) {
-        val (r, g, b) = nccDecode(texelByte, pass.ncc)
+        val (r, g, b) = nccDecode(texelByte, ncc)
         dr := r; dg := g; db := b; da := U(255, 8 bits)
       }
       is(Tmu.TextureFormat.A8) {
-        // 86Box: makergba(dat, dat, dat, dat) — R=G=B=A=dat
         val dat = texelByte.asUInt
-        dr := dat
-        dg := dat
-        db := dat
-        da := dat
+        dr := dat; dg := dat; db := dat; da := dat
       }
       is(Tmu.TextureFormat.I8) {
         val intensity = texelByte.asUInt
-        dr := intensity
-        dg := intensity
-        db := intensity
-        da := U(255, 8 bits)
+        dr := intensity; dg := intensity; db := intensity; da := U(255, 8 bits)
       }
       is(Tmu.TextureFormat.AI44) {
         val alpha = texelByte(7 downto 4).asUInt
@@ -626,7 +907,7 @@ case class Tmu(c: voodoo.Config) extends Component {
         db := expandTo8(texelData(1 downto 0).asUInt, 2)
       }
       is(Tmu.TextureFormat.AYIQ8422) {
-        val (r, g, b) = nccDecode(texelData(7 downto 0), pass.ncc)
+        val (r, g, b) = nccDecode(texelData(7 downto 0), ncc)
         dr := r; dg := g; db := b; da := texelData(15 downto 8).asUInt
       }
       is(Tmu.TextureFormat.RGB565) {
@@ -650,10 +931,7 @@ case class Tmu(c: voodoo.Config) extends Component {
       is(Tmu.TextureFormat.AI88) {
         val alpha = texelData(15 downto 8).asUInt
         val intensity = texelData(7 downto 0).asUInt
-        dr := intensity
-        dg := intensity
-        db := intensity
-        da := alpha
+        dr := intensity; dg := intensity; db := intensity; da := alpha
       }
       is(Tmu.TextureFormat.AP88) {
         dr := paletteColor(23 downto 16).asUInt
@@ -668,6 +946,16 @@ case class Tmu(c: voodoo.Config) extends Component {
         da := U(255, 8 bits)
       }
     }
+    (dr, dg, db, da)
+  }
+
+  val decoded = Stream(DecodedTexel())
+  decoded << joined.translateWith {
+    val rspData32 = joined.payload.rspData32
+    val queued = joined.payload.queued
+    val pass = queued.passthrough
+    val (dr, dg, db, da) =
+      decodeTexelWord(rspData32, queued.addrHalf, queued.addrByte, pass.format, pass.ncc)
 
     val result = DecodedTexel()
     result.r := dr
@@ -689,6 +977,12 @@ case class Tmu(c: voodoo.Config) extends Component {
   val storedA = Vec(Reg(UInt(8 bits)), 3)
   val storedDs = Reg(UInt(4 bits))
   val storedDt = Reg(UInt(4 bits))
+  when(io.input.fire && !io.output.fire) {
+    inFlightCount := inFlightCount + 1
+  }.elsewhen(!io.input.fire && io.output.fire) {
+    inFlightCount := inFlightCount - 1
+  }
+  io.busy := inFlightCount =/= 0
 
   // Bilinear blend weights
   val blendDs = Mux(collectCount =/= 0, storedDs, decoded.payload.passthrough.ds)
@@ -720,23 +1014,31 @@ case class Tmu(c: voodoo.Config) extends Component {
   val bilinearAccumulating = isBilinear && (collectCount < 3)
 
   // Output stream
-  io.output.valid := decoded.valid && !bilinearAccumulating
-  decoded.ready := bilinearAccumulating || io.output.ready
+  val normalOutput = Stream(Tmu.Output(c))
+  normalOutput.valid := decoded.valid && !bilinearAccumulating
+  decoded.ready := bilinearAccumulating || (!fastHoldValid && normalOutput.ready)
   if (c.trace.enabled) {
-    io.output.payload.trace := decoded.payload.passthrough.trace
+    normalOutput.payload.trace := decoded.payload.passthrough.trace
   }
 
   Seq(
-    io.output.payload.texture.r,
-    io.output.payload.texture.g,
-    io.output.payload.texture.b,
-    io.output.payload.textureAlpha
+    normalOutput.payload.texture.r,
+    normalOutput.payload.texture.g,
+    normalOutput.payload.texture.b,
+    normalOutput.payload.textureAlpha
   )
     .zip(blendedChannels)
     .zip(decodedChannels)
     .foreach { case ((out, blnd), dec) =>
       out := Mux(isBilinear, blnd, dec)
     }
+
+  io.output.valid := fastHoldValid || normalOutput.valid
+  io.output.payload := fastHoldValid ? fastHoldPayload | normalOutput.payload
+  normalOutput.ready := io.output.ready && !fastHoldValid
+  when(io.output.fire && fastHoldValid) {
+    fastHoldValid := False
+  }
 
   when(decoded.fire) {
     when(isBilinear && collectCount < 3) {
@@ -890,7 +1192,7 @@ object Tmu {
     dataWidth = 32,
     sourceWidth = 1,
     contextWidth = 0,
-    lengthWidth = 2,
+    lengthWidth = c.memBurstLengthWidth,
     canRead = true,
     canWrite = false,
     alignment = BmbParameter.BurstAlignement.BYTE

@@ -48,6 +48,9 @@ uint32_t sim_idle_wait(void);
 /* Advance simulation by n clock cycles. */
 void sim_tick(int n);
 
+/* Drain dirty framebuffer cache lines into fbRam. */
+void sim_flush_fb_cache(void);
+
 /* Bulk read from CoreSim's fbRam (bypasses bus protocol).
  * Reads word_count 32-bit words starting at byte_offset into dst. */
 void sim_read_fb(uint32_t byte_offset, uint32_t *dst, uint32_t word_count);

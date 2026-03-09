@@ -26,6 +26,9 @@ SCALA_SRCS := $(shell find $(PROJ_ROOT)/src -name '*.scala') $(PROJ_ROOT)/projec
 VERILATOR = verilator
 VERILATOR_ROOT ?= $(shell $(VERILATOR) --getenv VERILATOR_ROOT)
 VERILATOR_FLAGS = --cc --output-split 20000 --output-split-cfuncs 5000 --decorations none --public-flat-rw --x-assign fast --x-initial fast --noassert -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -Wno-CMPCONST -Wno-UNSIGNED
+SCALA_CLI ?= scala-cli
+SCALA_CLI_FLAGS ?=
+CORE_SIM_GEN_ARGS ?=
 ifeq ($(TRACE),1)
 VERILATOR_FLAGS += --trace-fst --trace-structs --trace-underscore
 endif
@@ -55,8 +58,10 @@ VERILATE_STAMP = $(OBJ_DIR)/.verilate.stamp
 # Updated at parse time via $(shell) so the timestamp only changes on real transitions.
 TRACE_MODE_FILE = $(OBJ_DIR)/.trace_mode
 TRACE_MODE_VAL  = $(if $(filter 1,$(TRACE)),trace,notrace)
+CORE_SIM_GEN_ARGS_FILE = $(OBJ_DIR)/.core_sim_gen_args
 $(shell mkdir -p $(OBJ_DIR))
 $(shell [ -f $(TRACE_MODE_FILE) ] && [ "$$(cat $(TRACE_MODE_FILE))" = "$(TRACE_MODE_VAL)" ] || echo "$(TRACE_MODE_VAL)" > $(TRACE_MODE_FILE))
+$(shell [ -f $(CORE_SIM_GEN_ARGS_FILE) ] && [ "$$(cat $(CORE_SIM_GEN_ARGS_FILE))" = "$(CORE_SIM_GEN_ARGS)" ] || printf '%s\n' "$(CORE_SIM_GEN_ARGS)" > $(CORE_SIM_GEN_ARGS_FILE))
 
 ###############################################################################
 # Targets
@@ -66,9 +71,9 @@ all: model harness
 
 # Step 1: Generate Verilog from SpinalHDL (rebuilds when Scala sources or TRACE mode change)
 # scala-cli run has a LibC native-image bug; use java -cp workaround
-$(RTL_DIR)/CoreSim.v: $(SCALA_SRCS) $(TRACE_MODE_FILE)
+$(RTL_DIR)/CoreSim.v: $(SCALA_SRCS) $(TRACE_MODE_FILE) $(CORE_SIM_GEN_ARGS_FILE)
 	@rm -f $(RTL_DIR)/*.bin
-	cd $(PROJ_ROOT) && java -Xmx2g -cp "$$(scala-cli compile . --print-class-path 2>/dev/null)" voodoo.CoreSimGen $(if $(filter 1,$(TRACE)),--trace-pipeline)
+	cd $(PROJ_ROOT) && java -Xmx2g -cp "$$( $(SCALA_CLI) compile . --print-class-path $(SCALA_CLI_FLAGS) )" voodoo.CoreSimGen $(if $(filter 1,$(TRACE)),--trace-pipeline) $(CORE_SIM_GEN_ARGS)
 	@# Fix $readmemb paths: SpinalHDL emits bare filenames resolved relative to
 	@# the process cwd.  Prepend the absolute RTL path so the Verilator model
 	@# finds the .bin files regardless of where the binary runs from.

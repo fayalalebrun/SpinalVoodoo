@@ -15,6 +15,13 @@ case class Config(
     wAccumFormat: QFormat,
     maxFbDims: (Int, Int),
     addressWidth: BitCount,
+    memBurstLengthWidth: Int,
+    fbFillLineWords: Int,
+    texFillLineWords: Int,
+    useFbFillCache: Boolean,
+    useTexFillCache: Boolean,
+    texFillCacheSlots: Int = 16,
+    texFillRequestWindow: Int = 16,
     packedTexLayout: Boolean = true,
     trace: TraceConfig = TraceConfig()
 )
@@ -36,6 +43,13 @@ object Config {
     wAccumFormat = SQ(48, 30),
     maxFbDims = (800, 600),
     addressWidth = 26 bits,
+    memBurstLengthWidth = 6,
+    fbFillLineWords = 16,
+    texFillLineWords = 8,
+    useFbFillCache = true,
+    useTexFillCache = true,
+    texFillCacheSlots = 16,
+    texFillRequestWindow = 16,
     trace = trace
   )
 

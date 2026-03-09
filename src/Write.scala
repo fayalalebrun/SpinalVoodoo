@@ -2,7 +2,6 @@ package voodoo
 
 import spinal.core._
 import spinal.lib._
-import spinal.lib.bus.bmb._
 
 case class Write(c: Config) extends Component {
   val i = new Bundle {
@@ -10,10 +9,10 @@ case class Write(c: Config) extends Component {
   }
 
   val o = new Bundle {
-    val fbWrite = master(Bmb(Write.baseBmbParams(c)))
+    val fbWrite = master Stream (FramebufferPlaneCache.WriteReq(c))
   }
 
-  o.fbWrite.cmd.translateFrom(i.fromPipeline) { (out, in) =>
+  o.fbWrite.translateFrom(i.fromPipeline) { (out, in) =>
     val strideSInt = (False ## in.fbPixelStride).asSInt
     val pixelFlat = (in.coords(1) * strideSInt + in.coords(0)).asUInt
     val planeAddress = (in.fbBaseAddr + (pixelFlat << 1)).resized
@@ -26,17 +25,10 @@ case class Write(c: Config) extends Component {
       laneData := B(0, 16 bits) ## in.data
     }
 
-    out.fragment.address := alignedAddress
-    out.fragment.data := laneData
-    out.fragment.opcode := Bmb.Cmd.Opcode.WRITE
-    out.fragment.length := 3 // 4 bytes - 1
-    out.fragment.source := 0 // Single source
-    out.fragment.mask := laneHi ? B"4'b1100" | B"4'b0011"
-    out.last := True
+    out.address := alignedAddress
+    out.data := laneData
+    out.mask := laneHi ? B"4'b1100" | B"4'b0011"
   }
-
-  // BMB response is always ready (fire and forget writes)
-  o.fbWrite.rsp.ready := True
 }
 
 object Write {
@@ -68,15 +60,4 @@ object Write {
     val fbPixelStride = UInt(11 bits)
     val trace = if (c.trace.enabled) Trace.PixelKey() else null
   }
-
-  def baseBmbParams(c: Config) = BmbParameter(
-    addressWidth = c.addressWidth.value,
-    dataWidth = 32,
-    sourceWidth = 1,
-    contextWidth = 0,
-    lengthWidth = 2,
-    canRead = false,
-    canWrite = true,
-    alignment = BmbParameter.BurstAlignement.BYTE
-  )
 }

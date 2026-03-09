@@ -23,7 +23,7 @@ object Core {
     dataWidth = 32,
     sourceWidth = 1 + log2Up(5), // 5 arbiter inputs
     contextWidth = 0,
-    lengthWidth = 2,
+    lengthWidth = c.memBurstLengthWidth,
     canRead = true,
     canWrite = true,
     alignment = BmbParameter.BurstAlignement.BYTE
@@ -34,7 +34,7 @@ object Core {
     dataWidth = 32,
     sourceWidth = 4 + log2Up(3), // max(srcW=1,4) + 2 route bits for 3 inputs = 6
     contextWidth = 0,
-    lengthWidth = 2,
+    lengthWidth = c.memBurstLengthWidth,
     canRead = true,
     canWrite = true,
     alignment = BmbParameter.BurstAlignement.BYTE
@@ -46,7 +46,7 @@ object Core {
     dataWidth = 32,
     sourceWidth = 4,
     contextWidth = 0,
-    lengthWidth = 2,
+    lengthWidth = 6,
     canRead = true,
     canWrite = true,
     alignment = BmbParameter.BurstAlignement.BYTE
@@ -87,6 +87,9 @@ case class Core(c: Config) extends Component {
     // Framebuffer base address
     val fbBaseAddr = in UInt (c.addressWidth)
 
+    // Simulation-only framebuffer cache flush request
+    val flushFbCaches = in Bool ()
+
   }
 
   // Instantiate components
@@ -111,10 +114,16 @@ case class Core(c: Config) extends Component {
 
   val floatShadowStartS = Reg(SInt(60 bits)) init (0)
   val floatShadowStartT = Reg(SInt(60 bits)) init (0)
+  val floatShadowStartW = Reg(SInt(60 bits)) init (0)
   val floatShadowDSdX = Reg(SInt(60 bits)) init (0)
   val floatShadowDTdX = Reg(SInt(60 bits)) init (0)
+  val floatShadowDWdX = Reg(SInt(60 bits)) init (0)
   val floatShadowDSdY = Reg(SInt(60 bits)) init (0)
   val floatShadowDTdY = Reg(SInt(60 bits)) init (0)
+  val floatShadowDWdY = Reg(SInt(60 bits)) init (0)
+  val floatShadowStartA = Reg(SInt(60 bits)) init (0)
+  val floatShadowDAdX = Reg(SInt(60 bits)) init (0)
+  val floatShadowDAdY = Reg(SInt(60 bits)) init (0)
 
   // Make triangle command streams accessible for simulation monitoring
   regBank.commands.triangleCmd.simPublic()
@@ -192,7 +201,7 @@ case class Core(c: Config) extends Component {
   cpuTexBus.cmd.opcode := cpuCmd.opcode
   cpuTexBus.cmd.data := cpuCmd.data
   cpuTexBus.cmd.mask := cpuCmd.mask
-  cpuTexBus.cmd.length := cpuCmd.length
+  cpuTexBus.cmd.length := cpuCmd.length.resize(Core.cpuTexBmbParams.access.lengthWidth bits)
   cpuTexBus.cmd.last := cpuCmd.last
   cpuTexBus.cmd.source := cpuCmd.source
 
@@ -256,20 +265,33 @@ case class Core(c: Config) extends Component {
 
   when(pciFifo.io.floatShadow.valid) {
     switch(pciFifo.io.floatShadow.address) {
+      is(U(0x030, 12 bits)) { floatShadowStartA := pciFifo.io.floatShadow.raw.resize(60 bits) }
       is(U(0x034, 12 bits)) { floatShadowStartS := pciFifo.io.floatShadow.raw.resize(60 bits) }
       is(U(0x038, 12 bits)) { floatShadowStartT := pciFifo.io.floatShadow.raw.resize(60 bits) }
+      is(U(0x03c, 12 bits)) { floatShadowStartW := pciFifo.io.floatShadow.raw.resize(60 bits) }
+      is(U(0x050, 12 bits)) { floatShadowDAdX := pciFifo.io.floatShadow.raw.resize(60 bits) }
       is(U(0x054, 12 bits)) { floatShadowDSdX := pciFifo.io.floatShadow.raw.resize(60 bits) }
       is(U(0x058, 12 bits)) { floatShadowDTdX := pciFifo.io.floatShadow.raw.resize(60 bits) }
+      is(U(0x05c, 12 bits)) { floatShadowDWdX := pciFifo.io.floatShadow.raw.resize(60 bits) }
+      is(U(0x070, 12 bits)) { floatShadowDAdY := pciFifo.io.floatShadow.raw.resize(60 bits) }
       is(U(0x074, 12 bits)) { floatShadowDSdY := pciFifo.io.floatShadow.raw.resize(60 bits) }
       is(U(0x078, 12 bits)) { floatShadowDTdY := pciFifo.io.floatShadow.raw.resize(60 bits) }
+      is(U(0x07c, 12 bits)) { floatShadowDWdY := pciFifo.io.floatShadow.raw.resize(60 bits) }
     }
   }.elsewhen(regBank.io.bus.cmd.fire && regBank.io.bus.cmd.opcode === Bmb.Cmd.Opcode.WRITE) {
     switch(regBank.io.bus.cmd.address) {
+      is(U(0x030, 12 bits)) {
+        floatShadowStartA := (regBank.io.bus.cmd.data.asSInt.resize(60 bits) |<< 18)
+      }
       is(U(0x034, 12 bits)) {
         floatShadowStartS := (regBank.io.bus.cmd.data.asSInt.resize(60 bits) |<< 12)
       }
       is(U(0x038, 12 bits)) {
         floatShadowStartT := (regBank.io.bus.cmd.data.asSInt.resize(60 bits) |<< 12)
+      }
+      is(U(0x03c, 12 bits)) { floatShadowStartW := regBank.io.bus.cmd.data.asSInt.resize(60 bits) }
+      is(U(0x050, 12 bits)) {
+        floatShadowDAdX := (regBank.io.bus.cmd.data.asSInt.resize(60 bits) |<< 18)
       }
       is(U(0x054, 12 bits)) {
         floatShadowDSdX := (regBank.io.bus.cmd.data.asSInt.resize(60 bits) |<< 12)
@@ -277,12 +299,17 @@ case class Core(c: Config) extends Component {
       is(U(0x058, 12 bits)) {
         floatShadowDTdX := (regBank.io.bus.cmd.data.asSInt.resize(60 bits) |<< 12)
       }
+      is(U(0x05c, 12 bits)) { floatShadowDWdX := regBank.io.bus.cmd.data.asSInt.resize(60 bits) }
+      is(U(0x070, 12 bits)) {
+        floatShadowDAdY := (regBank.io.bus.cmd.data.asSInt.resize(60 bits) |<< 18)
+      }
       is(U(0x074, 12 bits)) {
         floatShadowDSdY := (regBank.io.bus.cmd.data.asSInt.resize(60 bits) |<< 12)
       }
       is(U(0x078, 12 bits)) {
         floatShadowDTdY := (regBank.io.bus.cmd.data.asSInt.resize(60 bits) |<< 12)
       }
+      is(U(0x07c, 12 bits)) { floatShadowDWdY := regBank.io.bus.cmd.data.asSInt.resize(60 bits) }
     }
   }
   regBank.io.statusInputs <> io.statusInputs
@@ -379,8 +406,22 @@ case class Core(c: Config) extends Component {
     hi
   }
 
+  def captureHiAlpha(useFloatShadow: Bool): TriangleSetup.HiAlpha = {
+    val hi = TriangleSetup.HiAlpha(c)
+    val startAInt = regBank.triangleGeometry.startA.resize(60 bits) |<< 18
+    val dAdXInt = regBank.triangleGeometry.dAdX.resize(60 bits) |<< 18
+    val dAdYInt = regBank.triangleGeometry.dAdY.resize(60 bits) |<< 18
+
+    hi.start.raw := Mux(useFloatShadow, floatShadowStartA.asBits, startAInt.asBits)
+    hi.dAdX.raw := Mux(useFloatShadow, floatShadowDAdX.asBits, dAdXInt.asBits)
+    hi.dAdY.raw := Mux(useFloatShadow, floatShadowDAdY.asBits, dAdYInt.asBits)
+    hi
+  }
+
   // Capture gradients from integer registers at command time
-  def captureGradients(): Rasterizer.GradientBundle[Rasterizer.InputGradient] = {
+  def captureGradients(
+      useFloatShadow: Bool
+  ): Rasterizer.GradientBundle[Rasterizer.InputGradient] = {
     val g = regBank.triangleGeometry
     captureGradientsFrom(
       Seq(
@@ -389,7 +430,11 @@ case class Core(c: Config) extends Component {
         (g.startB.asBits, g.dBdX.asBits, g.dBdY.asBits), // blue  (12.12)
         (g.startZ.asBits, g.dZdX.asBits, g.dZdY.asBits), // depth (20.12)
         (g.startA.asBits, g.dAdX.asBits, g.dAdY.asBits), // alpha (12.12)
-        (g.startW.asBits, g.dWdX.asBits, g.dWdY.asBits), // W     (2.30)
+        (
+          Mux(useFloatShadow, floatShadowStartW.asBits, g.startW.resize(60 bits).asBits),
+          Mux(useFloatShadow, floatShadowDWdX.asBits, g.dWdX.resize(60 bits).asBits),
+          Mux(useFloatShadow, floatShadowDWdY.asBits, g.dWdY.resize(60 bits).asBits)
+        ), // W     (2.30 / float shadow)
         (g.startS.asBits, g.dSdX.asBits, g.dSdY.asBits), // S     (14.18)
         (g.startT.asBits, g.dTdX.asBits, g.dTdY.asBits) // T     (14.18)
       )
@@ -466,7 +511,8 @@ case class Core(c: Config) extends Component {
     out.triWithSign.tri(2)(0).raw := regBank.triangleGeometry.vertexCx.asBits
     out.triWithSign.tri(2)(1).raw := regBank.triangleGeometry.vertexCy.asBits
     out.triWithSign.signBit := signBit
-    out.grads := captureGradients()
+    out.grads := captureGradients(useFloatShadow)
+    out.hiAlpha := captureHiAlpha(useFloatShadow)
     out.texHi := captureHiTexCoords(useFloatShadow)
     out.config := capturePerTriangleConfig()
     if (c.trace.enabled) {
@@ -692,14 +738,14 @@ case class Core(c: Config) extends Component {
     val redSat = rasterOut.grads.redGrad.sat(satMax = 255, satMin = 0, exp = 0 exp)
     val greenSat = rasterOut.grads.greenGrad.sat(satMax = 255, satMin = 0, exp = 0 exp)
     val blueSat = rasterOut.grads.blueGrad.sat(satMax = 255, satMin = 0, exp = 0 exp)
-    val alphaSat = rasterOut.grads.alphaGrad.sat(satMax = 255, satMin = 0, exp = 0 exp)
+    val alphaSat = rasterOut.alphaGradHi.sat(satMax = 255, satMin = 0, exp = 0 exp)
 
     // Extract integer part (upper 8 bits) from saturated values
     // Color format after sat is UQ(8,12) - 8 integer bits, 12 fractional bits = 20 total bits
     out.iterated.r := (redSat.asBits >> 12).asUInt.resize(8 bits)
     out.iterated.g := (greenSat.asBits >> 12).asUInt.resize(8 bits)
     out.iterated.b := (blueSat.asBits >> 12).asUInt.resize(8 bits)
-    out.iteratedAlpha := (alphaSat.asBits >> 12).asUInt.resize(8 bits)
+    out.iteratedAlpha := (alphaSat.asBits >> 30).asUInt.resize(8 bits)
 
     // Upper 8 bits of Z for alpha local select option (Z is 20.12)
     // Saturate to [0,255] at exp=12 (so bits [19:12] become [7:0])
@@ -907,37 +953,124 @@ case class Core(c: Config) extends Component {
       out
     }
 
-  // ========================================================================
-  // Framebuffer arbiter (5 inputs → fbMem)
-  // ========================================================================
-  val fbArbiter = BmbArbiter(
-    inputsParameter = Seq(
-      Write.baseBmbParams(c),
-      Write.baseBmbParams(c),
-      FramebufferAccess.bmbParams(c),
-      FramebufferAccess.bmbParams(c),
-      Lfb.fbReadBmbParams(c)
-    ),
-    outputParameter = Core.fbMemBmbParams(c),
-    lowerFirstPriority = true // write/color gets highest priority
-  )
+  val fbColorBusy = Bool()
+  val fbAuxBusy = Bool()
+  val fbFillHits = UInt(32 bits)
+  val fbFillMisses = UInt(32 bits)
+  val fbFillBurstCount = UInt(32 bits)
+  val fbFillBurstBeats = UInt(32 bits)
+  val fbFillStallCycles = UInt(32 bits)
 
-  // Pipe cmd.ready to break combinational loops around arbiter readiness.
-  fbArbiter.io.inputs(0).cmd << writeColor.o.fbWrite.cmd.s2mPipe()
-  fbArbiter.io.inputs(0).rsp >> writeColor.o.fbWrite.rsp
+  if (c.useFbFillCache) {
+    val fbColorCache = FramebufferPlaneCache(c)
+    val fbAuxCache = FramebufferPlaneCache(c)
+    fbColorCache.io.flush := io.flushFbCaches
+    fbAuxCache.io.flush := io.flushFbCaches
 
-  fbArbiter.io.inputs(1).cmd << writeAux.o.fbWrite.cmd.s2mPipe()
-  fbArbiter.io.inputs(1).rsp >> writeAux.o.fbWrite.rsp
+    fbAccess.io.fbReadColorReq.s2mPipe() >> fbColorCache.io.readReq
+    fbAccess.io.fbReadColorRsp << fbColorCache.io.readRsp
+    fbAccess.io.fbReadAuxReq.s2mPipe() >> fbAuxCache.io.readReq
+    fbAccess.io.fbReadAuxRsp << fbAuxCache.io.readRsp
 
-  // Buffer fbRead responses to prevent deadlock in read-then-write flow.
-  fbArbiter.io.inputs(2).cmd << fbAccess.io.fbReadColor.cmd
-  fbAccess.io.fbReadColor.rsp << fbArbiter.io.inputs(2).rsp.s2mPipe()
+    fbColorCache.io.writeReq << writeColor.o.fbWrite.s2mPipe()
+    fbAuxCache.io.writeReq << writeAux.o.fbWrite.s2mPipe()
 
-  fbArbiter.io.inputs(3).cmd << fbAccess.io.fbReadAux.cmd
-  fbAccess.io.fbReadAux.rsp << fbArbiter.io.inputs(3).rsp.s2mPipe()
+    val fbArbiter = BmbArbiter(
+      inputsParameter = Seq(
+        FramebufferPlaneCache.bmbParams(c),
+        FramebufferPlaneCache.bmbParams(c),
+        Lfb.fbReadBmbParams(c)
+      ),
+      outputParameter = Core.fbMemBmbParams(c),
+      lowerFirstPriority = true
+    )
 
-  fbArbiter.io.inputs(4) <> lfb.io.fbReadBus
-  fbArbiter.io.output <> io.fbMem
+    fbArbiter.io.inputs(0).cmd << fbColorCache.io.mem.cmd.s2mPipe()
+    fbColorCache.io.mem.rsp << fbArbiter.io.inputs(0).rsp.s2mPipe()
+
+    fbArbiter.io.inputs(1).cmd << fbAuxCache.io.mem.cmd.s2mPipe()
+    fbAuxCache.io.mem.rsp << fbArbiter.io.inputs(1).rsp.s2mPipe()
+
+    fbArbiter.io.inputs(2) <> lfb.io.fbReadBus
+    fbArbiter.io.output <> io.fbMem
+
+    fbColorBusy := fbColorCache.io.busy
+    fbAuxBusy := fbAuxCache.io.busy
+    fbFillHits := (fbColorCache.io.fillHits + fbAuxCache.io.fillHits).resized
+    fbFillMisses := (fbColorCache.io.fillMisses + fbAuxCache.io.fillMisses).resized
+    fbFillBurstCount := (fbColorCache.io.fillBurstCount + fbAuxCache.io.fillBurstCount).resized
+    fbFillBurstBeats := (fbColorCache.io.fillBurstBeats + fbAuxCache.io.fillBurstBeats).resized
+    fbFillStallCycles := (fbColorCache.io.fillStallCycles + fbAuxCache.io.fillStallCycles).resized
+  } else {
+    val fbColorReadPort = FramebufferPlaneCache(c)
+    val fbColorWritePort = FramebufferPlaneCache(c)
+    val fbAuxReadPort = FramebufferPlaneCache(c)
+    val fbAuxWritePort = FramebufferPlaneCache(c)
+
+    fbColorReadPort.io.flush := False
+    fbColorWritePort.io.flush := False
+    fbAuxReadPort.io.flush := False
+    fbAuxWritePort.io.flush := False
+
+    fbAccess.io.fbReadColorReq.s2mPipe() >> fbColorReadPort.io.readReq
+    fbAccess.io.fbReadColorRsp << fbColorReadPort.io.readRsp
+    fbAccess.io.fbReadAuxReq.s2mPipe() >> fbAuxReadPort.io.readReq
+    fbAccess.io.fbReadAuxRsp << fbAuxReadPort.io.readRsp
+
+    fbColorReadPort.io.writeReq.valid := False
+    fbColorReadPort.io.writeReq.address := 0
+    fbColorReadPort.io.writeReq.data := 0
+    fbColorReadPort.io.writeReq.mask := 0
+    fbAuxReadPort.io.writeReq.valid := False
+    fbAuxReadPort.io.writeReq.address := 0
+    fbAuxReadPort.io.writeReq.data := 0
+    fbAuxReadPort.io.writeReq.mask := 0
+
+    fbColorWritePort.io.readReq.valid := False
+    fbColorWritePort.io.readReq.address := 0
+    fbColorWritePort.io.readRsp.ready := True
+    fbAuxWritePort.io.readReq.valid := False
+    fbAuxWritePort.io.readReq.address := 0
+    fbAuxWritePort.io.readRsp.ready := True
+
+    fbColorWritePort.io.writeReq << writeColor.o.fbWrite.s2mPipe()
+    fbAuxWritePort.io.writeReq << writeAux.o.fbWrite.s2mPipe()
+
+    val fbArbiter = BmbArbiter(
+      inputsParameter = Seq(
+        FramebufferPlaneCache.bmbParams(c),
+        FramebufferPlaneCache.bmbParams(c),
+        FramebufferPlaneCache.bmbParams(c),
+        FramebufferPlaneCache.bmbParams(c),
+        Lfb.fbReadBmbParams(c)
+      ),
+      outputParameter = Core.fbMemBmbParams(c),
+      lowerFirstPriority = true
+    )
+
+    fbArbiter.io.inputs(0).cmd << fbColorWritePort.io.mem.cmd.s2mPipe()
+    fbColorWritePort.io.mem.rsp << fbArbiter.io.inputs(0).rsp.s2mPipe()
+
+    fbArbiter.io.inputs(1).cmd << fbAuxWritePort.io.mem.cmd.s2mPipe()
+    fbAuxWritePort.io.mem.rsp << fbArbiter.io.inputs(1).rsp.s2mPipe()
+
+    fbArbiter.io.inputs(2).cmd << fbColorReadPort.io.mem.cmd.s2mPipe()
+    fbColorReadPort.io.mem.rsp << fbArbiter.io.inputs(2).rsp.s2mPipe()
+
+    fbArbiter.io.inputs(3).cmd << fbAuxReadPort.io.mem.cmd.s2mPipe()
+    fbAuxReadPort.io.mem.rsp << fbArbiter.io.inputs(3).rsp.s2mPipe()
+
+    fbArbiter.io.inputs(4) <> lfb.io.fbReadBus
+    fbArbiter.io.output <> io.fbMem
+
+    fbColorBusy := fbColorReadPort.io.busy || fbColorWritePort.io.busy
+    fbAuxBusy := fbAuxReadPort.io.busy || fbAuxWritePort.io.busy
+    fbFillHits := 0
+    fbFillMisses := 0
+    fbFillBurstCount := 0
+    fbFillBurstBeats := 0
+    fbFillStallCycles := 0
+  }
 
   // ========================================================================
   // Packed texture address translation at FIFO drain
@@ -1052,6 +1185,8 @@ case class Core(c: Config) extends Component {
   tmu.io.input.valid.simPublic()
   tmu.io.busy.simPublic()
   fbAccess.io.busy.simPublic()
+  fbColorBusy.simPublic()
+  fbAuxBusy.simPublic()
   colorCombine.io.input.valid.simPublic()
   fog.io.input.valid.simPublic()
   fbAccess.io.input.valid.simPublic()
@@ -1065,9 +1200,14 @@ case class Core(c: Config) extends Component {
   // first output pixel (rasterizer.o.valid only asserts once iteration begins).
   // This matches SST-1 hardware where SST_BUSY reflects actual pipeline activity.
   rasterizer.running.simPublic()
+  fbFillHits.simPublic()
+  fbFillMisses.simPublic()
+  fbFillBurstCount.simPublic()
+  fbFillBurstBeats.simPublic()
+  fbFillStallCycles.simPublic()
   val pipelineBusySignal =
     triangleSetup.o.valid || rasterizer.running || tmu.io.input.valid ||
-      tmu.io.busy || fbAccess.io.busy ||
+      tmu.io.busy || fbAccess.io.busy || fbColorBusy || fbAuxBusy ||
       colorCombine.io.input.valid || fog.io.input.valid || fbAccess.io.input.valid ||
       writeColor.i.fromPipeline.valid || writeAux.i.fromPipeline.valid || fastfill.running ||
       swapBuffer.io.waiting || lfb.io.busy

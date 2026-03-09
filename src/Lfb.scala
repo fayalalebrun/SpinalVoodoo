@@ -459,7 +459,7 @@ object Lfb {
     dataWidth = 32,
     sourceWidth = 1,
     contextWidth = 0,
-    lengthWidth = 2,
+    lengthWidth = c.memBurstLengthWidth,
     canRead = true,
     canWrite = false,
     alignment = BmbParameter.BurstAlignement.BYTE

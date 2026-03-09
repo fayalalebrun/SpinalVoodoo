@@ -77,6 +77,18 @@ object DitherTables {
   /** 2x2 G dither table: 256 × 2 × 2 = 1024 entries. Index: v*4 + y*2 + x. Values 0-63. */
   lazy val g2x2: Array[Int] = parseTable("dither_g2x2", 2, 2)
 
+  /** 4x4 R/B dither-subtract table: 256 × 4 × 4 = 4096 entries. */
+  lazy val dsubRb4x4: Array[Int] = parseTable("dithersub_rb", 4, 4)
+
+  /** 4x4 G dither-subtract table: 256 × 4 × 4 = 4096 entries. */
+  lazy val dsubG4x4: Array[Int] = parseTable("dithersub_g", 4, 4)
+
+  /** 2x2 R/B dither-subtract table: 256 × 2 × 2 = 1024 entries. */
+  lazy val dsubRb2x2: Array[Int] = parseTable("dithersub_rb2x2", 2, 2)
+
+  /** 2x2 G dither-subtract table: 256 × 2 × 2 = 1024 entries. */
+  lazy val dsubG2x2: Array[Int] = parseTable("dithersub_g2x2", 2, 2)
+
   /** Lookup a 4x4 R/B dither value. */
   def lookupRb(v: Int, y: Int, x: Int): Int = rb4x4(v * 16 + y * 4 + x)
 
@@ -89,8 +101,22 @@ object DitherTables {
   /** Lookup a 2x2 G dither value. */
   def lookupG2x2(v: Int, y: Int, x: Int): Int = g2x2(v * 4 + y * 2 + x)
 
+  /** Lookup a 4x4 R/B dither-subtract value. */
+  def lookupDsubRb(v: Int, y: Int, x: Int): Int = dsubRb4x4(v * 16 + y * 4 + x)
+
+  /** Lookup a 4x4 G dither-subtract value. */
+  def lookupDsubG(v: Int, y: Int, x: Int): Int = dsubG4x4(v * 16 + y * 4 + x)
+
+  /** Lookup a 2x2 R/B dither-subtract value. */
+  def lookupDsubRb2x2(v: Int, y: Int, x: Int): Int = dsubRb2x2(v * 4 + y * 2 + x)
+
+  /** Lookup a 2x2 G dither-subtract value. */
+  def lookupDsubG2x2(v: Int, y: Int, x: Int): Int = dsubG2x2(v * 4 + y * 2 + x)
+
   /** Packed ROM init: 4x4 table (4096 entries) followed by 2x2 table (1024 entries) = 5120 total.
     */
   lazy val rbPacked: Array[Int] = rb4x4 ++ rb2x2
   lazy val gPacked: Array[Int] = g4x4 ++ g2x2
+  lazy val dsubRbPacked: Array[Int] = dsubRb4x4 ++ dsubRb2x2
+  lazy val dsubGPacked: Array[Int] = dsubG4x4 ++ dsubG2x2
 }

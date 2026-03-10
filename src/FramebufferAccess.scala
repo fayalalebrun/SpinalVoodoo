@@ -196,6 +196,22 @@ case class FramebufferAccess(c: Config) extends Component {
       15 downto 0
     ).asUInt
   val destColor = expandRgb565(oldColor565)
+  val dsubRbRom = Vec(DitherTables.dsubRbPacked.map(v => U(v, 8 bits)))
+  val dsubGRom = Vec(DitherTables.dsubGPacked.map(v => U(v, 8 bits)))
+
+  def ditherAddr(v: UInt, use2x2: Bool, x: UInt, y: UInt): UInt = {
+    val addr4x4 = (v ## y ## x).asUInt
+    val addr2x2 = (v ## y(0) ## x(0)).asUInt
+    use2x2 ? (True ## addr2x2.resize(12 bits)).asUInt | addr4x4.resize(13 bits)
+  }
+
+  val destDsub = Color.u8()
+  val dsubX = afterPdata.coords(0)(1 downto 0).asUInt
+  val dsubY = afterPdata.coords(1)(1 downto 0).asUInt
+  destDsub.r := dsubRbRom(ditherAddr(destColor.r, afterPdata.fbzMode.ditherAlgorithm, dsubX, dsubY))
+  destDsub.g := dsubGRom(ditherAddr(destColor.g, afterPdata.fbzMode.ditherAlgorithm, dsubX, dsubY))
+  destDsub.b := dsubRbRom(ditherAddr(destColor.b, afterPdata.fbzMode.ditherAlgorithm, dsubX, dsubY))
+  val blendDestColor = afterPdata.fbzMode.enableDitherSubtract ? destDsub | destColor
   val destA = U(0xff, 8 bits)
 
   val srcColor = afterPdata.color
@@ -265,13 +281,13 @@ case class FramebufferAccess(c: Config) extends Component {
     srcColor,
     srcA,
     destA,
-    destColor,
+    blendDestColor,
     isSrc = true,
     colorBeforeFog
   )
   val dstFactor = computeBlendFactor(
     afterPdata.alphaMode.rgbDstFact,
-    destColor,
+    blendDestColor,
     srcA,
     destA,
     srcColor,

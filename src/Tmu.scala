@@ -168,8 +168,11 @@ case class Tmu(c: voodoo.Config) extends Component {
       // Signed subtraction: adjSInt can be negative when raw_W >= 2^27
       val adjSInt = (S(27, 8 bits) - (False ## msbPos).asSInt.resize(8 bits))
       val logFrac = logTable(index)
+      // The LUT path trends one LOD unit high near mip boundaries; bias it down slightly
+      // to match 86Box's fastlog-based perspective adjustment more closely.
       perspLodAdjust := ((adjSInt << 8).resize(16 bits)
-        - (False ## U(0, 8 bits) ## logFrac).asSInt.resize(16 bits))
+        - (False ## U(0, 8 bits) ## logFrac).asSInt.resize(16 bits)
+        - S(1, 16 bits))
     }
 
     // Multiply: product = sow_raw * interp (signed × unsigned)
@@ -178,10 +181,12 @@ case class Tmu(c: voodoo.Config) extends Component {
     val interpSigned = (False ## safeInterp).asSInt // 18-bit signed (always positive)
     val productS = sowRaw * interpSigned
     val productT = towRaw * interpSigned
+    val roundBias =
+      (S(1, productS.getWidth bits) |<< (msbPos - 1).resize(log2Up(productS.getWidth) bits))
 
-    // Shift to get X.4 texel coordinate: product >> msbPos (was >> msbPos+4 for integer)
-    texS := (productS >> msbPos).resized
-    texT := (productT >> msbPos).resized
+    // Shift to get X.4 texel coordinate: round before the final variable shift to better match 86Box
+    texS := ((productS + roundBias) >> msbPos).resized
+    texT := ((productT + roundBias) >> msbPos).resized
   }
 
   // Clamp W (force S=T=0 when W is negative)

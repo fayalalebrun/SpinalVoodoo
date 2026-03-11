@@ -1,6 +1,7 @@
 package voodoo.utils
 
 import spinal.core._
+import spinal.core.formal._
 import spinal.core.sim._
 import spinal.lib._
 import spinal.lib.bus.bmb._
@@ -37,7 +38,8 @@ case class PciFifo(
     busParams: BmbParameter,
     categories: Map[BigInt, RegisterCategory],
     floatAliases: Map[BigInt, PciFifo.FloatAliasConfig],
-    commandAddresses: Seq[BigInt]
+    commandAddresses: Seq[BigInt],
+    formalStrong: Boolean = true
 ) extends Component {
 
   val busAddrWidth: Int = busParams.access.addressWidth
@@ -195,7 +197,7 @@ case class PciFifo(
   private val pciFifo = StreamFifo(QueuedWrite(), depth = 64)
   pciFifo.io.push << queuedWriteTx
 
-  val fifoEmpty = Reg(Bool()) init (True) setName ("pciFifo_fifoEmpty")
+  val fifoEmpty = Bool().setName("pciFifo_fifoEmpty")
   fifoEmpty.simPublic()
   fifoEmpty := !pciFifo.io.pop.valid
   io.fifoEmpty := fifoEmpty
@@ -221,18 +223,6 @@ case class PciFifo(
   commandStreamBlocked := False
   when(commandStreamBlocked) {
     canDrain := False
-  }
-
-  // Post-command holdoff: block FIFO drain for 2 cycles after command register drain
-  private val postCommandHoldoff = RegInit(U(0, 2 bits))
-  when(postCommandHoldoff =/= 0) {
-    postCommandHoldoff := postCommandHoldoff - 1
-    canDrain := False
-  }
-  val commandDrained = Bool()
-  commandDrained := False
-  when(commandDrained) {
-    postCommandHoldoff := 2
   }
 
   private val drainedWrite = pciFifo.io.pop.haltWhen(!canDrain)
@@ -436,16 +426,160 @@ case class PciFifo(
           commandStreamBlocked := !io.commandReady(idx)
         }
       }
-      // Detect command register drain for holdoff
-      when(drainedWrite.fire && !drainedWrite.isTexture) {
-        for (addr <- commandAddresses) {
-          when(drainedWrite.address === U(addr, busAddrWidth bits)) {
-            commandDrained := True
-          }
-        }
-      }
     }
   })
+
+  GenerationFlags.formal {
+    assert(io.fifoEmpty === !pciFifo.io.pop.valid)
+    assert(isTexDrain === (drainedWrite.valid && drainedWrite.isTexture))
+    assert(isRegDrain === (drainedWrite.valid && !drainedWrite.isTexture))
+    assert(io.texDrain.valid === isTexDrain)
+    assert(
+      io.floatShadow.valid === (isRegDrain && drainedWrite.fire && drainedWrite.hasFloatShadow)
+    )
+    assert(io.syncDrained === (isRegDrain && drainedWrite.fire && drainedWrite.syncRequired))
+    assert(
+      drainedWrite.ready === ((isRegDrain && !cpuPassthrough && io.regSide.cmd.ready) ||
+        (isTexDrain && io.texDrain.ready))
+    )
+    assert(io.regSide.cmd.valid === (cpuPassthrough || doRegDrain))
+
+    when(doWriteDirect) {
+      assert(!shouldQueue)
+      assert(cpuPassthrough)
+    }
+
+    when(cpuPassthrough) {
+      assert(io.regSide.cmd.valid)
+      assert(!doRegDrain)
+      assert(io.regSide.cmd.opcode === io.cpuSide.cmd.opcode)
+      assert(io.regSide.cmd.address === io.cpuSide.cmd.address)
+      assert(io.regSide.cmd.data === io.cpuSide.cmd.data)
+      assert(io.regSide.cmd.mask === io.cpuSide.cmd.mask)
+      assert(io.regSide.cmd.length === io.cpuSide.cmd.length)
+      assert(io.regSide.cmd.last)
+    }
+
+    when(doRegDrain) {
+      assert(io.regSide.cmd.valid)
+      assert(io.regSide.cmd.opcode === Bmb.Cmd.Opcode.WRITE)
+      assert(io.regSide.cmd.address === drainedWrite.address)
+      assert(io.regSide.cmd.data === drainedWrite.data)
+      assert(io.regSide.cmd.mask === drainedWrite.mask)
+      assert(io.regSide.cmd.length === 3)
+      assert(io.regSide.cmd.last)
+    }
+
+    when(pciFifo.io.pop.syncRequired && pipelineBusyReg) {
+      assert(!drainedWrite.fire)
+    }
+    when(commandStreamBlocked) {
+      assert(!drainedWrite.fire)
+    }
+
+    when(pendingRead) {
+      assert(io.cpuSide.rsp.valid === (io.regSide.rsp.valid && lastWasCpuPassthrough))
+      assert(io.cpuSide.rsp.data === io.regSide.rsp.data)
+      assert(io.cpuSide.rsp.opcode === io.regSide.rsp.opcode)
+      assert(io.cpuSide.rsp.source === io.regSide.rsp.source)
+    }
+
+    when(io.cpuSide.cmd.valid && io.cpuSide.cmd.opcode === Bmb.Cmd.Opcode.READ && pendingRead) {
+      assert(!io.cpuSide.cmd.ready)
+    }
+
+    when(floatWriteRequest && !floatConvertInFlight) {
+      assert(!io.cpuSide.cmd.ready)
+      assert(floatConverter.io.op.valid)
+    }
+
+    when(floatConvertInFlight && floatConverter.io.result.valid) {
+      val rawSInt = floatConverter.io.result.number.raw.asSInt
+      val shifted = rawSInt >> floatConvertShift
+      val hasRemainder = Bool()
+      hasRemainder := False
+      switch(floatConvertShift) {
+        is(26) { hasRemainder := rawSInt(25 downto 0).orR }
+        is(18) { hasRemainder := rawSInt(17 downto 0).orR }
+        is(12) { hasRemainder := rawSInt(11 downto 0).orR }
+      }
+      val corrected = Mux(rawSInt.msb && hasRemainder, shifted + 1, shifted)
+
+      assert(queuedWriteTx.valid)
+      assert(queuedWriteTx.address === floatConvertTargetAddr)
+      assert(queuedWriteTx.data === corrected.resize(32 bits).asBits)
+      assert(queuedWriteTx.mask === B"1111")
+      assert(!queuedWriteTx.syncRequired)
+      assert(!queuedWriteTx.isTexture)
+      assert(!queuedWriteTx.texPciAddr.orR)
+      assert(queuedWriteTx.hasFloatShadow)
+      assert(queuedWriteTx.floatShadowRaw === rawSInt.resize(50 bits))
+    }
+
+    when(io.floatShadow.valid) {
+      assert(isRegDrain)
+      assert(drainedWrite.fire)
+      assert(drainedWrite.hasFloatShadow)
+      assert(io.floatShadow.address === drainedWrite.address)
+      assert(io.floatShadow.raw === drainedWrite.floatShadowRaw)
+    }
+
+    if (formalStrong) {
+      val fOccupancy = Reg(UInt(7 bits)) init (0)
+      when(queuedWriteTx.fire =/= drainedWrite.fire) {
+        when(queuedWriteTx.fire) {
+          fOccupancy := fOccupancy + 1
+        } otherwise {
+          fOccupancy := fOccupancy - 1
+        }
+      }
+      assert(io.pciFifoFree + fOccupancy === U(64, 7 bits))
+
+      val fTrackIdx0 = anyconst(UInt(3 bits))
+      val fTrackIdx1 = anyconst(UInt(3 bits))
+      assume(fTrackIdx0 < 4)
+      assume(fTrackIdx1 < 4)
+      assume(fTrackIdx0 < fTrackIdx1)
+
+      val fEnqueueCount = Reg(UInt(4 bits)) init (0)
+      val fDequeueCount = Reg(UInt(4 bits)) init (0)
+      val fSeen0 = Reg(Bool()) init (False)
+      val fSeen1 = Reg(Bool()) init (False)
+      val fPopped0 = Reg(Bool()) init (False)
+      val fPopped1 = Reg(Bool()) init (False)
+      val fPayload0 = Reg(QueuedWrite())
+      val fPayload1 = Reg(QueuedWrite())
+
+      when(queuedWriteTx.fire) {
+        when(fEnqueueCount === fTrackIdx0.resized) {
+          fSeen0 := True
+          fPayload0 := queuedWriteTx.payload
+        }
+        when(fEnqueueCount === fTrackIdx1.resized) {
+          fSeen1 := True
+          fPayload1 := queuedWriteTx.payload
+        }
+        fEnqueueCount := fEnqueueCount + 1
+      }
+
+      when(drainedWrite.fire) {
+        when(fSeen0 && fDequeueCount === fTrackIdx0.resized) {
+          assert(drainedWrite.payload.asBits === fPayload0.asBits)
+          fPopped0 := True
+        }
+        when(fSeen1 && fDequeueCount === fTrackIdx1.resized) {
+          assert(fPopped0)
+          assert(drainedWrite.payload.asBits === fPayload1.asBits)
+          fPopped1 := True
+        }
+        fDequeueCount := fDequeueCount + 1
+      }
+
+      when(fPopped1) {
+        assert(fPopped0)
+      }
+    }
+  }
 }
 
 object PciFifo {

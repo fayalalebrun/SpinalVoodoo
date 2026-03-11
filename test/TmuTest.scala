@@ -1,3 +1,5 @@
+//> using target.scope test
+
 package voodoo
 
 import spinal.core._
@@ -283,58 +285,59 @@ class TmuTest extends AnyFunSuite {
   }
 
   test("TMU computes correct texel address") {
-    SimConfig.withIVerilog.withWave.compile(Tmu(config)).doSim { dut =>
-      setupDut(dut)
-      setDefaultInput(dut)
+    SimConfig.withIVerilog.withWave.compile(Tmu(config.copy(useTexFillCache = false))).doSim {
+      dut =>
+        setupDut(dut)
+        setDefaultInput(dut)
 
-      // Set texture base address (now part of input stream config)
-      // texBaseAddr register is address/8 (hardware shifts left by 3)
-      val baseByteAddr = 0x100000
-      dut.io.input.payload.config.texBaseAddr #= baseByteAddr / 8
-      // Update texTables with the correct base address
-      if (config.packedTexLayout) {
-        setTexTables(dut, baseByteAddr, is16bit = true)
-      }
-
-      // Set S=10, T=20 (in integer coordinates)
-      dut.io.input.payload.s #= 10.0
-      dut.io.input.payload.t #= 20.0
-
-      dut.io.input.valid #= true
-
-      // Wait for command and check address
-      var cycles = 0
-      var addressCaptured = false
-      var capturedAddress = 0L
-      while (!addressCaptured && cycles < maxPipelineLatency) {
-        if (dut.io.texRead.cmd.valid.toBoolean) {
-          capturedAddress = dut.io.texRead.cmd.fragment.address.toLong
-          addressCaptured = true
-          dut.io.texRead.cmd.ready #= true
-          dut.io.texRead.rsp.valid #= true
-          dut.io.texRead.rsp.fragment.data #= 0xffff
-          dut.io.texRead.rsp.last #= true
-        } else {
-          dut.io.texRead.cmd.ready #= false
-          dut.io.texRead.rsp.valid #= false
+        // Set texture base address (now part of input stream config)
+        // texBaseAddr register is address/8 (hardware shifts left by 3)
+        val baseByteAddr = 0x100000
+        dut.io.input.payload.config.texBaseAddr #= baseByteAddr / 8
+        // Update texTables with the correct base address
+        if (config.packedTexLayout) {
+          setTexTables(dut, baseByteAddr, is16bit = true)
         }
-        dut.clockDomain.waitSampling()
-        cycles += 1
-      }
 
-      assert(addressCaptured, "Expected texture read command")
+        // Set S=10, T=20 (in integer coordinates)
+        dut.io.input.payload.s #= 10.0
+        dut.io.input.payload.t #= 20.0
 
-      // Expected address: base + (y * stride + x) * 2
-      // With stride=256, x=10, y=20: base + (20 * 256 + 10) * 2 = base + 10260
-      val expectedAddress = baseByteAddr + (20 * 256 + 10) * 2
-      println(
-        s"Texture address: expected=0x${expectedAddress.toHexString}, actual=0x${capturedAddress.toHexString}"
-      )
+        dut.io.input.valid #= true
 
-      assert(
-        capturedAddress == expectedAddress,
-        s"Expected address 0x${expectedAddress.toHexString}, got 0x${capturedAddress.toHexString}"
-      )
+        // Wait for command and check address
+        var cycles = 0
+        var addressCaptured = false
+        var capturedAddress = 0L
+        while (!addressCaptured && cycles < maxPipelineLatency) {
+          if (dut.io.texRead.cmd.valid.toBoolean) {
+            capturedAddress = dut.io.texRead.cmd.fragment.address.toLong
+            addressCaptured = true
+            dut.io.texRead.cmd.ready #= true
+            dut.io.texRead.rsp.valid #= true
+            dut.io.texRead.rsp.fragment.data #= 0xffff
+            dut.io.texRead.rsp.last #= true
+          } else {
+            dut.io.texRead.cmd.ready #= false
+            dut.io.texRead.rsp.valid #= false
+          }
+          dut.clockDomain.waitSampling()
+          cycles += 1
+        }
+
+        assert(addressCaptured, "Expected texture read command")
+
+        // Expected address: base + (y * stride + x) * 2
+        // With stride=256, x=10, y=20: base + (20 * 256 + 10) * 2 = base + 10260
+        val expectedAddress = baseByteAddr + (20 * 256 + 10) * 2
+        println(
+          s"Texture address: expected=0x${expectedAddress.toHexString}, actual=0x${capturedAddress.toHexString}"
+        )
+
+        assert(
+          capturedAddress == expectedAddress,
+          s"Expected address 0x${expectedAddress.toHexString}, got 0x${capturedAddress.toHexString}"
+        )
     }
   }
 

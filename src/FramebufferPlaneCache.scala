@@ -1,11 +1,12 @@
 package voodoo
 
 import spinal.core._
+import spinal.core.formal._
 import spinal.core.sim._
 import spinal.lib._
 import spinal.lib.bus.bmb._
 
-case class FramebufferPlaneCache(c: Config) extends Component {
+case class FramebufferPlaneCache(c: Config, formalStrong: Boolean = true) extends Component {
   import FramebufferPlaneCache._
 
   val io = new Bundle {
@@ -450,6 +451,172 @@ case class FramebufferPlaneCache(c: Config) extends Component {
       io.mem.rsp.ready := True
       when(io.mem.rsp.fire) {
         state := OpState.Idle
+      }
+    }
+  }
+
+  GenerationFlags.formal {
+    val formalReset = ClockDomain.current.isResetActive
+    if (formalStrong) {
+      val fWordAddr = anyconst(UInt(c.addressWidth.value bits))
+      val fInitData = anyconst(Bits(32 bits))
+      val fData = Reg(Bits(32 bits)) init (fInitData)
+      val fLineBase = lineBaseOf(fWordAddr)
+      val fWordIndex = wordIndexOf(fWordAddr)
+      assume(fWordAddr(1 downto 0) === U(0, 2 bits))
+
+      val fSlotData = Vec((0 until slotCount).map(_ => Reg(Bits(32 bits)) init (0)))
+      when(formalReset) {
+        fData := fInitData
+        for (slot <- 0 until slotCount) {
+          fSlotData(slot) := 0
+        }
+      }
+      for (slot <- 0 until slotCount) {
+        when(
+          lineWriteValid && lineWriteAddress === memIndex(U(slot, slotIndexWidth bits), fWordIndex)
+        ) {
+          for (lane <- 0 until 4) {
+            when(lineWriteMask(lane)) {
+              fSlotData(slot)(8 * lane + 7 downto 8 * lane) := lineWriteData(
+                8 * lane + 7 downto 8 * lane
+              )
+            }
+          }
+        }
+      }
+
+      val fTrackedWriteNow =
+        io.writeReq.fire && writeReqLineBase === fLineBase && writeReqWordIndex === fWordIndex &&
+          (writeHit || !(slotValid(victimSlot) && slotDirty(victimSlot)))
+      when(fTrackedWriteNow) {
+        for (lane <- 0 until 4) {
+          when(io.writeReq.mask(lane)) {
+            fData(8 * lane + 7 downto 8 * lane) := io.writeReq.data(8 * lane + 7 downto 8 * lane)
+          }
+        }
+      }
+
+      val fTrackedDelayedWrite = state === OpState.EvictRsp && io.mem.rsp.fire && !pendingIsRead &&
+        lineBaseOf(pendingWriteReq.address) === fLineBase && wordIndexOf(
+          pendingWriteReq.address
+        ) === fWordIndex
+      when(fTrackedDelayedWrite) {
+        for (lane <- 0 until 4) {
+          when(pendingWriteReq.mask(lane)) {
+            fData(8 * lane + 7 downto 8 * lane) := pendingWriteReq.data(
+              8 * lane + 7 downto 8 * lane
+            )
+          }
+        }
+      }
+
+      val fTrackedFillBeat = fillRspCount.resize(lineShift bits) === fWordIndex
+      when(
+        io.mem.rsp.fire && state === OpState.FillWait && slotBase(
+          pendingSlot
+        ) === fLineBase && fTrackedFillBeat
+      ) {
+        val fFillMask = ~slotDirtyMask(pendingSlot)(fWordIndex)
+        for (lane <- 0 until 4) {
+          when(fFillMask(lane)) {
+            assume(
+              io.mem.rsp.fragment.data(8 * lane + 7 downto 8 * lane) === fData(
+                8 * lane + 7 downto 8 * lane
+              )
+            )
+          }
+        }
+      }
+
+      val fReadPending = Reg(Bool()) init (False)
+      val fReadExpected = Reg(Bits(32 bits)) init (0)
+      when(formalReset) {
+        fReadPending := False
+        fReadExpected := 0
+      }
+      when(io.readReq.fire && io.readReq.address === fWordAddr && !fReadPending) {
+        fReadPending := True
+        fReadExpected := fData
+      }
+      when(!formalReset && io.readRsp.fire && fReadPending) {
+        assert(io.readRsp.data === fReadExpected)
+        fReadPending := False
+      }
+
+      when(!formalReset) {
+        for (slot <- 0 until slotCount) {
+          when(slotValid(slot) && slotBase(slot) === fLineBase) {
+            for (lane <- 0 until 4) {
+              when(slotKnownMask(slot)(fWordIndex)(lane)) {
+                assert(
+                  fSlotData(slot)(8 * lane + 7 downto 8 * lane) === fData(
+                    8 * lane + 7 downto 8 * lane
+                  )
+                )
+              }
+            }
+          }
+        }
+      }
+    }
+
+    when(!formalReset) {
+      if (formalStrong) {
+        for (slot <- 0 until slotCount) {
+          when(!slotValid(slot)) {
+            assert(!slotDirty(slot))
+            for (word <- 0 until lineWords) {
+              assert(slotKnownMask(slot)(word) === B(0, 4 bits))
+              assert(slotDirtyMask(slot)(word) === B(0, 4 bits))
+            }
+          }
+          for (word <- 0 until lineWords) {
+            assert((slotDirtyMask(slot)(word) & ~slotKnownMask(slot)(word)) === B(0, 4 bits))
+          }
+        }
+      }
+
+      when(readHit) {
+        assert(io.readReq.valid)
+        assert(slotValid(readHitSlot))
+        assert(slotBase(readHitSlot) === readReqLineBase)
+        assert(slotKnownMask(readHitSlot)(readReqWordIndex) === B"1111")
+      }
+
+      when(writeHit) {
+        assert(io.writeReq.valid)
+        assert(slotValid(writeHitSlot))
+        assert(slotBase(writeHitSlot) === writeReqLineBase)
+      }
+
+      when(state === OpState.FillCmd) {
+        assert(io.mem.cmd.valid)
+        assert(io.mem.cmd.fragment.opcode === Bmb.Cmd.Opcode.READ)
+        assert(io.mem.cmd.fragment.address === slotBase(pendingSlot))
+        assert(io.mem.cmd.fragment.length === lineLength)
+        assert(io.mem.cmd.last)
+      }
+
+      when(state === OpState.EvictSend && io.mem.cmd.valid) {
+        assert(io.mem.cmd.fragment.opcode === Bmb.Cmd.Opcode.WRITE)
+        assert(
+          io.mem.cmd.fragment.address === (slotBase(pendingSlot) + (evictBeat << 2).resized).resized
+        )
+        assert(io.mem.cmd.fragment.length === lineLength)
+        assert(io.mem.cmd.fragment.mask === slotDirtyMask(pendingSlot)(evictBeat))
+        assert(io.mem.cmd.last === (evictBeat === (lineWords - 1)))
+        assert(evictDataValid)
+      }
+
+      if (formalStrong) {
+        val prevFillRspFire = RegNext(io.mem.rsp.fire && state === OpState.FillWait) init (False)
+        val prevFillSlot = RegNext(pendingSlot) init (0)
+        val prevFillBeat = RegNext(fillRspCount.resize(log2Up(lineWords) bits)) init (0)
+
+        when(prevFillRspFire) {
+          assert(slotKnownMask(prevFillSlot)(prevFillBeat) === B"1111")
+        }
       }
     }
   }

@@ -221,6 +221,7 @@ object TriangleSetup {
     val tmuTextureMode = Bits(32 bits) // Texture mode (format, filtering, clamp/wrap)
     val tmuTexBaseAddr = UInt(24 bits)
     val tmuTLOD = Bits(27 bits) // tLOD register for mipmapping
+    val tmuSendConfig = Bool()
     // TMU texture coordinate gradients for LOD calculation
     val tmudSdX = AFix(c.texCoordsFormat)
     val tmudTdX = AFix(c.texCoordsFormat)

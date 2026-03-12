@@ -1,0 +1,3 @@
+QUARTUS_VERSION = "24.1"
+DATE = "00:00:00  March 05, 2026"
+PROJECT_REVISION = "SpinalVoodoo_de10"

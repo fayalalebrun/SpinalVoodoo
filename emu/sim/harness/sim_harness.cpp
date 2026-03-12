@@ -59,6 +59,14 @@ static int fbwrite_phase = 0; /* 0=clear, 1=idle_after_clear, 2=text_render */
 /* TMU logging: log texture lookup details for cutoff analysis */
 static FILE *tmu_log = nullptr;
 
+/* Unified bus logging for trace-vs-live comparisons. */
+static FILE *bus_log = nullptr;
+
+static void log_bus_event(char op, uint32_t addr, uint32_t data) {
+    if (!bus_log) return;
+    fprintf(bus_log, "%c %06x %08x\n", op, addr & 0xFFFFFF, data);
+}
+
 /* Pixel pipeline trace: env-var-gated per-pixel debug logging.
  * Set SIM_WATCH_X and SIM_WATCH_Y to trace a pixel through every stage.
  * Coords are post-yOriginSwap (screen space). */
@@ -681,6 +689,15 @@ int sim_init(void) {
         }
     }
 
+    const char *buslog_path = getenv("SIM_BUS_LOG");
+    if (buslog_path) {
+        bus_log = fopen(buslog_path, "w");
+        if (bus_log) {
+            fprintf(stderr, "[sim_harness] Bus logging to %s\n", buslog_path);
+            fprintf(bus_log, "# op addr data\n");
+        }
+    }
+
     /* Optional cycle timeout */
     const char *cycle_limit_str = getenv("SIM_CYCLE_LIMIT");
     if (cycle_limit_str) {
@@ -705,6 +722,10 @@ int sim_init(void) {
 }
 
 void sim_shutdown(void) {
+    if (bus_log) {
+        fclose(bus_log);
+        bus_log = nullptr;
+    }
     if (tmu_log) {
         fclose(tmu_log);
         tmu_log = nullptr;
@@ -740,6 +761,7 @@ void sim_shutdown(void) {
 
 void sim_write(uint32_t addr, uint32_t data) {
     bus_write(addr, data);
+    log_bus_event('W', addr, data);
 }
 
 void sim_write16(uint32_t addr, uint16_t data) {
@@ -750,7 +772,9 @@ void sim_write16(uint32_t addr, uint16_t data) {
 }
 
 uint32_t sim_read(uint32_t addr) {
-    return bus_read(addr);
+    uint32_t data = bus_read(addr);
+    log_bus_event('R', addr, data);
+    return data;
 }
 
 

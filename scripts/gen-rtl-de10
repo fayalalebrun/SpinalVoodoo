@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+MAIN_CLASS="${DE10_RTL_MAIN_CLASS:-voodoo.de10.De10TopGen}"
+SCALA_SOURCES=(project.scala src)
+SCALA_CLI_BASE_ARGS=(--server=false)
+SCALA_CLI_TIMEOUT_SECONDS="${DE10_SCALA_CLI_TIMEOUT_SECONDS:-300}"
+
+if ! command -v scala-cli >/dev/null 2>&1; then
+  echo "scala-cli not found in PATH" >&2
+  exit 1
+fi
+
+if ! command -v timeout >/dev/null 2>&1; then
+  echo "timeout not found in PATH" >&2
+  exit 1
+fi
+
+echo "[de10] Running scala-cli for ${MAIN_CLASS} with ${SCALA_CLI_TIMEOUT_SECONDS}s timeout"
+cd "$ROOT_DIR"
+timeout --foreground --kill-after=10s "${SCALA_CLI_TIMEOUT_SECONDS}s" \
+  scala-cli run "${SCALA_CLI_BASE_ARGS[@]}" "${SCALA_SOURCES[@]}" --main-class "$MAIN_CLASS"

@@ -142,6 +142,12 @@ case class TmuTexelDecoder(c: voodoo.Config) extends Component {
     result.g := dg
     result.b := db
     result.a := da
+    when(pass.sendConfig) {
+      result.r := 0
+      result.g := 0
+      result.b := 1
+      result.a := U(255, 8 bits)
+    }
     result.passthrough := pass
     result
   }
@@ -198,6 +204,12 @@ case class TmuTexelDecoder(c: voodoo.Config) extends Component {
     result.texture.g := blendChannel(pass.ds, pass.dt, g0, g1, g2, g3)
     result.texture.b := blendChannel(pass.ds, pass.dt, b0, b1, b2, b3)
     result.textureAlpha := blendChannel(pass.ds, pass.dt, a0, a1, a2, a3)
+    when(pass.sendConfig) {
+      result.texture.r := 0
+      result.texture.g := 0
+      result.texture.b := 1
+      result.textureAlpha := U(255, 8 bits)
+    }
     if (c.trace.enabled) {
       result.trace := pass.trace
     }

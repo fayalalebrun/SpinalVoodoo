@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DOSBOX_BIN="${DOSBOXX_BIN:-}"
+GLIDE_LIB_DIR="${DE10_GLIDE_LIB_DIR:-/opt/spinalvoodoo/current/lib}"
+CONF_FILE="${DE10_DOSBOX_CONF:-/opt/spinalvoodoo/current/etc/dosboxx-de10-glide.conf}"
+
+if [[ -z "$DOSBOX_BIN" ]]; then
+  if command -v dosbox-x >/dev/null 2>&1; then
+    DOSBOX_BIN="$(command -v dosbox-x)"
+  else
+    echo "dosbox-x not found and DOSBOXX_BIN is not set" >&2
+    exit 1
+  fi
+fi
+
+if [[ ! -x "$DOSBOX_BIN" ]]; then
+  echo "DOSBox-X binary is not executable: $DOSBOX_BIN" >&2
+  exit 1
+fi
+
+if [[ ! -f "$GLIDE_LIB_DIR/libglide2x.so.2" ]]; then
+  echo "Missing Glide library at $GLIDE_LIB_DIR/libglide2x.so.2" >&2
+  exit 1
+fi
+
+if [[ ! -f "$CONF_FILE" ]]; then
+  echo "Missing DOSBox-X config: $CONF_FILE" >&2
+  exit 1
+fi
+
+export LD_LIBRARY_PATH="$GLIDE_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+exec "$DOSBOX_BIN" -conf "$CONF_FILE" "$@"

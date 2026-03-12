@@ -1,0 +1,12 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+    fragment@0 {
+        target-path = "/soc/fpga-region0";
+
+        __overlay__ {
+            firmware-name = "SpinalVoodoo_de10.rbf";
+        };
+    };
+};

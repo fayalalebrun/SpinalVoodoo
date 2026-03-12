@@ -1,0 +1,445 @@
+#!/usr/bin/env bash
+if [[ -z "${BASH_VERSION:-}" ]]; then
+  exec bash "$0" "$@"
+fi
+
+set -euo pipefail
+
+ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+STAGE_DIR="$ROOT_DIR/output/de10/bookworm-sd-v7.0.0/FPGA-SoC-Debian12-7.0.0"
+TARGET_DIR="$STAGE_DIR/target/de10-nano"
+BOOT_DIR="$TARGET_DIR/boot"
+UBOOT_DIR="$TARGET_DIR/u-boot"
+KERNEL_SRC="$STAGE_DIR/files/vmlinuz-6.1.108-armv7-fpga-1"
+KERNEL_DST="vmlinuz-6.1.108-armv7-fpga"
+ROOTFS_DIR="$STAGE_DIR/debian12-rootfs-vanilla.tgz.files"
+DEBIAN_PKG_DIR="$STAGE_DIR/debian"
+HPS_DDR_SIZE_MIB=1024
+DE10_DDR_CARVEOUT_MIB="${DE10_DDR_CARVEOUT_MIB:-16}"
+
+DEFAULT_IMAGE="$ROOT_DIR/output/de10/bookworm-sd-v7.0.0/de10-bookworm-v7.0.0.img"
+DEFAULT_BMAP="$ROOT_DIR/output/de10/bookworm-sd-v7.0.0/de10-bookworm-v7.0.0.bmap"
+WORK_DIR="$ROOT_DIR/output/de10/bookworm-sd-v7.0.0/genimage-work"
+IMAGE_SIZE_MIB="${DE10_BOOKWORM_IMAGE_SIZE_MIB:-4096}"
+ROOTFS_OFFSET_MIB=109
+
+IMAGE_PATH="$DEFAULT_IMAGE"
+BMAP_PATH="$DEFAULT_BMAP"
+IMAGE_ONLY=0
+DEVICE=""
+ROOTFS_PARTS=()
+DEBIAN_PKGS=()
+BMAP_EXPLICIT=0
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/flash-de10-bookworm-sd [--image-only] [--image <path>] [--bmap <path>] [device]
+
+Builds a reusable DE10-Nano Debian 12 Bookworm SD image with genimage and,
+unless --image-only is used, flashes it with bmaptool.
+
+Arguments:
+  device          Optional target block device (for example /dev/sdb).
+
+Options:
+  --image-only    Build/update the image and .bmap, but do not flash a device.
+  --image <path>  Override the generated image path.
+  --bmap <path>   Override the generated bmap path.
+
+If no device is provided, the script auto-detects a single removable disk.
+EOF
+}
+
+patch_uenv_mem_limit() {
+  local uenv_path="$1"
+  local mem_limit_arg="$2"
+
+  python3 - "$uenv_path" "$mem_limit_arg" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+uenv_path = Path(sys.argv[1])
+mem_limit_arg = sys.argv[2]
+content = uenv_path.read_text()
+line_re = re.compile(r"^(linux_boot_args_other=)(.*)$", re.MULTILINE)
+match = line_re.search(content)
+if not match:
+    raise SystemExit(f"missing linux_boot_args_other in {uenv_path}")
+
+args = match.group(2).strip().split()
+args = [arg for arg in args if not arg.startswith("mem=")]
+args.append(mem_limit_arg)
+replacement = match.group(1) + " ".join(args)
+updated = line_re.sub(replacement, content, count=1)
+uenv_path.write_text(updated)
+PY
+}
+
+patch_dts_reserved_memory() {
+  local dts_path="$1"
+  local dtb_path="$2"
+  local carveout_base_hex="$3"
+  local carveout_size_hex="$4"
+
+  python3 - "$dts_path" "$carveout_base_hex" "$carveout_size_hex" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+dts_path = Path(sys.argv[1])
+carveout_base = sys.argv[2]
+carveout_size = sys.argv[3]
+text = dts_path.read_text()
+
+block = f'''\
+\treserved-memory {{
+\t\t#address-cells = <0x1>;
+\t\t#size-cells = <0x1>;
+\t\tranges;
+
+\t\tspinalvoodoo_reserved_ddr: fpga-ddr@{carveout_base[2:]} {{
+\t\t\treg = <{carveout_base} {carveout_size}>;
+\t\t\tno-map;
+\t\t}};
+\t}};
+
+'''
+
+pattern = re.compile(
+    r'\n\treserved-memory \{\n\t\t#address-cells = <0x1>;\n\t\t#size-cells = <0x1>;\n\t\tranges;\n\n\t\tspinalvoodoo_reserved_ddr: fpga-ddr@[0-9a-fA-F]+ \{\n\t\t\treg = <0x[0-9a-fA-F]+ 0x[0-9a-fA-F]+>;\n\t\t\tno-map;\n\t\t\};\n\t\};\n\n',
+    re.MULTILINE,
+)
+
+if pattern.search(text):
+    text = pattern.sub('\n' + block, text, count=1)
+else:
+    anchor = '\n\tmemory@0 {'
+    if anchor not in text:
+        raise SystemExit(f"could not find memory node anchor in {dts_path}")
+    text = text.replace(anchor, '\n' + block + '\tmemory@0 {', 1)
+
+dts_path.write_text(text)
+PY
+
+  dtc -I dts -O dtb -o "$dtb_path" "$dts_path"
+}
+
+require_file() {
+  local path="$1"
+  if [[ ! -e "$path" ]]; then
+    echo "Missing required staged file: $path" >&2
+    exit 1
+  fi
+}
+
+require_command() {
+  local name="$1"
+  if ! command -v "$name" >/dev/null 2>&1; then
+    echo "Missing required command: $name" >&2
+    exit 1
+  fi
+}
+
+detect_device() {
+  local devices
+  mapfile -t devices < <(lsblk -dn -o PATH,RM,TYPE | awk '$2 == 1 && $3 == "disk" { print $1 }')
+  case "${#devices[@]}" in
+    1)
+      printf '%s\n' "${devices[0]}"
+      ;;
+    0)
+      echo "No removable disk found. Pass a device explicitly." >&2
+      exit 1
+      ;;
+    *)
+      printf 'Multiple removable disks found:\n' >&2
+      printf '  %s\n' "${devices[@]}" >&2
+      echo "Pass the target device explicitly." >&2
+      exit 1
+      ;;
+  esac
+}
+
+partition_path() {
+  local dev="$1"
+  local idx="$2"
+  if [[ "$dev" =~ [0-9]$ ]]; then
+    printf '%sp%s\n' "$dev" "$idx"
+  else
+    printf '%s%s\n' "$dev" "$idx"
+  fi
+}
+
+unmount_partitions() {
+  local dev="$1"
+  local part
+  local idx
+
+  for idx in 1 2 3; do
+    part="$(partition_path "$dev" "$idx")"
+    if [[ -b "$part" ]]; then
+      if mountpoint="$(lsblk -nr -o MOUNTPOINT "$part" 2>/dev/null || true)" && [[ -n "$mountpoint" ]]; then
+        umount "$part"
+      fi
+    fi
+  done
+}
+
+prepare_inputs() {
+  local input_dir="$1"
+  local root_dir="$2"
+  local linux_mem_limit_mib
+  local linux_mem_limit_arg
+  local carveout_base_bytes
+  local carveout_base_hex
+  local carveout_end_hex
+  local carveout_size_hex
+  local dtb_matches=()
+  local dts_matches=()
+
+  rm -rf "$input_dir" "$root_dir"
+  mkdir -p "$input_dir/boot" "$root_dir"
+
+  if (( DE10_DDR_CARVEOUT_MIB <= 0 || DE10_DDR_CARVEOUT_MIB >= HPS_DDR_SIZE_MIB )); then
+    echo "DE10_DDR_CARVEOUT_MIB must be between 1 and $((HPS_DDR_SIZE_MIB - 1))" >&2
+    exit 1
+  fi
+
+  linux_mem_limit_mib="$((HPS_DDR_SIZE_MIB - DE10_DDR_CARVEOUT_MIB))"
+  linux_mem_limit_arg="mem=${linux_mem_limit_mib}M"
+  carveout_base_bytes="$((linux_mem_limit_mib * 1024 * 1024))"
+  printf -v carveout_base_hex '0x%08x' "$carveout_base_bytes"
+  printf -v carveout_end_hex '0x%08x' "$((carveout_base_bytes + DE10_DDR_CARVEOUT_MIB * 1024 * 1024 - 1))"
+  printf -v carveout_size_hex '0x%08x' "$((DE10_DDR_CARVEOUT_MIB * 1024 * 1024))"
+
+  cp "$BOOT_DIR"/* "$input_dir/boot/"
+  cp "$KERNEL_SRC" "$input_dir/boot/$KERNEL_DST"
+  patch_uenv_mem_limit "$input_dir/boot/uEnv.txt" "$linux_mem_limit_arg"
+  dtb_matches=("$input_dir"/boot/devicetree-*.dtb)
+  dts_matches=("$input_dir"/boot/devicetree-*.dts)
+  if [[ ${#dtb_matches[@]} -ne 1 || ${#dts_matches[@]} -ne 1 ]]; then
+    echo "Expected exactly one staged DTB and DTS in $input_dir/boot" >&2
+    exit 1
+  fi
+  patch_dts_reserved_memory "${dts_matches[0]}" "${dtb_matches[0]}" "$carveout_base_hex" "$carveout_size_hex"
+  echo "[de10-sd] Reserving top ${DE10_DDR_CARVEOUT_MIB} MiB for FPGA DDR at ${linux_mem_limit_arg}"
+  echo "[de10-sd] Marking ${carveout_base_hex}..${carveout_end_hex} in the DT as reserved-memory/no-map"
+
+  truncate -s 8M "$input_dir/uboot-partition.img"
+  dd if="$UBOOT_DIR/u-boot-spl.sfp" of="$input_dir/uboot-partition.img" bs=64K seek=0 conv=notrunc status=none
+  dd if="$UBOOT_DIR/u-boot.img" of="$input_dir/uboot-partition.img" bs=64K seek=4 conv=notrunc status=none
+
+  cat "${ROOTFS_PARTS[@]}" | tar xfz - -C "$root_dir"
+
+  mkdir -p "$root_dir/home/fpga/debian"
+  cp "$DEBIAN_PKG_DIR"/*.deb "$root_dir/home/fpga/debian/"
+}
+
+write_genimage_cfg() {
+  local cfg_path="$1"
+  local image_name="$2"
+  local rootfs_size_mib="$3"
+
+  cat > "$cfg_path" <<EOF
+image boot.vfat {
+  vfat {
+    label = "BOOT"
+  }
+  size = 100M
+  srcpath = "input/boot"
+}
+
+image rootfs.ext4 {
+  ext4 {
+    use-mke2fs = true
+    label = "rootfs"
+  }
+  size = ${rootfs_size_mib}M
+  srcpath = "root"
+}
+
+image ${image_name} {
+  hdimage {
+    partition-table-type = "mbr"
+    align = 1M
+    fill = true
+  }
+  size = ${IMAGE_SIZE_MIB}M
+
+  partition boot {
+    partition-type = 0x0b
+    image = "boot.vfat"
+    offset = 9M
+    size = 100M
+  }
+
+  partition rootfs {
+    partition-type = 0x83
+    image = "rootfs.ext4"
+    offset = 109M
+    size = ${rootfs_size_mib}M
+  }
+
+  partition uboot {
+    partition-type = 0xa2
+    image = "uboot-partition.img"
+    offset = 1M
+    size = 8M
+  }
+}
+EOF
+}
+
+build_image() {
+  local image_path="$1"
+  local bmap_path="$2"
+  local output_dir image_name cfg_path input_dir root_dir tmp_dir rootfs_size_mib
+
+  if (( IMAGE_SIZE_MIB <= ROOTFS_OFFSET_MIB )); then
+    echo "DE10_BOOKWORM_IMAGE_SIZE_MIB must be greater than ${ROOTFS_OFFSET_MIB}" >&2
+    exit 1
+  fi
+
+  output_dir="$(dirname "$image_path")"
+  image_name="$(basename "$image_path")"
+  rootfs_size_mib="$((IMAGE_SIZE_MIB - ROOTFS_OFFSET_MIB))"
+  cfg_path="$WORK_DIR/genimage.cfg"
+  input_dir="$WORK_DIR/input"
+  root_dir="$WORK_DIR/root"
+  tmp_dir="$WORK_DIR/tmp"
+
+  mkdir -p "$output_dir" "$(dirname "$bmap_path")"
+  rm -rf "$WORK_DIR"
+  mkdir -p "$tmp_dir"
+
+  echo "[de10-sd] Preparing genimage inputs"
+  prepare_inputs "$input_dir" "$root_dir"
+  write_genimage_cfg "$cfg_path" "$image_name" "$rootfs_size_mib"
+
+  rm -f "$image_path" "$bmap_path"
+
+  echo "[de10-sd] Building image with genimage"
+  (
+    cd "$WORK_DIR"
+    genimage \
+      --rootpath "$root_dir" \
+      --inputpath "$input_dir" \
+      --outputpath "$output_dir" \
+      --tmppath "$tmp_dir" \
+      --config "$cfg_path"
+  )
+
+  echo "[de10-sd] Building bmap"
+  bmaptool create -o "$bmap_path" "$image_path"
+}
+
+flash_image() {
+  local image_path="$1"
+  local bmap_path="$2"
+  local device="$3"
+
+  if [[ ! -b "$device" ]]; then
+    echo "Target is not a block device: $device" >&2
+    exit 1
+  fi
+
+  case "$device" in
+    /dev/sda|/dev/nvme0n1)
+      echo "Refusing to flash likely system disk: $device" >&2
+      exit 1
+      ;;
+  esac
+
+  echo "[de10-sd] Flashing $image_path to $device"
+  unmount_partitions "$device"
+  bmaptool copy --bmap "$bmap_path" "$image_path" "$device"
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --image-only)
+      IMAGE_ONLY=1
+      shift
+      ;;
+    --image)
+      IMAGE_PATH="$2"
+      if [[ "$BMAP_EXPLICIT" -eq 0 ]]; then
+        BMAP_PATH="${2}.bmap"
+      fi
+      shift 2
+      ;;
+    --bmap)
+      BMAP_PATH="$2"
+      BMAP_EXPLICIT=1
+      shift 2
+      ;;
+    --*)
+      echo "Unknown option: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+    *)
+      if [[ -n "$DEVICE" ]]; then
+        echo "Unexpected extra argument: $1" >&2
+        usage >&2
+        exit 1
+      fi
+      DEVICE="$1"
+      shift
+      ;;
+  esac
+done
+
+if [[ "$EUID" -ne 0 ]]; then
+  sudo_args=()
+  if [[ "$IMAGE_ONLY" -eq 1 ]]; then
+    sudo_args+=(--image-only)
+  fi
+  sudo_args+=(--image "$IMAGE_PATH" --bmap "$BMAP_PATH")
+  if [[ -n "$DEVICE" ]]; then
+    sudo_args+=("$DEVICE")
+  fi
+  exec sudo "$0" "${sudo_args[@]}"
+fi
+
+require_file "$UBOOT_DIR/u-boot-spl.sfp"
+require_file "$UBOOT_DIR/u-boot.img"
+require_file "$BOOT_DIR/uEnv.txt"
+require_file "$KERNEL_SRC"
+require_command dtc
+
+shopt -s nullglob
+ROOTFS_PARTS=("$ROOTFS_DIR"/x*)
+DEBIAN_PKGS=("$DEBIAN_PKG_DIR"/*.deb)
+shopt -u nullglob
+
+if [[ "${#ROOTFS_PARTS[@]}" -eq 0 ]]; then
+  echo "Missing split Debian rootfs payloads in $ROOTFS_DIR" >&2
+  exit 1
+fi
+
+if [[ "${#DEBIAN_PKGS[@]}" -eq 0 ]]; then
+  echo "Missing Debian support packages in $DEBIAN_PKG_DIR" >&2
+  exit 1
+fi
+
+build_image "$IMAGE_PATH" "$BMAP_PATH"
+
+if [[ "$IMAGE_ONLY" -eq 1 ]]; then
+  echo "[de10-sd] Image ready: $IMAGE_PATH"
+  echo "[de10-sd] Bmap ready: $BMAP_PATH"
+  echo "[de10-sd] Default image logins: fpga/fpga and root/admin"
+  exit 0
+fi
+
+if [[ -z "$DEVICE" ]]; then
+  DEVICE="$(detect_device)"
+fi
+
+flash_image "$IMAGE_PATH" "$BMAP_PATH" "$DEVICE"
+echo "[de10-sd] Default image logins: fpga/fpga and root/admin"

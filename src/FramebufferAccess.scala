@@ -33,6 +33,7 @@ case class FramebufferAccess(c: Config) extends Component {
 
     // Pipeline busy: pixels in flight inside fork-queue-join
     val busy = out Bool ()
+    val zFuncFail = out Bool ()
   }
 
   val inFlightCount = Reg(UInt(5 bits)) init 0
@@ -182,6 +183,7 @@ case class FramebufferAccess(c: Config) extends Component {
   )
 
   val depthKill = pdata.fbzMode.enableDepthBuffer && !depthPassed
+  io.zFuncFail := fetched.fire && depthKill
   val afterDepthTest = fetched.throwWhen(depthKill)
 
   // ========================================================================

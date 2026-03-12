@@ -6,6 +6,4 @@
 //> using test.dep "com.github.spinalhdl::spinalhdl-tester:1.13.0"
 //> using dep "org.scodec::scodec-core:1.11.10"
 //> using dep "org.scodec::scodec-bits:1.1.38"
-//> using repository "https://jitpack.io"
-//> using dep "com.github.fayalalebrun:math:30c17b86101fced5e6032b9fc0211a87d1f76ccd"
 //> using options "-deprecation" "-feature" "-unchecked"

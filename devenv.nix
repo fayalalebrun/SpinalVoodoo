@@ -35,8 +35,19 @@
   packages = [
     pkgs.git
     pkgs.git-lfs
+    pkgs.curl
     pkgs.stdenv.cc
     pkgs.boost
+    pkgs.genimage
+    pkgs.bmaptool
+    pkgs.util-linux
+    pkgs.parted
+    pkgs.dosfstools
+    pkgs.e2fsprogs
+    pkgs.gnutar
+    pkgs.gzip
+    pkgs.mtools
+    pkgs.dtc
     pkgs.iverilog
     pkgs.ghdl
     pkgs.yosys
@@ -51,6 +62,8 @@
     pkgs.python3Packages.jupytext
     pkgs.hdf5
     pkgs.gdb
+    # FPGA synthesis tooling
+    pkgs.quartus-prime-lite
     # Glide build dependencies (32-bit C toolchain for Voodoo1)
     pkgs.nasm
     pkgs.pkgsi686Linux.stdenv.cc
@@ -84,6 +97,30 @@
       echo "Done."
     '';
     description = "Build sim-enabled Glide library and test programs";
+  };
+
+  scripts.de10-plan = {
+    exec = ''
+      echo "DE10 goals: docs/DE10_MILESTONES.md"
+      echo "Bring-up plan: docs/DE10_BRINGUP_PLAN.md"
+      echo "Deployment plan: docs/DE10_DEPLOYMENT.md"
+    '';
+    description = "Print DE10 planning docs";
+  };
+
+  scripts.de10-build-bitstream = {
+    exec = ''exec bash ./scripts/build-bitstream-de10 "$@"'';
+    description = "Build DE10 bitstream (Quartus required)";
+  };
+
+  scripts.de10-program = {
+    exec = ''exec bash ./scripts/program-de10 "$@"'';
+    description = "Program DE10 FPGA image remotely";
+  };
+
+  scripts.de10-deploy = {
+    exec = ''exec bash ./scripts/deploy-de10.sh "$@"'';
+    description = "Deploy runtime bundle to a DE10";
   };
 
     pre-commit = {

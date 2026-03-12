@@ -101,7 +101,62 @@ case class PciFifo(
   private val isWriteCmd = io.cpuSide.cmd.valid && io.cpuSide.cmd.opcode === Bmb.Cmd.Opcode.WRITE
   private val doWriteImmediate =
     (io.cpuSide.cmd.fire && io.cpuSide.cmd.opcode === Bmb.Cmd.Opcode.WRITE).allowPruning()
-  private val shouldQueue = Bool()
+
+  private case class StagedWrite() extends Bundle {
+    val address = UInt(busAddrWidth bits)
+    val data = Bits(busDataWidth bits)
+    val mask = Bits(busDataWidth / 8 bits)
+    val syncRequired = Bool()
+    val isTexture = Bool()
+    val texPciAddr = UInt(23 bits)
+    val isFloatAlias = Bool()
+    val floatTargetAddr = UInt(busAddrWidth bits)
+    val floatShiftAmount = UInt(5 bits)
+  }
+
+  private val queueableCpuWrite = isWriteCmd && !fifoBypass
+
+  // Small front-end staging FIFO decouples incoming PCI writes from float conversion bubbles.
+  private val stageFifo = StreamFifo(StagedWrite(), depth = 16)
+  private val stagedWriteTx = Stream(StagedWrite())
+  stagedWriteTx.valid := False
+  stagedWriteTx.address := 0
+  stagedWriteTx.data := 0
+  stagedWriteTx.mask := 0
+  stagedWriteTx.syncRequired := False
+  stagedWriteTx.isTexture := False
+  stagedWriteTx.texPciAddr := 0
+  stagedWriteTx.isFloatAlias := False
+  stagedWriteTx.floatTargetAddr := 0
+  stagedWriteTx.floatShiftAmount := 0
+
+  when(queueableCpuWrite) {
+    stagedWriteTx.valid := io.cpuSide.cmd.valid
+    stagedWriteTx.address := io.cpuSide.cmd.address
+    stagedWriteTx.data := io.cpuSide.cmd.data
+    stagedWriteTx.mask := io.cpuSide.cmd.mask
+    stagedWriteTx.syncRequired := syncRequired
+    stagedWriteTx.isTexture := False
+    stagedWriteTx.texPciAddr := 0
+    stagedWriteTx.isFloatAlias := isFloatAlias
+    stagedWriteTx.floatTargetAddr := floatTargetAddr
+    stagedWriteTx.floatShiftAmount := floatShiftAmount
+  } elsewhen (io.texWrite.valid) {
+    stagedWriteTx.valid := True
+    stagedWriteTx.address := 0
+    stagedWriteTx.data := io.texWrite.data
+    stagedWriteTx.mask := io.texWrite.mask
+    stagedWriteTx.syncRequired := False
+    stagedWriteTx.isTexture := True
+    stagedWriteTx.texPciAddr := io.texWrite.pciAddr
+    stagedWriteTx.isFloatAlias := False
+    stagedWriteTx.floatTargetAddr := 0
+    stagedWriteTx.floatShiftAmount := 0
+  }
+
+  stageFifo.io.push << stagedWriteTx
+
+  private val stagedWrite = stageFifo.io.pop
 
   // ========================================================================
   // Float conversion pipeline
@@ -111,22 +166,30 @@ case class PciFifo(
   private val floatConvertTargetAddr = Reg(UInt(busAddrWidth bits))
   private val floatConvertShift = Reg(UInt(5 bits))
 
-  private val floatWriteRequest =
-    io.cpuSide.cmd.valid && io.cpuSide.cmd.opcode === Bmb.Cmd.Opcode.WRITE &&
-      !fifoBypass && isFloatAlias
+  private val floatWriteRequest = stagedWrite.valid && stagedWrite.isFloatAlias
   floatConverter.io.op.valid := floatWriteRequest && !floatConvertInFlight
-  floatConverter.io.op.payload.assignFromBits(io.cpuSide.cmd.data)
+  floatConverter.io.op.payload.assignFromBits(stagedWrite.data)
 
   when(floatConverter.io.op.fire) {
     floatConvertInFlight := True
-    floatConvertTargetAddr := floatTargetAddr
-    floatConvertShift := floatShiftAmount
+    floatConvertTargetAddr := stagedWrite.floatTargetAddr
+    floatConvertShift := stagedWrite.floatShiftAmount
   }
 
   // ========================================================================
   // FIFO push mux
   // ========================================================================
   private val queuedWriteTx = Stream(QueuedWrite())
+
+  queuedWriteTx.valid := False
+  queuedWriteTx.address := 0
+  queuedWriteTx.data := 0
+  queuedWriteTx.mask := 0
+  queuedWriteTx.syncRequired := False
+  queuedWriteTx.isTexture := False
+  queuedWriteTx.texPciAddr := 0
+  queuedWriteTx.hasFloatShadow := False
+  queuedWriteTx.floatShadowRaw := 0
 
   when(floatConvertInFlight && floatConverter.io.result.valid) {
     // Push converted float data with remapped integer address
@@ -152,44 +215,37 @@ case class PciFifo(
     queuedWriteTx.texPciAddr := 0
     queuedWriteTx.hasFloatShadow := True
     queuedWriteTx.floatShadowRaw := rawSInt.resize(50 bits)
-  } otherwise {
-    // Normal register write or texture write from texWrite input
-    // Texture writes are only enqueued when no register write is pending
-    val texWritePending = io.texWrite.valid && !shouldQueue
-    when(texWritePending && !floatConvertInFlight) {
-      queuedWriteTx.valid := True
-      queuedWriteTx.address := 0
-      queuedWriteTx.data := io.texWrite.data
-      queuedWriteTx.mask := io.texWrite.mask
-      queuedWriteTx.syncRequired := False
-      queuedWriteTx.isTexture := True
-      queuedWriteTx.texPciAddr := io.texWrite.pciAddr
-      queuedWriteTx.hasFloatShadow := False
-      queuedWriteTx.floatShadowRaw := 0
-    } otherwise {
-      queuedWriteTx.valid := shouldQueue
-      queuedWriteTx.address := io.cpuSide.cmd.address
-      queuedWriteTx.data := io.cpuSide.cmd.data
-      queuedWriteTx.mask := io.cpuSide.cmd.mask
-      queuedWriteTx.syncRequired := syncRequired
-      queuedWriteTx.isTexture := False
-      queuedWriteTx.texPciAddr := 0
-      queuedWriteTx.hasFloatShadow := False
-      queuedWriteTx.floatShadowRaw := 0
-    }
+  } elsewhen (stagedWrite.valid && !stagedWrite.isFloatAlias) {
+    queuedWriteTx.valid := True
+    queuedWriteTx.address := stagedWrite.address
+    queuedWriteTx.data := stagedWrite.data
+    queuedWriteTx.mask := stagedWrite.mask
+    queuedWriteTx.syncRequired := stagedWrite.syncRequired
+    queuedWriteTx.isTexture := stagedWrite.isTexture
+    queuedWriteTx.texPciAddr := stagedWrite.texPciAddr
   }
 
-  floatConverter.io.result.ready := floatConvertInFlight && queuedWriteTx.ready
+  // Converted float writes must be lossless. Hold the result until the FIFO
+  // accepts it, which backpressures the host while conversion/output is busy.
+  floatConverter.io.result.ready := queuedWriteTx.ready
   when(floatConverter.io.result.fire) {
     floatConvertInFlight := False
   }
 
-  // Texture write ready: accepted when FIFO can accept and no register write competing
-  io.texWrite.ready := !shouldQueue && !floatConvertInFlight && queuedWriteTx.ready &&
-    !(floatConvertInFlight && floatConverter.io.result.valid)
+  stageFifo.io.pop.ready := False
+  when(stagedWrite.valid && !stagedWrite.isFloatAlias) {
+    stageFifo.io.pop.ready := queuedWriteTx.fire
+  }
+  when(floatConvertInFlight && floatConverter.io.result.valid) {
+    stageFifo.io.pop.ready := queuedWriteTx.fire
+  }
 
-  // wasEnqueued: detect when a specific address is enqueued
-  io.wasEnqueued := shouldQueue && io.cpuSide.cmd.address === io.wasEnqueuedAddr
+  // Texture writes queue behind CPU writes but no longer stall behind float conversion bubbles.
+  io.texWrite.ready := !queueableCpuWrite && stageFifo.io.push.ready
+
+  // wasEnqueued: detect when a specific register write was actually enqueued
+  io.wasEnqueued := queuedWriteTx.fire && !queuedWriteTx.isTexture &&
+    queuedWriteTx.address === io.wasEnqueuedAddr
 
   // ========================================================================
   // 64-entry PCI FIFO
@@ -293,12 +349,6 @@ case class PciFifo(
   // FIFO'd write: generate immediate response at enqueue time
   // Drain response: consumed/discarded
 
-  // Track whether last regSide transaction was from CPU or drain
-  val lastWasCpuPassthrough = RegInit(False)
-  when(io.regSide.cmd.fire) {
-    lastWasCpuPassthrough := cpuPassthrough
-  }
-
   // Always consume regSide responses
   io.regSide.rsp.ready := True
 
@@ -318,13 +368,13 @@ case class PciFifo(
   when(io.cpuSide.cmd.fire && io.cpuSide.cmd.opcode === Bmb.Cmd.Opcode.READ) {
     pendingRead := True
   }
-  when(pendingRead && io.regSide.rsp.valid && lastWasCpuPassthrough) {
+  when(pendingRead && io.regSide.rsp.valid) {
     pendingRead := False
   }
 
   // Override default response for reads
   when(pendingRead) {
-    io.cpuSide.rsp.valid := io.regSide.rsp.valid && lastWasCpuPassthrough
+    io.cpuSide.rsp.valid := io.regSide.rsp.valid
     io.cpuSide.rsp.data := io.regSide.rsp.data
     io.cpuSide.rsp.opcode := io.regSide.rsp.opcode
     io.cpuSide.rsp.source := io.regSide.rsp.source
@@ -336,26 +386,22 @@ case class PciFifo(
   // Stall logic
   // ========================================================================
   io.cpuSide.cmd.ready := True
-  // Stall when FIFO is full for normal (non-float) FIFO writes
-  when(
-    io.cpuSide.cmd.valid && io.cpuSide.cmd.opcode === Bmb.Cmd.Opcode.WRITE &&
-      !fifoBypass && !isFloatAlias && !queuedWriteTx.ready
-  ) {
-    io.cpuSide.cmd.ready := False
-  }
-  // Stall for float alias conversion: initial cycle
-  when(
-    io.cpuSide.cmd.valid && io.cpuSide.cmd.opcode === Bmb.Cmd.Opcode.WRITE &&
-      !fifoBypass && isFloatAlias && !floatConvertInFlight
-  ) {
-    io.cpuSide.cmd.ready := False
-  }
-  // Stall while float conversion in flight but result not ready or FIFO full
-  when(floatConvertInFlight && !(floatConverter.io.result.valid && queuedWriteTx.ready)) {
-    io.cpuSide.cmd.ready := False
+  // Queued writes are accepted into the front-end stage FIFO, so float conversion no longer
+  // bubbles the incoming PCI bus unless that staging FIFO fills.
+  when(queueableCpuWrite) {
+    io.cpuSide.cmd.ready := stageFifo.io.push.ready
   }
   // Stall reads while a read is already pending
   when(io.cpuSide.cmd.valid && io.cpuSide.cmd.opcode === Bmb.Cmd.Opcode.READ && pendingRead) {
+    io.cpuSide.cmd.ready := False
+  }
+  // Stall reads until downstream accepts the passthrough command.
+  // Unlike writes, reads are not buffered in the PCI FIFO, so accepting a CPU read when regSide
+  // is not ready would drop the command and leave pendingRead stuck forever.
+  when(
+    io.cpuSide.cmd.valid && io.cpuSide.cmd.opcode === Bmb.Cmd.Opcode.READ && !pendingRead &&
+      !io.regSide.cmd.ready
+  ) {
     io.cpuSide.cmd.ready := False
   }
 
@@ -413,9 +459,6 @@ case class PciFifo(
       }
     }
 
-    // Normal FIFO path excludes float alias writes
-    shouldQueue := doWriteImmediate && !fifoBypass && !isFloatAlias
-
     // Command stream drain blocking
     println(
       s"[PciFifo] Command stream addresses: ${commandAddresses.map(a => f"0x$a%03x").mkString(", ")}"
@@ -445,7 +488,6 @@ case class PciFifo(
     assert(io.regSide.cmd.valid === (cpuPassthrough || doRegDrain))
 
     when(doWriteDirect) {
-      assert(!shouldQueue)
       assert(cpuPassthrough)
     }
 
@@ -478,7 +520,7 @@ case class PciFifo(
     }
 
     when(pendingRead) {
-      assert(io.cpuSide.rsp.valid === (io.regSide.rsp.valid && lastWasCpuPassthrough))
+      assert(io.cpuSide.rsp.valid === io.regSide.rsp.valid)
       assert(io.cpuSide.rsp.data === io.regSide.rsp.data)
       assert(io.cpuSide.rsp.opcode === io.regSide.rsp.opcode)
       assert(io.cpuSide.rsp.source === io.regSide.rsp.source)
@@ -489,7 +531,6 @@ case class PciFifo(
     }
 
     when(floatWriteRequest && !floatConvertInFlight) {
-      assert(!io.cpuSide.cmd.ready)
       assert(floatConverter.io.op.valid)
     }
 

@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+PROJECT_DIR="$ROOT_DIR/hw/de10/quartus"
+PROJECT_NAME="${DE10_PROJECT_NAME:-SpinalVoodoo_de10}"
+RTL_MAIN_CLASS="${DE10_RTL_MAIN_CLASS:-voodoo.de10.De10TopGen}"
+OUT_DIR="${DE10_OUT_DIR:-$ROOT_DIR/output/de10/bitstream}"
+SKIP_RTL_GEN="${DE10_SKIP_RTL_GEN:-0}"
+SKIP_QSYS_GEN="${DE10_SKIP_QSYS_GEN:-0}"
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/build-bitstream-de10 [--skip-rtl-gen] [--out-dir <path>]
+
+Environment overrides:
+  DE10_PROJECT_NAME    Quartus project/revision name (default: SpinalVoodoo_de10)
+  DE10_RTL_MAIN_CLASS  scala-cli main class for RTL generation
+  DE10_OUT_DIR         output artifact directory
+  DE10_SKIP_RTL_GEN    set to 1 to skip scala RTL generation
+  DE10_SKIP_QSYS_GEN   set to 1 to skip qsys generation
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --skip-rtl-gen)
+      SKIP_RTL_GEN=1
+      shift
+      ;;
+    --out-dir)
+      OUT_DIR="$2"
+      shift 2
+      ;;
+    --skip-qsys-gen)
+      SKIP_QSYS_GEN=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage
+      exit 1
+      ;;
+  esac
+done
+
+if ! command -v quartus_sh >/dev/null 2>&1; then
+  echo "quartus_sh not found in PATH" >&2
+  echo "Install/enter nix shell with quartus-prime-lite first." >&2
+  exit 1
+fi
+
+if ! command -v quartus_cpf >/dev/null 2>&1; then
+  echo "quartus_cpf not found in PATH" >&2
+  echo "Install/enter nix shell with quartus-prime-lite first." >&2
+  exit 1
+fi
+
+if [[ "$SKIP_RTL_GEN" != "1" ]]; then
+  echo "[de10] Generating RTL with scala-cli (${RTL_MAIN_CLASS})"
+  DE10_RTL_MAIN_CLASS="$RTL_MAIN_CLASS" "$ROOT_DIR/scripts/gen-rtl-de10"
+fi
+
+if [[ ! -f "$ROOT_DIR/hw/de10/rtl/De10Top.v" ]]; then
+  echo "Missing expected RTL file: hw/de10/rtl/De10Top.v" >&2
+  echo "Run without --skip-rtl-gen or verify ${RTL_MAIN_CLASS}." >&2
+  exit 1
+fi
+
+if [[ ! -f "$ROOT_DIR/hw/de10/quartus/De10PlatformTop.v" ]]; then
+  echo "Missing expected wrapper RTL file: hw/de10/quartus/De10PlatformTop.v" >&2
+  exit 1
+fi
+
+if [[ "$SKIP_QSYS_GEN" != "1" ]]; then
+  "$ROOT_DIR/scripts/gen-qsys-de10"
+fi
+
+if [[ ! -f "$ROOT_DIR/hw/de10/qsys/generated/synthesis/de10_soc.qip" ]]; then
+  echo "Missing expected generated Qsys file: hw/de10/qsys/generated/synthesis/de10_soc.qip" >&2
+  echo "Run without --skip-qsys-gen to regenerate Platform Designer outputs." >&2
+  exit 1
+fi
+
+if [[ ! -f "$ROOT_DIR/hw/de10/qsys/generated/pll/synthesis/de10_core_pll.qip" ]]; then
+  echo "Missing expected generated PLL Qsys file: hw/de10/qsys/generated/pll/synthesis/de10_core_pll.qip" >&2
+  echo "Run without --skip-qsys-gen to regenerate Platform Designer outputs." >&2
+  exit 1
+fi
+
+echo "[de10] Running Quartus compile flow"
+(cd "$PROJECT_DIR" && quartus_sh -t build.tcl "$PROJECT_NAME")
+
+SOF_FILE=""
+for candidate in \
+  "$PROJECT_DIR/output_files/${PROJECT_NAME}.sof" \
+  "$PROJECT_DIR/${PROJECT_NAME}.sof"; do
+  if [[ -f "$candidate" ]]; then
+    SOF_FILE="$candidate"
+    break
+  fi
+done
+
+if [[ -z "$SOF_FILE" ]]; then
+  echo "Quartus did not produce ${PROJECT_NAME}.sof in expected locations" >&2
+  exit 1
+fi
+
+mkdir -p "$OUT_DIR"
+cp "$SOF_FILE" "$OUT_DIR/${PROJECT_NAME}.sof"
+
+echo "[de10] Converting SOF to Linux/HPS-compatible compressed RBF"
+quartus_cpf -c -o bitstream_compression=on "$SOF_FILE" "$OUT_DIR/${PROJECT_NAME}.rbf"
+
+echo "[de10] Converting SOF to uncompressed RBF"
+quartus_cpf -c -o bitstream_compression=off "$SOF_FILE" "$OUT_DIR/${PROJECT_NAME}-uncompressed.rbf"
+
+if command -v sha256sum >/dev/null 2>&1; then
+  (
+    cd "$OUT_DIR"
+    sha256sum "${PROJECT_NAME}.sof" "${PROJECT_NAME}.rbf" "${PROJECT_NAME}-uncompressed.rbf" > SHA256SUMS
+  )
+fi
+
+echo "[de10] Artifacts ready in $OUT_DIR"

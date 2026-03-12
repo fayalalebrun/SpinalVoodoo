@@ -1,4 +1,4 @@
-# Top-level Makefile for SpinalVoodoo simulation
+# Top-level Makefile for SpinalVoodoo simulation + DE10 scaffolding
 #
 # Builds everything in dependency order:
 #   1. sim    - SpinalHDL → Verilog → Verilator model
@@ -11,9 +11,10 @@
 #   make sim          # just the Verilator model
 #   make glide        # sim + Glide library
 #   make tests        # sim + Glide + all test binaries
+#   make de10/help    # DE10 workflow entrypoints
 #   make clean        # clean all build artifacts
 
-.PHONY: all sim glide tests clean clean-sim clean-glide clean-tests run-all trace-test check-all FORCE
+.PHONY: all sim glide tests clean clean-sim clean-glide clean-tests run-all trace-test check-all de10/help de10/plan de10/rtl de10/qsys de10/bitstream de10/program de10/deploy de10/mmio-smoke de10/sync-sysroot de10/glide de10/glide-tests de10/glide-cross de10/glide-tests-cross FORCE
 
 # Derive CXX32 from CC32 for sub-makefiles that need it
 CC32 ?= gcc -m32
@@ -21,6 +22,8 @@ export CXX32 ?= $(shell d=$$(dirname "$(firstword $(CC32))") && [ -x "$$d/g++" ]
 export CC32
 export TRACE
 export REF_TRACE
+SIM_INTERFACE ?= core
+SIM_MODEL = $(if $(filter de10,$(SIM_INTERFACE)),CoreDe10,CoreSim)
 
 SIM_DIR       = emu/sim
 GLIDE_SRC_DIR = emu/glide/glide2x/sst1/glide/src
@@ -30,22 +33,89 @@ GLIDE_TST_DIR = emu/glide/glide2x/sst1/glide/tests
 SCALA_SRCS := $(shell find src -name '*.scala') project.scala
 
 # Stamp files — real build outputs used to avoid unnecessary sub-make invocations
-SIM_STAMP   = $(SIM_DIR)/obj_dir/VCoreSim__ALL.a
+SIM_STAMP   = $(SIM_DIR)/obj_dir/V$(SIM_MODEL)__ALL.a
+SIM_RTL     = $(SIM_DIR)/rtl/$(SIM_MODEL).v
 GLIDE_STAMP = emu/glide/glide2x/sst1/lib/sst1/libglide2x.so.2
 
 OUTPUT_DIR = output
+DE10_RTL_DIR = hw/de10/rtl
+DE10_BUILD_SCRIPT = scripts/build-bitstream-de10
+DE10_RTL_SCRIPT = scripts/gen-rtl-de10
+DE10_QSYS_SCRIPT = scripts/gen-qsys-de10
+DE10_PROGRAM_SCRIPT = scripts/program-de10
+DE10_DEPLOY_SCRIPT = scripts/deploy-de10.sh
+DE10_SYNC_SYSROOT_SCRIPT = scripts/sync-de10-sysroot
+DE10_CROSS_GLIDE_SCRIPT = scripts/build-de10-glide-cross
+DE10_MMIO_SMOKE_BIN = tools/de10-mmio-smoke
 
 all: tests
 
+de10/help:
+	@echo "DE10 targets:"
+	@echo "  make de10/plan         # open goals and bring-up docs"
+	@echo "  make de10/rtl          # generate DE10-targeted RTL"
+	@echo "  make de10/qsys         # generate Platform Designer system"
+	@echo "  make de10/bitstream    # run Quartus bitstream build flow"
+	@echo "  make de10/program      # program DE10 FPGA image remotely"
+	@echo "  make de10/deploy       # deploy runtime bundle to DE10"
+	@echo "  make de10/mmio-smoke   # build board MMIO smoke utility"
+	@echo "  make de10/sync-sysroot # fetch DE10 userspace sysroot locally"
+	@echo "  make de10/glide        # build DE10-targeted Glide library"
+	@echo "  make de10/glide-tests  # build DE10-targeted Glide test binaries"
+	@echo "  make de10/glide-cross  # cross-build DE10 Glide library locally"
+	@echo "  make de10/glide-tests-cross # cross-build DE10 Glide tests locally"
+
+de10/plan:
+	@echo "See docs/DE10_MILESTONES.md"
+	@echo "See docs/DE10_BRINGUP_PLAN.md"
+	@echo "See docs/DE10_DEPLOYMENT.md"
+
+de10/rtl:
+	@mkdir -p $(DE10_RTL_DIR)
+	$(DE10_RTL_SCRIPT)
+
+de10/qsys:
+	$(DE10_QSYS_SCRIPT)
+
+de10/bitstream:
+	$(DE10_BUILD_SCRIPT)
+
+de10/program:
+	$(DE10_PROGRAM_SCRIPT) $(ARGS)
+
+de10/deploy:
+	$(DE10_DEPLOY_SCRIPT) $(ARGS)
+
+de10/mmio-smoke: $(DE10_MMIO_SMOKE_BIN)
+
+de10/sync-sysroot:
+	$(DE10_SYNC_SYSROOT_SCRIPT) $(ARGS)
+
+de10/glide:
+	$(MAKE) -C emu/glide/glide2x/sst1/glide/src -f Makefile.de10 $(ARGS)
+
+de10/glide-tests:
+	$(MAKE) -C emu/glide/glide2x/sst1/glide/src -f Makefile.de10
+	$(MAKE) -C emu/glide/glide2x/sst1/glide/tests -f Makefile.de10 $(ARGS)
+
+de10/glide-cross:
+	$(DE10_CROSS_GLIDE_SCRIPT) --glide $(ARGS)
+
+de10/glide-tests-cross:
+	$(DE10_CROSS_GLIDE_SCRIPT) --glide-tests $(ARGS)
+
+$(DE10_MMIO_SMOKE_BIN): tools/de10-mmio-smoke.c
+	$(CC) -O2 -Wall -Wextra -o $@ $<
+
 # Phony targets: always recurse into sub-make (for explicit builds)
 sim:
-	$(MAKE) -C $(SIM_DIR) all
+	$(MAKE) -C $(SIM_DIR) all SIM_INTERFACE=$(SIM_INTERFACE)
 
 glide: sim
-	$(MAKE) -C $(GLIDE_SRC_DIR) -f Makefile.sim
+	$(MAKE) -C $(GLIDE_SRC_DIR) -f Makefile.sim SIM_INTERFACE=$(SIM_INTERFACE)
 
 tests: glide
-	$(MAKE) -C $(GLIDE_TST_DIR) -f Makefile.sim all
+	$(MAKE) -C $(GLIDE_TST_DIR) -f Makefile.sim all SIM_INTERFACE=$(SIM_INTERFACE)
 
 # Trace mode sentinel: force sim+glide rebuild when TRACE= setting changes.
 # Updated at parse time via $(shell) so the timestamp only changes on real transitions.
@@ -57,22 +127,22 @@ $(shell [ -f $(TRACE_MODE_FILE) ] && [ "$$(cat $(TRACE_MODE_FILE))" = "$(TRACE_M
 # File-based build chain: only recurse when outputs are stale.
 # The sub-makes handle fine-grained .c/.o dependency tracking internally.
 $(SIM_STAMP): $(SCALA_SRCS) $(TRACE_MODE_FILE)
-	$(MAKE) -C $(SIM_DIR) all
+	$(MAKE) -C $(SIM_DIR) all SIM_INTERFACE=$(SIM_INTERFACE)
 
 # Always recurse so sub-make tracks .c → .o deps for Glide sources
 $(GLIDE_STAMP): $(SIM_STAMP) FORCE
-	$(MAKE) -C $(GLIDE_SRC_DIR) -f Makefile.sim
+	$(MAKE) -C $(GLIDE_SRC_DIR) -f Makefile.sim SIM_INTERFACE=$(SIM_INTERFACE)
 
 # Build a single test exe (always recurse so sub-make tracks .c → .o deps)
 $(GLIDE_TST_DIR)/%.exe: $(GLIDE_STAMP) FORCE
-	$(MAKE) -C $(GLIDE_TST_DIR) -f Makefile.sim $*.exe
+	$(MAKE) -C $(GLIDE_TST_DIR) -f Makefile.sim $*.exe SIM_INTERFACE=$(SIM_INTERFACE)
 
 # Run a single test: make run/test00
 # Pass TRACE=1 to enable FST trace output
 run/%: $(GLIDE_TST_DIR)/%.exe scripts/srle2png
 	@rm -rf $(OUTPUT_DIR)/$*
 	@mkdir -p $(OUTPUT_DIR)/$*
-	@ln -sfn ../../emu/sim/rtl/CoreSim.v $(OUTPUT_DIR)/$*/CoreSim.v
+	@ln -sfn ../../$(SIM_RTL) $(OUTPUT_DIR)/$*/$(SIM_MODEL).v
 	cd $(GLIDE_TST_DIR) && \
 	  $(if $(filter 1,$(TRACE)),SIM_FST=$(abspath $(OUTPUT_DIR))/$*/trace.fst) \
 	  LD_LIBRARY_PATH=../../lib/sst1 \

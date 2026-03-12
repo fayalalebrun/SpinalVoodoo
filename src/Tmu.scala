@@ -400,6 +400,7 @@ case class Tmu(c: voodoo.Config) extends Component {
   val inputPassthrough = Tmu.TmuPassthrough(c)
   inputPassthrough.format := texMode.format
   inputPassthrough.bilinear := bilinearEnable
+  inputPassthrough.sendConfig := io.input.payload.config.sendConfig
   inputPassthrough.ds := finalDs
   inputPassthrough.dt := finalDt
   inputPassthrough.readIdx := 0
@@ -447,6 +448,7 @@ case class Tmu(c: voodoo.Config) extends Component {
   }.elsewhen(!io.input.fire && io.output.fire) {
     inFlightCount := inFlightCount - 1
   }
+  }
   io.busy := inFlightCount =/= 0
 }
 
@@ -462,6 +464,7 @@ object Tmu {
   case class TmuPassthrough(c: voodoo.Config) extends Bundle {
     val format = UInt(4 bits)
     val bilinear = Bool()
+    val sendConfig = Bool()
     val ds = UInt(4 bits)
     val dt = UInt(4 bits)
     val readIdx = UInt(2 bits)
@@ -615,6 +618,7 @@ object Tmu {
     val textureMode = Bits(32 bits)
     val texBaseAddr = UInt(24 bits)
     val tLOD = Bits(27 bits)
+    val sendConfig = Bool()
     val ncc = NccTableData()
     val texTables = if (c != null && c.packedTexLayout) TexLayoutTables.Tables() else null
   }

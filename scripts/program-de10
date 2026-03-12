@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+HOST="${DE10_HOST:-}"
+USER_NAME="${DE10_USER:-root}"
+RBF_FILE="${DE10_RBF:-output/de10/bitstream/SpinalVoodoo_de10.rbf}"
+REMOTE_TMP_DIR="${DE10_REMOTE_TMP_DIR:-/tmp/spinalvoodoo}"
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/program-de10 --host <host> [--user <user>] [--rbf <file>] [--remote-tmp-dir <dir>]
+
+Programming strategy:
+  1) If /dev/fpga0 exists, stream RBF into /dev/fpga0.
+  2) Else if fpga_manager firmware sysfs is present, install firmware and request load.
+  3) Else if dtbocfg configfs overlays are present, apply a temporary fpga-region overlay.
+
+Notes:
+  - Remote user must be root or have passwordless sudo.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --host)
+      HOST="$2"
+      shift 2
+      ;;
+    --user)
+      USER_NAME="$2"
+      shift 2
+      ;;
+    --rbf)
+      RBF_FILE="$2"
+      shift 2
+      ;;
+    --remote-tmp-dir)
+      REMOTE_TMP_DIR="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage
+      exit 1
+      ;;
+  esac
+done
+
+if [[ -z "$HOST" ]]; then
+  echo "Missing required --host" >&2
+  usage
+  exit 1
+fi
+
+if [[ ! -f "$RBF_FILE" ]]; then
+  echo "RBF file not found: $RBF_FILE" >&2
+  exit 1
+fi
+
+REMOTE_TARGET="${USER_NAME}@${HOST}"
+REMOTE_RBF="${REMOTE_TMP_DIR}/$(basename "$RBF_FILE")"
+REMOTE_FW_NAME="$(basename "$RBF_FILE")"
+
+echo "[de10] Uploading $(basename "$RBF_FILE") to ${REMOTE_TARGET}:${REMOTE_RBF}"
+ssh "$REMOTE_TARGET" "mkdir -p '$REMOTE_TMP_DIR'"
+scp "$RBF_FILE" "${REMOTE_TARGET}:${REMOTE_RBF}"
+
+echo "[de10] Programming FPGA on ${REMOTE_TARGET}"
+ssh "$REMOTE_TARGET" "bash -s -- '$REMOTE_RBF' '$REMOTE_FW_NAME'" <<'EOF'
+set -euo pipefail
+
+remote_rbf="$1"
+fw_name="$2"
+
+run_root() {
+  if [[ "$(id -u)" -eq 0 ]]; then
+    "$@"
+  else
+    sudo -n "$@"
+  fi
+}
+
+remove_existing_overlay() {
+  if [[ -d /config/device-tree/overlays/spinalvoodoo-load ]]; then
+    run_root bash -lc 'echo 0 > /config/device-tree/overlays/spinalvoodoo-load/status 2>/dev/null || true; rmdir /config/device-tree/overlays/spinalvoodoo-load 2>/dev/null || true'
+  fi
+}
+
+if [[ -e /dev/fpga0 ]]; then
+  run_root dd if="$remote_rbf" of=/dev/fpga0 bs=1M conv=fsync status=none
+elif [[ -e /sys/class/fpga_manager/fpga0/firmware ]]; then
+  run_root mkdir -p /lib/firmware
+  run_root install -m 0644 "$remote_rbf" "/lib/firmware/$fw_name"
+  printf '%s' "$fw_name" | run_root tee /sys/class/fpga_manager/fpga0/firmware >/dev/null
+elif [[ -d /config/device-tree/overlays && -d /sys/firmware/devicetree/base/soc/fpga-region0 && -x /usr/bin/dtc ]]; then
+  overlay_dts="$(dirname "$remote_rbf")/spinalvoodoo-load-overlay.dts"
+  overlay_dtbo="$(dirname "$remote_rbf")/spinalvoodoo-load-overlay.dtbo"
+
+  run_root mkdir -p /lib/firmware
+  run_root install -m 0644 "$remote_rbf" "/lib/firmware/$fw_name"
+
+  cat > "$overlay_dts" <<EODTS
+/dts-v1/;
+/plugin/;
+
+/ {
+    fragment@0 {
+        target-path = "/soc/fpga-region0";
+
+        __overlay__ {
+            firmware-name = "$fw_name";
+        };
+    };
+};
+EODTS
+
+  /usr/bin/dtc -@ -I dts -O dtb -o "$overlay_dtbo" "$overlay_dts"
+  remove_existing_overlay
+  run_root mkdir -p /config/device-tree/overlays/spinalvoodoo-load
+  run_root bash -lc 'cat "$1" > /config/device-tree/overlays/spinalvoodoo-load/dtbo' _ "$overlay_dtbo"
+  printf '1' | run_root tee /config/device-tree/overlays/spinalvoodoo-load/status >/dev/null
+else
+  echo "No supported FPGA programming interface found on target" >&2
+  exit 1
+fi
+
+if [[ -r /sys/class/fpga_manager/fpga0/state ]]; then
+  fpga_state="$(cat /sys/class/fpga_manager/fpga0/state)"
+  echo "fpga_manager state: ${fpga_state}"
+  if [[ "$fpga_state" != "operating" ]]; then
+    exit 1
+  fi
+fi
+EOF
+
+echo "[de10] Programming complete"

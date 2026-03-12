@@ -1,0 +1,253 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+SYSROOT_DIR="${DE10_SYSROOT:-$ROOT_DIR/output/de10/sysroot}"
+
+want_glide=0
+want_tests=0
+do_clean=0
+pass_args=()
+
+write_signature_file() {
+  local sig_file="$1"
+  local sig_value="$2"
+
+  printf '%s\n' "$sig_value" > "$sig_file"
+}
+
+read_signature_file() {
+  local sig_file="$1"
+
+  if [[ -f "$sig_file" ]]; then
+    tr -d '\n' < "$sig_file"
+  fi
+}
+
+hash_file() {
+  sha256sum "$1" | cut -d ' ' -f 1
+}
+
+hash_text() {
+  sha256sum | cut -d ' ' -f 1
+}
+
+signature_for_scope() {
+  local scope="$1"
+
+  {
+    printf 'scope=%s\n' "$scope"
+    printf 'script=%s\n' "$(hash_file "$ROOT_DIR/scripts/build-de10-glide-cross")"
+    printf 'clang=%s\n' "$CLANG_BIN"
+    printf 'llvm_ar=%s\n' "$LLVM_AR_BIN"
+    printf 'ld_lld=%s\n' "$LD_LLD_BIN"
+    printf 'sysroot=%s\n' "$SYSROOT_DIR"
+    printf 'gcc_dir=%s\n' "$GCC_DIR"
+    printf 'resource_dir=%s\n' "$RESOURCE_DIR"
+    printf 'cc_cmd=%s\n' "$CC_CMD"
+    printf 'pass_args='
+    printf '%q ' "${pass_args[@]}"
+    printf '\n'
+    cat
+  } | hash_text
+}
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/build-de10-glide-cross [--glide] [--glide-tests] [--sysroot <dir>] [-- <make args>]
+
+Cross-builds DE10 Glide artifacts locally using clang + a synced ARM sysroot.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --glide)
+      want_glide=1
+      shift
+      ;;
+    --glide-tests)
+      want_glide=1
+      want_tests=1
+      shift
+      ;;
+    --clean)
+      do_clean=1
+      shift
+      ;;
+    --sysroot)
+      SYSROOT_DIR="$2"
+      shift 2
+      ;;
+    --)
+      shift
+      pass_args=("$@")
+      break
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      pass_args+=("$1")
+      shift
+      ;;
+  esac
+done
+
+if [[ $want_glide -eq 0 && $want_tests -eq 0 ]]; then
+  want_glide=1
+  want_tests=1
+fi
+
+if [[ ! -d "$SYSROOT_DIR/usr/include" ]]; then
+  echo "Missing sysroot: $SYSROOT_DIR" >&2
+  echo "Run scripts/sync-de10-sysroot first." >&2
+  exit 1
+fi
+
+shopt -s nullglob
+
+find_tool() {
+  local env_name="$1"
+  shift
+  local from_env="${!env_name:-}"
+  local candidate
+
+  if [[ -n "$from_env" ]]; then
+    printf '%s\n' "$from_env"
+    return 0
+  fi
+
+  for candidate in "$@"; do
+    if [[ "$candidate" == *clang-wrapper* ]]; then
+      continue
+    fi
+    if [[ -x "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+CLANG_BIN="$(find_tool DE10_CLANG /nix/store/*-clang-*/bin/clang)"
+LLVM_AR_BIN="$(find_tool DE10_LLVM_AR /nix/store/*-llvm-*/bin/llvm-ar /nix/store/*-clang-*/bin/llvm-ar)"
+LD_LLD_BIN="$(find_tool DE10_LD_LLD /nix/store/*-lld-*/bin/ld.lld /nix/store/*-llvm-binutils-wrapper-*/bin/ld.lld)"
+GCC_DIRS=("$SYSROOT_DIR"/usr/lib/gcc/arm-linux-gnueabihf/*)
+
+if [[ ${#GCC_DIRS[@]} -eq 0 ]]; then
+  echo "Could not locate gcc support files under $SYSROOT_DIR/usr/lib/gcc/arm-linux-gnueabihf" >&2
+  exit 1
+fi
+
+GCC_DIR="${GCC_DIRS[0]}"
+RESOURCE_DIR="$($CLANG_BIN -print-resource-dir)"
+TARGET_TRIPLE="armv7a-linux-gnueabihf"
+SYSROOT_TRIPLE="arm-linux-gnueabihf"
+
+EXTRA_CFLAGS=(
+  -nostdinc
+  -isystem "$RESOURCE_DIR/include"
+  -isystem "$GCC_DIR/include"
+  -isystem "$SYSROOT_DIR/usr/include/$SYSROOT_TRIPLE"
+  -isystem "$SYSROOT_DIR/usr/include"
+)
+
+TEST_EXTRA_CFLAGS=(
+  "${EXTRA_CFLAGS[@]}"
+  -fno-fast-math
+)
+
+EXTRA_LDFLAGS=(
+  -fuse-ld="$LD_LLD_BIN"
+  -B"$GCC_DIR"
+  -B"$GCC_DIR/../../../../$SYSROOT_TRIPLE/bin"
+  -Wl,-z,max-page-size=4096
+  -Wl,-z,common-page-size=4096
+)
+
+TEST_EXTRA_LDFLAGS=(
+  "${EXTRA_LDFLAGS[@]}"
+  -no-pie
+  -Wl,--dynamic-linker=/lib/ld-linux-armhf.so.3
+)
+
+ENV_CLEAN=(
+  env
+  -u CPATH
+  -u C_INCLUDE_PATH
+  -u CPLUS_INCLUDE_PATH
+  -u LIBRARY_PATH
+  -u COMPILER_PATH
+  -u NIX_CFLAGS_COMPILE
+  -u NIX_LDFLAGS
+)
+
+CC_CMD="$CLANG_BIN --target=$TARGET_TRIPLE"
+AR_CMD="$LLVM_AR_BIN"
+
+GLIDE_SIG_FILE="$ROOT_DIR/emu/glide/glide2x/sst1/glide/src/.de10-cross-build.sig"
+TEST_SIG_FILE="$ROOT_DIR/emu/glide/glide2x/sst1/glide/tests/.de10-cross-build.sig"
+
+GLIDE_SIG_VALUE="$(
+  {
+    printf 'src_makefile=%s\n' "$(hash_file "$ROOT_DIR/emu/glide/glide2x/sst1/glide/src/Makefile.de10")"
+    printf 'extra_cflags='
+    printf '%q ' "${EXTRA_CFLAGS[@]}"
+    printf '\n'
+    printf 'extra_ldflags='
+    printf '%q ' "${EXTRA_LDFLAGS[@]}"
+    printf '\n'
+  } | signature_for_scope glide
+)"
+
+TEST_SIG_VALUE="$(
+  {
+    printf 'src_makefile=%s\n' "$(hash_file "$ROOT_DIR/emu/glide/glide2x/sst1/glide/src/Makefile.de10")"
+    printf 'tests_makefile=%s\n' "$(hash_file "$ROOT_DIR/emu/glide/glide2x/sst1/glide/tests/Makefile.de10")"
+    printf 'extra_cflags='
+    printf '%q ' "${TEST_EXTRA_CFLAGS[@]}"
+    printf '\n'
+    printf 'extra_ldflags='
+    printf '%q ' "${TEST_EXTRA_LDFLAGS[@]}"
+    printf '\n'
+  } | signature_for_scope tests
+)"
+
+src_make_args=()
+tests_make_args=("${pass_args[@]}")
+
+if [[ $want_tests -eq 0 ]]; then
+  src_make_args=("${pass_args[@]}")
+fi
+
+if [[ $want_glide -eq 1 ]]; then
+  if [[ $do_clean -eq 1 || "$(read_signature_file "$GLIDE_SIG_FILE")" != "$GLIDE_SIG_VALUE" ]]; then
+    "${ENV_CLEAN[@]}" make -C "$ROOT_DIR/emu/glide/glide2x/sst1/glide/src" -f Makefile.de10 clean
+  fi
+  "${ENV_CLEAN[@]}" make -C "$ROOT_DIR/emu/glide/glide2x/sst1/glide/src" -f Makefile.de10 \
+    CC="$CC_CMD" \
+    CXX="$CC_CMD" \
+    AR="$AR_CMD" \
+    SYSROOT="$SYSROOT_DIR" \
+    EXTRA_CFLAGS="${EXTRA_CFLAGS[*]}" \
+    EXTRA_LDFLAGS="${EXTRA_LDFLAGS[*]}" \
+    "${src_make_args[@]}"
+  write_signature_file "$GLIDE_SIG_FILE" "$GLIDE_SIG_VALUE"
+fi
+
+if [[ $want_tests -eq 1 ]]; then
+  if [[ $do_clean -eq 1 || "$(read_signature_file "$TEST_SIG_FILE")" != "$TEST_SIG_VALUE" ]]; then
+    "${ENV_CLEAN[@]}" make -C "$ROOT_DIR/emu/glide/glide2x/sst1/glide/tests" -f Makefile.de10 clean
+  fi
+  "${ENV_CLEAN[@]}" make -C "$ROOT_DIR/emu/glide/glide2x/sst1/glide/tests" -f Makefile.de10 \
+    CC="$CC_CMD" \
+    CXX="$CC_CMD" \
+    SYSROOT="$SYSROOT_DIR" \
+    EXTRA_CFLAGS="${TEST_EXTRA_CFLAGS[*]}" \
+    EXTRA_LDFLAGS="${TEST_EXTRA_LDFLAGS[*]}" \
+    "${tests_make_args[@]}"
+  write_signature_file "$TEST_SIG_FILE" "$TEST_SIG_VALUE"
+fi

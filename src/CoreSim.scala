@@ -36,12 +36,6 @@ case class CoreSim(c: Config, memTiming: SimMemoryTiming = SimMemoryTiming()) ex
   core.io.statusInputs.memFifoFree := 0xffff
   core.io.statusInputs.pciInterrupt := False
 
-  core.io.statisticsIn.pixelsIn := 0
-  core.io.statisticsIn.chromaFail := 0
-  core.io.statisticsIn.zFuncFail := 0
-  core.io.statisticsIn.aFuncFail := 0
-  core.io.statisticsIn.pixelsOut := 0
-
   core.io.fbBaseAddr := 0
   core.io.flushFbCaches := io.flushFbCaches
 }

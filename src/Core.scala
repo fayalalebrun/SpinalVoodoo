@@ -75,15 +75,6 @@ case class Core(c: Config) extends Component {
     val swapDisplayedBuffer = out UInt (2 bits)
     val swapsPending = out UInt (3 bits)
 
-    // Statistics inputs
-    val statisticsIn = in(new Bundle {
-      val pixelsIn = UInt(24 bits)
-      val chromaFail = UInt(24 bits)
-      val zFuncFail = UInt(24 bits)
-      val aFuncFail = UInt(24 bits)
-      val pixelsOut = UInt(24 bits)
-    })
-
     // Framebuffer base address
     val fbBaseAddr = in UInt (c.addressWidth)
 
@@ -313,7 +304,6 @@ case class Core(c: Config) extends Component {
     }
   }
   regBank.io.statusInputs <> io.statusInputs
-  regBank.io.statisticsIn <> io.statisticsIn
 
   // Pipeline busy signal: assigned after all pipeline stages are instantiated (see below)
 
@@ -456,6 +446,7 @@ case class Core(c: Config) extends Component {
     cfg.tmuTextureMode := regBank.tmuConfig.textureMode
     cfg.tmuTexBaseAddr := regBank.tmuConfig.texBaseAddr
     cfg.tmuTLOD := regBank.tmuConfig.tLOD.resized
+    cfg.tmuSendConfig := regBank.tmuConfig.trexInit1(18)
     cfg.tmudSdX.raw := g.dSdX.asBits
     cfg.tmudTdX.raw := g.dTdX.asBits
     cfg.tmudSdY.raw := g.dSdY.asBits
@@ -700,6 +691,7 @@ case class Core(c: Config) extends Component {
     out.config.textureMode := in.config.tmuTextureMode
     out.config.texBaseAddr := in.config.tmuTexBaseAddr
     out.config.tLOD := in.config.tmuTLOD
+    out.config.sendConfig := in.config.tmuSendConfig
     out.config.ncc := in.config.ncc
     if (c.packedTexLayout) {
       out.config.texTables := in.config.texTables
@@ -857,6 +849,22 @@ case class Core(c: Config) extends Component {
   // alphaMode blend fields are now per-pixel (carried through pipeline in Fog.Output.alphaMode)
   fbAccess.io.zaColor := regBank.renderConfig.zaColor
 
+  val pixelsInCounter = Reg(UInt(24 bits)) init (0)
+  val chromaFailCounter = Reg(UInt(24 bits)) init (0)
+  val zFuncFailCounter = Reg(UInt(24 bits)) init (0)
+  val aFuncFailCounter = Reg(UInt(24 bits)) init (0)
+  val pixelsOutCounter = Reg(UInt(24 bits)) init (0)
+
+  when(colorCombine.io.output.fire && chromaKill) {
+    chromaFailCounter := chromaFailCounter + 1
+  }
+  when(fog.io.output.fire && alphaKill) {
+    aFuncFailCounter := aFuncFailCounter + 1
+  }
+  when(fbAccess.io.zFuncFail) {
+    zFuncFailCounter := zFuncFailCounter + 1
+  }
+
   // ========================================================================
   // Triangle → Write.PreDither (from FramebufferAccess output)
   // ========================================================================
@@ -896,6 +904,14 @@ case class Core(c: Config) extends Component {
   fastfillWrite.io.regs.yOriginSwapValue := yOriginSwapValue
   fastfillWrite.io.regs.fbPixelStride := fbPixelStride
 
+  val pixelsInDelta =
+    colorCombine.io.output.fire.asUInt.resize(3 bits) +
+      lfb.io.pipelineOutput.fire.asUInt.resize(3 bits) +
+      lfb.io.writeOutput.fire.asUInt.resize(3 bits) +
+      fastfillWrite.io.output.fire.asUInt.resize(3 bits)
+
+  pixelsInCounter := pixelsInCounter + pixelsInDelta.resize(24 bits)
+
   // ========================================================================
   // Shared Dither: merge all three PreDither paths, dither, produce plane writes
   // ========================================================================
@@ -922,7 +938,7 @@ case class Core(c: Config) extends Component {
 
   val (forColorWrite, forAuxWrite) = StreamFork2(ditherJoined, synchronous = true)
 
-  writeColor.i.fromPipeline << forColorWrite
+  val colorWriteInput = forColorWrite
     .throwWhen(!forColorWrite.payload._2.rgbWrite)
     .translateWith {
       val ditOut = forColorWrite.payload._1
@@ -937,8 +953,9 @@ case class Core(c: Config) extends Component {
       }
       out
     }
+  writeColor.i.fromPipeline << colorWriteInput
 
-  writeAux.i.fromPipeline << forAuxWrite
+  val auxWriteInput = forAuxWrite
     .throwWhen(!forAuxWrite.payload._2.auxWrite)
     .translateWith {
       val pd = forAuxWrite.payload._2
@@ -952,6 +969,17 @@ case class Core(c: Config) extends Component {
       }
       out
     }
+  writeAux.i.fromPipeline << auxWriteInput
+
+  when(writeColor.i.fromPipeline.fire) {
+    pixelsOutCounter := pixelsOutCounter + 1
+  }
+
+  regBank.io.statisticsIn.pixelsIn := pixelsInCounter
+  regBank.io.statisticsIn.chromaFail := chromaFailCounter
+  regBank.io.statisticsIn.zFuncFail := zFuncFailCounter
+  regBank.io.statisticsIn.aFuncFail := aFuncFailCounter
+  regBank.io.statisticsIn.pixelsOut := pixelsOutCounter
 
   val fbColorBusy = Bool()
   val fbAuxBusy = Bool()
@@ -991,7 +1019,8 @@ case class Core(c: Config) extends Component {
     fbArbiter.io.inputs(1).cmd << fbAuxCache.io.mem.cmd.s2mPipe()
     fbAuxCache.io.mem.rsp << fbArbiter.io.inputs(1).rsp.s2mPipe()
 
-    fbArbiter.io.inputs(2) <> lfb.io.fbReadBus
+    fbArbiter.io.inputs(2).cmd << lfb.io.fbReadBus.cmd
+    lfb.io.fbReadBus.rsp << fbArbiter.io.inputs(2).rsp.s2mPipe()
     fbArbiter.io.output <> io.fbMem
 
     fbColorBusy := fbColorCache.io.busy
@@ -1060,7 +1089,8 @@ case class Core(c: Config) extends Component {
     fbArbiter.io.inputs(3).cmd << fbAuxReadPort.io.mem.cmd.s2mPipe()
     fbAuxReadPort.io.mem.rsp << fbArbiter.io.inputs(3).rsp.s2mPipe()
 
-    fbArbiter.io.inputs(4) <> lfb.io.fbReadBus
+    fbArbiter.io.inputs(4).cmd << lfb.io.fbReadBus.cmd
+    lfb.io.fbReadBus.rsp << fbArbiter.io.inputs(4).rsp.s2mPipe()
     fbArbiter.io.output <> io.fbMem
 
     fbColorBusy := fbColorReadPort.io.busy || fbColorWritePort.io.busy
@@ -1211,7 +1241,77 @@ case class Core(c: Config) extends Component {
       colorCombine.io.input.valid || fog.io.input.valid || fbAccess.io.input.valid ||
       writeColor.i.fromPipeline.valid || writeAux.i.fromPipeline.valid || fastfill.running ||
       swapBuffer.io.waiting || lfb.io.busy
+  val busyDebugSignal = Bits(32 bits)
+  busyDebugSignal := 0
+  busyDebugSignal(0) := triangleSetup.o.valid
+  busyDebugSignal(1) := rasterizer.running
+  busyDebugSignal(2) := tmu.io.input.valid
+  busyDebugSignal(3) := tmu.io.busy
+  busyDebugSignal(4) := fbAccess.io.busy
+  busyDebugSignal(5) := colorCombine.io.input.valid
+  busyDebugSignal(6) := fog.io.input.valid
+  busyDebugSignal(7) := fbAccess.io.input.valid
+  busyDebugSignal(8) := writeColor.i.fromPipeline.valid
+  busyDebugSignal(9) := writeAux.i.fromPipeline.valid
+  busyDebugSignal(10) := fastfill.running
+  busyDebugSignal(11) := swapBuffer.io.waiting
+  busyDebugSignal(12) := lfb.io.busy
+  busyDebugSignal(13) := fastfill.o.valid
+  busyDebugSignal(14) := fastfill.o.ready
+  busyDebugSignal(15) := fastfillWrite.io.output.valid
+  busyDebugSignal(16) := fastfillWrite.io.output.ready
+  busyDebugSignal(17) := preDitherMerged.valid
+  busyDebugSignal(18) := preDitherMerged.ready
+  busyDebugSignal(19) := preDitherPiped.valid
+  busyDebugSignal(20) := preDitherPiped.ready
+  busyDebugSignal(21) := dither.io.output.valid
+  busyDebugSignal(22) := dither.io.output.ready
+  busyDebugSignal(23) := ditherJoined.valid
+  busyDebugSignal(24) := ditherJoined.ready
+  busyDebugSignal(25) := forColorWrite.valid
+  busyDebugSignal(26) := forColorWrite.ready
+  busyDebugSignal(27) := forAuxWrite.valid
+  busyDebugSignal(28) := forAuxWrite.ready
+  busyDebugSignal(29) := writeColor.i.fromPipeline.ready
+  busyDebugSignal(30) := writeAux.i.fromPipeline.ready
+  busyDebugSignal(31) := fastfillWrite.io.output.payload.auxWrite
+  val writePathDebugSignal = Bits(32 bits)
+  writePathDebugSignal := 0
+  writePathDebugSignal(0) := fastfill.running
+  writePathDebugSignal(1) := fastfill.o.valid
+  writePathDebugSignal(2) := fastfill.o.ready
+  writePathDebugSignal(3) := fastfillWrite.io.output.valid
+  writePathDebugSignal(4) := fastfillWrite.io.output.ready
+  writePathDebugSignal(5) := preDitherMerged.valid
+  writePathDebugSignal(6) := preDitherMerged.ready
+  writePathDebugSignal(7) := ditherJoined.valid
+  writePathDebugSignal(8) := ditherJoined.ready
+  writePathDebugSignal(9) := forColorWrite.valid
+  writePathDebugSignal(10) := forColorWrite.ready
+  writePathDebugSignal(11) := colorWriteInput.valid
+  writePathDebugSignal(12) := colorWriteInput.ready
+  writePathDebugSignal(13) := writeColor.o.fbWrite.cmd.valid
+  writePathDebugSignal(14) := writeColor.o.fbWrite.cmd.ready
+  writePathDebugSignal(15) := colorWriteArbCmd.valid
+  writePathDebugSignal(16) := colorWriteArbCmd.ready
+  writePathDebugSignal(17) := forAuxWrite.valid
+  writePathDebugSignal(18) := forAuxWrite.ready
+  writePathDebugSignal(19) := auxWriteInput.valid
+  writePathDebugSignal(20) := auxWriteInput.ready
+  writePathDebugSignal(21) := writeAux.o.fbWrite.cmd.valid
+  writePathDebugSignal(22) := writeAux.o.fbWrite.cmd.ready
+  writePathDebugSignal(23) := auxWriteArbCmd.valid
+  writePathDebugSignal(24) := auxWriteArbCmd.ready
+  writePathDebugSignal(25) := writeAuxCmdPending
+  writePathDebugSignal(26) := fbArbiter.io.inputs(0).cmd.valid
+  writePathDebugSignal(27) := fbArbiter.io.inputs(0).cmd.ready
+  writePathDebugSignal(28) := fbArbiter.io.inputs(1).cmd.valid
+  writePathDebugSignal(29) := fbArbiter.io.inputs(1).cmd.ready
+  writePathDebugSignal(30) := fbArbiter.io.output.cmd.valid
+  writePathDebugSignal(31) := fbArbiter.io.output.cmd.ready
   regBank.io.pipelineBusy := pipelineBusySignal
+  regBank.io.busyDebug := busyDebugSignal
+  regBank.io.writePathDebug := writePathDebugSignal
   lfb.io.pciFifoEmpty := pciFifo.io.fifoEmpty
   lfb.io.pipelineBusy := pipelineBusySignal
 

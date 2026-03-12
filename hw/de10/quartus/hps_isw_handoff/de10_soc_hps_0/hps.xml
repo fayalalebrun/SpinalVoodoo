@@ -1,0 +1,196 @@
+<hps>
+  <system>
+    <config name='DEVICE_FAMILY' value='Cyclone V' />
+    <config name='DMA_Enable' value='No No No No No No No No' />
+    <config name='dbctrl_stayosc1' value='true' />
+    <config name='main_pll_m' value='63' />
+    <config name='main_pll_n' value='0' />
+    <config name='main_pll_c0_internal' value='1' />
+    <config name='main_pll_c1_internal' value='3' />
+    <config name='main_pll_c2_internal' value='3' />
+    <config name='main_pll_c3' value='511' />
+    <config name='main_pll_c4' value='511' />
+    <config name='main_pll_c5' value='15' />
+    <config name='l4_mp_clk_div' value='0' />
+    <config name='l4_sp_clk_div' value='0' />
+    <config name='periph_pll_m' value='39' />
+    <config name='periph_pll_n' value='0' />
+    <config name='periph_pll_c0' value='511' />
+    <config name='periph_pll_c1' value='511' />
+    <config name='periph_pll_c2' value='511' />
+    <config name='periph_pll_c3' value='511' />
+    <config name='periph_pll_c4' value='9' />
+    <config name='periph_pll_c5' value='511' />
+    <config name='usb_mp_clk_div' value='4' />
+    <config name='spi_m_clk_div' value='4' />
+    <config name='can0_clk_div' value='4' />
+    <config name='can1_clk_div' value='4' />
+    <config name='gpio_db_clk_div' value='16777215' />
+    <config name='main_pll_vco_hz' value='1600000000' />
+    <config name='periph_pll_vco_hz' value='1000000000' />
+    <config name='eosc1_clk_hz' value='25000000' />
+    <config name='eosc2_clk_hz' value='25000000' />
+    <config name='F2SCLK_PERIPHCLK_FREQ' value='0' />
+    <config name='F2SCLK_SDRAMCLK_FREQ' value='0' />
+    <config name='l3_mp_clk_div' value='1' />
+    <config name='l3_sp_clk_div' value='1' />
+    <config name='dbg_at_clk_div' value='0' />
+    <config name='dbg_clk_div' value='1' />
+    <config name='dbg_trace_clk_div' value='0' />
+    <config name='periph_pll_source' value='0' />
+    <config name='sdmmc_clk_source' value='2' />
+    <config name='nand_clk_source' value='2' />
+    <config name='qspi_clk_source' value='1' />
+    <config name='l4_mp_clk_source' value='1' />
+    <config name='l4_sp_clk_source' value='1' />
+    <config name='emac0_clk_hz' value='1953125' />
+    <config name='emac1_clk_hz' value='1953125' />
+    <config name='usb_mp_clk_hz' value='6250000' />
+    <config name='nand_clk_hz' value='488281' />
+    <config name='sdmmc_clk_hz' value='1953125' />
+    <config name='qspi_clk_hz' value='3125000' />
+    <config name='spi_m_clk_hz' value='6250000' />
+    <config name='can0_clk_hz' value='6250000' />
+    <config name='can1_clk_hz' value='6250000' />
+    <config name='gpio_db_clk_hz' value='5' />
+    <config name='l4_mp_clk_hz' value='100000000' />
+    <config name='l4_sp_clk_hz' value='100000000' />
+    <config name='sdram_pll_c5' value='5' />
+  </system>
+  <fpga_interfaces>
+    <config name='F2H_AXI_SLAVE' used='true' />
+    <config name='H2F_AXI_MASTER' used='true' />
+    <config name='LWH2F_AXI_MASTER' used='true' />
+    <config name='F2SDRAM_COMMAND_PORT_USED' value='0x1' />
+    <config name='F2SDRAM_READ_PORT_USED' value='0xF' />
+    <config name='F2SDRAM_WRITE_PORT_USED' value='0xF' />
+    <config name='F2SDRAM_RESET_PORT_USED' value='0x1FF' />
+  </fpga_interfaces>
+  <peripherals>
+    <peripheral name='rgmii0' used='false' />
+    <peripheral name='rgmii1' used='false' />
+    <peripheral name='nand' used='false' />
+    <peripheral name='qspi' used='false'>
+      <config name='CONFIG_HPS_QSPI_CS3' value='0' />
+      <config name='CONFIG_HPS_QSPI_CS2' value='0' />
+      <config name='CONFIG_HPS_QSPI_CS1' value='0' />
+      <config name='CONFIG_HPS_QSPI_CS0' value='0' />
+    </peripheral>
+    <peripheral name='sdmmc' used='false'>
+      <config name='CONFIG_HPS_SDMMC_BUSWIDTH' value='0' />
+    </peripheral>
+    <peripheral name='usb0' used='false' />
+    <peripheral name='usb1' used='false' />
+    <peripheral name='spim0' used='false' />
+    <peripheral name='spim1' used='false' />
+    <peripheral name='spis0' used='false' />
+    <peripheral name='spis1' used='false' />
+    <peripheral name='uart0' used='false'>
+      <config name='CONFIG_HPS_UART0_TX' value='0' />
+      <config name='CONFIG_HPS_UART0_CTS' value='0' />
+      <config name='CONFIG_HPS_UART0_RTS' value='0' />
+      <config name='CONFIG_HPS_UART0_RX' value='0' />
+    </peripheral>
+    <peripheral name='uart1' used='false'>
+      <config name='CONFIG_HPS_UART1_TX' value='0' />
+      <config name='CONFIG_HPS_UART1_CTS' value='0' />
+      <config name='CONFIG_HPS_UART1_RTS' value='0' />
+      <config name='CONFIG_HPS_UART1_RX' value='0' />
+    </peripheral>
+    <peripheral name='i2c0' used='false' />
+    <peripheral name='i2c1' used='false' />
+    <peripheral name='i2c2' used='false' />
+    <peripheral name='i2c3' used='false' />
+    <peripheral name='can0' used='false' />
+    <peripheral name='can1' used='false' />
+    <peripheral name='trace' used='false' />
+  </peripherals>
+  <pin_muxes>
+    <pin_mux name='GPLMUX0' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX1' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX2' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX3' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX4' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX5' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX6' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX7' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX8' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX9' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX10' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX11' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX12' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX13' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX14' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX15' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX16' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX17' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX18' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX19' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX20' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX21' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX22' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX23' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX24' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX25' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX26' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX27' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX28' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX29' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX30' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX31' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX32' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX33' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX34' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX35' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX36' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX37' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX38' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX39' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX40' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX41' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX42' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX43' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX44' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX45' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX46' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX47' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX48' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX49' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX50' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX51' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX52' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX53' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX54' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX55' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX56' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX57' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX58' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX59' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX60' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX61' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX62' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX63' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX64' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX65' choice='GPIO' value='1' />
+    <pin_mux name='GPLMUX66' choice='GPIO' value='1' />
+    <pin_mux name='RGMII0USEFPGA' value='0' />
+    <pin_mux name='RGMII1USEFPGA' value='0' />
+    <pin_mux name='NANDUSEFPGA' value='0' />
+    <pin_mux name='QSPIUSEFPGA' value='0' />
+    <pin_mux name='SDMMCUSEFPGA' value='0' />
+    <pin_mux name='USB0USEFPGA' value='0' />
+    <pin_mux name='USB1USEFPGA' value='0' />
+    <pin_mux name='SPIM0USEFPGA' value='0' />
+    <pin_mux name='SPIM1USEFPGA' value='0' />
+    <pin_mux name='SPIS0USEFPGA' value='0' />
+    <pin_mux name='SPIS1USEFPGA' value='0' />
+    <pin_mux name='UART0USEFPGA' value='0' />
+    <pin_mux name='UART1USEFPGA' value='0' />
+    <pin_mux name='I2C0USEFPGA' value='0' />
+    <pin_mux name='I2C1USEFPGA' value='0' />
+    <pin_mux name='I2C2USEFPGA' value='0' />
+    <pin_mux name='I2C3USEFPGA' value='0' />
+    <pin_mux name='CAN0USEFPGA' value='0' />
+    <pin_mux name='CAN1USEFPGA' value='0' />
+  </pin_muxes>
+</hps>

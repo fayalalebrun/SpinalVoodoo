@@ -52,6 +52,8 @@ case class RegisterBank(config: Config) extends Component {
 
     // Pipeline busy signal - used to stall Sync=Yes register writes
     val pipelineBusy = in Bool ()
+    val busyDebug = in Bits (32 bits)
+    val writePathDebug = in Bits (32 bits)
 
     // PciFifo signals (replaces internal busif FIFO signals)
     val pciFifoEmpty = in Bool ()
@@ -753,6 +755,12 @@ case class RegisterBank(config: Config) extends Component {
       .field(Bits(32 bits), AccessType.WO, 0, "Max RGB difference for video filtering")
       .asOutput()
 
+    // debugBusy (0x240) - Internal busy-source debug bitfield
+    val debugBusy = busif
+      .newRegAt(0x240, "debugBusy")
+      .field(Bits(32 bits), AccessType.RO, 0, "Internal pipeline busy-source debug bitfield")
+    debugBusy := io.busyDebug
+
     // fbiInit5 (0x244) - Multi-chip config
     val fbiInit5Reg = busif.newRegAt(0x244, "fbiInit5")
     val fbiInit5_multiCvg = fbiInit5Reg
@@ -769,6 +777,17 @@ case class RegisterBank(config: Config) extends Component {
     val fbiInit7Reg = busif.newRegAt(0x24c, "fbiInit7")
     val fbiInit7_cmdFifoEnable =
       fbiInit7Reg.fieldAt(8, Bool(), AccessType.RW, 0, "Enable command FIFO mode [V2+]").asOutput()
+
+    // writePathDebug (0x250) - Write-side pipeline and arbiter handshake debug
+    val writePathDebugReg = busif
+      .newRegAt(0x250, "writePathDebug")
+      .field(
+        Bits(32 bits),
+        AccessType.RO,
+        0,
+        "Write-side pipeline and arbiter handshake debug bitfield"
+      )
+    writePathDebugReg := io.writePathDebug
   }
 
   // ========================================================================
@@ -797,6 +816,14 @@ case class RegisterBank(config: Config) extends Component {
       busif.newRegAtWithCategory(0x30c, "texBaseAddr", RegisterCategory.fifoNoSync)
     val texBaseAddr =
       texBaseAddrReg.field(UInt(24 bits), AccessType.WO, 0, "Texture base address").asOutput()
+
+    // trexInit0 (0x31C) - TMU hardware init / memory config
+    val trexInit0Reg = busif.newRegAtWithCategory(0x31c, "trexInit0", RegisterCategory.fifoNoSync)
+    val trexInit0 = trexInit0Reg.field(Bits(32 bits), AccessType.WO, 0, "TMU init 0").asOutput()
+
+    // trexInit1 (0x320) - TMU hardware init / config output control
+    val trexInit1Reg = busif.newRegAtWithCategory(0x320, "trexInit1", RegisterCategory.fifoNoSync)
+    val trexInit1 = trexInit1Reg.field(Bits(32 bits), AccessType.WO, 0, "TMU init 1").asOutput()
   }
 
   // ========================================================================

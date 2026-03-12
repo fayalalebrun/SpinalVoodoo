@@ -185,6 +185,27 @@ Screenshots are saved to `output/<test>/screenshot.png`.
 | `SIM_FBWRITE_LOG` | Path to log framebuffer writes |
 | `SIM_TMU_LOG` | Path to log TMU/rasterizer activity |
 
+## DOSBox-X (32-bit Glide Path)
+
+The sim backend builds a **32-bit** `libglide2x`, so DOSBox-X must also be
+32-bit to `dlopen()` it.
+
+```bash
+# 1) Build sim + Glide backend
+make glide
+
+# 2) Launch DOSBox-X with this repo's Glide library injected
+scripts/run-dosboxx32-glide
+```
+
+Notes:
+
+- `scripts/run-dosboxx32-glide` prefers `DOSBOXX32_BIN` if set.
+- If `dosbox-x` on `PATH` is already 32-bit, it uses that.
+- Otherwise it auto-resolves Nix `pkgsi686Linux.dosbox-x`.
+- The script appends `scripts/dosboxx32-glide.conf` (enables `glide=true`, `voodoo_card=false`, `lfb=full_noaux`).
+- For headless smoke tests: `DOSBOXX32_HEADLESS=1 scripts/run-dosboxx32-glide -c "exit"`.
+
 ## Trace-Based Testing
 
 Glide trace files (`.bin`) capture PCI bus operations for offline replay against both
@@ -207,3 +228,45 @@ make check-all
 Replay outputs are written to `test-output/<trace>/` as `<trace>_ref.png`, `<trace>_sim.png`, and `<trace>_diff.png`.
 
 Trace files are stored in `traces/` and compared pixel-by-pixel against a reference model.
+
+## DE10-Nano Bring-Up Flow (Scaffold)
+
+Goal-oriented planning docs:
+
+- `docs/DE10_MILESTONES.md`
+- `docs/DE10_BRINGUP_PLAN.md`
+- `docs/DE10_DEPLOYMENT.md`
+
+Entry points:
+
+```bash
+make de10/help
+make de10/plan
+
+# Generate DE10-targeted RTL
+make de10/rtl
+
+# Generate DE10 Platform Designer system collateral
+make de10/qsys
+
+# Build bitstream (requires Quartus in PATH)
+make de10/bitstream
+
+# Program/deploy to a network-accessible board
+make de10/program ARGS="--host <de10-host> --user <user>"
+make de10/deploy  ARGS="--host <de10-host> --user <user>"
+
+# Build MMIO smoke utility for board-side validation
+make de10/mmio-smoke
+```
+
+Current scope of this scaffold:
+
+- Establishes scripted DE10 build/program/deploy interfaces.
+- Adds DE10 top-level RTL generator entry point (`voodoo.de10.De10TopGen`).
+- Adds Platform Designer generation for HPS bridge integration (`scripts/gen-qsys-de10`).
+- Adds a board MMIO smoke utility (`tools/de10-mmio-smoke.c`).
+
+The FPGA wrapper and memory integration are initial bring-up placeholders and
+are expected to evolve as full HPS hard-IP/Platform Designer integration is
+finalized.

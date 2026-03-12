@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+
+HOST="${DE10_HOST:-}"
+USER_NAME="${DE10_USER:-fpga}"
+SYSROOT_DIR="${DE10_SYSROOT:-$ROOT_DIR/output/de10/sysroot}"
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/sync-de10-sysroot --host <host> [--user <user>] [--sysroot <dir>]
+
+Fetches a minimal ARM sysroot from the DE10 board for local cross-compiles.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --host)
+      HOST="$2"
+      shift 2
+      ;;
+    --user)
+      USER_NAME="$2"
+      shift 2
+      ;;
+    --sysroot)
+      SYSROOT_DIR="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage
+      exit 1
+      ;;
+  esac
+done
+
+if [[ -z "$HOST" ]]; then
+  echo "Missing required --host" >&2
+  usage
+  exit 1
+fi
+
+mkdir -p "$SYSROOT_DIR"
+
+ssh "${USER_NAME}@${HOST}" \
+  'sudo tar -C / -cf - usr/include usr/lib/arm-linux-gnueabihf lib/arm-linux-gnueabihf usr/lib/gcc/arm-linux-gnueabihf' \
+  | tar -C "$SYSROOT_DIR" -xf -
+
+mkdir -p "$SYSROOT_DIR/lib"
+ln -sfn "arm-linux-gnueabihf/ld-linux-armhf.so.3" "$SYSROOT_DIR/lib/ld-linux-armhf.so.3"
+
+echo "[de10] synced sysroot to $SYSROOT_DIR"

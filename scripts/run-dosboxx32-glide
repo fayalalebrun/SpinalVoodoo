@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+GLIDE_LIB_DIR="$ROOT_DIR/emu/glide/glide2x/sst1/lib/sst1"
+GLIDE_LIB="$GLIDE_LIB_DIR/libglide2x.so.2"
+VOODOO_CONF="$ROOT_DIR/scripts/dosboxx32-glide.conf"
+
+if [[ ! -f "$GLIDE_LIB" ]]; then
+  echo "Missing $GLIDE_LIB"
+  echo "Build the sim Glide backend first: make glide"
+  exit 1
+fi
+
+is_32bit_dosboxx() {
+  local bin="$1"
+
+  if file -Lb "$bin" | grep -q "ELF 32-bit"; then
+    return 0
+  fi
+
+  # Nix often installs a shell wrapper that execs ".dosbox-x-wrapped".
+  if file -Lb "$bin" | grep -q "script"; then
+    local wrapped_bin
+    wrapped_bin="$(sed -n 's/.*"\(.*\.dosbox-x-wrapped\)".*/\1/p' "$bin" | head -n1)"
+    if [[ -n "$wrapped_bin" ]] && [[ -x "$wrapped_bin" ]] && file -Lb "$wrapped_bin" | grep -q "ELF 32-bit"; then
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
+resolve_dosboxx32() {
+  if [[ -n "${DOSBOXX32_BIN:-}" ]]; then
+    echo "$DOSBOXX32_BIN"
+    return 0
+  fi
+
+  if command -v dosbox-x >/dev/null 2>&1; then
+    local host_bin
+    host_bin="$(command -v dosbox-x)"
+    if is_32bit_dosboxx "$host_bin"; then
+      echo "$host_bin"
+      return 0
+    fi
+  fi
+
+  if command -v nix >/dev/null 2>&1; then
+    local out
+    out="$(
+      XDG_CACHE_HOME="${XDG_CACHE_HOME:-/tmp/.cache}" \
+      nix build --impure --no-link --print-out-paths \
+        --expr '(let pkgs=import <nixpkgs> {}; in pkgs.pkgsi686Linux.dosbox-x)' \
+        | tail -n1
+    )"
+    if [[ -x "$out/bin/dosbox-x" ]]; then
+      echo "$out/bin/dosbox-x"
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
+if ! DOSBOX_BIN="$(resolve_dosboxx32)"; then
+  echo "Unable to resolve a 32-bit DOSBox-X binary."
+  echo "Set DOSBOXX32_BIN=/path/to/32-bit/dosbox-x, or install Nix to auto-resolve pkgsi686Linux.dosbox-x."
+  exit 1
+fi
+
+if ! is_32bit_dosboxx "$DOSBOX_BIN"; then
+  echo "Resolved DOSBox-X is not 32-bit: $DOSBOX_BIN"
+  echo "A 64-bit DOSBox-X process cannot load this repo's 32-bit libglide2x."
+  exit 1
+fi
+
+if [[ "${DOSBOXX32_HEADLESS:-0}" == "1" ]]; then
+  export SDL_VIDEODRIVER="${SDL_VIDEODRIVER:-dummy}"
+  export SDL_AUDIODRIVER="${SDL_AUDIODRIVER:-dummy}"
+fi
+
+export LD_LIBRARY_PATH="$GLIDE_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+exec "$DOSBOX_BIN" -conf "$VOODOO_CONF" "$@"

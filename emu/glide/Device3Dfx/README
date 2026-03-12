@@ -1,0 +1,20 @@
+Build instructions
+------------------
+
+The new build system supports Linux kernel legacy build systems
+as used on 2.4.x or earlier and the new kbuild system used on 2.6
+and up.
+
+Current make targets are:
+
+	modules
+	clean
+	install
+
+If your kernel source is in some place different than /usr/src/linux
+specify the KSRC variable, like:
+
+	$ make KSRC=~/src/linux
+
+If you want to install in a different base dir specify DESTDIR.
+

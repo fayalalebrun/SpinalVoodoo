@@ -1,0 +1,52 @@
+# Makefile for building sim-enabled Glide2 test programs
+#
+# Builds test programs linked against sim-enabled libglide2x.
+# Uses C++ linker for Verilator runtime support.
+#
+# Usage:
+#   make -f Makefile.sim test00.exe     # build a single test
+#   make -f Makefile.sim all            # build all tests
+
+.PHONY: all clean
+.SUFFIXES: .c .o .exe
+.SECONDARY: tlib.o plib.o linutil.o
+
+FX_HW_BASE = sst1
+GLIDE2X_ROOT = ../../..
+GLIDE_ROOT = ../../../..
+
+# Use 32-bit compiler: CC32 env var (from devenv) or fall back to gcc -m32
+CC = $(if $(CC32),$(CC32),gcc -m32)
+CXX = $(if $(CXX32),$(CXX32),g++ -m32)
+CFLAGS = -Wall -O2 -ffast-math -g
+CFLAGS += -I$(GLIDE2X_ROOT)/$(FX_HW_BASE)/glide/src -I$(GLIDE2X_ROOT)/$(FX_HW_BASE)/incsrc -I$(GLIDE2X_ROOT)/$(FX_HW_BASE)/init
+CFLAGS += -I$(GLIDE_ROOT)/swlibs/fxmisc -I$(GLIDE_ROOT)/swlibs/newpci/pcilib
+CFLAGS += -DSST1 -DSIM_BACKEND
+
+LDFLAGS = -L$(GLIDE2X_ROOT)/$(FX_HW_BASE)/lib/sst1
+LDLIBS = -lglide2x -lm -lstdc++
+
+TESTS = test00.exe test01.exe test02.exe test03.exe test04.exe \
+        test05.exe test06.exe test07.exe test08.exe test09.exe \
+        test10.exe test11.exe test12.exe test13.exe test14.exe \
+        test15.exe test16.exe test17.exe test18.exe test19.exe \
+        test20.exe test21.exe test22.exe test23.exe test24.exe \
+        test25.exe test26.exe test27.exe test28.exe test29.exe
+
+.c.o:
+	$(CC) -o $@ $(CFLAGS) -c $<
+
+# Link with CXX for Verilator C++ runtime
+%.exe: linutil.o tlib.o %.o
+	$(CXX) -o $@ $(LDFLAGS) $^ $(LDLIBS)
+
+all: $(TESTS)
+
+linutil.o: $(GLIDE_ROOT)/swlibs/fxmisc/linutil.c
+	$(CC) -o $@ $(CFLAGS) -c $<
+
+qatest00.exe: linutil.o tlib.o plib.o qatest00.o
+	$(CXX) -o $@ $(LDFLAGS) $^ $(LDLIBS)
+
+clean:
+	rm -f *.o *.exe

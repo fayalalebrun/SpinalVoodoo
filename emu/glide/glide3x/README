@@ -1,0 +1,124 @@
+Glide3x (dec-2004):
+~~~~~~~~~~~~~~~~~~~
+
+sst1:	Voodoo Graphics XOR Voodoo Rush
+	Maintainers: Daniel Borca
+
+	Voodoo Graphics:
+	----------------
+
+	DOS/DJGPP	working
+		Req:	DJGPP 2.04
+		Build:	make -f Makefile.DJ FX_GLIDE_HW=sst1 [...]
+
+	DOS/OpenWatcom	working
+		Req:	OpenWatcom 1.2
+		Build:	make -f Makefile.wat FX_GLIDE_HW=sst1 [...]
+
+	Linux		working
+		Req:	gcc
+		Build:	make -f Makefile.linux FX_GLIDE_HW=sst1 [...]
+
+	Win32		working
+		Req:	MSVC6 (cl 12.00.8168, link 6.00.8168)
+		Build:	make -f Makefile.win32 FX_GLIDE_HW=sst1 [...]
+
+	Voodoo Rush (AT3D / Macronix):
+	-----------------------------
+
+	DOS/DJGPP	working
+		Req:	DJGPP 2.04
+		Build:	make -f Makefile.DJ FX_GLIDE_HW=sst96 [...]
+
+	DOS/OpenWatcom	working
+		Req:	OpenWatcom 1.2
+		Build:	make -f Makefile.wat FX_GLIDE_HW=sst96 [...]
+
+	Linux		compiles, but seems to be broken...
+		Req:	gcc
+		Build:	make -f Makefile.linux FX_GLIDE_HW=sst96 [...]
+
+	Win32		working
+		Req:	MSVC6 (cl 12.00.8168, link 6.00.8168)
+		Build:	make -f Makefile.win32 FX_GLIDE_HW=sst96 [...]
+
+
+cvg:	Voodoo^2
+	Maintainers: Daniel Borca, Hiroshi Morii
+
+	Voodoo^2:
+	---------
+
+	DOS/DJGPP	working
+		Req:	DJGPP 2.04
+		Build:	make -f Makefile.DJ FX_GLIDE_HW=cvg [...]
+
+	DOS/OpenWatcom	working
+		Req:	OpenWatcom 1.2
+		Build:	make -f Makefile.wat FX_GLIDE_HW=cvg [...]
+
+	Linux		working
+		Req:	gcc
+		Build:	make -f Makefile.linux FX_GLIDE_HW=cvg [...]
+
+	Win32		working
+		Req:	MSVC6 (cl 12.00.8168, link 6.00.8168)
+		Build:	make -f Makefile.win32 FX_GLIDE_HW=cvg [...]
+
+
+h3:	Voodoo Banshee, Voodoo3
+	Maintainers: Daniel Borca, Guillem Jover
+
+	Voodoo Banshee, Voodoo3:
+	------------------------
+
+	DOS/DJGPP	working
+		Req:	DJGPP 2.04
+		Build:	make -f Makefile.DJ FX_GLIDE_HW=h3 [...]
+
+	DOS/OpenWatcom	working
+		Req:	OpenWatcom 1.2
+		Build:	make -f Makefile.wat FX_GLIDE_HW=h3 [...]
+
+	Linux		DRI working, DGA seems to be broken, CINIT broken
+		Req:	gcc
+		Build:	make -f Makefile.linux FX_GLIDE_HW=h3 [...]
+
+	Win32		working
+		Req:	MSVC6 (cl 13.00.9176, link 7.00.9210), 2KDDK?
+		Build:	make -f Makefile.win32 FX_GLIDE_HW=h3 [...]
+
+
+h5:	Voodoo Banshee, Velocity 100/200, Voodoo3/4/5
+	Maintainers: Hiroshi Morii, Daniel Borca, Guillem Jover
+
+	Voodoo Banshee, Velocity 100/200, Voodoo3/4/5:
+	----------------------------------------------
+
+	DOS/DJGPP	working
+		Req:	DJGPP 2.04
+		Build:	make -f Makefile.DJ FX_GLIDE_HW=h5 [...]
+
+	DOS/OpenWatcom	working
+		Req:	OpenWatcom 1.2
+		Build:	make -f Makefile.wat FX_GLIDE_HW=h5 [...]
+
+	Linux		DRI working, DGA seems to be broken, CINIT broken
+		Req:	gcc
+		Build:	make -f Makefile.linux FX_GLIDE_HW=h5 [...]
+
+	Win32		working
+		Req:	MSVC6 (cl 13.00.9176, link 7.00.9210), 2KDDK?
+		Build:	make -f Makefile.win32 FX_GLIDE_HW=h5 [...]
+
+
+Notes:
+	1) All systems require nasm 0.98.38 and GNU make 3.80.
+	2) grDrawPoint has type-punning problems (optimizations enabled) in
+	   sst1, sst96, cvg and h3 branches.
+	3) V1 library cannot be used with VR (and vice-versa). Hence the XOR...
+	4) In order to build, swlibs directory must be copied under glide3x.
+
+
+Have fun,
+Daniel Borca

@@ -1,0 +1,324 @@
+# Win32 makefile for Glide2/SST1
+# This makefile MUST be processed by GNU make!!!
+#
+#  Copyright (c) 2004 - Daniel Borca
+#  Email : dborca@users.sourceforge.net
+#  Web   : http://www.geocities.com/dborca
+#
+#  Hiroshi Morii
+#  Email : koolsmoky@users.sourceforge.net
+#  Web   : http://www.3dfxzone.it/koolsmoky
+#
+
+#
+#  Available options:
+#
+#	CROSS		cross-compiler toolchain prefix
+#			Needed when cross-compiling e.g. on Linux,
+#			as opposed to compiling on native Windows.
+#			default = i686-pc-mingw32-
+#			(Note that a trailing '-' is necessary.)
+#
+#    Environment variables:
+#	FX_GLIDE_HW	build for the given ASIC (either sst1, or sst96).
+#			default = sst1
+#	CPU		optimize for the given processor.
+#			default = -mtune=pentium
+#	DEBUG=1		disable optimizations and build for debug.
+#			default = no
+#	USE_X86=1	use assembler triangle specializations!
+#			default = no
+#
+#    Targets:
+#	all:		build everything
+#	glide2x:	build Glide2x lib
+#	clean:		remove object files
+#	realclean:	remove all generated files
+#
+
+.PHONY: all glide2x clean realclean
+.INTERMEDIATE: fxgasm.exe
+.SUFFIXES: .c .obj .rc .res
+
+###############################################################################
+#	general defines (user settable?)
+###############################################################################
+
+GLIDE_RES = glide.res
+GLIDE_DLL = glide2x.dll
+GLIDE_DEF = glide2x.def
+GLIDE_IMP = libglide2x.dll.a
+
+FX_GLIDE_HW ?= sst1
+FX_GLIDE_SW = ../../../swlibs
+GLIDE_LIBDIR = ../../lib/$(FX_GLIDE_HW)
+
+###############################################################################
+#	tools
+###############################################################################
+
+# default cross-toolchain prefix
+DEF_CROSS=i686-pc-mingw32-
+#DEF_CROSS=i686-w64-mingw32-
+
+# detect if running under unix by finding 'rm' in $PATH :
+ifeq ($(wildcard $(addsuffix /rm,$(subst :, ,$(PATH)))),)
+WINMODE= 1
+UNLINK = del $(subst /,\,$(1))
+HOST_CC = $(CC)
+else
+WINMODE= 0
+UNLINK = $(RM) $(1)
+ifeq ($(CROSS),)
+CROSS=$(DEF_CROSS)
+endif
+endif
+
+CC = $(CROSS)gcc
+AS = nasm
+LD = $(CC)
+RC = $(CROSS)windres
+DLLTOOL = $(CROSS)dlltool
+STRIP = $(CROSS)strip
+
+ifeq ($(WINMODE),1)
+HOST_CC = $(CC)
+else
+#for cross-builds
+HOST_CC = gcc
+endif
+
+###############################################################################
+#	defines
+###############################################################################
+
+# platform
+CDEFS = -D__WIN32__ -DDIRECTX -DFX_DLL_ENABLE -DINIT_ACCESS_DDRAW
+# MSVC doesn't define WINNT, but MinGW does.  The Glide
+# source uses WINNT for its own purposes, so undefine it.
+CDEFS += -UWINNT
+
+# general
+CDEFS += -DGLIDE_HARDWARE -DGLIDE_DEFAULT_GAMMA=1.3f -DGLIDE_LIB=1
+
+# subsystem
+ifeq ($(FX_GLIDE_HW),sst1)
+CDEFS += -DSST1
+else
+ifeq ($(FX_GLIDE_HW),sst96)
+CDEFS += -DSST96
+CDEFS += -DSST96_FIFO
+#CDEFS += -DSST96_ALT_FIFO_WRAP
+#CDEFS += -DINIT96VGASWAP
+#CDEFS += -DINIT_ACCESS_DIRECT
+CDEFS += -DGLIDE_USE_ALT_REGMAP
+else
+$(error Invalid FX_GLIDE_HW setting)
+endif
+endif
+
+# debug
+ifdef DEBUG
+CDEFS += -DGDBG_INFO_ON -DGLIDE_DEBUG -DGLIDE_SANITY_ASSERT -DGLIDE_SANITY_SIZE
+endif
+
+# shameless plug and splash screen
+CDEFS += -DGLIDE_PLUG -DGLIDE_SPLASH
+
+###############################################################################
+#	flags
+###############################################################################
+
+# linker
+LDFLAGS = -shared -m32 -Wl,--enable-auto-image-base -Wl,--no-undefined
+#	 -Xlinker --output-def -Xlinker $(GLIDE_LIBDIR)/$(GLIDE_DEF)
+#	 -Xlinker --out-implib -Xlinker $(GLIDE_LIBDIR)/$(GLIDE_IMP)
+DLLTOOL_FLAGS = --as-flags=--32 -m i386 -U
+#DLLTOOL_FLAGS+= -k
+
+# assembler
+ASFLAGS = -O2 -fwin32 -D__WIN32__ --prefix _
+ASFLAGS += $(CDEFS)
+
+# resource compiler
+RCFLAGS = --output-format=coff --target=pe-i386
+
+# compiler
+CFLAGS  = -m32 -Wall
+
+LDLIBS = -luser32 -lkernel32
+ifeq ($(FX_GLIDE_HW),sst96)
+LDLIBS += -lgdi32 -lddraw -ldxguid
+endif
+ifdef DEBUG
+CFLAGS += -g
+else
+CPU ?= -mtune=pentium
+CFLAGS += -DNDEBUG -O2 -ffast-math $(CPU)
+endif
+
+CFLAGS += -I. -I../../incsrc -I../../init
+ifeq ($(FX_GLIDE_HW),sst1)
+CFLAGS += -I../../init/initvg
+else
+CFLAGS += -I../../init/init96
+endif
+CFLAGS += -I$(FX_GLIDE_SW)/fxmisc -I$(FX_GLIDE_SW)/newpci/pcilib -I$(FX_GLIDE_SW)/fxmemmap
+CFLAGS += $(CDEFS)
+
+ifneq ($(USE_X86),1)
+CFLAGS += -DGLIDE_USE_C_TRISETUP
+endif
+
+ifeq ($(WINMODE),1)
+HOST_CFLAGS=$(CFLAGS)
+else
+# for cross-builds
+HOST_CFLAGS=$(filter-out -mcpu=% -mtune=% -DFX_DLL_ENABLE -march=%,$(CFLAGS))
+endif
+
+###############################################################################
+#	objects
+###############################################################################
+
+GLIDE_OBJECTS = \
+	gsplash.o \
+	g3df.o  \
+	gu.o \
+	guclip.o \
+	gpci.o \
+	gump.o \
+	diglide.o \
+	disst.o \
+	ditex.o \
+	gbanner.o \
+	gerror.o \
+	gmovie.o \
+	digutex.o \
+	ddgump.o \
+	gaa.o \
+	gdraw.o \
+	gglide.o \
+	glfb.o \
+	gsst.o \
+	gtex.o \
+	gtexdl.o \
+	gutex.o \
+	gxdraw.o
+
+GLIDE_OBJECTS += \
+	cpuid.o
+
+ifeq ($(USE_X86),1)
+ifeq ($(FX_GLIDE_HW),sst1)
+GLIDE_OBJECTS += \
+	xdraw.o
+else
+GLIDE_OBJECTS += \
+	xdraw96.o
+endif
+endif
+
+INIT_OBJECTS = \
+	../../init/init.o \
+	../../init/gdebug.o
+
+ifeq ($(FX_GLIDE_HW),sst96)
+GLIDE_OBJECTS += \
+	sst96.o
+INIT_OBJECTS += \
+	../../init/vg96drvr.o \
+	../../init/init96/init96.o \
+	../../init/init96/dxdrvr.o \
+	../../init/init96/initat3d.o \
+	../../init/init96/initmcrx.o
+else
+INIT_OBJECTS += \
+	../../init/vgdrvr.o \
+	../../init/initvg/gamma.o \
+	../../init/initvg/dac.o \
+	../../init/initvg/video.o \
+	../../init/initvg/parse.o \
+	../../init/initvg/sli.o \
+	../../init/initvg/util.o \
+	../../init/initvg/info.o \
+	../../init/initvg/print.o \
+	../../init/initvg/sst1init.o
+endif
+
+GLIDE_OBJECTS += \
+	$(INIT_OBJECTS) \
+	$(FX_GLIDE_SW)/newpci/pcilib/sst1_pci.o \
+	$(FX_GLIDE_SW)/newpci/pcilib/fxmsr.o \
+	$(FX_GLIDE_SW)/newpci/pcilib/fxpci.o \
+	$(FX_GLIDE_SW)/newpci/pcilib/fxw32.o \
+	$(FX_GLIDE_SW)/newpci/pcilib/fxvxd.o \
+	$(FX_GLIDE_SW)/newpci/pcilib/fxnt.o
+
+###############################################################################
+#	rules
+###############################################################################
+
+.c.o:
+	$(CC) -o $@ $(CFLAGS) -c $<
+.rc.res:
+	$(RC) -o $@ $(RCFLAGS) $(CDEFS) -I$(FX_GLIDE_SW)/fxmisc $<
+
+###############################################################################
+#	main
+###############################################################################
+all: glide2x
+
+glide2x: $(GLIDE_LIBDIR)/$(GLIDE_DLL) $(GLIDE_LIBDIR)/$(GLIDE_IMP)
+
+$(GLIDE_LIBDIR)/$(GLIDE_DEF): $(GLIDE_LIBDIR)/$(GLIDE_DLL)
+$(GLIDE_LIBDIR)/$(GLIDE_DLL): $(GLIDE_OBJECTS) $(GLIDE_RES)
+	$(LD) -o $@ $(LDFLAGS) -Xlinker --output-def -Xlinker $(GLIDE_LIBDIR)/$(GLIDE_DEF) \
+		$(GLIDE_OBJECTS) $(LDLIBS) $(GLIDE_RES)
+$(GLIDE_LIBDIR)/$(GLIDE_IMP): $(GLIDE_LIBDIR)/$(GLIDE_DLL)
+	$(DLLTOOL) $(DLLTOOL_FLAGS) --dllname $(GLIDE_DLL) --input-def $(GLIDE_LIBDIR)/$(GLIDE_DEF) --output-lib $@
+
+strip:
+	$(STRIP) $(GLIDE_LIBDIR)/$(GLIDE_DLL)
+
+###############################################################################
+#	rules(2)
+###############################################################################
+
+cpuid.o: cpudtect.asm
+	$(AS) -o $@ $(ASFLAGS) $<
+# -D__MINGW32__ is needed for dllexport to work
+xdraw.o: xdraw.asm
+	$(AS) -o $@ $(ASFLAGS) -D__MINGW32__ $<
+xdraw96.o: xdraw96.asm
+	$(AS) -o $@ $(ASFLAGS) -D__MINGW32__ $<
+
+$(GLIDE_OBJECTS): fxinline.h fxgasm.h
+
+fxinline.h: fxgasm.exe
+	./$< -inline > $@
+
+fxgasm.h: fxgasm.exe
+	./$< -hex > $@
+
+fxgasm.exe: fxgasm.c
+	$(HOST_CC) -o $@ $(HOST_CFLAGS) $<
+
+###############################################################################
+#	clean, realclean
+###############################################################################
+
+clean:
+	-$(call UNLINK,*.o)
+	-$(call UNLINK,../../init/*.o)
+	-$(call UNLINK,../../init/initvg/*.o)
+	-$(call UNLINK,../../init/init96/*.o)
+	-$(call UNLINK,$(FX_GLIDE_SW)/newpci/pcilib/*.o)
+	-$(call UNLINK,fxinline.h)
+	-$(call UNLINK,fxgasm.h)
+	-$(call UNLINK,$(GLIDE_RES))
+
+realclean: clean
+	-$(call UNLINK,$(GLIDE_LIBDIR)/$(GLIDE_DLL))
+	-$(call UNLINK,$(GLIDE_LIBDIR)/$(GLIDE_IMP))
+	-$(call UNLINK,$(GLIDE_LIBDIR)/$(GLIDE_DEF))

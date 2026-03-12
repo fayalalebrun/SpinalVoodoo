@@ -1,0 +1,203 @@
+#!/bin/bash
+
+#
+# THIS SOFTWARE IS SUBJECT TO COPYRIGHT PROTECTION AND IS OFFERED ONLY
+# PURSUANT TO THE 3DFX GLIDE GENERAL PUBLIC LICENSE. THERE IS NO RIGHT
+# TO USE THE GLIDE TRADEMARK WITHOUT PRIOR WRITTEN PERMISSION OF 3DFX
+# INTERACTIVE, INC. A COPY OF THIS LICENSE MAY BE OBTAINED FROM THE 
+# DISTRIBUTOR OR BY CONTACTING 3DFX INTERACTIVE INC(info@3dfx.com). 
+# THIS PROGRAM IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND, EITHER 
+# EXPRESSED OR IMPLIED. SEE THE 3DFX GLIDE GENERAL PUBLIC LICENSE FOR A
+# FULL TEXT OF THE NON-WARRANTY PROVISIONS.  
+# 
+# USE, DUPLICATION OR DISCLOSURE BY THE GOVERNMENT IS SUBJECT TO
+# RESTRICTIONS AS SET FORTH IN SUBDIVISION (C)(1)(II) OF THE RIGHTS IN
+# TECHNICAL DATA AND COMPUTER SOFTWARE CLAUSE AT DFARS 252.227-7013,
+# AND/OR IN SIMILAR OR SUCCESSOR CLAUSES IN THE FAR, DOD OR NASA FAR
+# SUPPLEMENT. UNPUBLISHED RIGHTS RESERVED UNDER THE COPYRIGHT LAWS OF
+# THE UNITED STATES.  
+# 
+# COPYRIGHT 3DFX INTERACTIVE, INC. 1999, ALL RIGHTS RESERVED
+#
+
+function timereport() {
+	STARTTIME=$1
+	ENDTIME=$2
+    SECONDSPERMIN=60
+    SECONDSPERHOUR=`expr 60 \* 60`
+    SECONDSPERDAY=`expr 60 \* 60 \* 24`
+    SECONDSPERYEAR=`expr 60 \* 60 \* 24 \* 365`
+    ELAPSEDTIME=`expr $ENDTIME - $STARTTIME`
+    YEARS=`expr $ELAPSEDTIME / $SECONDSPERYEAR`
+    ELAPSEDTIME=`expr $ELAPSEDTIME % $SECONDSPERYEAR`
+    DAYS=`expr $ELAPSEDTIME / $SECONDSPERDAY`
+    ELAPSEDTIME=`expr $ELAPSEDTIME % $SECONDSPERDAY`
+    HOURS=`expr $ELAPSEDTIME / $SECONDSPERHOUR`
+    ELAPSEDTIME=`expr $ELAPSEDTIME % $SECONDSPERHOUR`
+    MINUTES=`expr $ELAPSEDTIME / $SECONDSPERMIN`
+    ELAPSEDTIME=`expr $ELAPSEDTIME % $SECONDSPERMIN`
+	echo "Time Elapsed: $YEARS Years, $DAYS Days, $HOURS Hours, $MINUTES Minutes, $ELAPSEDTIME Seconds"
+}
+
+function diskreport() {
+	SIGN=""
+	DISKUSAGE=`expr $2 - $1`
+	if [ $DISKUSAGE -lt 0 ]
+	then
+	    DISKUSAGE=`expr $DISKUSAGE '*' -1`
+        SIGN='-'
+    fi
+	DISKUSAGE_INT=`expr $DISKUSAGE / 1024`
+	DISKUSAGE_FRAC=`expr $DISKUSAGE % 1024`
+    echo "Disk usage: $SIGN$DISKUSAGE_INT.$DISKUSAGE_FRAC Mb"
+}
+
+function instrument_command() {
+    STARTDISK=`df -k . | grep -v '^Filesystem' | awk '{print $3;}'`
+	df -k .
+	STARTTIME=`date +%s`
+    (exec $*)
+    ENDTIME=`date +%s`
+    ENDDISK=`df -k . | grep -v '^Filesystem' | awk '{print $3;}'`
+	df -k .
+	timereport $STARTTIME $ENDTIME
+    diskreport $STARTDISK $ENDDISK
+}
+
+function normalize-directory-name() {
+    (cd $1; pwd)
+}
+
+export TOPDIR=`pwd`
+export NOISY_RECURSION=YES
+done=NO
+nomake=NO
+CCOMPILER=
+while [ "$done" = NO ]
+do
+    if [ -z "$1" ]
+    then
+		break;
+	fi
+	case "$1" in
+	--help)
+		echo 'usage: napalmbuild.3dfx [options] [make-options]'
+		echo 'options:'
+        echo '--sst1:                           Voodoo Graphics'
+        echo '--sst96:                          Voodoo Rush'
+        echo '--cvg:                            Voodoo 2'
+        echo '--h3:                             Voodoo Banshee/Voodoo 3'
+        echo '--h5:                             The VSA-100 chipset used'
+        echo `                                  in the Voodoo4 and Voodoo5`
+        echo `                                  line of products.`
+		echo '-q, --quiet-directories           Do not echo directory names'
+        echo '                                  when recursing into them.'
+        echo '-s <dir>, --scriptdir <dir>       Look for the ostype script'
+        echo '                                  in the given directory.'
+        echo '-n, --nomake                      Do not run make.'
+		echo '-b <dir>, --build-root <dir>      The build root directory'
+        echo '                                  is set to the given one.'
+        echo '                                  This may be a relative name.'
+		echo '-x, --echo                        Set -x in this build script.'
+        echo '--                                Options from -- on will'
+        echo '                                  be passed to make.'
+		echo 'All options from the first non-recognized option'
+        echo 'will be passed to make.'
+		exit 100
+		;;
+    --sst1)
+        export FX_GLIDE_HW=sst1
+        shift
+        ;;
+    --sst96)
+        export FX_GLIDE_HW=sst96
+        shift
+        ;;
+    --cvg)
+        export FX_GLIDE_HW=cvg
+        shift
+        ;;
+    --h3)
+        export FX_GLIDE_HW=h3
+        shift
+        ;;
+    --h5)
+        export FX_GLIDE_HW=h5
+        shift
+        ;;
+	-b|--build-root)
+	    shift
+		if [ -z "$1" ]
+		then
+		    echo "$0: No parameter to --build-root"
+			exit 100
+		fi
+		if [ ! -d "$1" ]
+		then
+		    echo "$0: Parameter $1 to --build-root is not a directory"
+			exit 100
+		fi
+		TOPDIR=`normalize-directory-name $1`
+		shift
+		;;
+	-q|--quiet-directories)
+	    export NOISY_RECURSION=NO
+		;;
+	-s|--scriptdir)
+		shift
+		export SCRIPTDIR="$1"
+		shift
+		;;
+	-n|--nomake)
+		nomake=YES
+		;;
+	-x|--echo)
+		set -x
+		shift
+		;;
+	-cc|--c-compiler)
+		shift
+		if [ -z "$1" ]
+		then
+		    echo "$0: No parameter to --c-compiler"
+			exit 100
+		fi
+		CCOMPILER="$1"
+		shift
+		;;
+	--)
+		shift
+		done=YES
+		;;
+	*)
+		done=YES
+		;;
+    esac
+done
+
+if [ -z "$SCRIPTDIR" ]
+then
+    export SCRIPTDIR=$TOPDIR/swlibs/include/make
+fi
+#
+# Make sure that the ostype script exists and is
+# executable.
+#
+if [ -f $TOPDIR/swlibs/include/make/ostype -a ! -x swlibs/include/make/ostype ]
+then
+    chmod +x $TOPDIR/swlibs/include/make/ostype
+fi
+if [ `$TOPDIR/swlibs/include/make/ostype` != Linux ]
+then
+    echo "The script $0 only functions under Linux."
+	exit 100
+fi
+if [ ! -z "$CCOMPILER" ]
+then
+    CCOMPILER_SET_CMD="CC=$CCOMPILER"
+fi
+if [ "$nomake" != YES ]
+then
+	cd $TOPDIR
+    instrument_command make $CCOMPILER_SET_CMD -f makefile.linux "$@"
+fi

@@ -1,0 +1,45 @@
+2000-08-02  Bill White  <bill.white@griggsinst.com>
+
+	*  Added the swlibs/texus2 directory, in support of
+	   compressed textures.
+
+2000-08-01  Bill White  <bill.white@griggsinst.com>
+
+	* swlibs/include/makefile.autoconf.am:
+		   Added CLEANFILES definition.
+
+	* makefile.autoconf.am:
+		   Added CLEANFILES definition.
+
+	* h5/glide3/src/makefile.autoconf.am:
+	           Changed include_headers to include_HEADERS.
+		   Added CLEANFILES definition.
+
+	* h3/makefile.autoconf.am:
+	           Added.
+
+	* cvg/glide3/src/makefile.autoconf.am:
+	           Added include_HEADERS.
+	
+	* cvg/makefile.autoconf.am:
+	           Added incsrc to get sst1vid.h.
+
+	* configure.in:
+	           Changed the includedir to glide3 not glide3x.
+	           Added makefiles in h3/incsrc and cvg/incsrc
+	
+	* chores.3dfx:
+	           Changed --build-directory switch to work with
+	           --build-dir.
+	
+	* INSTALL: Changed some wording and fixed some errors.  
+	           Also, removed the automake-generic boilerplate.
+	
+	* README:  Removed some of the old installation instructions,
+	           which are no longer needed.
+
+
+2000-07-26  Bill White  <bill.white@griggsinst.com>
+
+	* Added automake/autoconf project build management files.
+

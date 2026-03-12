@@ -1,0 +1,73 @@
+# MinGW tests makefile for Glide3
+#
+#  Copyright (c) 2002 - Borca Daniel
+#  Email : dborca@users.sourceforge.net
+#  Web   : http://www.geocities.com/dborca
+#
+
+#
+#  Available options:
+#
+#	CROSS		cross-compiler toolchain prefix
+#			Needed when cross-compiling e.g. on Linux,
+#			as opposed to compiling on native Windows.
+#			default = i686-pc-mingw32-
+#			(Note that a trailing '-' is necessary.)
+#
+#    Environment variables:
+#	CPU		optimize for the given processor.
+#			default = pentium
+#
+#    Targets:
+#	<file.exe>	build a specific file
+#
+
+.PHONY: all
+.SUFFIXES: .c .o .exe
+.SECONDARY: tlib.o fxos.o
+
+FX_GLIDE_HW = h5
+TOP = ../../..
+CPU ?= pentium
+
+# default cross-toolchain prefix
+DEF_CROSS=i686-pc-mingw32-
+#DEF_CROSS=i686-w64-mingw32-
+
+# detect if running under unix by finding 'rm' in $PATH :
+ifeq ($(wildcard $(addsuffix /rm,$(subst :, ,$(PATH)))),)
+WINMODE= 1
+UNLINK = del $(subst /,\,$(1))
+else
+WINMODE= 0
+UNLINK = $(RM) $(1)
+ifeq ($(CROSS),)
+CROSS=$(DEF_CROSS)
+endif
+endif
+
+CC = $(CROSS)gcc
+
+CFLAGS = -Wall -O2 -ffast-math -mtune=$(CPU)
+CFLAGS += -I$(TOP)/$(FX_GLIDE_HW)/glide3/src -I$(TOP)/$(FX_GLIDE_HW)/incsrc
+CFLAGS += -I$(TOP)/swlibs/fxmisc
+CFLAGS += -D__WIN32__ -DH3
+CFLAGS += -DFX_GLIDE_NAPALM=1
+
+LDFLAGS = -s -L$(TOP)/$(FX_GLIDE_HW)/lib
+
+LDLIBS = -lgdi32 -lglide3x
+
+.c.o:
+	$(CC) -o $@ $(CFLAGS) -c $<
+%.exe: tlib.o %.o
+	$(CC) -o $@ $(LDFLAGS) $^ $(LDLIBS)
+
+all:
+	$(error Must specify <filename.exe> to build)
+
+sbench.exe: sbench.o fxos.o tlib.o
+	$(CC) -o $@ $(LDFLAGS) $^ $(LDLIBS)
+
+fxos.o: $(TOP)/swlibs/fxmisc/fxos.c
+	$(CC) -o $@ $(CFLAGS) -c $<

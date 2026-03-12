@@ -1,0 +1,5 @@
+/GR_DDFUNC\((.*),/
+/GR_ENTRY\((.*),/
+/GR_DIENTRY\((.*),/
+/GR_STATE_ENTRY\((.*),/_\1/
+/GR_EXT_ENTRY\((.*),/_\1/

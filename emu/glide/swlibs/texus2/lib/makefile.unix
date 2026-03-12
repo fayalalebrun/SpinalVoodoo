@@ -1,0 +1,41 @@
+#
+# Copyright (c) 1997, 3Dfx Interactive, Inc.
+# All Rights Reserved.
+#
+# This is UNPUBLISHED PROPRIETARY SOURCE CODE of 3Dfx Interactive, Inc.;
+# the contents of this file may not be disclosed to third parties, copied or
+# duplicated in any form, in whole or in part, without the prior written
+# permission of 3Dfx Interactive, Inc.
+#
+# RESTRICTED RIGHTS LEGEND:
+# Use, duplication or disclosure by the Government is subject to restrictions
+# as set forth in subdivision (c)(1)(ii) of the Rights in Technical Data
+# and Computer Software clause at DFARS 252.227-7013, and/or in similar or
+# successor clauses in the FAR, DOD or NASA FAR Supplement. Unpublished  -
+# rights reserved under the Copyright Laws of the United States.
+#
+
+# local defines, options, includes
+DBGOPTS = -DHWC_DEBUG -DGDBG_INFO_ON -g
+LCDEFS= -DGLIDE_DIAGS -DHWC_CSIM -DGLIDE3 -DGLIDE3_ALPHA -DGD_DEBUGGING -DGLIDE_SIMULATOR
+LCOPTS = $(DBGOPTS)
+LADEFS	= -DIS_32
+LCOPTS	=
+LCINCS	= -I. -I$(BUILD_ROOT_SST2)/csim -I$(BUILD_ROOT_SST2)/hwc -I$(BUILD_ROOT_SST2)/include -I$(BUILD_ROOT_SST2)/build -I$(BUILD_ROOT_SWLIBS)/include -I../uinc
+
+# sources
+HEADERS = texus.h texusint.h
+PRIVATE_HEADERS = 
+COMPTEXT = codec.c eigen.c bitcoder.c
+CFILES  = $(COMPTEXT) texuslib.c clamp.c read.c resample.c mipmap.c \
+          quantize.c ncc.c nccnnet.c pal256.c pal6666.c dequant.c \
+          view.c util.c diffuse.c write.c tga.c 3df.c ppm.c rgt.c txs.c
+
+INSTALL_DESTINATION = $(BUILD_ROOT_SST2)
+
+# targets
+LIBRARIES = libtexus.a
+
+FX_DLL_LIBRARY=1
+
+include $(BUILD_ROOT_SST2)/include/make/3dfx.mak

@@ -1,7 +1,3 @@
 [submodule "emu/86Box"]
 	path = emu/86Box
 	url = git@github.com:fayalalebrun/86Box.git
-[submodule "emu/glide"]
-	path = emu/glide
-	url = git@github.com:fayalalebrun/glide.git
-	branch = glide-devel-sezero

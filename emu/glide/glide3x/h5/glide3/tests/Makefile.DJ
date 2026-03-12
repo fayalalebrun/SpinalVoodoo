@@ -1,0 +1,63 @@
+# DOS/DJGPP tests makefile for Glide3
+#
+#  Copyright (c) 2002 - Borca Daniel
+#  Email : dborca@users.sourceforge.net
+#  Web   : http://www.geocities.com/dborca
+#
+
+#
+#  Available options:
+#
+#    Environment variables:
+#	CPU		optimize for the given processor.
+#			default = pentium
+#	DXE=1		use DXE modules.
+#			default = no
+#
+#    Targets:
+#	<file.exe>	build a specific file
+#
+
+.PHONY: all clean
+.SUFFIXES: .c .o .exe
+.SECONDARY: tlib.o fxos.o
+
+FX_GLIDE_HW = h5
+TOP = ../../..
+CPU ?= pentium
+
+UNLINK = rm -f $(1)
+
+CC = gcc
+CFLAGS = -Wall -O2 -ffast-math -mtune=$(CPU)
+CFLAGS += -I$(TOP)/$(FX_GLIDE_HW)/glide3/src -I$(TOP)/$(FX_GLIDE_HW)/incsrc
+CFLAGS += -I$(TOP)/swlibs/fxmisc
+CFLAGS += -D__DOS__ -DH3
+CFLAGS += -D__DOS32__
+CFLAGS += -DFX_GLIDE_NAPALM=1
+
+LDFLAGS = -s -L$(TOP)/$(FX_GLIDE_HW)/lib
+
+ifdef DXE
+LDLIBS = -lglide3i
+else
+LDLIBS = -lglide3x
+endif
+
+.c.o:
+	$(CC) -o $@ $(CFLAGS) -c $<
+%.exe: tlib.o %.o
+	$(CC) -o $@ $(LDFLAGS) $^ $(LDLIBS)
+
+all:
+	$(error Must specify <filename.exe> to build)
+
+sbench.exe: sbench.o fxos.o tlib.o
+	$(CC) -o $@ $(LDFLAGS) $^ $(LDLIBS)
+
+fxos.o: $(TOP)/swlibs/fxmisc/fxos.c
+	$(CC) -o $@ $(CFLAGS) -c $<
+
+clean:
+	-$(call UNLINK,*.o)
+	-$(call UNLINK,*.exe)

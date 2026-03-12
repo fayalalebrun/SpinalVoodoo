@@ -1,0 +1,166 @@
+# Linux makefile for Texus
+#
+#  Copyright (c) 2003 - Daniel Borca
+#  Email : dborca@users.sourceforge.net
+#  Web   : http://www.geocities.com/dborca
+#
+#  Copyright (c) 2006 - Guillem Jover <guillem@hadrons.org>
+#
+
+#
+#  Available options:
+#
+#    Environment variables:
+#	FX_GLIDE_HW	build for the given ASIC (h3).
+#			default = h3
+#	OPTFLAGS	pass given optimization flags to compiler
+#			default = -O2 -ffast-math
+#	DEBUG=1		enable debugging checks and messages
+#			default = no
+#
+#    Targets:
+#	all:		build everything
+#	texus:		build Texus lib
+#	clean:		remove object files
+#	realclean:	remove all generated files
+#
+
+.PHONY: all texus clean realclean
+.SUFFIXES: .lo
+
+export PATH := $(PATH):.
+
+###############################################################################
+#	general defines (user settable?)
+###############################################################################
+
+TEXUS_VERSION_MAJOR = 1
+TEXUS_VERSION_MINOR = 1
+
+TEXUS_LIB = libtexus.a
+TEXUS_SO  = libtexus.so
+TEXUS_SONAME = $(TEXUS_SO).$(TEXUS_VERSION_MAJOR)
+TEXUS_SHARED = $(TEXUS_SONAME).$(TEXUS_VERSION_MINOR)
+
+# FIXME: this should be independent from the hw.
+FX_GLIDE_HW ?= h3
+# FIXME: this should be independent from the glide version.
+FX_GLIDE_HW_DIR = ../../../glide2x/$(FX_GLIDE_HW)
+FX_GLIDE_SW = ../..
+TEXUS_LIBDIR = $(FX_GLIDE_SW)/lib
+
+###############################################################################
+#	tools
+###############################################################################
+
+CC = gcc
+AS = nasm
+AR = ar
+
+CP = cp
+
+###############################################################################
+#	defines
+###############################################################################
+
+# platform
+CDEFS = -D__linux__
+
+ifdef FX_GLIDE3
+CDEFS += -DGLIDE3
+endif
+
+# general
+CDEFS += -DGLIDE_HARDWARE
+
+# debug
+
+# other
+
+###############################################################################
+#	flags
+###############################################################################
+
+# librarian
+ARFLAGS = rus
+
+# compiler
+CFLAGS = -Wall -W
+CFLAGS += -I. -I$(FX_GLIDE_SW)/include -I$(FX_GLIDE_SW)/fxmisc
+CFLAGS += -I$(FX_GLIDE_HW_DIR)/incsrc -I$(FX_GLIDE_HW_DIR)/glide/src
+CFLAGS += $(CDEFS)
+
+OPTFLAGS ?= -O2 -ffast-math
+
+# optflags
+CFLAGS += $(OPTFLAGS)
+
+###############################################################################
+#	objects
+###############################################################################
+
+TEXUS_OBJECTS = \
+	texuslib.o \
+	clamp.o \
+	read.o \
+	resample.o \
+	mipmap.o \
+	quantize.o \
+	ncc.o \
+	nccnnet.o \
+	pal256.o \
+	dequant.o \
+	view.o \
+	util.o \
+	diffuse.o \
+	write.o \
+	tga.o \
+	3df.o \
+	ppm.o \
+	rgt.o
+
+# FIXME: this is needed for now to match the old library signature, but
+#        needs to be checked if it's really needed.
+TEXUS_OBJECTS += \
+	$(FX_GLIDE_SW)/fxmisc/fxos.o \
+	$(FX_GLIDE_SW)/fxmisc/fximg.o \
+	$(FX_GLIDE_SW)/fxmisc/linutil.o
+
+###############################################################################
+#	rules
+###############################################################################
+
+.c.o:
+	$(CC) -o $@ $(CFLAGS) -c $<
+.c.lo:
+	$(CC) -o $@ $(CFLAGS) -DPIC -fPIC -c $<
+
+###############################################################################
+#	main
+###############################################################################
+
+all: texus
+
+texus: $(TEXUS_LIBDIR)/$(TEXUS_LIB) $(TEXUS_LIBDIR)/$(TEXUS_SO)
+
+$(TEXUS_LIBDIR)/$(TEXUS_LIB): $(TEXUS_OBJECTS)
+	$(AR) $(ARFLAGS) $@ $^
+
+$(TEXUS_LIBDIR)/$(TEXUS_SO): $(TEXUS_LIBDIR)/$(TEXUS_SHARED)
+	ln -fs $(TEXUS_SHARED) $(TEXUS_LIBDIR)/$(TEXUS_SO)
+
+$(TEXUS_LIBDIR)/$(TEXUS_SHARED): $(TEXUS_OBJECTS:.o=.lo)
+	$(CC) -o $@ -shared -Wl,-soname,$(TEXUS_SONAME) $^ $(LDFLAGS) $(LDLIBS)
+
+###############################################################################
+#	clean, realclean
+###############################################################################
+
+clean:
+	-$(RM) *.o *.lo
+
+realclean: clean
+	-$(RM) $(TEXUS_LIBDIR)/$(TEXUS_LIB)
+	-$(RM) $(TEXUS_LIBDIR)/$(TEXUS_SHARED)
+	-$(RM) $(TEXUS_LIBDIR)/$(TEXUS_SO)
+

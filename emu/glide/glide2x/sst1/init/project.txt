@@ -1,0 +1,80 @@
+What happens when glide initializes:
+
+* Identify Installed Hardware
+        - What if both an SST-1 and an AT3D are installed?
+          some behavior must be defined.  We could have an
+          enumerate3DfxHardware?
+* Locate and Load the correct DLL for the desired hardware.
+        - This requires that the interface be very well defined,
+          and we want it to be binary compatible across revisions.
+        - Under DOS either all init code must be statically linked in,
+          or we need a DOS DLL mechanism.
+* Map the desired device into virtual memory
+* Describe the selected hardware to the user/glide
+* Do card soft reset.
+        - this sets all register state to desired power on defaults so
+          that future operations can proceed from a known, well-defined
+          hardware state
+* Do card initialization:
+        - Under full screen this will involve setting up video timing
+          for the desired resolution and setting up whatever registers
+          are necessary to enable requrested color, alpha, depth buffers,
+          as well as configuring a command fifo if necessary.
+        - In a window this will negotiate with the operating system
+          for whatever shared resources are necessary. 
+* Initialize gamma correction
+        - Under Win95 this does nothing probably
+
+
+What happens when glide shuts down:
+
+* Idle the graphics hardware
+* Shut down graphics
+        - Win95 ( window )
+          free all ddraw resources.
+        - Win95 ( full-screen )
+          switch back to desktop
+          free all ddraw resources
+        - Dos   ( full-screen )
+          switch back to mode 3
+* Unmap card from virtual memory
+
+
+What happens when the user wants to write to the LFB:
+** Two approaches:
+* Define a code region in which LFB accesses are permitted
+        - Win95 ( window )
+          take a DDRAW lock on the surface and give pointer to users
+          lfbBegin( enum READWRITE ) - now returns a write pointer
+          do lfb writes
+          release ddraw lock - ( invalidates pointer )
+        - Win95 ( fullscreen )
+          same
+        - DOS ( fullscreen )
+          return pointer to frame buffer that was mapped at init time
+          
+* Don't ever allow user direct access to LFB
+        - All ugliness of lfb writes is 
+          hidden in writepixel/writerect functions
+
+What happens when the user wants to read from the LFB:
+** Two approaches:
+* Define a code region in which LFB accesses are permitted
+        - Win95 ( window )
+          take a readable DDRAW lock on the surface and give pointer to users
+          lfbBegin( enum READWRITE ) - now returns a readpointer pointer
+          do lfb writes
+          release ddraw lock - ( invalidates pointer )
+        - Win95 ( fullscreen )
+          same
+        - DOS ( fullscreen )
+          return pointer to frame buffer that was mapped at init time
+          
+* Don't ever allow user direct access to LFB
+        - All ugliness of lfb reads is 
+          hidden in readpixel/readrect functions
+        
+
+
+
+

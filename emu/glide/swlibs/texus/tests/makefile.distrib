@@ -1,0 +1,12 @@
+#
+
+CFLAGS = -g -I/usr/include/glide
+LIBS = -lglide2x -ltexus -lm
+
+all : viewppm view3df
+
+viewppm : viewppm.o
+	$(CC) -o $@ $+ $(LIBS)
+
+view3df : view3df.o
+	$(CC) -o $@ $+ $(LIBS)

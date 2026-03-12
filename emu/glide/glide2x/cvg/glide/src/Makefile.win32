@@ -1,0 +1,306 @@
+# Win32 makefile for Glide2/CVG
+# This makefile MUST be processed by GNU make!!!
+#
+#  Copyright (c) 2004
+#
+#  Daniel Borca
+#  Email : dborca@users.sourceforge.net
+#  Web   : http://www.geocities.com/dborca
+#
+#  Hiroshi Morii
+#  Email : koolsmoky@users.sourceforge.net
+#  Web   : http://www.3dfxzone.it/koolsmoky
+#
+
+#
+#  Available options:
+#
+#    Environment variables:
+#	CPU		optimize for the given processor.
+#			default = 6 (PentiumPro)
+#	DEBUG=1		disable optimizations and build for debug.
+#			default = no
+#	USE_X86=1	use assembler triangle specializations; req by CVG
+#			default = yes
+#	USE_3DNOW=1	allow 3DNow! specializations. However, the true CPU
+#			capabilities are still checked at run-time to avoid
+#			crashes.
+#			default = no
+#	USE_MMX=1	allow MMX specializations.
+#			default = no
+#	FXOEM2X=1	build fxoem2x.dll
+#			default = no
+#
+#    Targets:
+#	all:		build everything
+#	glide2x:	build Glide2x lib
+#	clean:		remove object files
+#	realclean:	remove all generated files
+#
+
+.PHONY: all glide2x clean realclean
+.INTERMEDIATE: fxgasm.exe
+.SUFFIXES: .c .obj .rc .res
+
+###############################################################################
+#	general defines (user settable?)
+###############################################################################
+
+GLIDE_RES = glide.res
+GLIDE_DLL = glide2x.dll
+GLIDE_IMP = glide2x.lib
+
+FX_GLIDE_SW = ../../../swlibs
+GLIDE_LIBDIR = ../../lib
+
+###############################################################################
+#	tools
+###############################################################################
+
+CC = cl
+AS = nasm
+LD = link
+RC = rc
+
+ifeq ($(wildcard $(addsuffix /rm.exe,$(subst ;, ,$(PATH)))),)
+UNLINK = del $(subst /,\,$(1))
+else
+UNLINK = $(RM) $(1)
+endif
+
+###############################################################################
+#	defines
+###############################################################################
+
+# platform
+CDEFS = -D__WIN32__ -DDIRECTX -DFX_DLL_ENABLE -D__3Dfx_PCI_CFG__
+
+# general
+CDEFS += -DGLIDE_HW_TRI_SETUP=1 -DGLIDE_PACKED_RGB=1 -DGLIDE_TRI_CULLING=1 -DGLIDE_DEFAULT_GAMMA=1.3f -DGLIDE_LIB=1
+#CDEFS += -DGLIDE3 -DGLIDE3_ALPHA -DGLIDE3_SCALER
+
+# special sli buffer clears
+CDEFS += -DGLIDE_BLIT_CLEAR=1
+
+# workaround for CVGs with broken tsus which cannot send commands to multiple
+# tmus using chipfield. chipfield will always be set to 0xf
+CDEFS += -DGLIDE_CHIP_BROADCAST=1
+
+# subsystem
+CDEFS += -DCVG
+
+# debug
+ifdef DEBUG
+CDEFS += -DGDBG_INFO_ON -DGLIDE_DEBUG -DGLIDE_SANITY_ASSERT -DGLIDE_SANITY_SIZE
+endif
+
+override USE_FIFO = 1
+#override USE_X86 = 1
+
+ifeq ($(USE_X86),1)
+CDEFS += -DGLIDE_DISPATCH_SETUP=1 -DGLIDE_DISPATCH_DOWNLOAD=1
+override USE_FIFO = 1
+CDEFS += -DHAVE_XDRAWTRI_ASM=1
+override USE_DRAWTRI_ASM = 1
+else
+CDEFS += -DGLIDE_USE_C_TRISETUP=1
+endif
+
+# fifo
+ifeq ($(USE_FIFO),1)
+CDEFS += -DUSE_PACKET_FIFO=1 -DGLIDE_PACKET3_TRI_SETUP=1
+endif
+
+# other
+CDEFS += -DGLIDE_PLUG -DGLIDE_SPLASH
+
+###############################################################################
+#	flags
+###############################################################################
+
+# linker
+LDFLAGS = -nologo -dll -opt:WIN98 -machine:IX86 -nodefaultlib
+
+# assembler
+ASFLAGS = -O6 -fwin32 -D__WIN32__ --prefix _
+ASFLAGS += $(CDEFS)
+
+# compiler
+CFLAGS  = -nologo -W3 -WX -D__MSC__=1
+
+LDLIBS = user32.lib kernel32.lib advapi32.lib
+ifdef DEBUG
+CFLAGS += -Od -MTd -Zi
+LDFLAGS += -debugtype:both -debug
+LDLIBS += LIBCMTD.lib
+else
+CPU ?= 6
+CFLAGS += -DNDEBUG -G$(CPU) -O2 -MT
+LDLIBS += LIBCMT.lib
+endif
+
+CFLAGS += -I. -I../../incsrc -I../../init
+CFLAGS += -I$(FX_GLIDE_SW)/fxmisc -I$(FX_GLIDE_SW)/newpci/pcilib -I$(FX_GLIDE_SW)/fxmemmap
+CFLAGS += $(CDEFS)
+
+# cpu optimized triangle
+ifeq ($(USE_MMX),1)
+CFLAGS += -DGL_MMX
+override USE_X86 = 1
+endif
+
+ifeq ($(USE_3DNOW),1)
+CFLAGS += -DGL_AMD3D
+override USE_X86 = 1
+endif
+
+###############################################################################
+#	objects
+###############################################################################
+
+GLIDE_OBJECTS = \
+	fifo.obj \
+	gsplash.obj \
+	g3df.obj  \
+	gu.obj \
+	guclip.obj \
+	gpci.obj \
+	gump.obj \
+	diglide.obj \
+	disst.obj \
+	ditex.obj \
+	gbanner.obj \
+	gerror.obj \
+	gmovie.obj \
+	digutex.obj \
+	ddgump.obj \
+	gaa.obj \
+	gdraw.obj \
+	gglide.obj \
+	glfb.obj \
+	gsst.obj \
+	gtex.obj \
+	gtexdl.obj \
+	gutex.obj \
+	cpuid.obj \
+	fpu.obj \
+	xtexdl_def.obj
+
+ifeq ($(USE_DRAWTRI_ASM),1)
+GLIDE_OBJECTS += xdrawtri.obj
+endif
+ifeq ($(USE_X86),1)
+GLIDE_OBJECTS += \
+	xdraw2_def.obj
+ifeq ($(USE_MMX),1)
+GLIDE_OBJECTS += \
+	xtexdl_mmx.obj
+endif
+ifeq ($(USE_3DNOW),1)
+GLIDE_OBJECTS += \
+	xdraw2_3dnow.obj \
+	xtexdl_3dnow.obj
+endif
+else
+GLIDE_OBJECTS += \
+	gxdraw.obj
+endif
+
+GLIDE_OBJECTS += \
+	$(FX_GLIDE_SW)/newpci/pcilib/fxpci.obj \
+	$(FX_GLIDE_SW)/newpci/pcilib/fxw32.obj \
+	$(FX_GLIDE_SW)/newpci/pcilib/fxvxd.obj \
+	$(FX_GLIDE_SW)/newpci/pcilib/fxnt.obj \
+	$(FX_GLIDE_SW)/newpci/pcilib/fxmsr.obj \
+	../../init/canopus.obj \
+	../../init/dac.obj \
+	../../init/gamma.obj \
+	../../init/gdebug.obj \
+	../../init/info.obj \
+	../../init/parse.obj \
+	../../init/print.obj \
+	../../init/sli.obj \
+	../../init/sst1init.obj \
+	../../init/util.obj \
+	../../init/video.obj \
+	../../init/fxremap.obj
+
+###############################################################################
+#	rules
+###############################################################################
+
+.c.obj:
+	$(CC) -Fo$@ $(CFLAGS) -c $<
+.rc.res:
+	$(RC) -Fo$@ $(CDEFS) -I$(FX_GLIDE_SW)/fxmisc $<
+
+###############################################################################
+#	main
+###############################################################################
+all: glide2x fxoem2x
+
+glide2x: $(GLIDE_LIBDIR)/$(GLIDE_DLL)
+
+$(GLIDE_LIBDIR)/$(GLIDE_DLL): $(GLIDE_OBJECTS) $(GLIDE_RES)
+	$(LD) -out:$@ $(LDFLAGS) $(GLIDE_OBJECTS) $(LDLIBS) $(GLIDE_RES)
+
+fxoem2x: $(GLIDE_LIBDIR)/fxoem2x.dll
+
+ifeq ($(FXOEM2X),1)
+$(GLIDE_LIBDIR)/fxoem2x.dll: ../oem/oeminit.obj ../oem/oeminit.res
+#	$(LD) -out:$@ $(LDFLAGS) ../oem/oeminit.obj $(LDLIBS) ../oem/oeminit.res
+else
+$(GLIDE_LIBDIR)/fxoem2x.dll:
+#	$(warning FxOem2x not enabled... Skipping fxoem2x.dll)
+endif
+
+###############################################################################
+#	rules(2)
+###############################################################################
+
+#cpuid.obj: cpudtect.asm
+#	$(AS) -o $@ $(ASFLAGS) $<
+xdraw2_def.obj: xdraw2.asm
+	$(AS) -o $@ $(ASFLAGS) $<
+xtexdl_def.obj: xtexdl.c
+	$(CC) -Fo$@ $(CFLAGS) -c $<
+xtexdl_mmx.obj: xtexdl.asm
+	$(AS) -o $@ $(ASFLAGS) -DGL_MMX=1 $<
+xdraw2_3dnow.obj: xdraw2.asm
+	$(AS) -o $@ $(ASFLAGS) -DGL_AMD3D=1 $<
+xtexdl_3dnow.obj: xtexdl.asm
+	$(AS) -o $@ $(ASFLAGS) -DGL_AMD3D=1 $<
+xdrawtri.obj: xdrawtri.asm
+	$(AS) -o $@ $(ASFLAGS) $<
+
+$(GLIDE_OBJECTS): fxinline.h fxgasm.h
+
+fxinline.h: fxgasm.exe
+	$< -inline > $@
+
+fxgasm.h: fxgasm.exe
+	$< -hex > $@
+
+fxgasm.exe: fxgasm.c
+	$(CC) -o $@ $(CFLAGS) $<
+
+###############################################################################
+#	clean, realclean
+###############################################################################
+
+clean:
+	-$(call UNLINK,*.obj)
+	-$(call UNLINK,../../init/*.obj)
+	-$(call UNLINK,$(FX_GLIDE_SW)/newpci/pcilib/*.obj)
+	-$(call UNLINK,fxinline.h)
+	-$(call UNLINK,fxgasm.h)
+	-$(call UNLINK,../oem/oeminit.obj)
+	-$(call UNLINK,../oem/oeminit.res)
+
+realclean: clean
+	-$(call UNLINK,$(GLIDE_LIBDIR)/glide2x.exp)
+	-$(call UNLINK,$(GLIDE_LIBDIR)/$(GLIDE_DLL))
+	-$(call UNLINK,$(GLIDE_LIBDIR)/$(GLIDE_IMP))
+	-$(call UNLINK,$(GLIDE_LIBDIR)/fxoem2x.exp)
+	-$(call UNLINK,$(GLIDE_LIBDIR)/fxoem2x.dll)
+	-$(call UNLINK,$(GLIDE_LIBDIR)/fxoem2x.lib)

@@ -1,0 +1,312 @@
+# Linux makefile for Glide2/H3
+# This makefile MUST be processed by GNU make!!!
+#
+#  Copyright (c) 2003 - Daniel Borca
+#  Email : dborca@users.sourceforge.net
+#  Web   : http://www.geocities.com/dborca
+#
+#  Copyright (c) 2006 - Guillem Jover <guillem@hadrons.org>
+#
+
+#
+#  Available options:
+#
+#    Environment variables:
+#	XPATH		specify X11 path.
+#			default = /usr/X11R6
+#	X11LIBS		X libraries path; default = $(XPATH)/lib
+#	H4=1		High speed Avenger.
+#			default = no
+#	OPTFLAGS	pass given optimization flags to compiler
+#			default = -O2 -ffast-math
+#	DEBUG=1		enable debugging checks and messages
+#			default = no
+#	USE_X86=1	use assembler triangle specializations!
+#			default = no
+#	USE_3DNOW=1	allow 3DNow! specializations. However, the true CPU
+#			capabilities are still checked at run-time to avoid
+#			crashes.
+#			default = no
+#
+#    Targets:
+#	all:		build everything
+#	glide2x:	build Glide2x lib
+#	clean:		remove object files
+#	realclean:	remove all generated files
+#
+
+.PHONY: all glide2x clean realclean
+.INTERMEDIATE: fxgasm
+.SUFFIXES: .lo
+
+export PATH := $(PATH):.
+
+###############################################################################
+#	general defines (user settable?)
+###############################################################################
+
+GLIDE_VERSION_MAJOR = 2
+GLIDE_VERSION_MINOR = 60
+
+GLIDE_LIB = libglide.a
+GLIDE_SO  = libglide.so
+GLIDE_SO_X= libglide2x.so
+GLIDE_SONAME = $(GLIDE_SO).$(GLIDE_VERSION_MAJOR)
+GLIDE_SHARED = $(GLIDE_SONAME).$(GLIDE_VERSION_MINOR)
+
+FX_GLIDE_SW = ../../../swlibs
+GLIDE_LIBDIR = ../../lib
+
+###############################################################################
+#	tools
+###############################################################################
+
+CC = gcc
+AS = nasm
+AR = ar
+
+CP = cp
+
+###############################################################################
+#	defines
+###############################################################################
+
+# platform
+CDEFS = -D__linux__
+
+XPATH ?= /usr/X11R6
+X11LIBS ?= $(XPATH)/lib
+LDLIBS = -L$(X11LIBS) -lX11 -lXext -lXxf86dga -lXxf86vm
+
+LDLIBS += -lm
+
+# general
+CDEFS += -DGLIDE_HW_TRI_SETUP=1 -DGLIDE_INIT_HWC -DGLIDE_PACKED_RGB=0 -DGLIDE_TRI_CULLING=1
+CDEFS += -DGLIDE_LIB -DHAL_HW=1
+
+# subsystem
+CDEFS += -DH3
+ifdef H4
+CDEFS += -DH4
+endif
+
+# debug
+ifdef DEBUG
+CDEFS += -DGDBG_INFO_ON -DGLIDE_DEBUG -DGLIDE_SANITY_ASSERT -DGLIDE_SANITY_SIZE
+endif
+
+override USE_FIFO = 1
+#override USE_X86 = 1
+
+ifeq ($(USE_X86),1)
+CDEFS += -DGLIDE_DISPATCH_SETUP=1
+override USE_FIFO = 1
+CDEFS += -DHAVE_XDRAWTRI_ASM=1
+override USE_DRAWTRI_ASM = 1
+else
+CDEFS += -DGLIDE_USE_C_TRISETUP=1
+endif
+
+# fifo
+ifeq ($(USE_FIFO),1)
+CDEFS += -DUSE_PACKET_FIFO=1 -DGLIDE_PACKET3_TRI_SETUP=1
+endif
+
+# other
+CDEFS += -DGLIDE_PLUG -DGLIDE_SPLASH
+
+# obsolete options
+# -DDIAG_BUILD
+
+###############################################################################
+#	flags
+###############################################################################
+
+# librarian
+ARFLAGS = rus
+
+# assembler
+ASFLAGS = -O6 -felf -D__linux__
+ASFLAGS += $(CDEFS)
+
+# compiler
+CFLAGS = -Wall
+CFLAGS += -I. -I../../incsrc -I../../minihwc
+CFLAGS += -I$(FX_GLIDE_SW)/fxmisc -I$(FX_GLIDE_SW)/newpci/pcilib -I$(FX_GLIDE_SW)/fxmemmap
+CFLAGS += $(CDEFS)
+
+ifeq ($(USE_3DNOW),1)
+CFLAGS += -DGL_AMD3D
+override USE_X86 = 1
+endif
+
+ifeq ($(USE_X86),1)
+CFLAGS += -DGL_X86
+OPTFLAGS ?= -O2 -ffast-math
+else
+OPTFLAGS ?= -O2 -ffast-math
+endif
+
+# optflags
+CFLAGS += $(OPTFLAGS)
+
+###############################################################################
+#	objects
+###############################################################################
+
+GLIDE_OBJECTS = \
+	fifo.o \
+	gsplash.o \
+	g3df.o \
+	gu.o \
+	guclip.o \
+	gpci.o \
+	gump.o \
+	diglide.o \
+	disst.o \
+	ditex.o \
+	gbanner.o \
+	gerror.o \
+	gmovie.o \
+	digutex.o \
+	ddgump.o \
+	gaa.o \
+	gdraw.o \
+	gglide.o \
+	glfb.o \
+	gsst.o \
+	gtex.o \
+	gtexdl.o \
+	gutex.o \
+	cpuid.o \
+	xtexdl_def.o
+
+ifeq ($(USE_DRAWTRI_ASM),1)
+GLIDE_OBJECTS += xdrawtri.o
+endif
+ifeq ($(USE_X86),1)
+GLIDE_OBJECTS += \
+	xdraw2_def.o
+ifeq ($(USE_3DNOW),1)
+GLIDE_OBJECTS += \
+	xdraw2_3dnow.o \
+	xtexdl_3dnow.o
+endif
+else
+GLIDE_OBJECTS += \
+	gxdraw.o
+endif
+
+GLIDE_OBJECTS += \
+	$(FX_GLIDE_SW)/newpci/pcilib/fxpci.o \
+	$(FX_GLIDE_SW)/newpci/pcilib/fxlinux.o \
+	../../minihwc/hwcio.o \
+	../../minihwc/gdebug.o
+
+# FIXME: needed for now to match the old library signature, should be checked
+#        if it's really needed.
+GLIDE_OBJECTS += \
+	$(FX_GLIDE_SW)/fxmisc/fxos.o \
+	$(FX_GLIDE_SW)/fxmisc/fximg.o
+
+GLIDE_OBJECTS += \
+	../../minihwc/linhwc.o
+
+###############################################################################
+#	rules
+###############################################################################
+
+.c.o:
+	$(CC) -o $@ $(CFLAGS) -c $<
+.c.lo:
+	$(CC) -o $@ $(CFLAGS) -DPIC -fPIC -c $<
+.S.o:
+	$(CC) -o $@ $(CDEFS) -c $<
+.s.o:
+	$(CC) -o $@ $(CDEFS) -x assembler-with-cpp -c $<
+
+###############################################################################
+#	main
+###############################################################################
+all: glide2x
+
+glide2x: $(GLIDE_LIBDIR)/$(GLIDE_LIB) $(GLIDE_LIBDIR)/$(GLIDE_SO) $(GLIDE_LIBDIR)/$(GLIDE_SONAME) $(GLIDE_LIBDIR)/$(GLIDE_SO_X)
+
+$(GLIDE_LIBDIR)/$(GLIDE_LIB): $(GLIDE_OBJECTS)
+	$(AR) $(ARFLAGS) $@ $^
+
+$(GLIDE_LIBDIR)/$(GLIDE_SO): $(GLIDE_LIBDIR)/$(GLIDE_SHARED)
+	ln -fs $(GLIDE_SHARED) $(GLIDE_LIBDIR)/$(GLIDE_SO)
+$(GLIDE_LIBDIR)/$(GLIDE_SONAME): $(GLIDE_LIBDIR)/$(GLIDE_SHARED)
+	ln -fs $(GLIDE_SHARED) $(GLIDE_LIBDIR)/$(GLIDE_SONAME)
+$(GLIDE_LIBDIR)/$(GLIDE_SO_X): $(GLIDE_LIBDIR)/$(GLIDE_SHARED)
+	ln -fs $(GLIDE_SHARED) $(GLIDE_LIBDIR)/$(GLIDE_SO_X)
+
+$(GLIDE_LIBDIR)/$(GLIDE_SHARED): $(GLIDE_OBJECTS:.o=.lo)
+	$(CC) -o $@ -shared -Wl,--no-undefined -Wl,-soname,$(GLIDE_SONAME) $^ $(LDFLAGS) $(LDLIBS)
+
+###############################################################################
+#	rules(2)
+###############################################################################
+
+#cpuid.o: cpudtect.S
+#	$(CC) -o $@ -xassembler-with-cpp -c $(CDEFS) $<
+#xdraw2_def.o: xdraw2.S
+#	$(CC) -o $@ -xassembler-with-cpp -c $(CDEFS) $<
+#xdraw2_3dnow.o: xdraw2.S
+#	$(CC) -o $@ -xassembler-with-cpp -c $(CDEFS) -DGL_AMD3D=1 $<
+#xtexdl_3dnow.o: xtexdl.S
+#	$(CC) -o $@ -xassembler-with-cpp -c $(CDEFS) -DGL_AMD3D=1 $<
+#xdrawtri.o: xdrawtri.S
+#	$(CC) -o $@ -xassembler-with-cpp -c $(CDEFS) $<
+cpuid.o: cpudtect.asm
+	$(AS) -o $@ $(ASFLAGS) $<
+xdraw2_def.o: xdraw2.asm
+	$(AS) -o $@ $(ASFLAGS) $<
+xdraw2_3dnow.o: xdraw2.asm
+	$(AS) -o $@ $(ASFLAGS) -DGL_AMD3D=1 $<
+xtexdl_3dnow.o: xtexdl.asm
+	$(AS) -o $@ $(ASFLAGS) -DGL_AMD3D=1 $<
+xdrawtri.o: xdrawtri.asm
+	$(AS) -o $@ $(ASFLAGS) $<
+
+cpuid.lo: cpuid.o
+	$(CP) $< $@
+xdraw2_def.lo: xdraw2_def.o
+	$(CP) $< $@
+xdraw2_3dnow.lo: xdraw2_3dnow.o
+	$(CP) $< $@
+xtexdl_3dnow.lo: xtexdl_3dnow.o
+	$(CP) $< $@
+xdrawtri.lo: xdrawtri.o
+	$(CP) $< $@
+
+$(GLIDE_OBJECTS): fxinline.h fxgasm.h
+
+fxinline.h: fxgasm
+	./$< -inline > $@
+
+fxgasm.h: fxgasm
+	./$< -hex > $@
+
+fxgasm: fxgasm.c
+	$(CC) -o $@ $(CFLAGS) $<
+
+###############################################################################
+#	clean, realclean
+###############################################################################
+
+clean:
+	-$(RM) *.o *.lo
+	-$(RM) ../../minihwc/*.o ../../minihwc/*.lo
+	-$(RM) $(FX_GLIDE_SW)/newpci/pcilib/*.o $(FX_GLIDE_SW)/newpci/pcilib/*.lo
+	-$(RM) $(FX_GLIDE_SW)/fxmisc/*.o $(FX_GLIDE_SW)/fxmisc/*.lo
+	-$(RM) fxinline.h
+	-$(RM) fxgasm.h
+
+realclean: clean
+	-$(RM) $(GLIDE_LIBDIR)/$(GLIDE_LIB)
+	-$(RM) $(GLIDE_LIBDIR)/$(GLIDE_SHARED)
+	-$(RM) $(GLIDE_LIBDIR)/$(GLIDE_SO)
+	-$(RM) $(GLIDE_LIBDIR)/$(GLIDE_SONAME)
+	-$(RM) $(GLIDE_LIBDIR)/$(GLIDE_SO_X)

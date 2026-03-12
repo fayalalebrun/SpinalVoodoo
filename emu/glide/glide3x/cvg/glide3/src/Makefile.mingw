@@ -1,0 +1,372 @@
+# Win32 makefile for Glide3/CVG and Texus2, using MinGW environment
+# This makefile MUST be processed by GNU make!!!
+#
+#  Copyright (c) 2004 - Daniel Borca
+#  Email : dborca@users.sourceforge.net
+#  Web   : http://www.geocities.com/dborca
+#
+
+#
+#  Available options:
+#
+#	CROSS		cross-compiler toolchain prefix
+#			Needed when cross-compiling e.g. on Linux,
+#			as opposed to compiling on native Windows.
+#			default = i686-pc-mingw32-
+#			(Note that a trailing '-' is necessary.)
+#
+#    Environment variables:
+#	OPTFLAGS	pass given optimization flags to compiler
+#			default = -O2 -ffast-math -mtune=pentium
+#	DEBUG=1		enable debugging checks and messages
+#			default = no
+#	USE_X86=1	use assembler triangle specializations; req by CVG
+#			default = no
+#	USE_MMX=1	allow MMX specializations. However, the true CPU
+#			capabilities are still checked at run-time to avoid
+#			crashes.
+#			default = no
+#	USE_3DNOW=1	allow 3DNow! specializations. However, the true CPU
+#			capabilities are still checked at run-time to avoid
+#			crashes.
+#			default = no
+#	TEXUS2=1	embed Texus2 functions into Glide3.
+#			default = no
+#
+#    Targets:
+#	all:		build everything
+#	glide3x:	build Glide3x lib
+#	clean:		remove object files
+#	realclean:	remove all generated files
+#
+
+.PHONY: all glide3x clean realclean
+.INTERMEDIATE: fxgasm.exe
+.SUFFIXES: .c .obj .rc .res
+
+###############################################################################
+#	general defines (user settable?)
+###############################################################################
+
+GLIDE_RES = glide.res
+GLIDE_DLL = glide3x.dll
+GLIDE_DEF = glide3x.def
+GLIDE_IMP = libglide3x.dll.a
+TEXUS_EXE = texus2.exe
+
+FX_GLIDE_SW = ../../../swlibs
+GLIDE_LIBDIR = ../../lib
+TEXUS_EXEDIR = $(FX_GLIDE_SW)/bin
+
+###############################################################################
+#	tools
+###############################################################################
+
+# default cross-toolchain prefix
+DEF_CROSS=i686-pc-mingw32-
+#DEF_CROSS=i686-w64-mingw32-
+
+# detect if running under unix by finding 'rm' in $PATH :
+ifeq ($(wildcard $(addsuffix /rm,$(subst :, ,$(PATH)))),)
+WINMODE= 1
+UNLINK = del $(subst /,\,$(1))
+HOST_CC = $(CC)
+else
+WINMODE= 0
+UNLINK = $(RM) $(1)
+ifeq ($(CROSS),)
+CROSS=$(DEF_CROSS)
+endif
+endif
+
+CC = $(CROSS)gcc
+AS = nasm
+LD = $(CC)
+RC = $(CROSS)windres
+DLLTOOL = $(CROSS)dlltool
+STRIP = $(CROSS)strip
+
+ifeq ($(WINMODE),1)
+HOST_CC = $(CC)
+else
+#for cross-builds
+HOST_CC = gcc
+endif
+
+###############################################################################
+#	defines
+###############################################################################
+
+# platform
+CDEFS = -D__WIN32__ -DDIRECTX -DFX_DLL_ENABLE -D__3Dfx_PCI_CFG__
+# MSVC doesn't define WINNT, but MinGW does.  The Glide
+# source uses WINNT for its own purposes, so undefine it.
+CDEFS += -UWINNT
+
+# general
+CDEFS += -DGLIDE3 -DGLIDE3_ALPHA -DGLIDE3_VERTEX_LAYOUT=1 -DGLIDE_HW_TRI_SETUP=1 -DGLIDE_PACKED_RGB=0 -DGLIDE_PACKET3_TRI_SETUP=1 -DGLIDE_TRI_CULLING=1 -DUSE_PACKET_FIFO=1
+#CDEFS += -DGLIDE3_SCALER
+CDEFS += -DGLIDE_DISPATCH_SETUP=1 -DGLIDE_DISPATCH_DOWNLOAD=1
+
+# workaround for CVGs with broken tsus which cannot send commands to multiple 
+# tmus using chipfield. chipfield will always be set to 0xf
+CDEFS += -DGLIDE_CHIP_BROADCAST=1
+# special sli buffer clears
+CDEFS += -DGLIDE_BLIT_CLEAR=1
+
+# subsystem
+CDEFS += -DCVG
+
+# debug
+ifdef DEBUG
+CDEFS += -DGDBG_INFO_ON -DGLIDE_DEBUG -DGLIDE_SANITY_ASSERT -DGLIDE_SANITY_SIZE
+endif
+
+# shameless plug and splash screen
+CDEFS += -DGLIDE_PLUG -DGLIDE_SPLASH
+
+ifeq ($(TEXUS2),1)
+CDEFS += -DHAVE_TEXUS2
+endif
+
+###############################################################################
+#	flags
+###############################################################################
+
+# linker
+LDFLAGS = -shared -m32 -Wl,--enable-auto-image-base -Wl,--no-undefined
+#	 -Xlinker --output-def -Xlinker $(GLIDE_LIBDIR)/$(GLIDE_DEF)
+#	 -Xlinker --out-implib -Xlinker $(GLIDE_LIBDIR)/$(GLIDE_IMP)
+DLLTOOL_FLAGS = --as-flags=--32 -m i386 -U
+#DLLTOOL_FLAGS+= -k
+
+# assembler
+ASFLAGS = -O2 -fwin32 -D__WIN32__ --prefix _
+ASFLAGS += $(CDEFS)
+
+# resource compiler
+RCFLAGS = --output-format=coff --target=pe-i386
+
+# compiler
+CFLAGS  = -m32 -Wall
+
+LDLIBS = -luser32 -lkernel32 -ladvapi32
+ifdef DEBUG
+CFLAGS += -g
+OPTFLAGS ?=
+else
+OPTFLAGS ?= -O2 -ffast-math -mtune=pentium
+endif
+
+
+CFLAGS += -I. -I../../incsrc -I../../init
+CFLAGS += -I$(FX_GLIDE_SW)/fxmisc -I$(FX_GLIDE_SW)/newpci/pcilib -I$(FX_GLIDE_SW)/fxmemmap
+CFLAGS += -I$(FX_GLIDE_SW)/texus2/lib
+CFLAGS += $(CDEFS) $(OPTFLAGS)
+
+ifeq ($(USE_MMX),1)
+CFLAGS += -DGL_MMX
+override USE_X86 = 1
+endif
+
+ifeq ($(USE_3DNOW),1)
+CFLAGS += -DGL_AMD3D
+override USE_X86 = 1
+endif
+
+ifeq ($(USE_X86),1)
+CFLAGS += -DGL_X86
+else
+CFLAGS += -DGLIDE_USE_C_TRISETUP
+endif
+
+ifeq ($(WINMODE),1)
+HOST_CFLAGS=$(CFLAGS)
+else
+# for cross-builds
+HOST_CFLAGS=$(filter-out -mcpu=% -mtune=% -DFX_DLL_ENABLE -march=%,$(CFLAGS))
+endif
+
+###############################################################################
+#	objects
+###############################################################################
+
+GLIDE_OBJECTS = \
+	fifo.o \
+	distate.o \
+	gstrip.o \
+	distrip.o \
+	diget.o \
+	gsplash.o \
+	g3df.o \
+	gu.o \
+	gpci.o \
+	diglide.o \
+	disst.o \
+	ditex.o \
+	gbanner.o \
+	gerror.o \
+	gaa.o \
+	gdraw.o \
+	gglide.o \
+	glfb.o \
+	gsst.o \
+	gtex.o \
+	gtexdl.o \
+	xtexdl_def.o
+
+ifeq ($(USE_X86),1)
+GLIDE_OBJECTS += \
+	cpuid.o \
+	xdraw2_def.o \
+	xdraw3_def.o
+ifeq ($(USE_MMX),1)
+GLIDE_OBJECTS += \
+	xtexdl_mmx.o
+endif
+ifeq ($(USE_3DNOW),1)
+GLIDE_OBJECTS += \
+	xdraw2_3dnow.o \
+	xdraw3_3dnow.o \
+	xtexdl_3dnow.o
+endif
+else
+GLIDE_OBJECTS += \
+	gxdraw.o
+endif
+
+GLIDE_OBJECTS += \
+	digutex.o \
+	$(FX_GLIDE_SW)/newpci/pcilib/fxpci.o \
+	$(FX_GLIDE_SW)/newpci/pcilib/fxw32.o \
+	$(FX_GLIDE_SW)/newpci/pcilib/fxvxd.o \
+	$(FX_GLIDE_SW)/newpci/pcilib/fxnt.o \
+	$(FX_GLIDE_SW)/newpci/pcilib/fxmsr.o \
+	../../init/canopus.o \
+	../../init/dac.o \
+	../../init/gamma.o \
+	../../init/gdebug.o \
+	../../init/info.o \
+	../../init/parse.o \
+	../../init/print.o \
+	../../init/sli.o \
+	../../init/sst1init.o \
+	../../init/util.o \
+	../../init/video.o \
+	../../init/fxremap.o
+
+TEXUS_SOURCES = \
+	$(FX_GLIDE_SW)/texus2/lib/texuslib.c \
+	$(FX_GLIDE_SW)/texus2/lib/clamp.c \
+	$(FX_GLIDE_SW)/texus2/lib/read.c \
+	$(FX_GLIDE_SW)/texus2/lib/resample.c \
+	$(FX_GLIDE_SW)/texus2/lib/mipmap.c \
+	$(FX_GLIDE_SW)/texus2/lib/quantize.c \
+	$(FX_GLIDE_SW)/texus2/lib/ncc.c \
+	$(FX_GLIDE_SW)/texus2/lib/nccnnet.c \
+	$(FX_GLIDE_SW)/texus2/lib/pal256.c \
+	$(FX_GLIDE_SW)/texus2/lib/pal6666.c \
+	$(FX_GLIDE_SW)/texus2/lib/dequant.c \
+	$(FX_GLIDE_SW)/texus2/lib/view.c \
+	$(FX_GLIDE_SW)/texus2/lib/util.c \
+	$(FX_GLIDE_SW)/texus2/lib/diffuse.c \
+	$(FX_GLIDE_SW)/texus2/lib/write.c \
+	$(FX_GLIDE_SW)/texus2/lib/tga.c \
+	$(FX_GLIDE_SW)/texus2/lib/3df.c \
+	$(FX_GLIDE_SW)/texus2/lib/ppm.c \
+	$(FX_GLIDE_SW)/texus2/lib/rgt.c \
+	$(FX_GLIDE_SW)/texus2/lib/txs.c \
+	$(FX_GLIDE_SW)/texus2/lib/codec.c \
+	$(FX_GLIDE_SW)/texus2/lib/eigen.c \
+	$(FX_GLIDE_SW)/texus2/lib/bitcoder.c
+
+ifeq ($(TEXUS2),1)
+GLIDE_OBJECTS += $(TEXUS_SOURCES:.c=.o)
+endif
+
+###############################################################################
+#	rules
+###############################################################################
+
+.c.o:
+	$(CC) -o $@ $(CFLAGS) -c $<
+.rc.res:
+	$(RC) -o $@ $(RCFLAGS) $(CDEFS) -I$(FX_GLIDE_SW)/fxmisc $<
+
+###############################################################################
+#	main
+###############################################################################
+all: glide3x $(TEXUS_EXEDIR)/$(TEXUS_EXE)
+
+glide3x: $(GLIDE_LIBDIR)/$(GLIDE_DLL)
+
+$(GLIDE_LIBDIR)/$(GLIDE_DEF): $(GLIDE_LIBDIR)/$(GLIDE_DLL)
+$(GLIDE_LIBDIR)/$(GLIDE_DLL): $(GLIDE_OBJECTS) $(GLIDE_RES)
+	$(LD) -o $@ $(LDFLAGS) -Xlinker --output-def -Xlinker $(GLIDE_LIBDIR)/$(GLIDE_DEF) \
+		$(GLIDE_OBJECTS) $(LDLIBS) $(GLIDE_RES)
+$(GLIDE_LIBDIR)/$(GLIDE_IMP): $(GLIDE_LIBDIR)/$(GLIDE_DLL)
+	$(DLLTOOL) $(DLLTOOL_FLAGS) --dllname $(GLIDE_DLL) --input-def $(GLIDE_LIBDIR)/$(GLIDE_DEF) --output-lib $@
+
+$(TEXUS_EXEDIR)/$(TEXUS_EXE): $(FX_GLIDE_SW)/texus2/cmd/cmd.c $(GLIDE_LIBDIR)/$(GLIDE_IMP)
+#ifeq ($(TEXUS2),1)
+#	$(CC) -o $@ $(CFLAGS) $^
+#else
+#	$(warning Texus2 not enabled... Skipping $(TEXUS_EXE))
+#endif
+
+strip:
+	$(STRIP) $(GLIDE_LIBDIR)/$(GLIDE_DLL)
+#ifeq ($(TEXUS2),1)
+#	$(STRIP) $(TEXUS_EXEDIR)/$(TEXUS_EXE)
+#endif
+
+###############################################################################
+#	rules(2)
+###############################################################################
+
+#cpuid.o: cpudtect.asm
+#	$(AS) -o $@ $(ASFLAGS) $<
+xdraw2_def.o: xdraw2.asm
+	$(AS) -o $@ $(ASFLAGS) $<
+xdraw3_def.o: xdraw3.asm
+	$(AS) -o $@ $(ASFLAGS) $<
+xtexdl_def.o: xtexdl.c
+	$(CC) -o $@ $(CFLAGS) -c $<
+xtexdl_mmx.o: xtexdl.asm
+	$(AS) -o $@ $(ASFLAGS) -DGL_MMX=1 $<
+xdraw2_3dnow.o: xdraw2.asm
+	$(AS) -o $@ $(ASFLAGS) -DGL_AMD3D=1 $<
+xdraw3_3dnow.o: xdraw3.asm
+	$(AS) -o $@ $(ASFLAGS) -DGL_AMD3D=1 $<
+xtexdl_3dnow.o: xtexdl.asm
+	$(AS) -o $@ $(ASFLAGS) -DGL_AMD3D=1 $<
+
+$(GLIDE_OBJECTS): fxinline.h fxgasm.h
+
+fxinline.h: fxgasm.exe
+	./$< -inline > $@
+
+fxgasm.h: fxgasm.exe
+	./$< -hex > $@
+
+fxgasm.exe: fxgasm.c
+	$(HOST_CC) -o $@ $(HOST_CFLAGS) $<
+
+###############################################################################
+#	clean, realclean
+###############################################################################
+
+clean:
+	-$(call UNLINK,*.o)
+	-$(call UNLINK,../../init/*.o)
+	-$(call UNLINK,$(FX_GLIDE_SW)/newpci/pcilib/*.o)
+	-$(call UNLINK,fxinline.h)
+	-$(call UNLINK,fxgasm.h)
+	-$(call UNLINK,$(FX_GLIDE_SW)/texus2/lib/*.o)
+	-$(call UNLINK,$(GLIDE_RES))
+
+realclean: clean
+	-$(call UNLINK,$(GLIDE_LIBDIR)/$(GLIDE_DLL))
+	-$(call UNLINK,$(GLIDE_LIBDIR)/$(GLIDE_IMP))
+	-$(call UNLINK,$(GLIDE_LIBDIR)/$(GLIDE_DEF))
+	-$(call UNLINK,$(TEXUS_EXEDIR)/$(TEXUS_EXE))

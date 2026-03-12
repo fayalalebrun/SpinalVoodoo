@@ -1,0 +1,177 @@
+# Makefile for building sim-enabled Glide2x library
+#
+# Builds libglide2x with SIM_BACKEND support for SpinalVoodoo Verilator bridge.
+# Uses fxsim.c instead of fxlinux.c for platform backend.
+# Links with in-process Verilator CoreSim model (no TCP/JVM).
+#
+# Usage:
+#   make -f Makefile.sim
+#   make -f Makefile.sim clean
+
+.PHONY: all clean
+.SUFFIXES: .c .o
+
+FX_GLIDE_HW = sst1
+GLIDE_ROOT = ../../../..
+FX_GLIDE_SW = $(GLIDE_ROOT)/swlibs
+
+GLIDE_LIBDIR = ../../lib/$(FX_GLIDE_HW)
+
+# Path to Verilator sim build (from emu/sim/Makefile)
+SIM_DIR = ../../../../../../emu/sim
+SIM_INTERFACE ?= core
+SIM_MODEL = $(if $(filter de10,$(SIM_INTERFACE)),CoreDe10,CoreSim)
+
+GLIDE_LIB = libglide2x.a
+GLIDE_SHARED = libglide2x.so.2
+GLIDE_SONAME = libglide2x.so.2
+GLIDE_SO = libglide2x.so
+
+###############################################################################
+#	tools
+###############################################################################
+
+# Use 32-bit compiler: CC32 env var (from devenv) or fall back to gcc -m32
+CC = $(if $(CC32),$(CC32),gcc -m32)
+CXX = $(if $(CXX32),$(CXX32),g++ -m32)
+AR = ar
+
+###############################################################################
+#	defines
+###############################################################################
+
+CDEFS = -DINIT_LINUX
+CDEFS += -DSIM_BACKEND
+ifeq ($(SIM_INTERFACE),de10)
+CDEFS += -DSIM_DE10_INTERFACE
+endif
+CDEFS += -DGLIDE_HARDWARE -DGLIDE_DEFAULT_GAMMA=1.3f -DGLIDE_LIB=1
+CDEFS += -DSST1
+CDEFS += -DGLIDE_USE_C_TRISETUP
+# GLIDE_PLUG and GLIDE_SPLASH disabled in sim mode (no splash screen needed)
+
+###############################################################################
+#	flags
+###############################################################################
+
+ARFLAGS = rus
+
+VERILATOR_ROOT ?= $(shell verilator --getenv VERILATOR_ROOT)
+
+CFLAGS = -Wall -g -Wno-incompatible-pointer-types -Wno-int-conversion -Wno-error=format-security
+CFLAGS += -I. -I../../incsrc -I../../init -I../../init/initvg
+CFLAGS += -I$(FX_GLIDE_SW)/fxmisc -I$(FX_GLIDE_SW)/newpci/pcilib -I$(FX_GLIDE_SW)/fxmemmap
+CFLAGS += -I$(SIM_DIR)/harness
+CFLAGS += $(CDEFS)
+CFLAGS += -O1 -ffast-math
+
+###############################################################################
+#	objects
+###############################################################################
+
+GLIDE_OBJECTS = \
+	gsplash.o \
+	g3df.o  \
+	gu.o \
+	guclip.o \
+	gpci.o \
+	gump.o \
+	diglide.o \
+	disst.o \
+	ditex.o \
+	gbanner.o \
+	gerror.o \
+	gmovie.o \
+	digutex.o \
+	ddgump.o \
+	gaa.o \
+	gdraw.o \
+	gglide.o \
+	glfb.o \
+	gsst.o \
+	gtex.o \
+	gtexdl.o \
+	gutex.o \
+	gxdraw.o \
+	cpuid.o
+
+INIT_OBJECTS = \
+	../../init/init.o \
+	../../init/gdebug.o \
+	../../init/vgdrvr.o \
+	../../init/initvg/gamma.o \
+	../../init/initvg/dac.o \
+	../../init/initvg/video.o \
+	../../init/initvg/parse.o \
+	../../init/initvg/sli.o \
+	../../init/initvg/util.o \
+	../../init/initvg/info.o \
+	../../init/initvg/print.o \
+	../../init/initvg/sst1init.o
+
+# Use fxsim.o instead of fxlinux.o for simulation backend
+GLIDE_OBJECTS += \
+	$(INIT_OBJECTS) \
+	$(FX_GLIDE_SW)/newpci/pcilib/sst1_pci.o \
+	$(FX_GLIDE_SW)/newpci/pcilib/fxmsr.o \
+	$(FX_GLIDE_SW)/newpci/pcilib/fxpci.o \
+	$(FX_GLIDE_SW)/newpci/pcilib/fxsim.o
+
+GLIDE_OBJECTS += \
+	$(FX_GLIDE_SW)/fxmisc/fxos.o \
+	$(FX_GLIDE_SW)/fxmisc/fximg.o
+
+# Backend objects (built by emu/sim/Makefile)
+ifeq ($(TRACE_CAPTURE),1)
+BACKEND_OBJ = \
+	$(SIM_DIR)/obj_dir/sim_trace_harness.o \
+	$(SIM_DIR)/obj_dir/voodoo_trace_writer.o
+BACKEND_LIB =
+else
+BACKEND_OBJ = \
+	$(SIM_DIR)/obj_dir/sim_harness.o \
+	$(SIM_DIR)/obj_dir/verilated.o \
+	$(SIM_DIR)/obj_dir/verilated_threads.o
+ifeq ($(TRACE),1)
+BACKEND_OBJ += $(SIM_DIR)/obj_dir/verilated_fst_c.o
+endif
+
+# Static archive needs --whole-archive to pull in trace objects
+# (trace registration uses virtual dispatch, no direct symbol dependency)
+BACKEND_LIB = -Wl,--whole-archive $(SIM_DIR)/obj_dir/V$(SIM_MODEL)__ALL.a -Wl,--no-whole-archive
+endif
+
+###############################################################################
+#	targets
+###############################################################################
+
+all: $(GLIDE_LIBDIR) $(GLIDE_LIBDIR)/$(GLIDE_LIB) $(GLIDE_LIBDIR)/$(GLIDE_SO)
+
+###############################################################################
+#	rules
+###############################################################################
+
+.c.o:
+	$(CC) -o $@ $(CFLAGS) -c $<
+
+# CPU detection stub for sim mode (no x87/CPUID needed)
+cpuid.o: cpudetect_sim.c
+	$(CC) -o $@ $(CFLAGS) -c $<
+
+$(GLIDE_LIBDIR):
+	mkdir -p $@
+
+$(GLIDE_LIBDIR)/$(GLIDE_LIB): $(GLIDE_OBJECTS)
+	$(AR) $(ARFLAGS) $@ $^
+
+# Link as shared library with Verilator model (C++ link for Verilator runtime)
+$(GLIDE_LIBDIR)/$(GLIDE_SO): $(GLIDE_OBJECTS) $(BACKEND_OBJ)
+	$(CXX) -o $(GLIDE_LIBDIR)/$(GLIDE_SHARED) -shared -Wl,-soname,$(GLIDE_SONAME) \
+		$(GLIDE_OBJECTS) $(BACKEND_OBJ) \
+		$(BACKEND_LIB) \
+		-lm -lstdc++ -L/nix/store/50iqcilic2xpimja0hygz25hr7kw6icp-zlib-1.3.1/lib -lz
+	ln -fs $(GLIDE_SHARED) $@
+
+clean:
+	rm -f $(GLIDE_OBJECTS)
+	rm -f $(GLIDE_LIBDIR)/$(GLIDE_LIB) $(GLIDE_LIBDIR)/$(GLIDE_SHARED) $(GLIDE_LIBDIR)/$(GLIDE_SO)

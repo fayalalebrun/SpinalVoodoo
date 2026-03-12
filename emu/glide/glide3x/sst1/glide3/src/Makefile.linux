@@ -1,0 +1,344 @@
+# Linux makefile for Glide3/SST1 and Texus2
+#
+#  Copyright (c) 2003 - Daniel Borca
+#  Email : dborca@users.sourceforge.net
+#  Web   : http://www.geocities.com/dborca
+#
+
+#
+#  Available options:
+#
+#    Environment variables:
+#	FX_GLIDE_HW	build for the given ASIC (either sst1, or sst96).
+#			default = sst1
+#	XPATH		specify X11 path; needed for sst96.
+#			default = /usr/X11R6 (sst96 only)
+#	X11LIBS		X libraries path; default = $(XPATH)/lib
+#	OPTFLAGS	pass given optimization flags to compiler
+#			default = -O1 -ffast-math
+#	DEBUG=1		enable debugging checks and messages
+#			default = no
+#	USE_X86=1	use assembler triangle specializations!
+#			default = no
+#	TEXUS2=1	embed Texus2 functions into Glide3.
+#			default = no
+#
+#    Targets:
+#	all:		build everything
+#	glide3x:	build Glide3x lib
+#	clean:		remove object files
+#	realclean:	remove all generated files
+#
+
+.PHONY: all glide3x clean realclean
+.INTERMEDIATE: fxgasm
+.SUFFIXES: .lo
+
+export PATH := $(PATH):.
+
+###############################################################################
+#	general defines (user settable?)
+###############################################################################
+
+GLIDE_VERSION_MAJOR = 3
+GLIDE_VERSION_MINOR = 10.0
+
+GLIDE_LIB = libglide3.a
+GLIDE_SO  = libglide3.so
+GLIDE_SO_X= libglide3x.so
+TEXUS_EXE = texus2
+
+GLIDE_SONAME = $(GLIDE_SO).$(GLIDE_VERSION_MAJOR)
+GLIDE_SHARED = $(GLIDE_SONAME).$(GLIDE_VERSION_MINOR)
+
+FX_GLIDE_HW ?= sst1
+FX_GLIDE_SW = ../../../swlibs
+GLIDE_LIBDIR = ../../lib/$(FX_GLIDE_HW)
+TEXUS_EXEDIR = $(FX_GLIDE_SW)/bin
+
+###############################################################################
+#	tools
+###############################################################################
+
+CC = gcc
+AS = nasm
+AR = ar
+
+CP = cp
+
+###############################################################################
+#	defines
+###############################################################################
+
+# platform
+CDEFS = -DINIT_LINUX
+
+XPATH ?= /usr/X11R6
+X11LIBS ?= $(XPATH)/lib
+ifeq ($(FX_GLIDE_HW),sst96)
+## NOTE: no -lXxf86rush in new X versions
+LDLIBS = -L$(X11LIBS) -lX11 -lXxf86dga -lXxf86rush -lXxf86vm
+endif
+LDLIBS += -lm
+
+# general
+CDEFS += -DGLIDE3 -DGLIDE3_ALPHA -DGLIDE_HARDWARE
+
+# subsystem
+ifeq ($(FX_GLIDE_HW),sst1)
+CDEFS += -DSST1
+else
+ifeq ($(FX_GLIDE_HW),sst96)
+CDEFS += -DSST96
+CDEFS += -DSST96_FIFO
+#CDEFS += -DSST96_ALT_FIFO_WRAP
+CDEFS += -DGLIDE_USE_ALT_REGMAP
+else
+$(error Invalid FX_GLIDE_HW setting)
+endif
+endif
+
+# debug
+ifdef DEBUG
+CDEFS += -DGDBG_INFO_ON -DGLIDE_DEBUG -DGLIDE_SANITY_ASSERT -DGLIDE_SANITY_SIZE
+endif
+
+# other
+CDEFS += -DGLIDE_PLUG -DGLIDE_SPLASH
+
+ifeq ($(TEXUS2),1)
+CDEFS += -DHAVE_TEXUS2
+endif
+
+###############################################################################
+#	flags
+###############################################################################
+
+# librarian
+ARFLAGS = rus
+
+# assembler
+ASFLAGS = -O6 -felf -D__linux__
+ASFLAGS += $(CDEFS)
+
+# compiler
+CFLAGS = -Wall
+CFLAGS += -I. -I../../incsrc -I../../init
+ifeq ($(FX_GLIDE_HW),sst1)
+CFLAGS += -I../../init/initvg
+else
+CFLAGS += -I../../init/init96
+endif
+CFLAGS += -I$(FX_GLIDE_SW)/fxmisc -I$(FX_GLIDE_SW)/newpci/pcilib -I$(FX_GLIDE_SW)/fxmemmap
+CFLAGS += -I$(FX_GLIDE_SW)/texus2/lib
+ifeq ($(FX_GLIDE_HW),sst96)
+CFLAGS += -I$(XPATH)/include
+endif
+CFLAGS += $(CDEFS)
+
+ifeq ($(USE_X86),1)
+CFLAGS += -DGL_X86
+OPTFLAGS ?= -O1 -ffast-math
+else
+CFLAGS += -DGLIDE_USE_C_TRISETUP
+OPTFLAGS ?= -O1 -ffast-math
+endif
+
+# optflags
+CFLAGS += $(OPTFLAGS)
+
+###############################################################################
+#	objects
+###############################################################################
+
+GLIDE_OBJECTS = \
+	distate.o \
+	diget.o \
+	gstrip.o \
+	distrip.o \
+	diglide.o \
+	disst.o \
+	ditex.o \
+	g3df.o \
+	gaa.o \
+	gbanner.o \
+	gdraw.o \
+	gerror.o \
+	gglide.o \
+	glfb.o \
+	gpci.o \
+	gsplash.o \
+	gsst.o \
+	gtex.o \
+	gtexdl.o \
+	gu.o \
+	gxdraw.o
+
+ifeq ($(USE_X86),1)
+GLIDE_OBJECTS += \
+	cpuid.o
+ifeq ($(FX_GLIDE_HW),sst1)
+GLIDE_OBJECTS += \
+	xdraw.o
+else
+GLIDE_OBJECTS += \
+	xdraw96.o
+endif
+endif
+
+INIT_OBJECTS = \
+	../../init/init.o \
+	../../init/gdebug.o
+
+ifeq ($(FX_GLIDE_HW),sst96)
+GLIDE_OBJECTS += \
+	sst96.o
+INIT_OBJECTS += \
+	../../init/vg96drvr.o \
+	../../init/init96/init96.o \
+	../../init/init96/lindrvr.o \
+	../../init/init96/initat3d.o \
+	../../init/init96/initmcrx.o
+else
+INIT_OBJECTS += \
+	../../init/vgdrvr.o \
+	../../init/initvg/gamma.o \
+	../../init/initvg/dac.o \
+	../../init/initvg/video.o \
+	../../init/initvg/parse.o \
+	../../init/initvg/sli.o \
+	../../init/initvg/util.o \
+	../../init/initvg/info.o \
+	../../init/initvg/print.o \
+	../../init/initvg/sst1init.o
+endif
+
+GLIDE_OBJECTS += \
+	$(INIT_OBJECTS) \
+	$(FX_GLIDE_SW)/newpci/pcilib/sst1_pci.o \
+	$(FX_GLIDE_SW)/newpci/pcilib/fxmsr.o \
+	$(FX_GLIDE_SW)/newpci/pcilib/fxpci.o \
+	$(FX_GLIDE_SW)/newpci/pcilib/fxlinux.o
+
+# FIXME: these are to match the old library signature.
+# Should be checked if it's really needed.
+GLIDE_OBJECTS += \
+	$(FX_GLIDE_SW)/fxmisc/fxos.o \
+	$(FX_GLIDE_SW)/fxmisc/fximg.o
+
+TEXUS_SOURCES = \
+	$(FX_GLIDE_SW)/texus2/lib/texuslib.c \
+	$(FX_GLIDE_SW)/texus2/lib/clamp.c \
+	$(FX_GLIDE_SW)/texus2/lib/read.c \
+	$(FX_GLIDE_SW)/texus2/lib/resample.c \
+	$(FX_GLIDE_SW)/texus2/lib/mipmap.c \
+	$(FX_GLIDE_SW)/texus2/lib/quantize.c \
+	$(FX_GLIDE_SW)/texus2/lib/ncc.c \
+	$(FX_GLIDE_SW)/texus2/lib/nccnnet.c \
+	$(FX_GLIDE_SW)/texus2/lib/pal256.c \
+	$(FX_GLIDE_SW)/texus2/lib/pal6666.c \
+	$(FX_GLIDE_SW)/texus2/lib/dequant.c \
+	$(FX_GLIDE_SW)/texus2/lib/view.c \
+	$(FX_GLIDE_SW)/texus2/lib/util.c \
+	$(FX_GLIDE_SW)/texus2/lib/diffuse.c \
+	$(FX_GLIDE_SW)/texus2/lib/write.c \
+	$(FX_GLIDE_SW)/texus2/lib/tga.c \
+	$(FX_GLIDE_SW)/texus2/lib/3df.c \
+	$(FX_GLIDE_SW)/texus2/lib/ppm.c \
+	$(FX_GLIDE_SW)/texus2/lib/rgt.c \
+	$(FX_GLIDE_SW)/texus2/lib/txs.c \
+	$(FX_GLIDE_SW)/texus2/lib/codec.c \
+	$(FX_GLIDE_SW)/texus2/lib/eigen.c \
+	$(FX_GLIDE_SW)/texus2/lib/bitcoder.c
+
+ifeq ($(TEXUS2),1)
+GLIDE_OBJECTS += $(TEXUS_SOURCES:.c=.o)
+endif
+
+###############################################################################
+#	rules
+###############################################################################
+
+.c.o:
+	$(CC) -o $@ $(CFLAGS) -c $<
+.c.lo:
+	$(CC) -o $@ $(CFLAGS) -DPIC -fPIC -c $<
+
+###############################################################################
+#	main
+###############################################################################
+all: glide3x $(TEXUS_EXEDIR)/$(TEXUS_EXE)
+
+glide3x: $(GLIDE_LIBDIR)/$(GLIDE_LIB) $(GLIDE_LIBDIR)/$(GLIDE_SO) $(GLIDE_LIBDIR)/$(GLIDE_SONAME) $(GLIDE_LIBDIR)/$(GLIDE_SO_X)
+
+$(GLIDE_LIBDIR)/$(GLIDE_LIB): $(GLIDE_OBJECTS)
+	$(AR) $(ARFLAGS) $@ $^
+
+$(GLIDE_LIBDIR)/$(GLIDE_SO): $(GLIDE_LIBDIR)/$(GLIDE_SHARED)
+	ln -fs $(GLIDE_SHARED) $(GLIDE_LIBDIR)/$(GLIDE_SO)
+$(GLIDE_LIBDIR)/$(GLIDE_SONAME): $(GLIDE_LIBDIR)/$(GLIDE_SHARED)
+	ln -fs $(GLIDE_SHARED) $(GLIDE_LIBDIR)/$(GLIDE_SONAME)
+$(GLIDE_LIBDIR)/$(GLIDE_SO_X): $(GLIDE_LIBDIR)/$(GLIDE_SHARED)
+	ln -fs $(GLIDE_SHARED) $(GLIDE_LIBDIR)/$(GLIDE_SO_X)
+
+$(GLIDE_LIBDIR)/$(GLIDE_SHARED): $(GLIDE_OBJECTS:.o=.lo)
+	$(CC) -o $@ -shared -Wl,--no-undefined -Wl,-soname,$(GLIDE_SONAME) $^ $(LDFLAGS) $(LDLIBS)
+
+$(TEXUS_EXEDIR)/$(TEXUS_EXE): $(FX_GLIDE_SW)/texus2/cmd/cmd.c $(GLIDE_LIBDIR)/$(GLIDE_LIB)
+ifeq ($(TEXUS2),1)
+	$(CC) -o $@ -s $(CFLAGS) -L$(GLIDE_LIBDIR) $< -lglide3x -lm
+else
+	$(warning Texus2 not enabled... Skipping $(TEXUS_EXE))
+endif
+
+###############################################################################
+#	rules(2)
+###############################################################################
+
+cpuid.o: cpudtect.asm
+	$(AS) -o $@ $(ASFLAGS) $<
+xdraw.o: xdraw.asm
+	$(AS) -o $@ $(ASFLAGS) $<
+xdraw96.o: xdraw96.asm
+	$(AS) -o $@ $(ASFLAGS) $<
+
+cpuid.lo: cpuid.o
+	$(CP) $< $@
+xdraw.lo: xdraw.o
+	$(CP) $< $@
+xdraw96.lo: xdraw96.o
+	$(CP) $< $@
+
+$(GLIDE_OBJECTS): fxinline.h fxgasm.h
+
+fxinline.h: fxgasm
+	$< -inline > $@
+
+fxgasm.h: fxgasm
+	$< -hex > $@
+
+fxgasm: fxgasm.c
+	$(CC) -o $@ $(CFLAGS) $<
+
+###############################################################################
+#	clean, realclean
+###############################################################################
+
+clean:
+	-$(RM) *.o *.lo
+	-$(RM) ../../init/*.o ../../init/*.lo
+	-$(RM) ../../init/initvg/*.o ../../init/initvg/*.lo
+	-$(RM) ../../init/init96/*.o ../../init/init96/*.lo
+	-$(RM) $(FX_GLIDE_SW)/newpci/pcilib/*.o $(FX_GLIDE_SW)/newpci/pcilib/*.lo
+	-$(RM) $(FX_GLIDE_SW)/fxmisc/*.o $(FX_GLIDE_SW)/fxmisc/*.lo
+	-$(RM) fxinline.h
+	-$(RM) fxgasm.h
+	-$(RM) $(FX_GLIDE_SW)/texus2/lib/*.o $(FX_GLIDE_SW)/texus2/lib/*.lo
+
+realclean: clean
+	-$(RM) $(GLIDE_LIBDIR)/$(GLIDE_LIB)
+	-$(RM) $(GLIDE_LIBDIR)/$(GLIDE_SHARED)
+	-$(RM) $(GLIDE_LIBDIR)/$(GLIDE_SO)
+	-$(RM) $(GLIDE_LIBDIR)/$(GLIDE_SONAME)
+	-$(RM) $(GLIDE_LIBDIR)/$(GLIDE_SO_X)
+	-$(RM) $(TEXUS_EXEDIR)/$(TEXUS_EXE)

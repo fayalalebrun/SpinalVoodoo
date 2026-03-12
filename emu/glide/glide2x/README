@@ -1,0 +1,35 @@
+Here are a few notes about building Glide3x from CVS.
+
+The Glide source trees are branced by platform and the platform names are
+internal names used at 3dfx.  Since these name may not make sense to others
+here is a quick list.
+
+sst1:  Voodoo Graphics
+sst96: Voodoo Rush
+cvg:   Voodoo 2
+h3:    Voodoo Banshee/Voodoo 3
+
+There is a single toplevel makefile for glide2x.  To select a build
+for either sst1, cvg or h3 set FX_GLIDE_HW to either sst1, cvg or h3.  The
+default is to build for h3.
+
+There are many other environment variables used to control the Glide
+build.  Here is a listing of some of the important ones:
+
+DEBUG=1:               Turn on debugging information, note this disables 
+                       the asm optimizations.
+FX_GLIDE_PIC=1:        Enable PIC in shared libraries.
+FX_GLIDE_CTRISETUP=1:  Use C versions as opposed to ASM versions of triangle
+                       setup code.
+GL_AMD3D=1:            Enable AMD 3DNow! optimizations.  Note this is 
+                       currently broken on several platforms.
+
+All glide source trees use a common set of libraries kept in the
+swlibs branch.  In order to build any glide library the swlibs branch
+must be moved inside the glide3x directory.  The swlibs branch is not
+stored here within the glide2x cvs tree because it is also shared with
+the glide3x branch.
+
+NOTE:  glide2x tree is NOT 64-bit-safe.  If you are cross-compiling for
+dos or windows on a 64-host remember to use the -m32 switch of host-gcc,
+e.g. run: make HOST_CC="gcc -m32" <other-stuff>

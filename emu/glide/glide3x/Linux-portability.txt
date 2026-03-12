@@ -1,0 +1,56 @@
+Glide3 (for Linux) was originally written for x86 only but work has been done
+and is ongoing to make it work on other platforms too:
+
+Glide3 was not only written for Linux-x86 but also for dos,windows and mac.
+The triangle setup code of the dos/windows/linux-x86 code is written in
+x86-assembler. Luckily there are C-equivalents for those functions written
+for the mac. These C-equivalents are enabled by defining GLIDE_USE_C_TRISETUP.
+
+The x86-asm triangle setup code comes in multiple variants for different
+x86-CPU's. Glide3 chooses runtime between these variants depending on the
+CPU it is actually running on. The cpu detection (cpuid) code nescesarry for
+this is also written in assembler. Recently this code has been wrapped with
+#ifdef GL_X86.
+
+The defining of GL_X86 or GLIDE_USE_C_TRISETUP is controleled by passing
+USE_X86=1 to the makefile. Glide3 has been successfully tested on x86 without
+USE_X86=1 passed to the makefile for the cvg h3 and h5 asics. IOW this has not
+been tested for the sst1 and sst96 asics.
+
+Even if compiled without GL_X86 defined and with GLIDE_USE_C_TRISETUP
+defined the Glide3 code still contains a small piece of assembler: The
+P6FENCE macro, this macro is used for io synchronisation and needs to be
+defined for each platform you want to compile Glide3 on. You can find it in,
+and to add a new platfrom need to add a define to:
+cvg/init/sst1init.h
+cvg/glide3/src/fxglide.h
+h3/minihwc/minihwc.c
+h3/minihwc/linhwc.c
+h3/glide3/src/fxglide.h
+h5/minihwc/minihwc.c
+h5/minihwc/linhwc.c
+h5/glide3/src/fxglide.h
+sst1/init/initvg/sst1init.h
+Currently for Linux there is a version of the P6FENCE macro for the following
+platforms: x86, x86_64, ia64, alpha .
+
+The original Glide3 code is not 64 bit clean, longs where used for 32 bits
+registers, ptrs casted to and stored as ints, etc. RedHat has created and
+tested a 64bit clean version of Glide3 for h5 and h3. This work has been
+merged into current CVS, however this was based in an older Glide3 version,
+so h5 and h3 might not be completely 64 bit clean. The other asics are far
+from 64 bit clean. The Debian Glide3 package also contain some 64 bit
+patches, these are probably equivalent to the RedHat ones, but might be
+worth a look.
+
+Last but not least some C-functions take the address of their first parameter
+and assume this can be used as an array, iow they assume a certain stack
+layout. Known functions doing this are:
+cvg/glide3/src/gdraw.c:1142: _vptrisetup_cull
+h5/glide3/src/gdraw.c:279: grDrawLine
+
+64 bit todo:
+-change use of long to int in texus2
+-change use of long to FxX32 in register definitions of cvg, sst1, sst96
+-actually compile it on a 64 bit platform and fix all warnings
+-test, test, test

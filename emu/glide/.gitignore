@@ -1,0 +1,17 @@
+# Build artifacts
+*.o
+*.lo
+*.a
+*.so
+*.so.*
+*.exe
+
+# Generated headers
+glide2x/sst1/glide/src/fxgasm.h
+glide2x/sst1/glide/src/fxinline.h
+
+# Libraries
+glide2x/sst1/lib/
+
+# Symlinked swlibs in glide2x
+glide2x/sst1/swlibs

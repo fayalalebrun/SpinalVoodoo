@@ -1,0 +1,62 @@
+# Linux tests makefile for Glide3
+#
+#  Copyright (c) 2002 - Borca Daniel
+#  Email : dborca@users.sourceforge.net
+#  Web   : http://www.geocities.com/dborca
+#
+
+#
+#  Available options:
+#
+#    Environment variables:
+#	DGA=1		Build DGA version (experimental).
+#			default = no
+#	XPATH		specify X11 path; needed by DGA.
+#			default = /usr/X11R6
+#	X11LIBS		X libraries path; default = $(XPATH)/lib
+#	CPU		optimize for the given processor.
+#			default = pentium
+#
+#    Targets:
+#	<file.exe>	build a specific file
+#
+
+.PHONY: all clean
+.SUFFIXES: .c .o .exe
+.SECONDARY: tlib.o linutil.o
+
+FX_GLIDE_HW = h5
+TOP = ../../..
+CPU ?= pentium
+XPATH ?= /usr/X11R6
+X11LIBS ?= $(XPATH)/lib
+
+CC = gcc
+CFLAGS = -Wall -O2 -ffast-math -mtune=$(CPU)
+CFLAGS += -I$(TOP)/$(FX_GLIDE_HW)/glide3/src -I$(TOP)/$(FX_GLIDE_HW)/incsrc
+CFLAGS += -I$(TOP)/swlibs/fxmisc
+CFLAGS += -DH3
+CFLAGS += -DFX_GLIDE_NAPALM=1
+
+LDFLAGS = -s -L$(TOP)/$(FX_GLIDE_HW)/lib
+
+LDLIBS = -lglide3
+ifeq ($(DGA),1)
+LDLIBS += -L$(X11LIBS) -lX11 -lXext -lXxf86dga
+endif
+LDLIBS += -lm
+
+.c.o:
+	$(CC) -o $@ $(CFLAGS) -c $<
+%.exe: linutil.o tlib.o %.o
+	$(CC) -o $@ $(LDFLAGS) $^ $(LDLIBS)
+
+all:
+	$(error Must specify <filename.exe> to build)
+
+linutil.o: $(TOP)/swlibs/fxmisc/linutil.c
+	$(CC) -o $@ $(CFLAGS) -c $<
+
+clean:
+	rm -f *.o
+	rm -f *.exe

@@ -1,0 +1,49 @@
+# Win32 tests makefile for Glide2
+# This makefile MUST be processed by GNU make!!!
+#
+#  Copyright (c) 2004 - Borca Daniel
+#  Email : dborca@users.sourceforge.net
+#  Web   : http://www.geocities.com/dborca
+#
+
+#
+#  Available options:
+#
+#    Environment variables:
+#	FX_GLIDE_HW	build for the given ASIC (h3).
+#			default = h3
+#	CPU		optimize for the given processor.
+#			default = 6
+#
+#    Targets:
+#	<file.exe>	build a specific file
+#
+
+.PHONY: all
+.SUFFIXES: .c .obj .exe
+.SECONDARY: tlib.obj plib.obj
+
+FX_GLIDE_HW ?= h3
+TOP = ../../..
+CPU ?= 6
+
+CC = cl
+CFLAGS = -nologo -W3 -D__MSC__=1 -DNDEBUG -G$(CPU) -O2 -MT
+CFLAGS += -I$(TOP)/$(FX_GLIDE_HW)/glide/src -I$(TOP)/$(FX_GLIDE_HW)/incsrc
+CFLAGS += -I$(TOP)/swlibs/fxmisc
+CFLAGS += -D__WIN32__ -DH3
+
+LD = link
+LDFLAGS = -nologo -opt:WIN98 -machine:IX86
+LDLIBS = user32.lib gdi32.lib $(TOP)/$(FX_GLIDE_HW)/lib/glide2x.lib
+
+.c.obj:
+	$(CC) -Fo$@ $(CFLAGS) -c $<
+%.exe: tlib.obj %.obj
+	$(LD) -out:$@ $(LDFLAGS) $^ $(LDLIBS)
+
+all:
+	$(error Must specify <filename.exe> to build)
+
+qatest00.exe: tlib.obj plib.obj qatest00.obj
+	$(LD) -out:$@ $(LDFLAGS) $^ $(LDLIBS)

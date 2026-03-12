@@ -1,0 +1,55 @@
+# Makefile for building DE10-targeted Glide2 test programs
+
+.PHONY: all clean
+.SUFFIXES: .c .o .exe
+.SECONDARY: tlib.o plib.o linutil.o
+
+FX_HW_BASE = sst1
+GLIDE2X_ROOT = ../../..
+GLIDE_ROOT = ../../../..
+
+ifeq ($(origin CC), default)
+CC = $(if $(CROSS_COMPILE),$(CROSS_COMPILE)gcc,gcc)
+endif
+ifeq ($(origin CXX), default)
+CXX = $(if $(CROSS_COMPILE),$(CROSS_COMPILE)g++,g++)
+endif
+
+SYSROOT_FLAG =
+ifneq ($(strip $(SYSROOT)),)
+SYSROOT_FLAG = --sysroot=$(SYSROOT)
+endif
+
+CFLAGS = -Wall -O2 -ffast-math -g -DDE10_BACKEND $(SYSROOT_FLAG)
+CFLAGS += -I$(GLIDE2X_ROOT)/$(FX_HW_BASE)/glide/src -I$(GLIDE2X_ROOT)/$(FX_HW_BASE)/incsrc -I$(GLIDE2X_ROOT)/$(FX_HW_BASE)/init
+CFLAGS += -I$(GLIDE_ROOT)/swlibs/fxmisc -I$(GLIDE_ROOT)/swlibs/newpci/pcilib
+CFLAGS += -DSST1
+CFLAGS += $(EXTRA_CFLAGS)
+
+LDFLAGS = $(SYSROOT_FLAG) -L$(GLIDE2X_ROOT)/$(FX_HW_BASE)/lib/de10
+LDFLAGS += $(EXTRA_LDFLAGS)
+LDLIBS = -lglide2x -lm
+
+TESTS = test00.exe test01.exe test02.exe test03.exe test04.exe \
+		test05.exe test06.exe test07.exe test08.exe test09.exe \
+		test10.exe test11.exe test12.exe test13.exe test14.exe \
+		test15.exe test16.exe test17.exe test18.exe test19.exe \
+		test20.exe test21.exe test22.exe test23.exe test24.exe \
+		test25.exe test26.exe test27.exe test28.exe test29.exe
+
+.c.o:
+	$(CC) -o $@ $(CFLAGS) -c $<
+
+%.exe: linutil.o tlib.o %.o
+	$(CC) -o $@ $(LDFLAGS) $^ $(LDLIBS)
+
+all: $(TESTS)
+
+linutil.o: $(GLIDE_ROOT)/swlibs/fxmisc/linutil.c
+	$(CC) -o $@ $(CFLAGS) -c $<
+
+qatest00.exe: linutil.o tlib.o plib.o qatest00.o
+	$(CC) -o $@ $(LDFLAGS) $^ $(LDLIBS)
+
+clean:
+	rm -f *.o *.exe

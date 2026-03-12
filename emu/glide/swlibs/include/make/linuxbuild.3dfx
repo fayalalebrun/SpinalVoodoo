@@ -1,0 +1,82 @@
+#!/bin/bash
+
+# 
+# THIS SOFTWARE IS SUBJECT TO COPYRIGHT PROTECTION AND IS OFFERED ONLY
+# PURSUANT TO THE 3DFX GLIDE GENERAL PUBLIC LICENSE. THERE IS NO RIGHT
+# TO USE THE GLIDE TRADEMARK WITHOUT PRIOR WRITTEN PERMISSION OF 3DFX
+# INTERACTIVE, INC. A COPY OF THIS LICENSE MAY BE OBTAINED FROM THE 
+# DISTRIBUTOR OR BY CONTACTING 3DFX INTERACTIVE INC(info@3dfx.com). 
+# THIS PROGRAM IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND, EITHER 
+# EXPRESSED OR IMPLIED. SEE THE 3DFX GLIDE GENERAL PUBLIC LICENSE FOR A
+# FULL TEXT OF THE NON-WARRANTY PROVISIONS.  
+# 
+# USE, DUPLICATION OR DISCLOSURE BY THE GOVERNMENT IS SUBJECT TO
+# RESTRICTIONS AS SET FORTH IN SUBDIVISION (C)(1)(II) OF THE RIGHTS IN
+# TECHNICAL DATA AND COMPUTER SOFTWARE CLAUSE AT DFARS 252.227-7013,
+# AND/OR IN SIMILAR OR SUCCESSOR CLAUSES IN THE FAR, DOD OR NASA FAR
+# SUPPLEMENT. UNPUBLISHED RIGHTS RESERVED UNDER THE COPYRIGHT LAWS OF
+# THE UNITED STATES.  
+# 
+# COPYRIGHT 3DFX INTERACTIVE, INC. 1999, ALL RIGHTS RESERVED
+#
+
+function timereport() {
+    STARTTIME=$1
+    ENDTIME=$2
+    SECONDSPERMIN=60
+    SECONDSPERHOUR=`expr 60 \* 60`
+    SECONDSPERDAY=`expr 60 \* 60 \* 24`
+    SECONDSPERYEAR=`expr 60 \* 60 \* 24 \* 365`
+    ELAPSEDTIME=`expr $ENDTIME - $STARTTIME`
+    YEARS=`expr $ELAPSEDTIME / $SECONDSPERYEAR`
+    ELAPSEDTIME=`expr $ELAPSEDTIME % $SECONDSPERYEAR`
+    DAYS=`expr $ELAPSEDTIME / $SECONDSPERDAY`
+    ELAPSEDTIME=`expr $ELAPSEDTIME % $SECONDSPERDAY`
+    HOURS=`expr $ELAPSEDTIME / $SECONDSPERHOUR`
+    ELAPSEDTIME=`expr $ELAPSEDTIME % $SECONDSPERHOUR`
+    MINUTES=`expr $ELAPSEDTIME / $SECONDSPERMIN`
+    ELAPSEDTIME=`expr $ELAPSEDTIME % $SECONDSPERMIN`
+    echo "Time Elapsed: $YEARS Years, $DAYS Days, $HOURS Hours, $MINUTES Minutes, $ELAPSEDTIME Seconds"
+}
+
+function diskreport() {
+    SIGN=""
+    DISKUSAGE=`expr $2 - $1`
+    if [ $DISKUSAGE -lt 0 ]
+    then
+        DISKUSAGE=`expr $DISKUSAGE '*' -1`
+        SIGN='-'
+    fi
+    DISKUSAGE_INT=`expr $DISKUSAGE / 1024`
+    DISKUSAGE_FRAC=`expr $DISKUSAGE % 1024`
+    echo "Disk usage: $SIGN$DISKUSAGE_INT.$DISKUSAGE_FRAC Mb"
+}
+
+function instrument_command() {
+    STARTDISK=`df -k . | grep --invert-match '^Filesystem' | awk '{print $3;}'`
+    df -k .
+    STARTTIME=`date +%s`
+    (exec $*)
+    ENDTIME=`date +%s`
+    ENDDISK=`df -k . | grep --invert-match '^Filesystem' | awk '{print $3;}'`
+    df -k .
+    timereport $STARTTIME $ENDTIME
+    diskreport $STARTDISK $ENDDISK
+}
+
+#
+# This function is really only useful for cutting
+# from this file and pasting into a shell window.
+#
+function fix_assembler_names() {
+    for file in `find . -name '*.s'`
+    do
+        dir=`dirname $file`
+        basename=`basename $file .s`
+        (set -x; mv $file $dir/$basename.S)
+    done
+}
+
+export NOISY_RECURSION=YES
+export SCRIPTDIR=`pwd`/swlibs/include/make
+instrument_command make CC=egcs -f makefile.linux "$@"

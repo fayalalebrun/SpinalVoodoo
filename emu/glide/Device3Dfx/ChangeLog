@@ -1,0 +1,300 @@
+2011-07-03  Guillem Jover  <guillem@hadrons.org>
+
+	* Makefile (KBUILD): Handle Linux 3.x versions.
+
+2011-07-03  Guillem Jover  <guillem@hadrons.org>
+
+	* Makefile (help): Do not print command only their output.
+
+2011-05-27  Guillem Jover  <guillem@hadrons.org>
+
+	* 3dfx_driver.c (MODULE_VERSION): Bump to '2011.05.27'.
+
+2011-05-27  Guillem Jover  <guillem@hadrons.org>
+
+	* 3dfx_driver.c [HAVE_UNLOCKED_IOCTL] (ioctl_3dfx): Use new
+	prototype for unlocked_ioctl.
+	(fops_3dfx) [HAVE_UNLOCKED_IOCTL]: Assign ioctl_3dfx to
+	.unlocked_ioctl instead of .ioctl.
+
+2011-05-27  Guillem Jover  <guillem@hadrons.org>
+
+	* 3dfx_driver.c: On Linux >= 2.6.33, use <generated/autoconf.h>
+	instead of <linux/autoconf.h>. Include it after <linux/version.h>.
+	* Makefile (VERSION_HEADER): Use generated/utsrelease.h if present
+	instead of linux/utsrelease.h or linux/version.h.
+
+2011-05-27  Guillem Jover  <guillem@hadrons.org>
+
+	* Makefile: Do not use negative exit codes.
+
+2008-06-24  Guillem Jover  <guillem@hadrons.org>
+
+	* 3dfx_driver.c (MODULE_VERSION): Bump to '2008.06.24'.
+
+2008-06-24  Guillem Jover  <guillem@hadrons.org>
+
+	* 3dfx_driver.c (KERNEL_MIN_VER): Remove defenition, and replace all
+	users with its contents.
+
+2008-06-24  Guillem Jover  <guillem@hadrons.org>
+
+	* 3dfx_driver.c (pci_dev_put): Define to nothing on kernels < 2.5.73.
+	(setmtrr_3dfx): Call pci_dev_put to release the refcount on the
+	Intel 82441FX PCI device when done with it.
+
+2008-06-22  Guillem Jover  <guillem@hadrons.org>
+
+	* 3dfx_driver.c (id_table_3dfx): Terminate the list with an empty
+	element.
+
+2008-06-22  Guillem Jover  <guillem@hadrons.org>
+
+	* 3dfx_driver.c (pci_get_device): On Linux < 2.5.73 define it as
+	pci_find_device.
+	(findCardType, setmtrr_3dfx): Use pci_get_device instead of deprecated
+	pci_find_device.
+
+2008-06-22  Guillem Jover  <guillem@hadrons.org>
+
+	* 3dfx_driver.c (cleanup_module): Ignore return value from
+	unregister_chrdev as it actually returns void now.
+
+2007-02-06  Guillem Jover  <guillem@hadrons.org>
+
+	* 3dfx_driver.c (MODULE_VERSION): Bump to '2007.02.06'.
+
+2007-02-06  Guillem Jover  <guillem@hadrons.org>
+
+	Fix warnings when not checking pci_register_driver return codes.
+
+	* 3dfx_driver.c (findCards): Return int instead of void, and normalize
+	error code to be always negative, otherwise return numCards.
+	(init_module): Check for findCards return code, print a warning and
+	exit the module on error.
+	(init_3dfx): Likewise.
+
+2007-02-06  Guillem Jover  <guillem@hadrons.org>
+
+	* 3dfx_driver.c (HAVE_DEVFS): Define to 1 if
+	LINUX_VERSION_CODE >= 2.3.46 and LINUX_VERSION_CODE <= 2.6.17 or
+	if DEVFS_SUPPORT is defined, define to 0 otherwise.
+	(devfs_handle): Only use if HAVE_DEVFS.
+	(init_module): Only use devfs_mk_cdev or devfs_register if HAVE_DEVFS.
+	(cleanup_module): Only use devfs_remove or devfs_unregister if
+	HAVE_DEVFS.
+
+2007-02-06  Guillem Jover  <guillem@hadrons.org>
+
+	* Makefile (CFLAGS): Use '-march' instead of the deprecated '-mcpu'.
+
+2007-02-06  Guillem Jover  <guillem@hadrons.org>
+
+	* kinfo.c: Removed.
+	* kver.c: New file.
+	* Makefile: Include kver.mak.
+	(KVERS): Move this variable to 'kver.mak', which is a generated file.
+	(VERSION_HEADER): New variable to cope with UTS_RELEASE being moved
+	from 'linux/version.h' to 'linux/utsrelease.h' in 2.6.18.
+	(kver, kver.mak): New targets.
+	(KBUILD): New variable.
+	(KVER_MAJOR, KVER_MINOR, BUILD_TYPE, MODULE_TDFX): Likewise, moved
+	from the generated file 'config'.
+	(config, kinfo, kinfo.h): Remove targets.
+	(modules, intstall, clean): Do not depend on config target.
+	(modules, intstall): Depend on sanity target .
+
+2007-02-06  Guillem Jover  <guillem@hadrons.org>
+
+	* Makefile (.PHONY): Add clean_kbuild. Rename modules-legacy,
+	modules-kbuild, install-legacy, install-kbuild and clean-legacy to
+	modules_legacy, modules_kbuild, install_legacy, install_kbuild
+	and clean_legacy.
+
+2007-01-31  Guillem Jover  <guillem@hadrons.org>
+
+	* 3dfx_device.c (cardInfo_t): Make dev be 'struct pci_dev *' even for
+	kernels < 2.6.0.
+	(findCardType): Assign to cards[n].dev the dev variable instead of
+	devfn. Fix macro to use devfn instead.
+
+2006-12-03  Guillem Jover  <guillem@hadrons.org>
+
+	* 3dfx_device.c (my_remap_page_range): Define as remap_pfn_range for
+	linux 2.6.10 or higher.
+
+2006-12-03  Guillem Jover  <guillem@hadrons.org>
+
+	Use the "new" kernel level exception handling for memory accesses
+	introduced in linux 2.1.8, which obsoletes verify_aread.
+
+	* 3dfx_device.c (doQueryFetch): Remove verify_area and check for
+	copy_to_user return values.
+	(doPIORead): Likewise.
+	(doQueryUpdate): Remove verify_area and check for copy_from_user
+	return values.
+	(doQuery): Likewise.
+	(doPIOWrite): Likewise.
+	(doPIO): Likewise.
+	(verify_area) [DEBUG]: Remove function.
+	(a_last_dummy_function) [DEBUG]: Likewise.
+
+2006-12-03  Guillem Jover  <guillem@hadrons.org>
+
+	* 3dfx_device.c (doQueryFetch): Assign desc->device to i, and use it
+	when referencing cards.
+
+2006-12-03  Guillem Jover  <guillem@hadrons.org>
+
+	* 3dfx_device.c (setmtrr_3dfx): Make it static.
+	(resetmtrr_3dfx): Likewise.
+
+2006-12-03  Guillem Jover  <guillem@hadrons.org>
+
+	* 3dfx_device.c (id_table_3dfx): Move near the corresponding ifdef
+	for older kernels.
+	(findCards): Likewise.
+	(driver_3dfx): Forward declare.
+
+2006-12-03  Guillem Jover  <guillem@hadrons.org>
+
+	Rename functions obsoleted in linux 2.1.93.
+
+	* 3dfx_device.c (pcibios_read_config_byte): Rename to ...
+	(pci_read_config_byte): ... this and remove first argument.
+	(pcibios_read_config_word): Rename to ...
+	(pci_read_config_word): ... this and remove first argument.
+	(pcibios_read_config_dword): Rename to ...
+	(pci_read_config_dword): ... this and remove first argument.
+	(pcibios_write_config_dword): Rename to ...
+	(pci_write_config_dword): ... this and remove first argument.
+
+2006-12-03  Guillem Jover  <guillem@hadrons.org>
+
+	* 3dfx_device.c (VM_OFFSET_ALIGNED): New macro.
+	(mmap_3dfx): Use VM_OFFSET_ALIGNED, instead of checking for specific
+	kernel versions and changing behaviour.
+
+2006-12-03  Guillem Jover  <guillem@hadrons.org>
+
+	* 3dfx_device.c: Indentation fixes.
+
+2006-03-03  Guillem Jover  <guillem@hadrons.org>
+
+	* 3dfx_device.c: Rename HAVE_MTRR to CONFIG_MTRR.
+
+2005-04-23  Guillem Jover  <guillem@hadrons.org>
+
+	* 3dfx_device.c: Add GPL notice.
+
+2005-04-24  Ozkan Sezer  <sezeroz@gmail.com>
+
+	* 3dfx_device.c: Add Macronix MX86251 Voodoo Rush support.
+
+2005-04-24  Ozkan Sezer  <sezeroz@gmail.com>
+
+	* 3dfx_device.c (setmtrr_3dfx): Add missing break on default case.
+
+2005-04-23  Guillem Jover  <guillem@hadrons.org>
+
+	* 3dfx_device.c: Fix comment format. Remove obsolete compiler flags
+	  info.
+
+2005-04-23  Guillem Jover  <guillem@hadrons.org>
+
+	* 3dfx_device.c: Move ChangeLog entries to ...
+	* ChangeLog: ... here.
+
+2004-05-05  Guillem Jover  <guillem@debian.org>
+
+	* Use designators in fops_3dfx instead of the obsolete colon syntax.
+
+2004-05-04  Guillem Jover  <guillem@debian.org>
+
+	* Cleaned new kernel build system.
+	* Indentation fixes. Normalized ChangeLog date format.
+
+2004-02-13  Aristeu Sergio Rozanski Filho  <aris@cathedrallabs.org>
+
+	* Use kernel build system.
+	* Use new pci probe present in 2.6.x kernels.
+	* Use module auto-loading.
+
+2004-01-22  Guillem Jover  <guillem@debian.org>
+
+	* Ported to 2.6 kernels.
+
+2002-05-05  Guillem Jover  <guillem@hadrons.org>
+
+	* Re-included VOODOO pci id, accidentally removed in last patch,
+	  thanks to Jan Kuipers to point this out.
+
+2002-01-29  Guillem Jover  <guillem@hadrons.org>
+
+	* Fixed bug when compiling for 2.4 kernels with modversions.
+	* Added devfs support.
+	* Added MODULE_* declarations.
+	* Cleaned detection code.
+
+2000-02-04  Joseph Kain  <joseph@3dfx.com>
+
+	* Updated Carlo Woord's email address.
+
+1999-12-22  Joseph Kain  <joseph@3dfx.com>
+
+	* Support for new VMA structure in Kernels 2.3.14 and higher.
+	  This patch is based on Dieter Nuetzel's work.
+
+1999-11-09  Joseph Kain  <joseph@3dfx.com>
+
+	* Made cards static to remove conflict with hisax ISDN driver.
+
+1998-10-30  Carlo Wood  <carlo@alinoe.com>
+
+	* Re-included module versions (this source was based on the
+	  source by Jon Taylor which was based on an older version
+	  by Daryll Straus.  I now included the later changes made
+	  by Daryll in this source too).
+	* Use pci_find_device for 2.1/2.2 kernels instead of the old
+	  pcibios_find_device.  Idem pci_present().
+
+1998-10-21  Carlo Wood  <carlo@alinoe.com>
+
+	* Fixed compile bugs related to 2.0 kernels.
+
+1998-10-21  Carlo Wood  <carlo@alinoe.com>
+
+	* `struct file_operations' was changed as of kernel 2.1.118,
+	  fixed this module to also work with versions > 2.1.117.
+
+	* Machines that don't have mtrr still need <asm/uaccess.h>.
+
+1998-10-20  Carlo Wood  <carlo@alinoe.com>
+
+	* Finally fixed in init_module() the right way.  This time I tested
+	  it too (it now really works).
+
+	* Added resetmtrr_3dfx() to clean up the MTRR settings when the
+	  module is unloaded.  This is not really necessary but its clean.
+	  It allows to compare using this device WITH MTRR with another
+	  method WITHOUT MTRR, without being confused by sticky MTRR settings
+	  for instance.
+
+1998-10-18  Carlo Wood  <carlo@alinoe.com>
+
+	* Forgot the '== -EBUSY' in init_module(), causing the registration
+	  of character device to always fail.  You need to reboot if you
+	  tried the previous version (if there is junk in `cat /proc/devices'
+	  major 107).
+
+1998-10-18  Carlo Wood  <carlo@alinoe.com>
+
+	* struct file_operations fops_3dfx was initialized wrong:
+	  `release_3dfx' was put on the place of `fsync', causing weird
+	  behaviour :).
+
+	* Several warning fixes.
+
+	* setmtrr_3dfx did not always return a value, and the value was
+	  ignored, effectively ignoring errors returned by mtrr_add().
+

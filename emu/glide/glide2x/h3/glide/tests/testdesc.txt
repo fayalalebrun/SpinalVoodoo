@@ -1,0 +1,46 @@
+*************************************************
+TEST NAMES
+
+test00 - buffer clear
+test01 - draw points
+test02 - draw lines
+test03 - gouraud lines
+test04 - gouraud triangle
+test05 - z buffer
+test06 - w buffer
+test07 - alpha blend
+test08 - fog
+test09 - chromakey
+test10 - backface culling
+test11 - lfb 
+test12 - lfb + renderbuffer + yorigin
+test13 - iterated alpha
+test14 - depth bias
+test15 - clip rectangle
+test16 - shameless plug and splash screen
+test17 - decal texture - rgb lit texture - white lit texture
+test18 - texture alpha
+test19 - texture filters
+test20 - mipmap modes ( nomip, mip, trilinear )
+test21 - texture compositing ( lightmap, detail, specular )
+test22 - multi-pass fog
+test23 - anti-aliased points
+test24 - anti-aliased lines
+test25 - anti-aliased triangles
+test26 - grLfbWriteRegion 
+test27 - cycle 3d hardware on and off, excersie open/close
+test28 - planar polygon test
+test29 - simple palette texture test
+test30 - hints - separate texture, polygon oow
+test32 - Mindlessly simple multiple board test
+
+qatest00 - Texture download, multibase, LOD downloads, Partial LODs
+qatest01 - Alliance Buffer Swap bug
+
+Tests that should be done
+* - anti-aliased polygons
+* - clipped polygons
+* - gratuitous c++ test
+* - alpha test
+* - alpha selects lighting
+* - cockpit bit

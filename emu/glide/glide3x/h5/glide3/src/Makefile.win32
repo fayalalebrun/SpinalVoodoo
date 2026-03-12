@@ -1,0 +1,337 @@
+# Win32 makefile for Glide3/H5 and Texus2, using Visual Studio (cl.exe)
+# This makefile MUST be processed by GNU make!!!
+#
+#  Copyright (c) 2004 - Daniel Borca
+#  Email : dborca@users.sourceforge.net
+#  Web   : http://www.geocities.com/dborca
+#
+
+#
+#  Available options:
+#
+#    Environment variables:
+#	H4=1		High speed Avenger/Napalm.
+#			default = no
+#	OPTFLAGS	pass given optimization flags to compiler
+#			default = -G6 -O2 (or -Od if DEBUG=1)
+#	DEBUG=1		enable debugging checks and messages
+#			default = no
+#	USE_X86=1	use assembler triangle specializations!
+#			default = no
+#	USE_3DNOW=1	allow 3DNow! specializations. However, the true CPU
+#			capabilities are still checked at run-time to avoid
+#			crashes.
+#			default = no
+#	USE_MMX=1	(see USE_3DNOW)
+#			default = no
+#	USE_SSE=1	(see USE_3DNOW)
+#			default = no
+#	USE_SSE2=1	(see USE_3DNOW)
+#			default = no
+#	TEXUS2=1	embed Texus2 functions into Glide3.
+#			default = no
+#
+#    Targets:
+#	all:		build everything
+#	glide3x:	build Glide3x lib
+#	clean:		remove object files
+#	realclean:	remove all generated files
+#
+
+.PHONY: all glide3x clean realclean
+.INTERMEDIATE: fxgasm.exe fxbldno.exe
+.SUFFIXES: .c .obj .rc .res
+
+###############################################################################
+#	general defines (user settable?)
+###############################################################################
+
+GLIDE_RES = glide.res
+GLIDE_DLL = glide3x.dll
+GLIDE_IMP = glide3x.lib
+TEXUS_EXE = texus2.exe
+
+FX_GLIDE_SW = ../../../swlibs
+GLIDE_LIBDIR = ../../lib
+TEXUS_EXEDIR = $(FX_GLIDE_SW)/bin
+
+###############################################################################
+#	tools
+###############################################################################
+
+CC = cl
+AS = nasm
+LD = link
+RC = rc
+
+ifeq ($(wildcard $(addsuffix /rm.exe,$(subst ;, ,$(PATH)))),)
+UNLINK = del $(subst /,\,$(1))
+else
+UNLINK = $(RM) $(1)
+endif
+
+###############################################################################
+#	defines
+###############################################################################
+
+# platform
+CDEFS = -D__WIN32__ -DFX_DLL_ENABLE -DHWC_ACCESS_DDRAW=1 -DHWC_EXT_INIT=1 -DGLIDE_ALT_TAB=1
+CDEFS += -DBETA=1 -DHWC_MINIVDD_HACK=1 -DWIN40COMPAT=1 -DWINXP_ALT_TAB_FIX=1 -DWINXP_SAFER_ALT_TAB_FIX=1 -DNEED_MSGFILE_ASSIGN
+#CDEFS += -DHAVE_WIN9X_DDK=1
+
+# general
+CDEFS += -DGLIDE3 -DGLIDE3_ALPHA -DGLIDE_HW_TRI_SETUP=1 -DGLIDE_INIT_HWC -DGLIDE_PACKED_RGB=0 -DGLIDE_PACKET3_TRI_SETUP=1 -DGLIDE_TRI_CULLING=1 -DUSE_PACKET_FIFO=1
+CDEFS += -DGLIDE_CHECK_CONTEXT
+
+# subsystem
+CDEFS += -DH3
+ifdef H4
+CDEFS += -DH4
+endif
+CDEFS += -DFX_GLIDE_H5_CSIM=1 -DFX_GLIDE_NAPALM=1
+
+# debug
+ifdef DEBUG
+CDEFS += -DGDBG_INFO_ON -DGLIDE_DEBUG -DGLIDE_SANITY_ASSERT -DGLIDE_SANITY_SIZE
+endif
+
+# other
+CDEFS += -DGLIDE_PLUG -DGLIDE_SPLASH
+
+ifeq ($(TEXUS2),1)
+CDEFS += -DHAVE_TEXUS2
+endif
+
+###############################################################################
+#	flags
+###############################################################################
+
+# linker
+LDFLAGS = -nologo -dll -opt:WIN98 -machine:IX86 -nodefaultlib
+
+# assembler
+ASFLAGS = -O6 -fwin32 -D__WIN32__ --prefix _
+ASFLAGS += $(CDEFS)
+
+# compiler
+CFLAGS  = -nologo -W3 -WX -D__MSC__=1
+
+LDLIBS = user32.lib kernel32.lib ddraw.lib gdi32.lib dxguid.lib advapi32.lib
+ifdef DEBUG
+CFLAGS += -MTd -Zi
+LDFLAGS += -debugtype:both -debug
+LDLIBS += LIBCMTD.lib
+OPTFLAGS ?= -Od
+else
+CFLAGS += -DNDEBUG -MT
+LDLIBS += LIBCMT.lib
+OPTFLAGS ?= -G6 -O2
+endif
+
+CFLAGS += -I. -I../../incsrc -I../../minihwc
+CFLAGS += -I$(FX_GLIDE_SW)/fxmisc -I$(FX_GLIDE_SW)/newpci/pcilib -I$(FX_GLIDE_SW)/fxmemmap
+CFLAGS += -I$(FX_GLIDE_SW)/texus2/lib
+CFLAGS += $(CDEFS) $(OPTFLAGS)
+
+ifeq ($(USE_3DNOW),1)
+CFLAGS += -DGL_AMD3D
+override USE_X86 = 1
+endif
+ifeq ($(USE_MMX),1)
+CFLAGS += -DGL_MMX
+override USE_X86 = 1
+endif
+ifeq ($(USE_SSE),1)
+CFLAGS += -DGL_SSE
+override USE_X86 = 1
+endif
+ifeq ($(USE_SSE2),1)
+CFLAGS += -DGL_SSE2
+override USE_X86 = 1
+endif
+
+ifeq ($(USE_X86),1)
+CFLAGS += -DGL_X86
+else
+CFLAGS += -DGLIDE_USE_C_TRISETUP
+endif
+
+###############################################################################
+#	objects
+###############################################################################
+
+GLIDE_OBJECTS = \
+	fifo.obj \
+	distate.obj \
+	gstrip.obj \
+	distrip.obj \
+	diget.obj \
+	gsplash.obj \
+	g3df.obj \
+	gu.obj \
+	gpci.obj \
+	diglide.obj \
+	disst.obj \
+	ditex.obj \
+	gsfc.obj \
+	gbanner.obj \
+	gerror.obj \
+	gaa.obj \
+	gdraw.obj \
+	gglide.obj \
+	glfb.obj \
+	gsst.obj \
+	gtex.obj \
+	gtexdl.obj \
+	xtexdl_def.obj
+
+ifeq ($(USE_X86),1)
+GLIDE_OBJECTS += \
+	cpuid.obj \
+	xdraw2_def.obj \
+	xdraw3_def.obj
+ifeq ($(USE_3DNOW),1)
+GLIDE_OBJECTS += \
+	xdraw2_3dnow.obj \
+	xdraw3_3dnow.obj \
+	xtexdl_3dnow.obj
+endif
+ifeq ($(USE_MMX),1)
+GLIDE_OBJECTS += \
+	xtexdl_mmx.obj
+endif
+ifeq ($(USE_SSE),1)
+GLIDE_OBJECTS += \
+	xdraw2_sse.obj \
+	xdraw3_sse.obj
+endif
+ifeq ($(USE_SSE2),1)
+GLIDE_OBJECTS += \
+	xtexdl_sse2.obj
+endif
+else
+GLIDE_OBJECTS += \
+	gxdraw.obj
+endif
+
+GLIDE_OBJECTS += \
+	gthread.obj \
+	winsurf.obj \
+	../../minihwc/hwcio.obj \
+	../../minihwc/gdebug.obj \
+	../../minihwc/minihwc.obj \
+	../../minihwc/win_mode.obj
+
+TEXUS_SOURCES = \
+	$(FX_GLIDE_SW)/texus2/lib/texuslib.c \
+	$(FX_GLIDE_SW)/texus2/lib/clamp.c \
+	$(FX_GLIDE_SW)/texus2/lib/read.c \
+	$(FX_GLIDE_SW)/texus2/lib/resample.c \
+	$(FX_GLIDE_SW)/texus2/lib/mipmap.c \
+	$(FX_GLIDE_SW)/texus2/lib/quantize.c \
+	$(FX_GLIDE_SW)/texus2/lib/ncc.c \
+	$(FX_GLIDE_SW)/texus2/lib/nccnnet.c \
+	$(FX_GLIDE_SW)/texus2/lib/pal256.c \
+	$(FX_GLIDE_SW)/texus2/lib/pal6666.c \
+	$(FX_GLIDE_SW)/texus2/lib/dequant.c \
+	$(FX_GLIDE_SW)/texus2/lib/view.c \
+	$(FX_GLIDE_SW)/texus2/lib/util.c \
+	$(FX_GLIDE_SW)/texus2/lib/diffuse.c \
+	$(FX_GLIDE_SW)/texus2/lib/write.c \
+	$(FX_GLIDE_SW)/texus2/lib/tga.c \
+	$(FX_GLIDE_SW)/texus2/lib/3df.c \
+	$(FX_GLIDE_SW)/texus2/lib/ppm.c \
+	$(FX_GLIDE_SW)/texus2/lib/rgt.c \
+	$(FX_GLIDE_SW)/texus2/lib/txs.c \
+	$(FX_GLIDE_SW)/texus2/lib/codec.c \
+	$(FX_GLIDE_SW)/texus2/lib/eigen.c \
+	$(FX_GLIDE_SW)/texus2/lib/bitcoder.c
+
+ifeq ($(TEXUS2),1)
+GLIDE_OBJECTS += $(TEXUS_SOURCES:.c=.obj)
+endif
+
+###############################################################################
+#	rules
+###############################################################################
+
+.c.obj:
+	$(CC) -Fo$@ $(CFLAGS) -c $<
+.rc.res:
+	$(RC) -Fo$@ $(CDEFS) -I$(FX_GLIDE_SW)/fxmisc $<
+
+###############################################################################
+#	main
+###############################################################################
+all: glide3x $(TEXUS_EXEDIR)/$(TEXUS_EXE)
+
+glide3x: $(GLIDE_LIBDIR)/$(GLIDE_DLL)
+
+$(GLIDE_LIBDIR)/$(GLIDE_DLL): $(GLIDE_OBJECTS) $(GLIDE_RES)
+	$(LD) -out:$@ $(LDFLAGS) $(GLIDE_OBJECTS) $(LDLIBS) $(GLIDE_RES)
+
+$(TEXUS_EXEDIR)/$(TEXUS_EXE): $(FX_GLIDE_SW)/texus2/cmd/cmd.c $(GLIDE_LIBDIR)/$(GLIDE_IMP)
+#ifeq ($(TEXUS2),1)
+#	$(CC) -o $@ $(CFLAGS) $^
+#else
+#	$(warning Texus2 not enabled... Skipping $(TEXUS_EXE))
+#endif
+
+###############################################################################
+#	rules(2)
+###############################################################################
+
+xdraw2_def.obj: xdraw2.asm
+	$(AS) -o $@ $(ASFLAGS) $<
+xdraw3_def.obj: xdraw3.asm
+	$(AS) -o $@ $(ASFLAGS) $<
+xdraw2_3dnow.obj: xdraw2.asm
+	$(AS) -o $@ $(ASFLAGS) -DGL_AMD3D=1 $<
+xdraw3_3dnow.obj: xdraw3.asm
+	$(AS) -o $@ $(ASFLAGS) -DGL_AMD3D=1 $<
+xtexdl_3dnow.obj: xtexdl.asm
+	$(AS) -o $@ $(ASFLAGS) -DGL_AMD3D=1 $<
+xtexdl_mmx.obj: xtexdl.asm
+	$(AS) -o $@ $(ASFLAGS) -DGL_MMX=1 $<
+xdraw2_sse.obj: xdraw2.asm
+	$(AS) -o $@ $(ASFLAGS) -DGL_SSE=1 $<
+xdraw3_sse.obj: xdraw3.asm
+	$(AS) -o $@ $(ASFLAGS) -DGL_SSE=1 $<
+xtexdl_sse2.obj: xtexdl.asm
+	$(AS) -o $@ $(ASFLAGS) -DGL_SSE2=1 $<
+
+$(GLIDE_OBJECTS): fxinline.h fxgasm.h fxbldno.h
+
+fxinline.h: fxgasm.exe
+	.\$< -inline > $@
+
+fxgasm.h: fxgasm.exe
+	.\$< -hex > $@
+
+fxgasm.exe: fxgasm.c
+	$(CC) -o $@ $(CFLAGS) $<
+
+fxbldno.h: fxbldno.exe
+	.\$< > $@
+
+fxbldno.exe: fxbldno.c
+	$(CC) -o $@ $(CFLAGS) $<
+
+###############################################################################
+#	clean, realclean
+###############################################################################
+
+clean:
+	-$(call UNLINK,*.obj)
+	-$(call UNLINK,../../minihwc/*.obj)
+	-$(call UNLINK,fxinline.h)
+	-$(call UNLINK,fxgasm.h)
+	-$(call UNLINK,fxbldno.h)
+	-$(call UNLINK,$(FX_GLIDE_SW)/texus2/lib/*.obj)
+	-$(call UNLINK,$(GLIDE_RES))
+
+realclean: clean
+	-$(call UNLINK,$(GLIDE_LIBDIR)/glide3x.exp)
+	-$(call UNLINK,$(GLIDE_LIBDIR)/$(GLIDE_DLL))
+	-$(call UNLINK,$(GLIDE_LIBDIR)/$(GLIDE_IMP))
+	-$(call UNLINK,$(TEXUS_EXEDIR)/$(TEXUS_EXE))

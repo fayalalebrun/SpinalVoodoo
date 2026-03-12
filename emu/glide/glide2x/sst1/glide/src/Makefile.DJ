@@ -1,0 +1,268 @@
+# DOS/DJGPP makefile for Glide2/SST1
+#
+#  Copyright (c) 2003 - Daniel Borca
+#  Email : dborca@users.sourceforge.net
+#  Web   : http://www.geocities.com/dborca
+#
+
+#
+#  Available options:
+#
+#    Environment variables:
+#	FX_GLIDE_HW	build for the given ASIC (either sst1, or sst96).
+#			default = sst1
+#	CPU		optimize for the given processor.
+#			default = -mtune=pentium
+#	DEBUG=1		disable optimizations and build for debug.
+#			default = no
+#	USE_X86=1	use assembler triangle specializations!
+#			default = no
+#
+#    Targets:
+#	all:		build everything
+#	glide2x:	build Glide2x lib
+#	clean:		remove object files
+#	realclean:	remove all generated files
+#
+
+.PHONY: all glide2x clean realclean
+.INTERMEDIATE: fxgasm.exe
+
+###############################################################################
+#	general defines (user settable?)
+###############################################################################
+
+GLIDE_LIB = libglide2x.a
+GLIDE_DXE = glide2x.dxe
+GLIDE_IMP = libglide2i.a
+
+FX_GLIDE_HW ?= sst1
+FX_GLIDE_SW = ../../../swlibs
+GLIDE_LIBDIR = ../../lib/$(FX_GLIDE_HW)
+
+###############################################################################
+#	tools
+###############################################################################
+
+CC = gcc
+AS = nasm
+AR = ar
+DXE3GEN = dxe3gen
+
+#for cross-builds
+HOST_CC = gcc
+
+UNLINK = rm -f $(1)
+
+###############################################################################
+#	defines
+###############################################################################
+
+# platform
+CDEFS = -D__DOS__ -D__DOS32__ -DINIT_DOS
+
+# general
+CDEFS += -DGLIDE_HARDWARE -DGLIDE_DEFAULT_GAMMA=1.3f -DGLIDE_LIB=1
+
+# subsystem
+ifeq ($(FX_GLIDE_HW),sst1)
+CDEFS += -DSST1
+else
+ifeq ($(FX_GLIDE_HW),sst96)
+CDEFS += -DSST96
+CDEFS += -DSST96_FIFO
+#CDEFS += -DSST96_ALT_FIFO_WRAP
+#CDEFS += -DINIT96VGASWAP
+CDEFS += -DINIT_ACCESS_DIRECT
+CDEFS += -DGLIDE_USE_ALT_REGMAP
+else
+$(error Invalid FX_GLIDE_HW setting)
+endif
+endif
+
+# debug
+ifdef DEBUG
+CDEFS += -DGDBG_INFO_ON -DGLIDE_DEBUG -DGLIDE_SANITY_ASSERT -DGLIDE_SANITY_SIZE
+endif
+
+# shameless plug and splash screen
+#CDEFS += -DGLIDE_PLUG -DGLIDE_SPLASH
+
+###############################################################################
+#	flags
+###############################################################################
+
+# librarian
+ARFLAGS = rus
+
+# assembler
+ASFLAGS = -O2 -fcoff -D__DJGPP__ --prefix _
+ASFLAGS += $(CDEFS)
+
+# compiler
+CFLAGS = -Wall
+CFLAGS += -I. -I../../incsrc -I../../init
+ifeq ($(FX_GLIDE_HW),sst1)
+CFLAGS += -I../../init/initvg
+else
+CFLAGS += -I../../init/init96
+endif
+CFLAGS += -I$(FX_GLIDE_SW)/fxmisc -I$(FX_GLIDE_SW)/newpci/pcilib -I$(FX_GLIDE_SW)/fxmemmap
+CFLAGS += $(CDEFS)
+
+ifeq ($(USE_X86),1)
+CFLAGS += -DGL_X86
+OPTFLAGS ?= -O1 -ffast-math -mtune=pentium
+else
+CFLAGS += -DGLIDE_USE_C_TRISETUP
+OPTFLAGS ?= -O1 -ffast-math
+endif
+
+# optflags
+CFLAGS += $(OPTFLAGS)
+
+# for cross-builds
+HOST_CFLAGS=$(filter-out -mcpu=% -mtune=% -march=%,$(CFLAGS))
+
+###############################################################################
+#	objects
+###############################################################################
+
+GLIDE_OBJECTS = \
+	gsplash.o \
+	g3df.o  \
+	gu.o \
+	guclip.o \
+	gpci.o \
+	gump.o \
+	diglide.o \
+	disst.o \
+	ditex.o \
+	gbanner.o \
+	gerror.o \
+	gmovie.o \
+	digutex.o \
+	ddgump.o \
+	gaa.o \
+	gdraw.o \
+	gglide.o \
+	glfb.o \
+	gsst.o \
+	gtex.o \
+	gtexdl.o \
+	gutex.o \
+	gxdraw.o
+
+GLIDE_OBJECTS += \
+	cpuid.o
+
+ifeq ($(USE_X86),1)
+ifeq ($(FX_GLIDE_HW),sst1)
+GLIDE_OBJECTS += \
+	xdraw.o
+else
+GLIDE_OBJECTS += \
+	xdraw96.o
+endif
+endif
+
+INIT_OBJECTS = \
+	../../init/init.o \
+	../../init/gdebug.o
+
+ifeq ($(FX_GLIDE_HW),sst96)
+GLIDE_OBJECTS += \
+	sst96.o
+INIT_OBJECTS += \
+	../../init/vg96drvr.o \
+	../../init/init96/init96.o \
+	../../init/init96/dxdrvr.o \
+	../../init/init96/initat3d.o \
+	../../init/init96/initmcrx.o
+else
+INIT_OBJECTS += \
+	../../init/vgdrvr.o \
+	../../init/initvg/gamma.o \
+	../../init/initvg/dac.o \
+	../../init/initvg/video.o \
+	../../init/initvg/parse.o \
+	../../init/initvg/sli.o \
+	../../init/initvg/util.o \
+	../../init/initvg/info.o \
+	../../init/initvg/print.o \
+	../../init/initvg/sst1init.o
+endif
+
+GLIDE_OBJECTS += \
+	$(INIT_OBJECTS) \
+	$(FX_GLIDE_SW)/newpci/pcilib/sst1_pci.o \
+	$(FX_GLIDE_SW)/newpci/pcilib/fxmsr.o \
+	$(FX_GLIDE_SW)/newpci/pcilib/fxpci.o \
+	$(FX_GLIDE_SW)/newpci/pcilib/fxdpmi2.o
+
+###############################################################################
+#	rules
+###############################################################################
+
+.c.o:
+	$(CC) -o $@ $(CFLAGS) -c $<
+
+###############################################################################
+#	main
+###############################################################################
+all: glide2x
+
+glide2x: $(GLIDE_LIBDIR)/$(GLIDE_LIB) $(GLIDE_LIBDIR)/$(GLIDE_DXE) $(GLIDE_LIBDIR)/$(GLIDE_IMP)
+
+$(GLIDE_LIBDIR)/$(GLIDE_LIB): $(GLIDE_OBJECTS)
+	$(AR) $(ARFLAGS) $@ $^
+
+$(GLIDE_LIBDIR)/$(GLIDE_DXE) $(GLIDE_LIBDIR)/$(GLIDE_IMP): $(GLIDE_OBJECTS)
+	-$(DXE3GEN) -o $(GLIDE_LIBDIR)/$(GLIDE_DXE) -Y $(GLIDE_LIBDIR)/$(GLIDE_IMP) -E _gr -E _gu  -E _ConvertAndDownloadRle -U $^
+
+###############################################################################
+#	rules(2)
+###############################################################################
+
+cpuid.o: cpudtect.asm
+	$(AS) -o $@ $(ASFLAGS) $<
+xdraw.o: xdraw.asm
+	$(AS) -o $@ $(ASFLAGS) $<
+xdraw96.o: xdraw96.asm
+	$(AS) -o $@ $(ASFLAGS) $<
+
+$(GLIDE_OBJECTS): fxinline.h fxgasm.h
+
+# cross-compile workaround:
+ifneq ($(COMSPEC),)
+RUN_FXGASM=fxgasm.exe
+else
+RUN_FXGASM=./fxgasm.exe
+endif
+
+fxinline.h: fxgasm.exe
+	$(RUN_FXGASM) -inline > $@
+
+fxgasm.h: fxgasm.exe
+	$(RUN_FXGASM) -hex > $@
+
+fxgasm.exe: fxgasm.c
+	$(HOST_CC) -o $@ $(HOST_CFLAGS) $<
+
+###############################################################################
+#	clean, realclean
+###############################################################################
+
+clean:
+	-$(call UNLINK,*.o)
+	-$(call UNLINK,../../init/*.o)
+	-$(call UNLINK,../../init/initvg/*.o)
+	-$(call UNLINK,../../init/init96/*.o)
+	-$(call UNLINK,$(FX_GLIDE_SW)/newpci/pcilib/*.o)
+	-$(call UNLINK,fxinline.h)
+	-$(call UNLINK,fxgasm.h)
+
+realclean: clean
+	-$(call UNLINK,$(GLIDE_LIBDIR)/$(GLIDE_LIB))
+	-$(call UNLINK,$(GLIDE_LIBDIR)/$(GLIDE_DXE))
+	-$(call UNLINK,$(GLIDE_LIBDIR)/$(GLIDE_IMP))

@@ -1,0 +1,40 @@
+GDEBUG levels:
+
+Level   Description
+-----   ------------------------------------------------
+ 80     init routines
+ 81     gu3df*
+ 82	grLfb*
+ 83	grSst*
+ 84	grSstStatus, grSstIsBusy, grSstVideoLine
+ 85	gr* misc state routines
+ 86	grBuffer*
+ 87	grDisableAllEffects, grGlide?etState
+ 88	grTex* attribute routines
+ 89	grTex* download routines
+ 90	grDrawPoint
+ 91	grDrawLine
+ 92	grDrawTriangle
+ 93	grDrawPolygon*
+ 94	grDrawAAPoint
+ 95	grDrawAALine
+ 96	grDrawAATriangle
+ 97	grDrawAAPolygon*
+ 98	guMP* routines
+ 99	gu* misc. routines
+280	internal init routines
+281	routine exit traces
+282     dataList values
+
+GLIDE_PLATFORM: 
+
+        GLIDE_HARDWARE:
+                Defined if GLIDE should use the actual SST hardware.
+
+        GLIDE_HW_*:
+        GLIDE_HW_SST1:
+                This macro is for compiling 
+        GLIDE_HW_SST96:
+                This macro is for compiling Glide for SST96
+        GLIDE_HW_H3:
+                This macro is for compiling Glide for H3

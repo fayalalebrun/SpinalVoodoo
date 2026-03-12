@@ -1,0 +1,70 @@
+# DOS/DJGPP tests makefile for Glide2
+#
+#  Copyright (c) 2002 - Borca Daniel
+#  Email : dborca@users.sourceforge.net
+#  Web   : http://www.geocities.com/dborca
+#
+
+#
+#  Available options:
+#
+#    Environment variables:
+#	FX_GLIDE_HW	build for the given ASIC (sst1, sst96).
+#			default = sst1
+#	CPU		optimize for the given processor.
+#			default = pentium
+#	DXE=1		use DXE modules.
+#			default = no
+#
+#    Targets:
+#	<file.exe>	build a specific file
+#
+
+.PHONY: all clean
+.SUFFIXES: .c .o .exe
+.SECONDARY: tlib.o plib.o
+
+FX_GLIDE_HW ?= sst1
+ifeq ($(FX_GLIDE_HW),sst1)
+HWDEF = -DSST1
+else
+ifeq ($(FX_GLIDE_HW),sst96)
+HWDEF = -DSST96
+endif
+endif
+
+override FX_HW_BASE = sst1
+TOP = ../../..
+CPU ?= pentium
+
+UNLINK = rm -f $(1)
+
+CC = gcc
+CFLAGS = -Wall -O2 -ffast-math -mtune=$(CPU)
+CFLAGS += -I$(TOP)/$(FX_HW_BASE)/glide/src -I$(TOP)/$(FX_HW_BASE)/incsrc -I$(TOP)/$(FX_HW_BASE)/init
+CFLAGS += -I$(TOP)/swlibs/fxmisc
+CFLAGS += -D__DOS__ $(HWDEF)
+CFLAGS += -D__DOS32__
+
+LDFLAGS = -s -L$(TOP)/$(FX_HW_BASE)/lib/$(FX_GLIDE_HW)
+
+ifdef DXE
+LDLIBS = -lglide2i
+else
+LDLIBS = -lglide2x
+endif
+
+.c.o:
+	$(CC) -o $@ $(CFLAGS) -c $<
+%.exe: tlib.o %.o
+	$(CC) -o $@ $(LDFLAGS) $^ $(LDLIBS)
+
+all:
+	$(error Must specify <filename.exe> to build)
+
+qatest00.exe: tlib.o plib.o qatest00.o
+	$(CC) -o $@ $(LDFLAGS) $^ $(LDLIBS)
+
+clean:
+	-$(call UNLINK,*.o)
+	-$(call UNLINK,*.exe)

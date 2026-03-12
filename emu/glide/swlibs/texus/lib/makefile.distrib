@@ -1,0 +1,13 @@
+
+CFILES  = texuslib.c clamp.c read.c resample.c mipmap.c quantize.c ncc.c \
+	  nccnnet.c pal256.c dequant.c view.c util.c diffuse.c write.c \
+	  tga.c 3df.c ppm.c rgt.c
+
+CFLAGS = -g -I/usr/include/glide
+
+libtexus.so : libtexus.a
+	$(LD) -shared -o $@ --whole-archive $+
+
+libtexus.a : $(CFILES:.c=.o)
+	$(AR) cq $@ $+
+

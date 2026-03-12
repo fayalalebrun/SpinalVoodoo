@@ -118,4 +118,5 @@ case class CoreDe10(c: Config) extends Component {
   core.io.statusInputs.pciInterrupt := False
 
   core.io.fbBaseAddr := 0
+  core.io.flushFbCaches := False
 }

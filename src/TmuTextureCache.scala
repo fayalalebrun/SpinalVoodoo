@@ -34,6 +34,7 @@ case class TmuTextureCache(c: voodoo.Config, formalStrong: Boolean = true) exten
   when(isExpanding) {
     expandedStream.payload.passthrough.format := regPassthrough.format
     expandedStream.payload.passthrough.bilinear := regPassthrough.bilinear
+    expandedStream.payload.passthrough.sendConfig := regPassthrough.sendConfig
     expandedStream.payload.passthrough.ds := regPassthrough.ds
     expandedStream.payload.passthrough.dt := regPassthrough.dt
     expandedStream.payload.passthrough.readIdx := expandCount

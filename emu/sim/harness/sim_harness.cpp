@@ -744,7 +744,13 @@ void sim_shutdown(void) {
     if (top) {
         auto r = top->rootp;
         fprintf(stderr,
-                "[sim_harness] Fill stats: fb hit=%u miss=%u burst=%u beats=%u stall=%u\n",
+                "[sim_harness] Fill stats: tmu hit=%u miss=%u burst=%u beats=%u stall=%u fastBi=%u | fb hit=%u miss=%u burst=%u beats=%u stall=%u\n",
+                r->CoreSim__DOT__core_1__DOT__tmu_1__DOT__textureCache__DOT__texFillHits,
+                r->CoreSim__DOT__core_1__DOT__tmu_1__DOT__textureCache__DOT__texFillMisses,
+                r->CoreSim__DOT__core_1__DOT__tmu_1__DOT__textureCache__DOT__texFillBurstCount,
+                r->CoreSim__DOT__core_1__DOT__tmu_1__DOT__textureCache__DOT__texFillBurstBeats,
+                r->CoreSim__DOT__core_1__DOT__tmu_1__DOT__textureCache__DOT__texFillStallCycles,
+                r->CoreSim__DOT__core_1__DOT__tmu_1__DOT__textureCache__DOT__texFastBilinearHits,
                 r->CoreSim__DOT__core_1__DOT__fbFillHits,
                 r->CoreSim__DOT__core_1__DOT__fbFillMisses,
                 r->CoreSim__DOT__core_1__DOT__fbFillBurstCount,

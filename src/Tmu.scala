@@ -448,7 +448,6 @@ case class Tmu(c: voodoo.Config) extends Component {
   }.elsewhen(!io.input.fire && io.output.fire) {
     inFlightCount := inFlightCount - 1
   }
-  }
   io.busy := inFlightCount =/= 0
 }
 

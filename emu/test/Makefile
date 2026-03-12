@@ -26,7 +26,7 @@ VERILATOR       = verilator
 VERILATOR_ROOT ?= $(shell $(VERILATOR) --getenv VERILATOR_ROOT)
 VERILATOR_FLAGS = --cc --output-split 20000 --output-split-cfuncs 5000 --decorations none --public-flat-rw --x-assign fast --x-initial fast --noassert -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -Wno-CMPCONST -Wno-UNSIGNED
 SCALA_CLI ?= scala-cli
-SCALA_CLI_FLAGS ?=
+SCALA_CLI_FLAGS ?= --power
 CORE_SIM_GEN_ARGS ?=
 ifeq ($(TRACE),1)
 VERILATOR_FLAGS += --trace-fst --trace-structs --trace-underscore
@@ -75,7 +75,7 @@ state-roundtrip: $(OBJ_DIR)/state_roundtrip_test
 # Step 1: Generate Verilog (reuse existing or rebuild)
 $(VERILOG): $(SCALA_SRCS) $(CORE_SIM_GEN_ARGS_FILE)
 	@rm -f $(dir $(VERILOG))*.bin
-	cd $(PROJ_ROOT) && java -Xmx2g -cp "$$( $(SCALA_CLI) compile . --print-class-path $(SCALA_CLI_FLAGS) )" voodoo.CoreSimGen $(if $(filter 1,$(TRACE)),--trace-pipeline) $(CORE_SIM_GEN_ARGS)
+	cd $(PROJ_ROOT) && java -Xmx2g -cp "$$( $(SCALA_CLI) compile project.scala src --print-class-path $(SCALA_CLI_FLAGS) )" voodoo.CoreSimGen $(if $(filter 1,$(TRACE)),--trace-pipeline) $(CORE_SIM_GEN_ARGS)
 	@sed -i 's|\$$readmemb("\([^/"]*\.bin\)"|\$$readmemb("$(abspath $(dir $(VERILOG)))/\1"|g' $@
 
 # Step 2: Verilate (64-bit obj_dir, separate from 32-bit Glide build)

@@ -39,6 +39,7 @@ void vl_warn(const char* filename, int linenum, const char* hier,
 /* State                                                               */
 /* ------------------------------------------------------------------ */
 
+static VerilatedContext *contextp = nullptr;
 static VCoreSim *top = nullptr;
 #ifdef VM_TRACE_FST
 static VerilatedFstC *tfp = nullptr;
@@ -615,17 +616,20 @@ static uint32_t bus_read(uint32_t addr) {
 
 int sim_init(void) {
     /* Verilator context setup */
-    Verilated::commandArgs(0, (const char **)nullptr);
+    contextp = new VerilatedContext;
+    if (!contextp) return -1;
+    contextp->commandArgs(0, (const char **)nullptr);
+    contextp->threads(1);
 
 #ifdef VM_TRACE_FST
     /* Must call traceEverOn before model construction if tracing */
     const char *fst_path = getenv("SIM_FST");
     if (fst_path) {
-        Verilated::traceEverOn(true);
+        contextp->traceEverOn(true);
     }
 #endif
 
-    top = new VCoreSim;
+    top = new VCoreSim{contextp};
     if (!top) return -1;
 
     /* Reset sequence */
@@ -759,6 +763,10 @@ void sim_shutdown(void) {
         top->final();
         delete top;
         top = nullptr;
+    }
+    if (contextp) {
+        delete contextp;
+        contextp = nullptr;
     }
     fprintf(stderr, "[sim_harness] Shutdown after %lu cycles (%lu R, %lu W)\n",
             (unsigned long)(sim_time / 2),

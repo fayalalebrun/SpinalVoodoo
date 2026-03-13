@@ -231,10 +231,10 @@ FX_EXPORT FxBool FX_CSTYLE sst1InitIdle(FxU32 *sstbase)
 void sst1InitIdleLoop(FxU32 *sstbase)
 {
     FxU32 cntr;
+    FxU32 status;
     volatile Sstregs *sst = (Sstregs *) sstbase;
 #if defined(DE10_BACKEND) || defined(SIM_BACKEND)
     FxU32 spinCount = 0;
-    FxU32 status;
     volatile FxU32 *debugBusyReg = (volatile FxU32 *) ((FxU8 *) sstbase + 0x240);
     volatile FxU32 *pixelsInReg = (volatile FxU32 *) ((FxU8 *) sstbase + 0x14c);
     volatile FxU32 *pixelsOutReg = (volatile FxU32 *) ((FxU8 *) sstbase + 0x15c);
@@ -366,10 +366,10 @@ FX_EXPORT FxBool FX_CSTYLE sst1InitIdleFBI(FxU32 *sstbase)
 FX_EXPORT FxBool FX_CSTYLE sst1InitIdleFBINoNOP(FxU32 *sstbase)
 {
     FxU32 cntr;
+    FxU32 status;
     volatile Sstregs *sst = (Sstregs *) sstbase;
 #if defined(DE10_BACKEND) || defined(SIM_BACKEND)
     FxU32 spinCount = 0;
-    FxU32 status;
     volatile FxU32 *debugBusyReg = (volatile FxU32 *) ((FxU8 *) sstbase + 0x240);
     volatile FxU32 *writePathDebugReg = (volatile FxU32 *) ((FxU8 *) sstbase + 0x250);
     volatile FxU32 *pixelsInReg = (volatile FxU32 *) ((FxU8 *) sstbase + 0x14c);

@@ -921,3 +921,8 @@ void sim_read_tex(uint32_t byte_offset, uint32_t *dst, uint32_t word_count) {
 void sim_set_swap_count(uint32_t count) {
     top->rootp->CoreSim__DOT__core_1__DOT__swapBuffer_1__DOT__swapCountReg = count & 0x3;
 }
+
+uint32_t sim_get_swap_count(void) {
+    if (!top) return 0;
+    return top->rootp->CoreSim__DOT__core_1__DOT__swapBuffer_1__DOT__swapCountReg & 0x3u;
+}

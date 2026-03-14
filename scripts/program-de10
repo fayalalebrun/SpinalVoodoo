@@ -5,10 +5,11 @@ HOST="${DE10_HOST:-}"
 USER_NAME="${DE10_USER:-root}"
 RBF_FILE="${DE10_RBF:-output/de10/bitstream/SpinalVoodoo_de10.rbf}"
 REMOTE_TMP_DIR="${DE10_REMOTE_TMP_DIR:-/tmp/spinalvoodoo}"
+STATE_FILE="${DE10_STATE_FILE:-}"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/program-de10 --host <host> [--user <user>] [--rbf <file>] [--remote-tmp-dir <dir>]
+Usage: scripts/program-de10 --host <host> [--user <user>] [--rbf <file>] [--remote-tmp-dir <dir>] [--state-file <path>]
 
 Programming strategy:
   1) If /dev/fpga0 exists, stream RBF into /dev/fpga0.
@@ -36,6 +37,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --remote-tmp-dir)
       REMOTE_TMP_DIR="$2"
+      shift 2
+      ;;
+    --state-file)
+      STATE_FILE="$2"
       shift 2
       ;;
     -h|--help)
@@ -70,11 +75,12 @@ ssh "$REMOTE_TARGET" "mkdir -p '$REMOTE_TMP_DIR'"
 scp "$RBF_FILE" "${REMOTE_TARGET}:${REMOTE_RBF}"
 
 echo "[de10] Programming FPGA on ${REMOTE_TARGET}"
-ssh "$REMOTE_TARGET" "bash -s -- '$REMOTE_RBF' '$REMOTE_FW_NAME'" <<'EOF'
+ssh "$REMOTE_TARGET" "bash -s -- '$REMOTE_RBF' '$REMOTE_FW_NAME' '$STATE_FILE'" <<'EOF'
 set -euo pipefail
 
 remote_rbf="$1"
 fw_name="$2"
+state_file="$3"
 
 run_root() {
   if [[ "$(id -u)" -eq 0 ]]; then
@@ -134,6 +140,12 @@ if [[ -r /sys/class/fpga_manager/fpga0/state ]]; then
   if [[ "$fpga_state" != "operating" ]]; then
     exit 1
   fi
+fi
+
+if [[ -n "$state_file" ]]; then
+  remote_hash="$(sha256sum "$remote_rbf" | cut -d ' ' -f 1)"
+  run_root mkdir -p "$(dirname "$state_file")"
+  printf '%s  %s\n' "$remote_hash" "$fw_name" | run_root tee "$state_file" >/dev/null
 fi
 EOF
 

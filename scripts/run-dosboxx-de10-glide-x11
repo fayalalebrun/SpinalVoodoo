@@ -1,0 +1,334 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+
+HOST="${DE10_HOST:-}"
+USER_NAME="${DE10_USER:-fpga}"
+RBF_FILE="${DE10_RBF:-$ROOT_DIR/output/de10/bitstream/SpinalVoodoo_de10.rbf}"
+REMOTE_DIR="${DE10_RUNTIME_DIR:-/home/fpga/de10-cross}"
+GLIDE_LIB_DIR="${DE10_GLIDE_LIB_DIR:-$REMOTE_DIR}"
+DOSBOX_BIN="${DE10_DOSBOX_BIN:-$REMOTE_DIR/dosboxx-src/src/dosbox-x}"
+CONF_FILE="${DE10_DOSBOX_CONF:-$REMOTE_DIR/dosboxx-de10-glide.conf}"
+STATE_FILE="${DE10_FPGA_STATE_FILE:-$REMOTE_DIR/.fpga-programmed.sha256}"
+OUTPUT_DIR="${DE10_OUTPUT_DIR:-$ROOT_DIR/output/de10/dosboxx}"
+DISPLAY_NUM="${DE10_X11_DISPLAY:-:99}"
+SCREEN_SPEC="${DE10_X11_SCREEN:-1024x768x24}"
+POLL_SECONDS="${DE10_POLL_SECONDS:-5}"
+TIMEOUT_SECONDS="${DE10_TIMEOUT_SECONDS:-180}"
+SETTLE_SECONDS="${DE10_SETTLE_SECONDS:-2}"
+EXE=""
+EXE_ARGS="-n 100000000"
+CAPTURE_NAME=""
+EXPECTED_IMAGE=""
+VERIFY_ONLY=0
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/run-dosboxx-de10-glide-x11 --host <host> --exe <dos-exe> [options]
+
+Options:
+  --host <host>            DE10 host
+  --user <user>            SSH user (default: fpga)
+  --exe <dos-exe>          DOS executable to run, e.g. TEST00DX.EXE
+  --exe-args <args>        Arguments appended to the DOS command (default: -n 100000000)
+  --capture-name <name>    Output stem (default: <exe-lower>-board-x11)
+  --expected <png>         Expected PNG for compare output
+  --rbf <file>             Local bitstream to program before launch
+  --verify-programmed      Skip programming and require the remote programmed-hash marker to match
+  --runtime-dir <dir>      Remote runtime directory (default: /home/fpga/de10-cross)
+  --glide-lib-dir <dir>    Remote Glide lib directory (default: runtime dir)
+  --dosbox-bin <path>      Remote DOSBox-X binary path
+  --conf <path>            Remote DOSBox-X config path
+  --output-dir <dir>       Local capture output directory
+  --display <display>      Remote X display number (default: :99)
+  --screen <spec>          Xvfb screen spec (default: 1024x768x24)
+  --poll-seconds <n>       Poll interval while waiting for presentation (default: 5)
+  --timeout-seconds <n>    Wait timeout for first presented frame (default: 180)
+  --settle-seconds <n>     Extra wait after first presentation before capture (default: 2)
+EOF
+}
+
+infer_expected() {
+  local stem="$1"
+  local candidate
+
+  candidate="$ROOT_DIR/output/de10/dosboxx/${stem}-board.png"
+  if [[ -f "$candidate" ]]; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+
+  candidate="$ROOT_DIR/output/de10/dosboxx/${stem}-board-0.png"
+  if [[ -f "$candidate" ]]; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+
+  return 1
+}
+
+parse_geometry() {
+  local tree_file="$1"
+  local line
+
+  while IFS= read -r line; do
+    if [[ "$line" == *'"DOSBox-X '* &&
+          "$line" =~ ([0-9]+)x([0-9]+)\+([0-9]+)\+([0-9]+)[[:space:]]+\+[0-9]+\+[0-9]+$ ]]; then
+      printf '%s %s %s %s\n' \
+        "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" "${BASH_REMATCH[4]}"
+      return 0
+    fi
+  done < "$tree_file"
+
+  return 1
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --host)
+      HOST="$2"
+      shift 2
+      ;;
+    --user)
+      USER_NAME="$2"
+      shift 2
+      ;;
+    --exe)
+      EXE="$2"
+      shift 2
+      ;;
+    --exe-args)
+      EXE_ARGS="$2"
+      shift 2
+      ;;
+    --capture-name)
+      CAPTURE_NAME="$2"
+      shift 2
+      ;;
+    --expected)
+      EXPECTED_IMAGE="$2"
+      shift 2
+      ;;
+    --rbf)
+      RBF_FILE="$2"
+      shift 2
+      ;;
+    --verify-programmed)
+      VERIFY_ONLY=1
+      shift
+      ;;
+    --runtime-dir)
+      REMOTE_DIR="$2"
+      shift 2
+      ;;
+    --glide-lib-dir)
+      GLIDE_LIB_DIR="$2"
+      shift 2
+      ;;
+    --dosbox-bin)
+      DOSBOX_BIN="$2"
+      shift 2
+      ;;
+    --conf)
+      CONF_FILE="$2"
+      shift 2
+      ;;
+    --output-dir)
+      OUTPUT_DIR="$2"
+      shift 2
+      ;;
+    --display)
+      DISPLAY_NUM="$2"
+      shift 2
+      ;;
+    --screen)
+      SCREEN_SPEC="$2"
+      shift 2
+      ;;
+    --poll-seconds)
+      POLL_SECONDS="$2"
+      shift 2
+      ;;
+    --timeout-seconds)
+      TIMEOUT_SECONDS="$2"
+      shift 2
+      ;;
+    --settle-seconds)
+      SETTLE_SECONDS="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage
+      exit 1
+      ;;
+  esac
+done
+
+if [[ -z "$HOST" || -z "$EXE" ]]; then
+  usage >&2
+  exit 1
+fi
+
+for cmd in ssh scp sha256sum magick; do
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "Missing required command: $cmd" >&2
+    exit 1
+  fi
+done
+
+if [[ ! -f "$RBF_FILE" ]]; then
+  echo "RBF file not found: $RBF_FILE" >&2
+  exit 1
+fi
+
+mkdir -p "$OUTPUT_DIR"
+
+REMOTE_TARGET="${USER_NAME}@${HOST}"
+EXE_STEM="${EXE%.*}"
+EXE_STEM="${EXE_STEM,,}"
+if [[ -z "$CAPTURE_NAME" ]]; then
+  CAPTURE_NAME="${EXE_STEM}-board-x11"
+fi
+if [[ -z "$EXPECTED_IMAGE" ]]; then
+  EXPECTED_IMAGE="$(infer_expected "$EXE_STEM" || true)"
+fi
+
+LOCAL_ROOT_PNG="$OUTPUT_DIR/${CAPTURE_NAME}-root.png"
+LOCAL_CROP_PNG="$OUTPUT_DIR/${CAPTURE_NAME}.png"
+LOCAL_TREE="$OUTPUT_DIR/${CAPTURE_NAME}.tree"
+LOCAL_STAGE="$OUTPUT_DIR/${CAPTURE_NAME}.stage"
+LOCAL_DOSBOX_LOG="$OUTPUT_DIR/${CAPTURE_NAME}.dosbox.log"
+LOCAL_XVFB_LOG="$OUTPUT_DIR/${CAPTURE_NAME}.xvfb.log"
+REMOTE_BASE="$REMOTE_DIR/.${CAPTURE_NAME}"
+
+echo "[de10-x11] Checking SSH connectivity"
+ssh "$REMOTE_TARGET" true
+
+if [[ "$VERIFY_ONLY" -eq 0 ]]; then
+  echo "[de10-x11] Programming expected FPGA image"
+  "$ROOT_DIR/scripts/program-de10" \
+    --host "$HOST" \
+    --user "$USER_NAME" \
+    --rbf "$RBF_FILE" \
+    --state-file "$STATE_FILE"
+else
+  local_hash="$(sha256sum "$RBF_FILE" | cut -d ' ' -f 1)"
+  remote_hash="$(ssh "$REMOTE_TARGET" "test -f '$STATE_FILE' && head -n 1 '$STATE_FILE' | cut -d ' ' -f 1 || true")"
+  if [[ "$remote_hash" != "$local_hash" ]]; then
+    echo "Remote programmed bitstream marker does not match $RBF_FILE" >&2
+    exit 1
+  fi
+fi
+
+echo "[de10-x11] Checking remote X11 and DOSBox-X tools"
+ssh "$REMOTE_TARGET" "command -v Xvfb >/dev/null && command -v xwininfo >/dev/null && command -v xwd >/dev/null && test -x '$DOSBOX_BIN' && test -f '$CONF_FILE' && test -f '$GLIDE_LIB_DIR/libglide2x.so.2'"
+
+echo "[de10-x11] Launching DOSBox-X on board"
+ssh "$REMOTE_TARGET" "sudo -n bash -s -- '$REMOTE_BASE' '$DISPLAY_NUM' '$SCREEN_SPEC' '$GLIDE_LIB_DIR' '$DOSBOX_BIN' '$CONF_FILE' '$REMOTE_DIR' '$EXE' '$EXE_ARGS'" <<'EOF'
+set -euo pipefail
+
+remote_base="$1"
+display_num="$2"
+screen_spec="$3"
+glide_lib_dir="$4"
+dosbox_bin="$5"
+conf_file="$6"
+runtime_dir="$7"
+exe_name="$8"
+exe_args="$9"
+
+pkill -9 Xvfb 2>/dev/null || true
+pkill -9 dosbox-x 2>/dev/null || true
+rm -f "${remote_base}."*
+
+Xvfb "$display_num" -screen 0 "$screen_spec" >"${remote_base}.xvfb.log" 2>&1 &
+echo $! >"${remote_base}.xvfb.pid"
+sleep 1
+
+export DISPLAY="$display_num"
+export SDL_AUDIODRIVER=dummy
+export LD_LIBRARY_PATH="$glide_lib_dir"
+export GLIDE_X11_ENABLE=1
+export GLIDE_X11_DEBUG=1
+export GLIDE_X11_STAGE_FILE="${remote_base}.stage"
+
+dos_cmd="$exe_name"
+if [[ -n "$exe_args" ]]; then
+  dos_cmd+=" $exe_args"
+fi
+
+"$dosbox_bin" -conf "$conf_file" \
+  -c "mount c $runtime_dir" \
+  -c "c:" \
+  -c "$dos_cmd" >"${remote_base}.dosbox.log" 2>&1 &
+echo $! >"${remote_base}.dosbox.pid"
+EOF
+
+echo "[de10-x11] Waiting for first presented frame"
+presented=0
+deadline=$((SECONDS + TIMEOUT_SECONDS))
+while (( SECONDS < deadline )); do
+  if ssh "$REMOTE_TARGET" "grep -q 'swap presented' '${REMOTE_BASE}.stage' 2>/dev/null"; then
+    presented=1
+    break
+  fi
+  sleep "$POLL_SECONDS"
+done
+
+if [[ "$presented" -eq 0 ]]; then
+  echo "[de10-x11] Warning: timed out waiting for 'swap presented'; capturing anyway" >&2
+else
+  sleep "$SETTLE_SECONDS"
+fi
+
+echo "[de10-x11] Capturing X11 root window and logs"
+ssh "$REMOTE_TARGET" "sudo -n bash -s -- '$REMOTE_BASE' '$DISPLAY_NUM'" <<'EOF'
+set -euo pipefail
+
+remote_base="$1"
+display_num="$2"
+
+export DISPLAY="$display_num"
+xwininfo -root -tree >"${remote_base}.tree"
+xwd -root -silent -out "${remote_base}.xwd"
+kill -9 "$(cat "${remote_base}.dosbox.pid")" 2>/dev/null || true
+kill -9 "$(cat "${remote_base}.xvfb.pid")" 2>/dev/null || true
+EOF
+
+scp "$REMOTE_TARGET:${REMOTE_BASE}.tree" "$LOCAL_TREE"
+scp "$REMOTE_TARGET:${REMOTE_BASE}.xwd" /tmp/.de10-x11-$$.xwd
+scp "$REMOTE_TARGET:${REMOTE_BASE}.stage" "$LOCAL_STAGE"
+scp "$REMOTE_TARGET:${REMOTE_BASE}.dosbox.log" "$LOCAL_DOSBOX_LOG"
+scp "$REMOTE_TARGET:${REMOTE_BASE}.xvfb.log" "$LOCAL_XVFB_LOG"
+
+magick /tmp/.de10-x11-$$.xwd "$LOCAL_ROOT_PNG"
+rm -f /tmp/.de10-x11-$$.xwd
+
+if ! geometry="$(parse_geometry "$LOCAL_TREE")"; then
+  echo "Could not parse DOSBox-X window geometry from $LOCAL_TREE" >&2
+  exit 1
+fi
+read -r crop_w crop_h crop_x crop_y <<<"$geometry"
+magick "$LOCAL_ROOT_PNG" -crop "${crop_w}x${crop_h}+${crop_x}+${crop_y}" +repage "$LOCAL_CROP_PNG"
+
+echo "[de10-x11] Saved crop: $LOCAL_CROP_PNG"
+
+if [[ -n "$EXPECTED_IMAGE" ]]; then
+  if [[ ! -f "$EXPECTED_IMAGE" ]]; then
+    echo "Expected image not found: $EXPECTED_IMAGE" >&2
+    exit 1
+  fi
+  ae="$(magick compare -metric AE "$LOCAL_CROP_PNG" "$EXPECTED_IMAGE" null: 2>&1 >/dev/null || true)"
+  rmse="$(magick compare -metric RMSE "$LOCAL_CROP_PNG" "$EXPECTED_IMAGE" null: 2>&1 >/dev/null || true)"
+  fuzz="$(magick compare -fuzz 2% -metric AE "$LOCAL_CROP_PNG" "$EXPECTED_IMAGE" null: 2>&1 >/dev/null || true)"
+  echo "[de10-x11] Compare vs $EXPECTED_IMAGE"
+  echo "[de10-x11]   AE=$ae"
+  echo "[de10-x11]   RMSE=$rmse"
+  echo "[de10-x11]   AE(fuzz2%)=$fuzz"
+fi

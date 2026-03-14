@@ -685,6 +685,7 @@ GR_ENTRY(grBufferSwap, void, ( int swapInterval ))
 #endif
 
   GR_END();
+  _grX11PresenterSwap();
 #undef FN_NAME  
 } /* grBufferSwap */
 

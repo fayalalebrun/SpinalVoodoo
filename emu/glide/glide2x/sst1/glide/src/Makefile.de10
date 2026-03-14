@@ -21,6 +21,8 @@ ifeq ($(origin CXX), default)
 CXX = $(if $(CROSS_COMPILE),$(CROSS_COMPILE)g++,g++)
 endif
 AR ?= ar
+X11_CFLAGS ?=
+X11_LIBS ?= -lX11 -lXext
 
 SYSROOT_FLAG =
 ifneq ($(strip $(SYSROOT)),)
@@ -37,6 +39,7 @@ ARFLAGS = rus
 
 CFLAGS = -Wall -g -Wno-incompatible-pointer-types -Wno-int-conversion -Wno-error=format-security
 CFLAGS += -fPIC -O1 -ffast-math $(SYSROOT_FLAG)
+CFLAGS += $(X11_CFLAGS)
 CFLAGS += -I. -I../../incsrc -I../../init -I../../init/initvg
 CFLAGS += -I$(FX_GLIDE_SW)/fxmisc -I$(FX_GLIDE_SW)/newpci/pcilib -I$(FX_GLIDE_SW)/fxmemmap
 CFLAGS += $(CDEFS)
@@ -68,6 +71,7 @@ GLIDE_OBJECTS = \
 	gtex.o \
 	gtexdl.o \
 	gutex.o \
+	gx11present.o \
 	gxdraw.o \
 	cpuid.o
 
@@ -112,7 +116,7 @@ $(GLIDE_LIBDIR)/$(GLIDE_LIB): $(GLIDE_OBJECTS)
 
 $(GLIDE_LIBDIR)/$(GLIDE_SO): $(GLIDE_OBJECTS)
 	$(CC) -o $(GLIDE_LIBDIR)/$(GLIDE_SHARED) -shared -Wl,-soname,$(GLIDE_SONAME) \
-		$(GLIDE_OBJECTS) $(LDFLAGS) -lm
+		$(GLIDE_OBJECTS) $(LDFLAGS) -lm $(X11_LIBS)
 	ln -fs $(GLIDE_SHARED) $@
 
 clean:

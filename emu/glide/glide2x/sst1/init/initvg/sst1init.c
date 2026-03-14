@@ -239,11 +239,21 @@ FX_EXPORT FxU32 * FX_CSTYLE sst1InitMapBoard(FxU32 BoardNumber)
                 de10StageFile("sst1InitMapBoard: before fbiInit1 read");
                 sstptr = (Sstregs *) sst;
                 /* Check SLI not enabled... */
-                if((IGET(sstptr->fbiInit1) & SST_EN_SCANLINE_INTERLEAVE) &&
-                    sst1InitSliDetect(sst)) {
+                {
+                    FxU32 fbiInit1Val = IGET(sstptr->fbiInit1);
+                    char stageBuf[96];
+                    snprintf(stageBuf, sizeof(stageBuf),
+                        "sst1InitMapBoard: after fbiInit1 read 0x%08x",
+                        fbiInit1Val);
+                    de10StageFile(stageBuf);
+                    de10StageFile("sst1InitMapBoard: before sli detect");
+                    if((fbiInit1Val & SST_EN_SCANLINE_INTERLEAVE) &&
+                        sst1InitSliDetect(sst)) {
                     INIT_PRINTF(("sst1InitMapBoard(): Scanline Interleave detected at startup for board=%d\n", j));
                     INIT_PRINTF(("                    System reboot required...\n"));
                     return(NULL);
+                    }
+                    de10StageFile("sst1InitMapBoard: after sli detect");
                 }
             } else {
                 FxU32 code = pciGetErrorCode();

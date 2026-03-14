@@ -917,6 +917,10 @@ _GlideInitEnvironment(void);
 void FX_CSTYLE
 _grColorCombineDelta0Mode( FxBool delta0Mode );
 
+void _grX11PresenterInit(FxU32 hWnd, FxU32 width, FxU32 height);
+void _grX11PresenterSwap(void);
+void _grX11PresenterShutdown(void);
+
 void
 _doGrErrorCallback( const char *name, const char *msg, FxBool fatal );
 

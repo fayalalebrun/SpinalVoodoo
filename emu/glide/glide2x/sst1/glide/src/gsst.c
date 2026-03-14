@@ -1040,6 +1040,10 @@ GR_ENTRY(grSstWinOpen, FxBool, (
     grGlideSetState(&state);
   }
 
+  if (rv) {
+    _grX11PresenterInit(hWnd, gc->state.screen_width, gc->state.screen_height);
+  }
+
   BAILOUT:
   GR_RETURN( rv );
 } /* grSstWinOpen */
@@ -1156,6 +1160,8 @@ GR_ENTRY( grSstWinClose, void, ( void ) )
   fprintf(stderr, "[de10] grSstWinClose: done\n");
   fflush(stderr);
 #endif
+
+  _grX11PresenterShutdown();
 
   GR_END();
 #undef FN_NAME

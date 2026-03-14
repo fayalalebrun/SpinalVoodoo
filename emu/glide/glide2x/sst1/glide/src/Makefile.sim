@@ -36,6 +36,8 @@ CC = $(if $(CC32),$(CC32),gcc -m32)
 CXX = $(if $(CXX32),$(CXX32),g++ -m32)
 AR = ar
 ZLIB_LIBS ?= -lz
+X11_CFLAGS ?=
+X11_LIBS ?= -lX11 -lXext
 
 ###############################################################################
 #	defines
@@ -60,6 +62,7 @@ ARFLAGS = rus
 VERILATOR_ROOT ?= $(shell verilator --getenv VERILATOR_ROOT)
 
 CFLAGS = -Wall -g -Wno-incompatible-pointer-types -Wno-int-conversion -Wno-error=format-security
+CFLAGS += $(X11_CFLAGS)
 CFLAGS += -I. -I../../incsrc -I../../init -I../../init/initvg
 CFLAGS += -I$(FX_GLIDE_SW)/fxmisc -I$(FX_GLIDE_SW)/newpci/pcilib -I$(FX_GLIDE_SW)/fxmemmap
 CFLAGS += -I$(SIM_DIR)/harness
@@ -93,6 +96,7 @@ GLIDE_OBJECTS = \
 	gtex.o \
 	gtexdl.o \
 	gutex.o \
+	gx11present.o \
 	gxdraw.o \
 	cpuid.o
 
@@ -170,7 +174,7 @@ $(GLIDE_LIBDIR)/$(GLIDE_SO): $(GLIDE_OBJECTS) $(BACKEND_OBJ)
 	$(CXX) -o $(GLIDE_LIBDIR)/$(GLIDE_SHARED) -shared -Wl,-soname,$(GLIDE_SONAME) \
 		$(GLIDE_OBJECTS) $(BACKEND_OBJ) \
 		$(BACKEND_LIB) \
-		-lm -lstdc++ $(ZLIB_LIBS)
+		-lm -lstdc++ $(ZLIB_LIBS) $(X11_LIBS)
 	ln -fs $(GLIDE_SHARED) $@
 
 clean:

@@ -69,6 +69,9 @@ void sim_read_tex(uint32_t byte_offset, uint32_t *dst, uint32_t word_count);
  * Only the low 2 bits are used. Bit 0 determines front/back buffer assignment. */
 void sim_set_swap_count(uint32_t count);
 
+/* Read the current swap buffer count register. */
+uint32_t sim_get_swap_count(void);
+
 #ifdef __cplusplus
 }
 #endif

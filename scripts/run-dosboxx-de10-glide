@@ -31,4 +31,12 @@ fi
 
 export LD_LIBRARY_PATH="$GLIDE_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
+if [[ "${DE10_GLIDE_X11:-0}" != "0" ]]; then
+  export GLIDE_X11_ENABLE=1
+fi
+
+if [[ -n "${DE10_GLIDE_STAGE_FILE:-}" ]]; then
+  export GLIDE_X11_STAGE_FILE="$DE10_GLIDE_STAGE_FILE"
+fi
+
 exec "$DOSBOX_BIN" -conf "$CONF_FILE" "$@"

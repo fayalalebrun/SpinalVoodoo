@@ -1,6 +1,7 @@
 package voodoo
 
 import spinal.core._
+import spinal.core.formal._
 import spinal.lib._
 
 /** SwapBuffer command handler
@@ -17,7 +18,7 @@ import spinal.lib._
   * values are updated. We use a SAMPLING state to wait one cycle after cmd.valid before reading
   * vsyncEnable/swapInterval.
   */
-case class SwapBuffer() extends Component {
+case class SwapBuffer(formalStrong: Boolean = false) extends Component {
   val io = new Bundle {
     val cmd = slave Stream (NoData)
     val vRetrace = in Bool ()
@@ -91,6 +92,58 @@ case class SwapBuffer() extends Component {
       } otherwise {
         retraceCounter := retraceCounter + 1
       }
+    }
+  }
+
+  GenerationFlags.formal {
+    val formalReset = ClockDomain.current.isResetActive
+
+    when(!formalReset) {
+      // --- Combinational / tautological properties (induction-safe) ---
+      // cmd.ready defaults to False; only overridden in SAMPLING or WAITING branches
+      when(!isSampling && !isWaiting) {
+        assert(!io.cmd.ready)
+      }
+
+      // cmd.ready and swapCompleted are wired identically (same assignments in every branch)
+      assert(io.cmd.ready === swapCompleted)
+
+      // Output port wiring correctness
+      assert(io.waiting === (isWaiting || isSampling))
+      assert(io.swapCount === swapCountReg)
+      assert(io.swapsPending === swapsPendingReg)
+    }
+
+    if (formalStrong) {
+      when(!formalReset) {
+        // --- State machine well-formedness (BMC-only) ---
+        // States are mutually exclusive: never both sampling and waiting
+        assert(!(isSampling && isWaiting))
+
+        // --- Stream protocol properties (BMC-only) ---
+        // SAMPLING and WAITING states always have cmd.valid held high
+        // (entered via cmd.valid in IDLE without consuming; Stream holds valid until fire)
+        when(isSampling) {
+          assert(io.cmd.valid)
+        }
+        when(isWaiting) {
+          assert(io.cmd.valid)
+        }
+
+        // --- Counter bounds (BMC-only) ---
+        // Retrace counter never exceeds captured interval while waiting
+        when(isWaiting) {
+          assert(retraceCounter <= capturedInterval)
+        }
+      }
+
+      // --- Reachability covers ---
+      // Immediate swap path reachable (vsync disabled)
+      cover(io.cmd.ready && isSampling)
+      // Vsync swap path reachable (waited for retrace)
+      cover(io.cmd.ready && !isSampling)
+      // Waiting state with nonzero retrace count reachable
+      cover(isWaiting && retraceCounter > 0)
     }
   }
 }

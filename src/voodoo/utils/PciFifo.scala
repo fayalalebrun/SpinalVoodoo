@@ -253,11 +253,6 @@ case class PciFifo(
   private val pciFifo = StreamFifo(QueuedWrite(), depth = 64)
   pciFifo.io.push << queuedWriteTx
 
-  val fifoEmpty = Bool().setName("pciFifo_fifoEmpty")
-  fifoEmpty.simPublic()
-  fifoEmpty := !pciFifo.io.pop.valid
-  io.fifoEmpty := fifoEmpty
-
   io.pciFifoFree := pciFifo.io.availability
 
   // ========================================================================
@@ -266,11 +261,12 @@ case class PciFifo(
   private val canDrain = Bool()
   canDrain := True
 
-  // Register pipelineBusy to break combinatorial loop
-  val pipelineBusyReg = RegNext(io.pipelineBusy) init (False)
+  // Registered issue stage directly after the PCI FIFO. This keeps a single clean
+  // dequeue boundary while breaking the downstream control loops.
+  private val issuedWrite = pciFifo.io.pop.haltWhen(!canDrain).m2sPipe()
 
-  // Block drain if Sync=Yes register and pipeline is busy
-  when(pciFifo.io.pop.syncRequired && pipelineBusyReg) {
+  // Block dequeue if Sync=Yes register and pipeline is busy.
+  when(pciFifo.io.pop.syncRequired && io.pipelineBusy) {
     canDrain := False
   }
 
@@ -281,7 +277,12 @@ case class PciFifo(
     canDrain := False
   }
 
-  private val drainedWrite = pciFifo.io.pop.haltWhen(!canDrain)
+  private val drainedWrite = issuedWrite
+
+  val fifoEmpty = Bool().setName("pciFifo_fifoEmpty")
+  fifoEmpty.simPublic()
+  fifoEmpty := !pciFifo.io.pop.valid && !issuedWrite.valid
+  io.fifoEmpty := fifoEmpty
 
   // ========================================================================
   // Drain routing: register writes vs texture writes
@@ -473,7 +474,7 @@ case class PciFifo(
   })
 
   GenerationFlags.formal {
-    assert(io.fifoEmpty === !pciFifo.io.pop.valid)
+    assert(io.fifoEmpty === (!pciFifo.io.pop.valid && !issuedWrite.valid))
     assert(isTexDrain === (drainedWrite.valid && drainedWrite.isTexture))
     assert(isRegDrain === (drainedWrite.valid && !drainedWrite.isTexture))
     assert(io.texDrain.valid === isTexDrain)
@@ -512,7 +513,7 @@ case class PciFifo(
       assert(io.regSide.cmd.last)
     }
 
-    when(pciFifo.io.pop.syncRequired && pipelineBusyReg) {
+    when(pciFifo.io.pop.syncRequired && io.pipelineBusy) {
       assert(!drainedWrite.fire)
     }
     when(commandStreamBlocked) {

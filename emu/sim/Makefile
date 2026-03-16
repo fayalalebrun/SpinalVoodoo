@@ -27,7 +27,7 @@ SIM_MK = V$(SIM_TOP).mk
 HARNESS_SRC = $(if $(filter de10,$(SIM_INTERFACE)),$(HARNESS_DIR)/sim_harness_de10.cpp,$(HARNESS_DIR)/sim_harness.cpp)
 
 # SpinalHDL sources that generate the Verilog
-SCALA_SRCS := $(shell find $(PROJ_ROOT)/src -name '*.scala') $(PROJ_ROOT)/project.scala
+SCALA_SRCS := $(shell find $(PROJ_ROOT)/src -name '*.scala' ! -name '.#*') $(PROJ_ROOT)/project.scala
 SCALA_CLI_SRCS = project.scala src
 
 # Verilator settings
@@ -57,6 +57,8 @@ ifeq ($(TRACE),1)
 CXXFLAGS += -DVM_TRACE_FST
 endif
 CXXFLAGS += -I$(OBJ_DIR) -I$(VERILATOR_ROOT)/include -I$(VERILATOR_ROOT)/include/vltstd
+
+TRACE_IO_FLAGS = -D_FILE_OFFSET_BITS=64 -D_LARGEFILE_SOURCE -D_LARGEFILE64_SOURCE
 
 # Stamp file: tracks when Verilator was last run successfully.
 # Verilator regenerates obj_dir/*.cpp from the Verilog source.
@@ -129,10 +131,10 @@ $(OBJ_DIR)/verilated_fst_c.o: $(VERILATOR_ROOT)/include/verilated_fst_c.cpp $(TR
 trace-harness: $(OBJ_DIR)/sim_trace_harness.o $(OBJ_DIR)/voodoo_trace_writer.o
 
 $(OBJ_DIR)/voodoo_trace_writer.o: $(TRACE_DIR)/voodoo_trace_writer.c $(TRACE_DIR)/voodoo_trace_writer.h $(TRACE_DIR)/voodoo_trace_format.h
-	$(OBJCACHE) $(CXX32) $(CXXFLAGS) -I$(TRACE_DIR) -c -o $@ $<
+	$(OBJCACHE) $(CXX32) $(CXXFLAGS) $(TRACE_IO_FLAGS) -I$(TRACE_DIR) -c -o $@ $<
 
 $(OBJ_DIR)/sim_trace_harness.o: $(HARNESS_DIR)/sim_trace_harness.c $(HARNESS_DIR)/sim_harness.h $(TRACE_DIR)/voodoo_trace_writer.h $(TRACE_DIR)/voodoo_trace_format.h
-	$(OBJCACHE) $(CXX32) $(CXXFLAGS) -I$(TRACE_DIR) -c -o $@ $<
+	$(OBJCACHE) $(CXX32) $(CXXFLAGS) $(TRACE_IO_FLAGS) -I$(TRACE_DIR) -c -o $@ $<
 
 clean:
 	rm -rf $(OBJ_DIR)

@@ -320,9 +320,9 @@ case class Core(c: Config) extends Component {
   swapBuffer.io.swapInterval := regBank.commands.swapInterval
   swapBuffer.io.swapCmdEnqueued := pciFifo.io.wasEnqueued
 
-  regBank.io.swapDisplayedBuffer := swapBuffer.io.swapCount
+  regBank.io.swapDisplayedBuffer := swapBuffer.io.swapCount(0).asUInt.resize(2 bits)
   regBank.io.swapsPending := swapBuffer.io.swapsPending
-  io.swapDisplayedBuffer := swapBuffer.io.swapCount
+  io.swapDisplayedBuffer := swapBuffer.io.swapCount(0).asUInt.resize(2 bits)
   io.swapsPending := swapBuffer.io.swapsPending
 
   // ========================================================================
@@ -1225,6 +1225,9 @@ case class Core(c: Config) extends Component {
   fastfill.running.simPublic()
   swapBuffer.io.waiting.simPublic()
   lfb.io.busy.simPublic()
+  regBank.commands.nopCmd.valid.simPublic()
+  regBank.commands.fastfillCmd.valid.simPublic()
+  regBank.commands.swapbufferCmd.valid.simPublic()
   // Pipeline busy: any stage active.
   // rasterizer.running covers the gap between accepting a triangle and producing
   // first output pixel (rasterizer.o.valid only asserts once iteration begins).
@@ -1239,7 +1242,15 @@ case class Core(c: Config) extends Component {
     triangleSetup.o.valid || rasterizer.running || tmu.io.input.valid ||
       tmu.io.busy || fbAccess.io.busy || fbColorBusy || fbAuxBusy ||
       colorCombine.io.input.valid || fog.io.input.valid || fbAccess.io.input.valid ||
-      writeColor.i.fromPipeline.valid || writeAux.i.fromPipeline.valid || fastfill.running ||
+      writeColor.i.fromPipeline.valid || writeAux.i.fromPipeline.valid ||
+      writeColor.o.fbWrite.valid || writeAux.o.fbWrite.valid ||
+      fastfill.running || fastfill.o.valid || fastfillWrite.io.output.valid ||
+      preDitherMerged.valid || preDitherPiped.valid ||
+      dither.io.output.valid || ditherJoined.valid ||
+      forColorWrite.valid || forAuxWrite.valid ||
+      colorWriteInput.valid || auxWriteInput.valid ||
+      regBank.commands.nopCmd.valid || regBank.commands.fastfillCmd.valid ||
+      regBank.commands.swapbufferCmd.valid ||
       swapBuffer.io.waiting || lfb.io.busy
   val busyDebugSignal = Bits(32 bits)
   busyDebugSignal := 0

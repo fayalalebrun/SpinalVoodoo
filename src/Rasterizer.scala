@@ -1,10 +1,11 @@
 package voodoo
 
 import spinal.core._
+import spinal.core.formal._
 import spinal.lib._
 import voodoo.utils.StreamWhile
 
-case class Rasterizer(c: Config) extends Component {
+case class Rasterizer(c: Config, formalStrong: Boolean = false) extends Component {
   val i = slave Stream (TriangleSetup.Output(c))
   val o = master Stream (Rasterizer.Output(c))
   val pixelSeqCounter = if (c.trace.enabled) Reg(UInt(24 bits)) init (0) else null
@@ -84,6 +85,8 @@ case class Rasterizer(c: Config) extends Component {
         (intY >= clipLowYS) && (intY < clipHighYS)
 
       output.insideTriangle := insideTriangle && (!enableClipping || insideClip)
+      output.xrange := state.input.xrange
+      output.yrange := state.input.yrange
 
       // Compute next state
       val next = cloneOf(state)
@@ -186,6 +189,41 @@ case class Rasterizer(c: Config) extends Component {
   val running = out(Bool())
   running := streamWhileResult.running
 
+  GenerationFlags.formal {
+    val formalReset = ClockDomain.current.isResetActive
+
+    when(!formalReset && withInsideFlag.valid) {
+      val intX = withInsideFlag.payload.data.coords(0)
+      val intY = withInsideFlag.payload.data.coords(1)
+      val xmin = withInsideFlag.payload.xrange(0).floor(0).asSInt
+      val xmax = withInsideFlag.payload.xrange(1).floor(0).asSInt
+      val ymin = withInsideFlag.payload.yrange(0).floor(0).asSInt
+      val ymax = withInsideFlag.payload.yrange(1).floor(0).asSInt
+
+      // The rasterizer evaluates one cycle beyond the bounding box on the left/right
+      // to detect the edge.
+      val N = c.vertexFormat.nonFraction + 1
+      assert(intX >= xmin.resize(N) - 1)
+      assert(intX <= xmax.resize(N) + 1)
+
+      // Top/bottom are strict bounds + 1 iteration
+      assert(intY >= ymin.resize(N))
+      assert(intY <= ymax.resize(N))
+
+      when(enableClipping && withInsideFlag.payload.insideTriangle) {
+        val clipLeftS = clipLeft.resize(c.vertexFormat.nonFraction bits).asSInt
+        val clipRightS = clipRight.resize(c.vertexFormat.nonFraction bits).asSInt
+        val clipLowYS = clipLowY.resize(c.vertexFormat.nonFraction bits).asSInt
+        val clipHighYS = clipHighY.resize(c.vertexFormat.nonFraction bits).asSInt
+
+        assert(intX >= clipLeftS)
+        assert(intX < clipRightS)
+        assert(intY >= clipLowYS)
+        assert(intY < clipHighYS)
+      }
+    }
+  }
+
   // Drop samples outside triangle and remove flag
   o << withInsideFlag.takeWhen(withInsideFlag.payload.insideTriangle).map(_.data)
 
@@ -234,6 +272,8 @@ object Rasterizer {
   case class OutputWithFlag(c: Config) extends Bundle {
     val data = Output(c)
     val insideTriangle = Bool()
+    val xrange = vertex2d(c.vertexFormat)
+    val yrange = vertex2d(c.vertexFormat)
   }
 
   case class State(c: Config) extends Bundle {

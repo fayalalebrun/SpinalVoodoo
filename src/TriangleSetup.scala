@@ -1,9 +1,10 @@
 package voodoo
 
 import spinal.core._
+import spinal.core.formal._
 import spinal.lib._
 
-case class TriangleSetup(c: Config) extends Component {
+case class TriangleSetup(c: Config, formalStrong: Boolean = false) extends Component {
   val i = slave(Stream(TriangleSetup.Input(c)))
   val o = master(Stream(TriangleSetup.Output(c)))
 
@@ -183,6 +184,21 @@ case class TriangleSetup(c: Config) extends Component {
     out.config := input.config
     if (c.trace.enabled) {
       out.trace := input.trace
+    }
+
+    GenerationFlags.formal {
+      when(i.valid) {
+        val tri = input.triWithSign.tri
+
+        // Assert bounding box properties
+        val minX = tri.map(_(0)).reduceBalancedTree((a, b) => a.min(b))
+        val maxX = tri.map(_(0)).reduceBalancedTree((a, b) => a.max(b))
+
+        // Bounding box xrange must bound all vertices
+        assert(out.xrange(0) <= minX)
+        assert(out.xrange(1) >= maxX)
+        assert(out.xrange(1) >= out.xrange(0))
+      }
     }
 
     out

@@ -22,11 +22,6 @@ int main(void) {
   }
   grBufferClear(0x00ff0000u, 0, 0xffff);
   grBufferSwap(1);
-  {
-    volatile unsigned long spin;
-    for (spin = 0; spin < 300000000UL; ++spin) {
-    }
-  }
   if (!grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 0, 0, 1, 1, 2, &pix)) {
     printf("lfbread failed\n");
     grGlideShutdown();

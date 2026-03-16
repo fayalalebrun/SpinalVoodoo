@@ -35,8 +35,6 @@ static struct {
   XImage *image;
   unsigned char *pixels;
   FxU16 *frontBuffer;
-  FxU32 *rawWords;
-  FxU32 rawWordCount;
   FxU32 lastBufferOffset;
 #ifdef DE10_BACKEND
   int ddrFd;
@@ -60,6 +58,7 @@ static struct {
   int height;
   int windowWidth;
   int windowHeight;
+  int visible;
   int enabled;
   int presenting;
 } x11Presenter = {
@@ -80,12 +79,18 @@ static int x11PresenterDebugEnabled(void) {
 }
 
 static int x11PresenterRequested(void) {
-#ifdef DE10_BACKEND
   const char *value = getenv("GLIDE_X11_ENABLE");
-  return (value != NULL && *value != '\0' && strcmp(value, "0") != 0);
-#else
+  if (value != NULL) return (*value != '\0' && strcmp(value, "0") != 0);
+#ifndef DE10_BACKEND
   return 1;
+#else
+  return 0;
 #endif
+}
+
+static int x11PresenterUseTopLevel(void) {
+  const char *value = getenv("GLIDE_X11_TOPLEVEL");
+  return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
 }
 
 static void x11PresenterLog(const char *message) {
@@ -104,6 +109,35 @@ static void x11PresenterLog(const char *message) {
       fclose(fp);
     }
   }
+}
+
+static void x11PresenterDumpFrame(const char *label) {
+  const char *dir = getenv("GLIDE_X11_DUMP_DIR");
+  FILE *fp;
+  char path[512];
+  size_t x;
+  size_t y;
+  static unsigned int frameId;
+
+  if (!dir || !*dir || !x11Presenter.frontBuffer) return;
+
+  snprintf(path, sizeof(path), "%s/%04u-%s.ppm", dir, frameId++, label ? label : "frame");
+  fp = fopen(path, "wb");
+  if (!fp) return;
+
+  fprintf(fp, "P6\n%d %d\n255\n", x11Presenter.width, x11Presenter.height);
+  for (y = 0; y < (size_t)x11Presenter.height; y++) {
+    for (x = 0; x < (size_t)x11Presenter.width; x++) {
+      FxU16 px = x11Presenter.frontBuffer[y * (size_t)x11Presenter.width + x];
+      unsigned char rgb[3];
+      rgb[0] = (unsigned char)(((px >> 11) & 0x1f) * 255 / 31);
+      rgb[1] = (unsigned char)(((px >> 5) & 0x3f) * 255 / 63);
+      rgb[2] = (unsigned char)((px & 0x1f) * 255 / 31);
+      fwrite(rgb, 1, 3, fp);
+    }
+  }
+
+  fclose(fp);
 }
 
 #ifdef DE10_BACKEND
@@ -199,6 +233,12 @@ static void x11PresenterFreeImage(void) {
 
 static int x11PresenterCreateImage(void) {
   XImage *image;
+  int imageWidth;
+  int imageHeight;
+
+  imageWidth = x11Presenter.windowWidth > 0 ? x11Presenter.windowWidth : x11Presenter.width;
+  imageHeight = x11Presenter.windowHeight > 0 ? x11Presenter.windowHeight : x11Presenter.height;
+  if (imageWidth <= 0 || imageHeight <= 0) return 0;
 
   x11PresenterFreeImage();
   image = XCreateImage(x11Presenter.display,
@@ -207,14 +247,14 @@ static int x11PresenterCreateImage(void) {
                        ZPixmap,
                        0,
                        NULL,
-                       x11Presenter.width,
-                       x11Presenter.height,
+                       imageWidth,
+                       imageHeight,
                        BitmapPad(x11Presenter.display),
                        0);
   if (!image) return 0;
 
   x11Presenter.pixels = (unsigned char *)malloc((size_t)image->bytes_per_line *
-                                                (size_t)x11Presenter.height);
+                                                (size_t)imageHeight);
   if (!x11Presenter.pixels) {
     image->data = NULL;
     XDestroyImage(image);
@@ -229,27 +269,54 @@ static int x11PresenterCreateImage(void) {
 static int x11PresenterEnsureChildWindow(void) {
   Region inputRegion;
   XSetWindowAttributes windowAttr;
-  XWindowAttributes parentAttr;
+  Window hostParent;
   unsigned long windowMask = 0;
+  int parentWidth;
+  int parentHeight;
   int childX;
   int childY;
   unsigned int childWidth;
   unsigned int childHeight;
 
-  if (!XGetWindowAttributes(x11Presenter.display, x11Presenter.parent, &parentAttr)) {
-    return 0;
+  hostParent = x11Presenter.parent;
+  if (x11PresenterUseTopLevel()) {
+    int screen = DefaultScreen(x11Presenter.display);
+    hostParent = RootWindow(x11Presenter.display, screen);
+    parentWidth = DisplayWidth(x11Presenter.display, screen);
+    parentHeight = DisplayHeight(x11Presenter.display, screen);
+  } else {
+    XWindowAttributes parentAttr;
+    if (!XGetWindowAttributes(x11Presenter.display, x11Presenter.parent, &parentAttr)) {
+      return 0;
+    }
+    parentWidth = parentAttr.width;
+    parentHeight = parentAttr.height;
   }
 
   childWidth = (unsigned int)x11Presenter.width;
   childHeight = (unsigned int)x11Presenter.height;
-  if ((unsigned int)parentAttr.width < childWidth) childWidth = (unsigned int)parentAttr.width;
-  if ((unsigned int)parentAttr.height < childHeight) childHeight = (unsigned int)parentAttr.height;
+  if ((unsigned int)parentWidth != childWidth || (unsigned int)parentHeight != childHeight) {
+    unsigned long scaledWidth = (unsigned long)parentHeight * (unsigned long)x11Presenter.width;
+    unsigned long scaledHeight = (unsigned long)parentWidth * (unsigned long)x11Presenter.height;
+
+    if (scaledWidth <= scaledHeight) {
+      childWidth = (unsigned int)parentWidth;
+      childHeight = (unsigned int)(((unsigned long)parentWidth * (unsigned long)x11Presenter.height) /
+                                   (unsigned long)x11Presenter.width);
+    } else {
+      childHeight = (unsigned int)parentHeight;
+      childWidth = (unsigned int)(((unsigned long)parentHeight * (unsigned long)x11Presenter.width) /
+                                  (unsigned long)x11Presenter.height);
+    }
+  }
+  if ((unsigned int)parentWidth < childWidth) childWidth = (unsigned int)parentWidth;
+  if ((unsigned int)parentHeight < childHeight) childHeight = (unsigned int)parentHeight;
   if (!childWidth || !childHeight) return 0;
 
   childX = 0;
   childY = 0;
-  if (parentAttr.width > (int)childWidth) childX = (parentAttr.width - (int)childWidth) / 2;
-  if (parentAttr.height > (int)childHeight) childY = (parentAttr.height - (int)childHeight) / 2;
+  if (parentWidth > (int)childWidth) childX = (parentWidth - (int)childWidth) / 2;
+  if (parentHeight > (int)childHeight) childY = (parentHeight - (int)childHeight) / 2;
 
   if (!x11Presenter.window) {
     memset(&windowAttr, 0, sizeof(windowAttr));
@@ -257,13 +324,17 @@ static int x11PresenterEnsureChildWindow(void) {
     windowMask |= CWBackPixmap;
     windowAttr.border_pixel = 0;
     windowMask |= CWBorderPixel;
+    if (x11PresenterUseTopLevel()) {
+      windowAttr.override_redirect = True;
+      windowMask |= CWOverrideRedirect;
+    }
     if (x11Presenter.colormap) {
       windowAttr.colormap = x11Presenter.colormap;
       windowMask |= CWColormap;
     }
 
     x11Presenter.window = XCreateWindow(x11Presenter.display,
-                                        x11Presenter.parent,
+                                        hostParent,
                                         childX,
                                         childY,
                                         childWidth,
@@ -275,6 +346,9 @@ static int x11PresenterEnsureChildWindow(void) {
                                         windowMask,
                                         &windowAttr);
     if (!x11Presenter.window) return 0;
+    if (x11PresenterUseTopLevel()) {
+      XStoreName(x11Presenter.display, x11Presenter.window, "Glide X11 Presenter");
+    }
     x11PresenterLog("created child window");
   } else if (x11Presenter.windowWidth != (int)childWidth ||
              x11Presenter.windowHeight != (int)childHeight) {
@@ -285,7 +359,6 @@ static int x11PresenterEnsureChildWindow(void) {
   }
 
   XMoveWindow(x11Presenter.display, x11Presenter.window, childX, childY);
-  XMapRaised(x11Presenter.display, x11Presenter.window);
   inputRegion = XCreateRegion();
   if (inputRegion) {
     XShapeCombineRegion(x11Presenter.display,
@@ -297,106 +370,51 @@ static int x11PresenterEnsureChildWindow(void) {
                         ShapeSet);
     XDestroyRegion(inputRegion);
   }
-  XSetInputFocus(x11Presenter.display,
-                 x11Presenter.parent,
-                 RevertToParent,
-                 CurrentTime);
 
   x11Presenter.windowWidth = (int)childWidth;
   x11Presenter.windowHeight = (int)childHeight;
+  if (!x11Presenter.image || x11Presenter.image->width != x11Presenter.windowWidth ||
+      x11Presenter.image->height != x11Presenter.windowHeight) {
+    if (!x11PresenterCreateImage()) return 0;
+  }
   return x11Presenter.windowWidth > 0 && x11Presenter.windowHeight > 0;
 }
 
-static void x11PresenterStorePixel(int x, int y, unsigned long pixel) {
-  unsigned char *dst;
-  int bytesPerPixel;
+static void x11PresenterSetVisible(int visible) {
+  if (!x11Presenter.window || !x11Presenter.display) return;
+  if (!!x11Presenter.visible == !!visible) return;
 
-  if (!x11Presenter.image) return;
-
-  bytesPerPixel = x11Presenter.image->bits_per_pixel / 8;
-  if (bytesPerPixel <= 0) return;
-
-  dst = x11Presenter.pixels + (size_t)y * (size_t)x11Presenter.image->bytes_per_line +
-        (size_t)x * (size_t)bytesPerPixel;
-
-  switch (bytesPerPixel) {
-  case 4:
-    if (x11Presenter.image->byte_order == LSBFirst) {
-      dst[0] = (unsigned char)(pixel & 0xfful);
-      dst[1] = (unsigned char)((pixel >> 8) & 0xfful);
-      dst[2] = (unsigned char)((pixel >> 16) & 0xfful);
-      dst[3] = (unsigned char)((pixel >> 24) & 0xfful);
-    } else {
-      dst[0] = (unsigned char)((pixel >> 24) & 0xfful);
-      dst[1] = (unsigned char)((pixel >> 16) & 0xfful);
-      dst[2] = (unsigned char)((pixel >> 8) & 0xfful);
-      dst[3] = (unsigned char)(pixel & 0xfful);
+  if (visible) {
+    XMapRaised(x11Presenter.display, x11Presenter.window);
+    if (!x11PresenterUseTopLevel()) {
+      XSetInputFocus(x11Presenter.display,
+                     x11Presenter.parent,
+                     RevertToParent,
+                     CurrentTime);
     }
-    break;
-  case 3:
-    if (x11Presenter.image->byte_order == LSBFirst) {
-      dst[0] = (unsigned char)(pixel & 0xfful);
-      dst[1] = (unsigned char)((pixel >> 8) & 0xfful);
-      dst[2] = (unsigned char)((pixel >> 16) & 0xfful);
-    } else {
-      dst[0] = (unsigned char)((pixel >> 16) & 0xfful);
-      dst[1] = (unsigned char)((pixel >> 8) & 0xfful);
-      dst[2] = (unsigned char)(pixel & 0xfful);
-    }
-    break;
-  case 2:
-    if (x11Presenter.image->byte_order == LSBFirst) {
-      dst[0] = (unsigned char)(pixel & 0xfful);
-      dst[1] = (unsigned char)((pixel >> 8) & 0xfful);
-    } else {
-      dst[0] = (unsigned char)((pixel >> 8) & 0xfful);
-      dst[1] = (unsigned char)(pixel & 0xfful);
-    }
-    break;
-  default:
-    break;
+  } else {
+    XUnmapWindow(x11Presenter.display, x11Presenter.window);
   }
+
+  x11Presenter.visible = !!visible;
 }
 
-static int x11PresenterEnsureRawWords(FxU32 wordCount) {
-  FxU32 *rawWords;
+static size_t x11PresenterCountNonBlackPixels(void) {
+  size_t count = (size_t)x11Presenter.width * (size_t)x11Presenter.height;
+  size_t i;
+  size_t nonBlack = 0;
 
-  if (x11Presenter.rawWordCount >= wordCount) return 1;
-
-  rawWords = (FxU32 *)realloc(x11Presenter.rawWords, (size_t)wordCount * sizeof(FxU32));
-  if (!rawWords) return 0;
-
-  x11Presenter.rawWords = rawWords;
-  x11Presenter.rawWordCount = wordCount;
-  return 1;
-}
-
-static void x11PresenterCopyBuffer(const FxU32 *words, FxU32 stridePixels) {
-  FxU32 y;
-
-  for (y = 0; y < (FxU32)x11Presenter.height; y++) {
-    FxU16 *dstLine = x11Presenter.frontBuffer +
-                     (size_t)y * (size_t)x11Presenter.width;
-    FxU32 x;
-    FxU32 base = y * stridePixels;
-
-    for (x = 0; x < (FxU32)x11Presenter.width; x += 2) {
-      FxU32 word = words[(base + x) >> 1];
-      dstLine[x] = (FxU16)(word & 0xFFFFu);
-      if ((x + 1u) < (FxU32)x11Presenter.width) {
-        dstLine[x + 1u] = (FxU16)((word >> 16) & 0xFFFFu);
-      }
-    }
+  for (i = 0; i < count; i++) {
+    if (x11Presenter.frontBuffer[i] != 0) nonBlack++;
   }
+
+  return nonBlack;
 }
 
 static int x11PresenterReadFrontBuffer(void) {
   GrGC *gc = _GlideRoot.curGC;
 #ifdef SIM_BACKEND
-  FxU32 stridePixels;
-  FxU32 bufferOffset;
-  FxU32 wordCount;
-  FxU32 displayOffset;
+  FxBool readOk;
 #elif defined(DE10_BACKEND)
   Sstregs *hw;
   FxU32 stridePixels;
@@ -414,26 +432,16 @@ static int x11PresenterReadFrontBuffer(void) {
 
   if (!gc) return 0;
 #ifdef SIM_BACKEND
-  stridePixels = gc->fbStride;
-  {
-    FxU32 fbiInit1 = sim_read(0x214);
-    FxU32 tiles = (fbiInit1 >> 4) & 0xFu;
-    if (tiles) stridePixels = tiles << 6;
-  }
-  if (!stridePixels) return 0;
-
-  wordCount = ((stridePixels * (FxU32)x11Presenter.height) + 1u) >> 1;
-  if (!x11PresenterEnsureRawWords(wordCount)) return 0;
-
-  bufferOffset = ((sim_read(0x218) >> 11) & 0x1FFu) * 4096u;
-  if (!bufferOffset) bufferOffset = stridePixels * (FxU32)x11Presenter.height * 2u;
-  displayOffset = (sim_get_swap_count() & 1u) ? bufferOffset : 0u;
-
-  sim_flush_fb_cache();
-  sim_read_fb(displayOffset, x11Presenter.rawWords, wordCount);
-  x11Presenter.lastBufferOffset = displayOffset;
-  x11PresenterCopyBuffer(x11Presenter.rawWords, stridePixels);
-  x11PresenterLog("frontbuffer bulk read ok");
+  readOk = grLfbReadRegion(GR_BUFFER_FRONTBUFFER,
+                           0,
+                           0,
+                           (FxU32)x11Presenter.width,
+                           (FxU32)x11Presenter.height,
+                           (FxU32)x11Presenter.width * sizeof(FxU16),
+                           x11Presenter.frontBuffer);
+  if (!readOk) return 0;
+  x11Presenter.lastBufferOffset = 0u;
+  x11PresenterLog("frontbuffer lfb read ok");
   return 1;
 #elif defined(DE10_BACKEND)
   hw = (Sstregs *)gc->reg_ptr;
@@ -453,7 +461,7 @@ static int x11PresenterReadFrontBuffer(void) {
   bufferOffset = ((GET(hw->fbiInit2) >> 11) & 0x1FFu) * 4096u;
   if (!bufferOffset) bufferOffset = stridePixels * (FxU32)x11Presenter.height * 2u;
   displayedBuffer = (GET(hw->status) & SST_DISPLAYED_BUFFER) >> SST_DISPLAYED_BUFFER_SHIFT;
-  displayOffset = displayedBuffer * bufferOffset;
+  displayOffset = (displayedBuffer & 1u) * bufferOffset;
   ddrBase = (FxU16 *)(x11Presenter.ddrBase + displayOffset);
   x11PresenterLog("de10 buffer select ready");
 
@@ -520,9 +528,6 @@ void _grX11PresenterShutdown(void) {
   x11Presenter.gc = 0;
   x11PresenterDestroyWindow();
   x11PresenterFreeImage();
-  free(x11Presenter.rawWords);
-  x11Presenter.rawWords = NULL;
-  x11Presenter.rawWordCount = 0;
   free(x11Presenter.frontBuffer);
   x11Presenter.frontBuffer = NULL;
 #ifdef DE10_BACKEND
@@ -593,10 +598,45 @@ void _grX11PresenterInit(FxU32 hWnd, FxU32 width, FxU32 height) {
 void _grX11PresenterSwap(void) {
   size_t x;
   size_t y;
+  size_t nonBlackPixels;
+  int waitIters;
 
   if (!x11Presenter.enabled || x11Presenter.presenting) return;
   x11Presenter.presenting = 1;
   x11PresenterLog("swap begin");
+
+  if (!x11PresenterReadFrontBuffer()) {
+    x11PresenterLog("frontbuffer read failed");
+    goto out;
+  }
+
+  for (waitIters = 0; waitIters < 4096; waitIters++) {
+    if (grBufferNumPending() <= 0 && !grSstIsBusy()) break;
+  }
+  if (waitIters > 0) {
+    if (!x11PresenterReadFrontBuffer()) {
+      x11PresenterLog("frontbuffer reread failed");
+      goto out;
+    }
+  }
+
+  nonBlackPixels = x11PresenterCountNonBlackPixels();
+  if (x11PresenterDebugEnabled()) {
+    char msg[160];
+    snprintf(msg,
+             sizeof(msg),
+             "frontbuffer final nonblack=%lu offset=0x%x waited=%d",
+             (unsigned long)nonBlackPixels,
+             x11Presenter.lastBufferOffset,
+             waitIters);
+    x11PresenterLog(msg);
+  }
+  if (nonBlackPixels < 2048u) {
+    x11PresenterDumpFrame("blank");
+    x11PresenterSetVisible(0);
+    goto out;
+  }
+  x11PresenterDumpFrame("present");
 
   if (!x11PresenterEnsureChildWindow()) goto out;
   if (!x11Presenter.gc) {
@@ -604,15 +644,13 @@ void _grX11PresenterSwap(void) {
     if (!x11Presenter.gc) goto out;
     x11PresenterLog("created child gc");
   }
+  x11PresenterSetVisible(1);
 
-  if (!x11PresenterReadFrontBuffer()) {
-    x11PresenterLog("frontbuffer read failed");
-    goto out;
-  }
-
-  for (y = 0; y < (size_t)x11Presenter.height; y++) {
-    for (x = 0; x < (size_t)x11Presenter.width; x++) {
-      FxU16 px = x11Presenter.frontBuffer[y * (size_t)x11Presenter.width + x];
+  for (y = 0; y < (size_t)x11Presenter.windowHeight; y++) {
+    size_t srcY = (y * (size_t)x11Presenter.height) / (size_t)x11Presenter.windowHeight;
+    for (x = 0; x < (size_t)x11Presenter.windowWidth; x++) {
+      size_t srcX = (x * (size_t)x11Presenter.width) / (size_t)x11Presenter.windowWidth;
+      FxU16 px = x11Presenter.frontBuffer[srcY * (size_t)x11Presenter.width + srcX];
       unsigned char r = (unsigned char)(((px >> 11) & 0x1f) * 255 / 31);
       unsigned char g = (unsigned char)(((px >> 5) & 0x3f) * 255 / 63);
       unsigned char b = (unsigned char)((px & 0x1f) * 255 / 31);
@@ -620,7 +658,7 @@ void _grX11PresenterSwap(void) {
           x11PresenterScaleComponent(r, x11Presenter.redMax, x11Presenter.redShift) |
           x11PresenterScaleComponent(g, x11Presenter.greenMax, x11Presenter.greenShift) |
           x11PresenterScaleComponent(b, x11Presenter.blueMax, x11Presenter.blueShift);
-      x11PresenterStorePixel((int)x, (int)y, nativePixel);
+      XPutPixel(x11Presenter.image, (int)x, (int)y, nativePixel);
     }
   }
 
@@ -629,8 +667,8 @@ void _grX11PresenterSwap(void) {
             x11Presenter.gc,
             x11Presenter.image,
             0, 0, 0, 0,
-            (unsigned)x11Presenter.windowWidth,
-            (unsigned)x11Presenter.windowHeight);
+             (unsigned)x11Presenter.windowWidth,
+             (unsigned)x11Presenter.windowHeight);
   XRaiseWindow(x11Presenter.display, x11Presenter.window);
   XSync(x11Presenter.display, False);
   x11PresenterLog("swap presented");

@@ -25,11 +25,29 @@
     CPATH = lib.makeIncludePath [
       pkgs.boost
       pkgs.glibc.dev
+      pkgs.xorg.libX11
+      pkgs.xorg.libXext
+      pkgs.xorg.xorgproto
+    ];
+    LIBRARY_PATH = lib.makeLibraryPath [
+      pkgs.pkgsi686Linux.zlib
+      pkgs.pkgsi686Linux.xorg.libX11
+      pkgs.pkgsi686Linux.xorg.libXext
     ];
     YOSYS_GHDL_EXTENSION = pkgs.yosys-ghdl.outPath + "/share/yosys/plugins/ghdl.so";
     # 32-bit toolchain for Glide builds
     CC32 = pkgs.pkgsi686Linux.stdenv.cc.outPath + "/bin/gcc";
     CXX32 = pkgs.pkgsi686Linux.stdenv.cc.outPath + "/bin/g++";
+    DOSBOXX_LOGFILE = "${config.env.DEVENV_ROOT}/output/dosbox-x-console.log";
+    DOSBOXX_LOG_CONSOLE = "quiet";
+    DOSBOX_TOMB_SRC = "/tmp/tr1-3dfx";
+    DOSBOX_TOMB_STAGE_ROOT = "/tmp/tr1-run";
+    DOSBOX_TOMB_GAME_DIR = "TOMBRAID";
+    DOSBOX_TOMB_ISO = "tr1disc01.iso";
+    DOSBOX_TOMB_EXE = "TOMB.EXE";
+    DOSBOX_TOMB_WAIT_SECONDS = "180";
+    DOSBOX_TOMB_SCREENSHOT = "${config.env.DEVENV_ROOT}/output/tomb/tombraider.png";
+    DOSBOX_TOMB_LOG = "${config.env.DEVENV_ROOT}/output/tomb/tomb-screenshot.log";
   };
 
   packages = [
@@ -67,6 +85,9 @@
     # Glide build dependencies (32-bit C toolchain for Voodoo1)
     pkgs.nasm
     pkgs.pkgsi686Linux.stdenv.cc
+    pkgs.pkgsi686Linux.dosbox-x
+    pkgs.open-watcom-bin
+    pkgs.djgpp
     # Verilator build acceleration
     pkgs.ccache
     pkgs.llvmPackages.clang
@@ -121,6 +142,33 @@
   scripts.de10-deploy = {
     exec = ''exec bash ./scripts/deploy-de10.sh "$@"'';
     description = "Deploy runtime bundle to a DE10";
+  };
+
+  scripts.dosboxx-console = {
+    exec = ''
+      set -euo pipefail
+      mkdir -p "$(dirname "$DOSBOXX_LOGFILE")"
+      exec dosbox-x \
+        -set "log logfile=$DOSBOXX_LOGFILE" \
+        -set "dos log console=$DOSBOXX_LOG_CONSOLE" \
+        "$@"
+    '';
+    description = "Run DOSBox-X with guest console logging enabled";
+  };
+
+  scripts.tomb-run-headless = {
+    exec = ''exec bash ./scripts/run-tomb-glide-headless "$@"'';
+    description = "Run Tomb Raider through DOSBox-X Glide headlessly";
+  };
+
+  scripts.tomb-run-live = {
+    exec = ''exec bash ./scripts/run-tomb-glide-live "$@"'';
+    description = "Run Tomb Raider through DOSBox-X Glide with a window";
+  };
+
+  scripts.tomb-screenshot = {
+    exec = ''exec bash ./scripts/capture-tomb-screenshot "$@"'';
+    description = "Run Tomb Raider and capture a live screenshot";
   };
 
     pre-commit = {

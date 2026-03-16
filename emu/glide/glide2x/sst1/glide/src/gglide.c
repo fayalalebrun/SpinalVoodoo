@@ -530,6 +530,8 @@ GR_ENTRY(grBufferSwap, void, ( int swapInterval ))
 
   GR_BEGIN_NOFIFOCHECK(FN_NAME,80);
   GDBG_INFO_MORE((gc->myLevel,"(%d)\n",swapInterval));
+  fprintf(stderr, "[hostglide] grBufferSwap requested=%d\n", swapInterval);
+  fflush(stderr);
 #ifdef DE10_BACKEND
   fprintf(stderr, "[de10] grBufferSwap: start requested=%d\n", swapInterval);
   fflush(stderr);

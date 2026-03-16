@@ -191,12 +191,89 @@ The sim backend builds a **32-bit** `libglide2x`, so DOSBox-X must also be
 32-bit to `dlopen()` it.
 
 ```bash
-# 1) Build sim + Glide backend
+# Build sim + Glide backend
 make glide
 
-# 2) Launch DOSBox-X with this repo's Glide library injected
-scripts/run-dosboxx32-glide
+# Build DOS guest binaries that use the original 3dfx DOS SDK import libs
+make dos/sdk
+
+# Build one DOS guest binary
+make dos/sdk/df00sdk
+
+# Run one DOS guest binary inside DOSBox-X through its built-in GLIDE2X.OVL
+make dos/run/df00sdk
+
+# Headless variant
+make dos/run/df00sdk-headless
+
+# Launch a raw DOSBox-X session with this repo's Glide library injected
+make dosbox
 ```
+
+Common top-level commands:
+
+- `make dos/help` prints the DOS and Tomb entry points.
+- `make dos/sdk` builds all DOS SDK-style test binaries from `emu/glide/glide2x/sst1/glide/tests/Makefile.sdkwat`.
+- `make dos/sdk/<name>` builds one DOS SDK-style binary, for example `make dos/sdk/df00sdk`.
+- `make dos/run/<name>` mounts `emu/glide/glide2x/sst1/glide/tests` as `C:` in DOSBox-X and runs `<name>.exe`.
+- `make dos/run/<name>-headless` does the same with `DOSBOXX32_HEADLESS=1`.
+- `make dosbox ARGS='...'` launches DOSBox-X with the repo Glide backend and forwards extra DOSBox-X arguments.
+- `make tomb/help` prints the Tomb Raider setup requirements.
+- `make tomb/prepare ARGS='--game-dir ... --patch ... --iso ...'` prepares a reusable Tomb Raider source tree from your game files and 3dfx patch assets.
+- `make tomb/run`, `make tomb/headless`, and `make tomb/screenshot` expose the existing Tomb helper scripts through the top-level `Makefile`.
+
+The split is intentional:
+
+- `make run/<name>` runs a Linux-hosted test binary linked directly against the sim backend.
+- `make dos/run/<name>` runs a DOS guest binary inside DOSBox-X through its built-in `GLIDE2X.OVL` bridge.
+
+### Tomb Raider Setup
+
+The Tomb helper scripts expect a prepared source tree at `DOSBOX_TOMB_SRC`.
+By default that is `/tmp/tr1-3dfx`.
+
+The easiest way to create it is:
+
+```bash
+make tomb/prepare ARGS='--game-dir /path/to/TOMBRAID --patch /path/to/3dfx-patch.zip --iso /path/to/tr1disc01.iso'
+```
+
+That helper:
+
+- copies your source game directory into `DOSBOX_TOMB_SRC/TOMBRAID`
+- copies the ISO into `DOSBOX_TOMB_SRC/tr1disc01.iso` if provided
+- overlays the supplied 3dfx patch directory or archive onto the game directory
+
+It accepts either a patch directory or a `.zip`/tar archive. Add `--output /path/to/tree`
+to prepare somewhere other than `DOSBOX_TOMB_SRC`, and `--force` to replace an existing tree.
+
+Expected layout by default:
+
+```text
+/tmp/tr1-3dfx/
+  tr1disc01.iso
+  TOMBRAID/
+    TOMB.EXE
+    ... game files ...
+```
+
+Typical flow:
+
+- Prepare the tree with `make tomb/prepare ...`, or assemble the layout manually.
+- Run `make tomb/help` to print the current assumptions.
+- Run `make tomb/run` or `make tomb/headless`.
+
+At launch time the helper scripts copy the source tree into `DOSBOX_TOMB_STAGE_ROOT`
+(default `/tmp/tr1-run`) and automatically rename any bundled `glide2x.ovl` so that
+DOSBox-X's built-in `GLIDE2X.OVL` guest bridge is used instead.
+
+You can override the defaults with these environment variables:
+
+- `DOSBOX_TOMB_SRC`
+- `DOSBOX_TOMB_STAGE_ROOT`
+- `DOSBOX_TOMB_GAME_DIR`
+- `DOSBOX_TOMB_ISO`
+- `DOSBOX_TOMB_EXE`
 
 Notes:
 
@@ -204,7 +281,7 @@ Notes:
 - If `dosbox-x` on `PATH` is already 32-bit, it uses that.
 - Otherwise it auto-resolves Nix `pkgsi686Linux.dosbox-x`.
 - The script appends `scripts/dosboxx32-glide.conf` (enables `glide=true`, `voodoo_card=false`, `lfb=full_noaux`).
-- For headless smoke tests: `DOSBOXX32_HEADLESS=1 scripts/run-dosboxx32-glide -c "exit"`.
+- For low-level manual control you can still use `scripts/run-dosboxx32-glide` directly.
 
 ## Trace-Based Testing
 

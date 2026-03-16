@@ -1,0 +1,238 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/tomb-common.sh"
+
+: "${DOSBOX_TOMB_SCREENSHOT:=output/tomb/tombraider.png}"
+: "${DOSBOX_TOMB_LOG:=output/tomb/tomb-screenshot.log}"
+: "${DOSBOX_TOMB_WAIT_SECONDS:=180}"
+: "${DOSBOX_TOMB_WINDOWRES:=1280x960}"
+
+stage_dir="$(tomb_prepare_stage)"
+mkdir -p "$(dirname -- "$DOSBOX_TOMB_SCREENSHOT")" "$(dirname -- "$DOSBOX_TOMB_LOG")"
+rm -f "$DOSBOX_TOMB_SCREENSHOT"
+unset DOSBOXX32_HEADLESS
+
+mapfile -t args < <(tomb_dosbox_args "$stage_dir")
+
+"$SCRIPT_DIR/run-dosboxx32-glide" \
+  -set "log logfile=$DOSBOX_TOMB_LOG" \
+  -set "fullscreen=false" \
+  -set "windowresolution=$DOSBOX_TOMB_WINDOWRES" \
+  "$@" \
+  "${args[@]}" &
+pid=$!
+
+cleanup() {
+  kill "$pid" >/dev/null 2>&1 || true
+  wait "$pid" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+sleep "$DOSBOX_TOMB_WAIT_SECONDS"
+
+python - "$DOSBOX_TOMB_SCREENSHOT" <<'PY'
+import ctypes
+import ctypes.util
+import os
+import struct
+import sys
+import zlib
+
+
+class XWindowAttributes(ctypes.Structure):
+    _fields_ = [
+        ("x", ctypes.c_int),
+        ("y", ctypes.c_int),
+        ("width", ctypes.c_int),
+        ("height", ctypes.c_int),
+        ("border_width", ctypes.c_int),
+        ("depth", ctypes.c_int),
+        ("visual", ctypes.c_void_p),
+        ("root", ctypes.c_ulong),
+        ("class", ctypes.c_int),
+        ("bit_gravity", ctypes.c_int),
+        ("win_gravity", ctypes.c_int),
+        ("backing_store", ctypes.c_int),
+        ("backing_planes", ctypes.c_ulong),
+        ("backing_pixel", ctypes.c_ulong),
+        ("save_under", ctypes.c_int),
+        ("colormap", ctypes.c_ulong),
+        ("map_installed", ctypes.c_int),
+        ("map_state", ctypes.c_int),
+        ("all_event_masks", ctypes.c_long),
+        ("your_event_mask", ctypes.c_long),
+        ("do_not_propagate_mask", ctypes.c_long),
+        ("override_redirect", ctypes.c_int),
+        ("screen", ctypes.c_void_p),
+    ]
+
+
+class XImage(ctypes.Structure):
+    _fields_ = [
+        ("width", ctypes.c_int),
+        ("height", ctypes.c_int),
+        ("xoffset", ctypes.c_int),
+        ("format", ctypes.c_int),
+        ("data", ctypes.c_void_p),
+        ("byte_order", ctypes.c_int),
+        ("bitmap_unit", ctypes.c_int),
+        ("bitmap_bit_order", ctypes.c_int),
+        ("bitmap_pad", ctypes.c_int),
+        ("depth", ctypes.c_int),
+        ("bytes_per_line", ctypes.c_int),
+        ("bits_per_pixel", ctypes.c_int),
+        ("red_mask", ctypes.c_ulong),
+        ("green_mask", ctypes.c_ulong),
+        ("blue_mask", ctypes.c_ulong),
+        ("obdata", ctypes.c_void_p),
+        ("funcs", ctypes.c_void_p),
+    ]
+
+
+def shift(mask):
+    amount = 0
+    while mask and (mask & 1) == 0:
+        amount += 1
+        mask >>= 1
+    return amount
+
+
+def scale(value, mask):
+    if not mask:
+        return 0
+    normalized = mask >> shift(mask)
+    return (value * 255) // normalized
+
+
+def chunk(tag, payload):
+    return (
+        struct.pack(">I", len(payload))
+        + tag
+        + payload
+        + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF)
+    )
+
+
+lib = ctypes.cdll.LoadLibrary(ctypes.util.find_library("X11"))
+lib.XOpenDisplay.argtypes = [ctypes.c_char_p]
+lib.XOpenDisplay.restype = ctypes.c_void_p
+lib.XDefaultRootWindow.argtypes = [ctypes.c_void_p]
+lib.XDefaultRootWindow.restype = ctypes.c_ulong
+lib.XQueryTree.argtypes = [
+    ctypes.c_void_p,
+    ctypes.c_ulong,
+    ctypes.POINTER(ctypes.c_ulong),
+    ctypes.POINTER(ctypes.c_ulong),
+    ctypes.POINTER(ctypes.POINTER(ctypes.c_ulong)),
+    ctypes.POINTER(ctypes.c_uint),
+]
+lib.XQueryTree.restype = ctypes.c_int
+lib.XFetchName.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(ctypes.c_char_p)]
+lib.XFetchName.restype = ctypes.c_int
+lib.XGetWindowAttributes.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(XWindowAttributes)]
+lib.XGetWindowAttributes.restype = ctypes.c_int
+lib.XGetImage.argtypes = [
+    ctypes.c_void_p,
+    ctypes.c_ulong,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_uint,
+    ctypes.c_uint,
+    ctypes.c_ulong,
+    ctypes.c_int,
+]
+lib.XGetImage.restype = ctypes.POINTER(XImage)
+lib.XGetPixel.argtypes = [ctypes.POINTER(XImage), ctypes.c_int, ctypes.c_int]
+lib.XGetPixel.restype = ctypes.c_ulong
+lib.XDestroyImage.argtypes = [ctypes.POINTER(XImage)]
+lib.XDestroyImage.restype = ctypes.c_int
+lib.XFree.argtypes = [ctypes.c_void_p]
+lib.XSync.argtypes = [ctypes.c_void_p, ctypes.c_int]
+
+display = lib.XOpenDisplay(os.environ.get("DISPLAY", ":0").encode())
+if not display:
+    raise SystemExit("cannot open X display")
+
+root = lib.XDefaultRootWindow(display)
+lib.XSync(display, 0)
+best = None
+stack = [root]
+
+while stack:
+    window = stack.pop()
+    root_ref = ctypes.c_ulong()
+    parent_ref = ctypes.c_ulong()
+    children = ctypes.POINTER(ctypes.c_ulong)()
+    count = ctypes.c_uint()
+    if not lib.XQueryTree(display, window, ctypes.byref(root_ref), ctypes.byref(parent_ref), ctypes.byref(children), ctypes.byref(count)):
+        continue
+    try:
+        title_ptr = ctypes.c_char_p()
+        title = None
+        if lib.XFetchName(display, window, ctypes.byref(title_ptr)) and title_ptr.value:
+            title = title_ptr.value.decode(errors="ignore")
+            lib.XFree(title_ptr)
+
+        attrs = XWindowAttributes()
+        if lib.XGetWindowAttributes(display, window, ctypes.byref(attrs)):
+            area = attrs.width * attrs.height
+            if title and "DOSBox-X" in title and attrs.width > 100 and attrs.height > 100:
+                candidate = (area, window, attrs.width, attrs.height, title)
+                if best is None or candidate > best:
+                    best = candidate
+
+        if children:
+            for index in range(count.value):
+                stack.append(children[index])
+    finally:
+        if children:
+            lib.XFree(children)
+
+if best is None:
+    raise SystemExit("no DOSBox-X window found")
+
+_, window, width, height, title = best
+image = lib.XGetImage(display, window, 0, 0, width, height, ctypes.c_ulong(-1).value, 2)
+if not image:
+    raise SystemExit("XGetImage failed")
+
+try:
+    red_shift = shift(image.contents.red_mask)
+    green_shift = shift(image.contents.green_mask)
+    blue_shift = shift(image.contents.blue_mask)
+    rows = []
+    for y in range(height):
+        row = bytearray([0])
+        for x in range(width):
+            pixel = lib.XGetPixel(image, x, y)
+            row.extend(
+                (
+                    scale((pixel & image.contents.red_mask) >> red_shift, image.contents.red_mask),
+                    scale((pixel & image.contents.green_mask) >> green_shift, image.contents.green_mask),
+                    scale((pixel & image.contents.blue_mask) >> blue_shift, image.contents.blue_mask),
+                )
+            )
+        rows.append(bytes(row))
+
+    payload = b"".join(rows)
+    png = b"\x89PNG\r\n\x1A\n"
+    png += chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+    png += chunk(b"IDAT", zlib.compress(payload, 9))
+    png += chunk(b"IEND", b"")
+
+    output_path = sys.argv[1]
+    with open(output_path, "wb") as handle:
+        handle.write(png)
+
+    print(output_path)
+    print(title)
+    print(f"{width}x{height}")
+finally:
+    lib.XDestroyImage(image)
+PY
+
+trap - EXIT
+cleanup
+printf 'Saved %s\n' "$DOSBOX_TOMB_SCREENSHOT"

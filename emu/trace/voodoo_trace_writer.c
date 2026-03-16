@@ -5,6 +5,10 @@
  */
 
 #include "voodoo_trace_writer.h"
+#include <fcntl.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <stddef.h>
 #include <string.h>
 
@@ -16,15 +20,18 @@ trace_writer_open(voodoo_trace_writer_t *w, const char *path,
         return -1;
 
     memset(w, 0, sizeof(*w));
+    w->fd = -1;
 
     w->file = fopen(path, "wb");
     if (!w->file)
         return -1;
+    w->fd = fileno(w->file);
 
     /* Write header */
     if (fwrite(hdr, sizeof(voodoo_trace_header_t), 1, w->file) != 1) {
         fclose(w->file);
         w->file = NULL;
+        w->fd = -1;
         return -1;
     }
 
@@ -105,5 +112,23 @@ trace_writer_close(voodoo_trace_writer_t *w)
         fwrite(&count32, sizeof(uint32_t), 1, w->file);
         fclose(w->file);
         w->file = NULL;
+        w->fd = -1;
     }
+}
+
+void
+trace_writer_finalize_signal_safe(voodoo_trace_writer_t *w)
+{
+    uint32_t count32;
+
+    if (!w || w->fd < 0)
+        return;
+
+    count32 = (uint32_t)w->entry_count;
+    (void)pwrite(w->fd, &count32, sizeof(count32), offsetof(voodoo_trace_header_t, entry_count));
+    (void)fsync(w->fd);
+    (void)close(w->fd);
+    w->fd = -1;
+    w->file = NULL;
+    w->has_pending = 0;
 }

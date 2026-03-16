@@ -11,10 +11,11 @@
 #   make sim          # just the Verilator model
 #   make glide        # sim + Glide library
 #   make tests        # sim + Glide + all test binaries
+#   make dos/help     # DOS guest workflow entrypoints
 #   make de10/help    # DE10 workflow entrypoints
 #   make clean        # clean all build artifacts
 
-.PHONY: all sim glide tests clean clean-sim clean-glide clean-tests run-all trace-test check-all de10/help de10/plan de10/rtl de10/qsys de10/bitstream de10/program de10/deploy de10/mmio-smoke de10/sync-sysroot de10/glide de10/glide-tests de10/glide-cross de10/glide-tests-cross FORCE
+.PHONY: all sim glide tests clean clean-sim clean-glide clean-tests run-all trace-test check-all dos/help dos/sdk dosbox tomb/help tomb/prepare tomb/run tomb/headless tomb/screenshot de10/help de10/plan de10/rtl de10/qsys de10/bitstream de10/program de10/deploy de10/mmio-smoke de10/sync-sysroot de10/glide de10/glide-tests de10/glide-cross de10/glide-tests-cross FORCE
 
 # Derive CXX32 from CC32 for sub-makefiles that need it
 CC32 ?= gcc -m32
@@ -28,6 +29,8 @@ SIM_MODEL = $(if $(filter de10,$(SIM_INTERFACE)),CoreDe10,CoreSim)
 SIM_DIR       = emu/sim
 GLIDE_SRC_DIR = emu/glide/glide2x/sst1/glide/src
 GLIDE_TST_DIR = emu/glide/glide2x/sst1/glide/tests
+DOS_SDK_MAKEFILE = Makefile.sdkwat
+DOS_TEST_MOUNT_DIR = $(GLIDE_TST_DIR)
 
 # SpinalHDL sources — trigger sim rebuild when RTL changes
 SCALA_SRCS := $(shell find src -name '*.scala') project.scala
@@ -49,6 +52,63 @@ DE10_CROSS_GLIDE_SCRIPT = scripts/build-de10-glide-cross
 DE10_MMIO_SMOKE_BIN = tools/de10-mmio-smoke
 
 all: tests
+
+dos/help:
+	@echo "DOS targets:"
+	@echo "  make dos/sdk                  # build all DOS SDK-style test binaries"
+	@echo "  make dos/sdk/df00sdk         # build one DOS SDK-style test binary"
+	@echo "  make dos/run/df00sdk         # run one DOS SDK-style test in DOSBox-X"
+	@echo "  make dos/run/df00sdk-headless # run one DOS SDK-style test headlessly"
+	@echo "  make dosbox ARGS='...'       # launch DOSBox-X with the repo Glide backend"
+	@echo "  make tomb/help               # print Tomb Raider setup requirements"
+	@echo "  make tomb/prepare ARGS='...' # prepare a Tomb Raider source tree from assets"
+	@echo "  make tomb/run                # run Tomb Raider with a window"
+	@echo "  make tomb/headless           # run Tomb Raider headlessly"
+	@echo "  make tomb/screenshot         # run Tomb Raider and capture a screenshot"
+
+dos/sdk:
+	$(MAKE) -C $(GLIDE_TST_DIR) -f $(DOS_SDK_MAKEFILE) all
+
+dos/sdk/%:
+	$(MAKE) -C $(GLIDE_TST_DIR) -f $(DOS_SDK_MAKEFILE) $*.exe
+
+dosbox: glide
+	bash ./scripts/run-dosboxx32-glide $(ARGS)
+
+dos/run/%: dos/sdk/% glide
+	bash ./scripts/run-dosboxx32-glide \
+	  -c "mount c $(DOS_TEST_MOUNT_DIR)" \
+	  -c "c:" \
+	  -c "$*.exe" \
+	  $(ARGS)
+
+dos/run/%-headless: dos/sdk/% glide
+	DOSBOXX32_HEADLESS=1 bash ./scripts/run-dosboxx32-glide \
+	  -c "mount c $(DOS_TEST_MOUNT_DIR)" \
+	  -c "c:" \
+	  -c "$*.exe" \
+	  $(ARGS)
+
+tomb/run: glide
+	bash ./scripts/run-tomb-glide-live $(ARGS)
+
+tomb/help:
+	@echo "Tomb Raider setup:"
+	@echo "  1) Prepare a source tree at DOSBOX_TOMB_SRC (default: /tmp/tr1-3dfx)"
+	@echo "  2) Easiest path: make tomb/prepare ARGS='--game-dir /path/to/TOMBRAID --patch /path/to/3dfx-patch.zip --iso /path/to/tr1disc01.iso'"
+	@echo "  3) The prepared tree must contain \$$DOSBOX_TOMB_GAME_DIR and usually \$$DOSBOX_TOMB_ISO"
+	@echo "  4) The runner copies that tree to DOSBOX_TOMB_STAGE_ROOT and disables bundled glide2x.ovl"
+	@echo "  5) Override paths with DOSBOX_TOMB_SRC, DOSBOX_TOMB_STAGE_ROOT, DOSBOX_TOMB_GAME_DIR, DOSBOX_TOMB_ISO, DOSBOX_TOMB_EXE"
+	@echo "  6) Pass --output PATH or --force through make tomb/prepare ARGS='...' when needed"
+
+tomb/prepare:
+	bash ./scripts/prepare-tomb-glide-tree $(ARGS)
+
+tomb/headless: glide
+	bash ./scripts/run-tomb-glide-headless $(ARGS)
+
+tomb/screenshot: glide
+	bash ./scripts/capture-tomb-screenshot $(ARGS)
 
 de10/help:
 	@echo "DE10 targets:"

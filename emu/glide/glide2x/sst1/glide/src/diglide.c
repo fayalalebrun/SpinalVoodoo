@@ -273,12 +273,19 @@ GR_DIENTRY(grHints, void, (GrHint_t hintType, FxU32 hints))
 GR_DIENTRY(grGlideInit, void, ( void ))
 {
   GDBG_INIT();
+
+  fprintf(stderr, "[hostglide] grGlideInit\n");
+  fflush(stderr);
   
   GDBG_INFO((80,"grGlideInit()\n"));
   _GlideInitEnvironment();                      /* the main init code */
+  fprintf(stderr, "[hostglide] grGlideInit returned from _GlideInitEnvironment\n");
+  fflush(stderr);
   FXUNUSED(*glideIdent);
 
   grResetTriStats();
+  fprintf(stderr, "[hostglide] grGlideInit done\n");
+  fflush(stderr);
   GDBG_INFO((281,"grGlideInit --done---------------------------------------\n"));
 } /* grGlideInit */
 

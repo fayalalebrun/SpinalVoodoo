@@ -46,26 +46,12 @@ resolve_dosboxx32() {
     fi
   fi
 
-  if command -v nix >/dev/null 2>&1; then
-    local out
-    out="$(
-      XDG_CACHE_HOME="${XDG_CACHE_HOME:-/tmp/.cache}" \
-      nix build --impure --no-link --print-out-paths \
-        --expr '(let pkgs=import <nixpkgs> {}; in pkgs.pkgsi686Linux.dosbox-x)' \
-        | tail -n1
-    )"
-    if [[ -x "$out/bin/dosbox-x" ]]; then
-      echo "$out/bin/dosbox-x"
-      return 0
-    fi
-  fi
-
   return 1
 }
 
 if ! DOSBOX_BIN="$(resolve_dosboxx32)"; then
   echo "Unable to resolve a 32-bit DOSBox-X binary."
-  echo "Set DOSBOXX32_BIN=/path/to/32-bit/dosbox-x, or install Nix to auto-resolve pkgsi686Linux.dosbox-x."
+  echo "Set DOSBOXX32_BIN=/path/to/32-bit/dosbox-x or put a 32-bit dosbox-x on PATH."
   exit 1
 fi
 

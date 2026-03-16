@@ -29,6 +29,7 @@ emu/sim/output/
 emu/sim/rtl/
 emu/sim/.bsp/
 emu/sim/.scala-build/
+emu/sim/*.fst
 
 # Disk images and ISOs
 *.iso
@@ -44,6 +45,8 @@ emu/result
 # Trace captures
 emu/voodoo_trace.trace/
 emu/voodoo_capture_*/
+trace.bin
+traces/tomb_*/
 
 # Trace text dumps (regeneratable)
 traces/**/*.txt
@@ -52,6 +55,21 @@ traces/**/*.txt
 output/
 test-output/
 emu/test/obj_dir/
+
+# DOSBox-X / DOS guest build artifacts
+emu/glide/glide2x/sst1/glide/src/.de10-cross-build.sig
+emu/glide/glide2x/sst1/glide/tests/*.exe
+emu/glide/glide2x/sst1/glide/tests/*.EXE
+emu/glide/glide2x/sst1/glide/tests/*.obj
+emu/glide/glide2x/sst1/glide/tests/*.OBJ
+emu/glide/glide2x/sst1/glide/tests/*.lnk
+emu/glide/glide2x/sst1/glide/tests/*.LNK
+emu/glide/glide2x/sst1/glide/tests/*.OUT
+emu/glide/glide2x/sst1/glide/tests/*.SRL
+emu/glide/glide2x/sst1/glide/tests/*.DXE
+emu/glide/glide2x/sst1/glide/tests/*.LBC
+emu/glide/glide2x/sst1/glide/tests/*.LIB
+emu/glide/glide2x/sst1/glide/tests/*.LST
 
 # DE10 Quartus outputs
 hw/de10/rtl/
@@ -69,6 +87,8 @@ hw/de10/quartus/*.done
 hw/de10/quartus/*.pin
 hw/de10/quartus/*.sld
 hw/de10/quartus/c5_pin_model_dump.txt
+.cnxerr
+qmegawiz_errors_log.txt
 
 # DE10 helper tool binaries
 tools/de10-mmio-smoke

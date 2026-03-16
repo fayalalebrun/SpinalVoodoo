@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/tomb-common.sh"
+
+stage_dir="$(tomb_prepare_stage)"
+unset DOSBOXX32_HEADLESS
+
+mapfile -t args < <(tomb_dosbox_args "$stage_dir")
+exec "$SCRIPT_DIR/run-dosboxx32-glide" "$@" "${args[@]}"

@@ -9,7 +9,7 @@
 
 .PHONY: all clean
 .SUFFIXES: .c .o .exe
-.SECONDARY: tlib.o plib.o linutil.o
+.SECONDARY: tlib.o tlib_dosbx.o plib.o linutil.o
 
 FX_HW_BASE = sst1
 GLIDE2X_ROOT = ../../..
@@ -33,7 +33,18 @@ TESTS = test00.exe test01.exe test02.exe test03.exe test04.exe \
         test20.exe test21.exe test22.exe test23.exe test24.exe \
         test25.exe test26.exe test27.exe test28.exe test29.exe
 
+DOSFLOW_TESTS = df00sim.exe df01sim.exe df02sim.exe
+
 .c.o:
+	$(CC) -o $@ $(CFLAGS) -c $<
+
+dosflow00_sim.o: dosflow00.c
+	$(CC) -o $@ $(CFLAGS) -c $<
+
+dosflow01_sim.o: dosflow01.c
+	$(CC) -o $@ $(CFLAGS) -c $<
+
+dosflow02_sim.o: dosflow02.c
 	$(CC) -o $@ $(CFLAGS) -c $<
 
 # Link with CXX for Verilator C++ runtime
@@ -42,10 +53,21 @@ TESTS = test00.exe test01.exe test02.exe test03.exe test04.exe \
 
 all: $(TESTS)
 
+dosflow: $(DOSFLOW_TESTS)
+
 linutil.o: $(GLIDE_ROOT)/swlibs/fxmisc/linutil.c
 	$(CC) -o $@ $(CFLAGS) -c $<
 
 qatest00.exe: linutil.o tlib.o plib.o qatest00.o
+	$(CXX) -o $@ $(LDFLAGS) $^ $(LDLIBS)
+
+df00sim.exe: tlib_dosbx.o dosflow00_sim.o
+	$(CXX) -o $@ $(LDFLAGS) $^ $(LDLIBS)
+
+df01sim.exe: tlib_dosbx.o dosflow01_sim.o
+	$(CXX) -o $@ $(LDFLAGS) $^ $(LDLIBS)
+
+df02sim.exe: tlib_dosbx.o dosflow02_sim.o
 	$(CXX) -o $@ $(LDFLAGS) $^ $(LDLIBS)
 
 clean:

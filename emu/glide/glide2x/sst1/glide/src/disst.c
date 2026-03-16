@@ -87,6 +87,11 @@ GR_DIENTRY(grSstQueryHardware, FxBool, ( GrHwConfiguration *hwc ))
   retVal = _GlideRoot.hwConfig.num_sst > 0;
   *hwc = _GlideRoot.hwConfig;
 
+  fprintf(stderr, "[hostglide] grSstQueryHardware ret=%d num_sst=%u\n",
+          retVal,
+          _GlideRoot.hwConfig.num_sst);
+  fflush(stderr);
+
   return(retVal);
 } /* grSstQueryHardware */
 
@@ -95,6 +100,11 @@ GR_DIENTRY(grSstQueryHardware, FxBool, ( GrHwConfiguration *hwc ))
 */
 GR_DIENTRY(grSstSelect, void, ( int which ))
 {
+  fprintf(stderr, "[hostglide] grSstSelect which=%d num_sst=%u\n",
+          which,
+          _GlideRoot.hwConfig.num_sst);
+  fflush(stderr);
+
   if ( which >= _GlideRoot.hwConfig.num_sst )
     GrErrorCallback( "grSstSelect:  non-existent SST", FXTRUE );
 
@@ -161,4 +171,3 @@ GR_DIENTRY(grSstVidMode, void,
 
   _GlideRoot.GCs[whichSst].vidTimings = vidTimings;    
 } /* grSstVidMode */
-

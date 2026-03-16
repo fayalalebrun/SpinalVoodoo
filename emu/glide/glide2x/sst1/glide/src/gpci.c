@@ -469,6 +469,10 @@ _GlideInitEnvironment( void )
   {
     const FxBool hwDetectP = _grSstDetectResources();
     de10BootStage("_GlideInitEnvironment: after detect resources");
+    fprintf(stderr, "[hostglide] _GlideInitEnvironment detect=%d num_sst=%u\n",
+            hwDetectP,
+            _GlideRoot.hwConfig.num_sst);
+    fflush(stderr);
 
     if (!hwDetectP) {
       char s[128];
@@ -493,7 +497,11 @@ _GlideInitEnvironment( void )
   }
 
   _grMipMapInit();
+  fprintf(stderr, "[hostglide] _GlideInitEnvironment after mipmap init\n");
+  fflush(stderr);
   _GlideRoot.initialized = FXTRUE; /* save this for the end */
+  fprintf(stderr, "[hostglide] _GlideInitEnvironment done\n");
+  fflush(stderr);
 
 } /* _GlideInitEnvironment */
 

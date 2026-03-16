@@ -573,6 +573,16 @@ GR_ENTRY(grSstWinOpen, FxBool, (
                   resolution,refresh,format,
                   origin ? "LL" : "UL",
                   nColBuffers, nAuxBuffers));
+  fprintf(stderr,
+          "[hostglide] grSstWinOpen hWnd=0x%x res=%d refresh=%d format=%d origin=%d col=%d aux=%d\n",
+          hWnd,
+          resolution,
+          refresh,
+          format,
+          origin,
+          nColBuffers,
+          nAuxBuffers);
+  fflush(stderr);
   GR_CHECK_F("grSstWinOpen", !gc, "no SST selected as current (gc==NULL)");
 
 #if (GLIDE_PLATFORM & GLIDE_HW_SST1)

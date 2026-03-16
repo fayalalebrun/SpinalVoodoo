@@ -1,0 +1,176 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/tomb-common.sh"
+
+output_dir="${DOSBOX_TOMB_SRC}"
+game_src=""
+iso_src=""
+patch_src=""
+force=0
+
+usage() {
+  cat <<EOF
+Usage:
+  $0 --game-dir PATH --patch PATH [--iso PATH] [--output PATH] [--force]
+
+Prepares a Tomb Raider source tree for the repo's DOSBox-X helpers.
+
+Required:
+  --game-dir PATH   Source game directory to copy into the prepared tree
+  --patch PATH      3dfx patch directory or archive to overlay onto the game dir
+
+Optional:
+  --iso PATH        Tomb Raider ISO to copy beside the game dir
+  --output PATH     Prepared tree destination (default: DOSBOX_TOMB_SRC or $DOSBOX_TOMB_SRC)
+  --force           Replace the output directory if it already exists
+
+The prepared tree uses these names:
+  game dir: $DOSBOX_TOMB_GAME_DIR
+  ISO:      $DOSBOX_TOMB_ISO
+EOF
+}
+
+die() {
+  printf '%s\n' "$*" >&2
+  exit 1
+}
+
+require_path() {
+  local label="$1"
+  local path="$2"
+  [[ -e "$path" ]] || die "Missing $label: $path"
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --game-dir)
+      game_src="$2"
+      shift 2
+      ;;
+    --iso)
+      iso_src="$2"
+      shift 2
+      ;;
+    --patch)
+      patch_src="$2"
+      shift 2
+      ;;
+    --output)
+      output_dir="$2"
+      shift 2
+      ;;
+    --force)
+      force=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      die "Unknown argument: $1"
+      ;;
+  esac
+done
+
+[[ -n "$game_src" ]] || die "--game-dir is required"
+[[ -n "$patch_src" ]] || die "--patch is required"
+
+require_path "game directory" "$game_src"
+[[ -d "$game_src" ]] || die "Game source is not a directory: $game_src"
+require_path "patch" "$patch_src"
+
+if [[ -n "$iso_src" ]]; then
+  require_path "ISO" "$iso_src"
+  [[ -f "$iso_src" ]] || die "ISO source is not a file: $iso_src"
+fi
+
+if [[ -e "$output_dir" ]]; then
+  [[ "$force" == "1" ]] || die "Output already exists: $output_dir (pass --force to replace it)"
+  rm -rf "$output_dir"
+fi
+
+mkdir -p "$output_dir"
+cp -a "$game_src" "$output_dir/$DOSBOX_TOMB_GAME_DIR"
+
+if [[ -n "$iso_src" ]]; then
+  cp -a "$iso_src" "$output_dir/$DOSBOX_TOMB_ISO"
+fi
+
+tmpdir="$(mktemp -d)"
+cleanup() {
+  rm -rf "$tmpdir"
+}
+trap cleanup EXIT
+
+extract_patch_dir="$tmpdir/patch"
+mkdir -p "$extract_patch_dir"
+
+if [[ -d "$patch_src" ]]; then
+  cp -a "$patch_src/." "$extract_patch_dir/"
+else
+  python3 - "$patch_src" "$extract_patch_dir" <<'PY'
+import pathlib
+import sys
+import tarfile
+import zipfile
+
+src = pathlib.Path(sys.argv[1])
+dst = pathlib.Path(sys.argv[2])
+
+if zipfile.is_zipfile(src):
+    with zipfile.ZipFile(src) as zf:
+        zf.extractall(dst)
+elif tarfile.is_tarfile(src):
+    with tarfile.open(src) as tf:
+        tf.extractall(dst)
+else:
+    raise SystemExit(f"Unsupported patch archive format: {src}")
+PY
+fi
+
+resolve_overlay_root() {
+  local root="$1"
+  local direct_game_dir="$root/$DOSBOX_TOMB_GAME_DIR"
+
+  if [[ -d "$direct_game_dir" ]]; then
+    printf '%s\n' "$direct_game_dir"
+    return 0
+  fi
+
+  if [[ -f "$root/$DOSBOX_TOMB_EXE" ]] || [[ -f "$root/glide2x.ovl" ]]; then
+    printf '%s\n' "$root"
+    return 0
+  fi
+
+  mapfile -t subdirs < <(find "$root" -mindepth 1 -maxdepth 1 -type d | sort)
+  if [[ ${#subdirs[@]} -eq 1 ]]; then
+    local subdir="${subdirs[0]}"
+    if [[ -f "$subdir/$DOSBOX_TOMB_EXE" ]] || [[ -f "$subdir/glide2x.ovl" ]]; then
+      printf '%s\n' "$subdir"
+      return 0
+    fi
+    if [[ -d "$subdir/$DOSBOX_TOMB_GAME_DIR" ]]; then
+      printf '%s\n' "$subdir/$DOSBOX_TOMB_GAME_DIR"
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
+if ! overlay_root="$(resolve_overlay_root "$extract_patch_dir")"; then
+  die "Unable to determine how to apply patch contents from: $patch_src"
+fi
+
+cp -a "$overlay_root/." "$output_dir/$DOSBOX_TOMB_GAME_DIR/"
+
+printf 'Prepared Tomb Raider tree at %s\n' "$output_dir"
+printf '  Game dir: %s\n' "$output_dir/$DOSBOX_TOMB_GAME_DIR"
+if [[ -n "$iso_src" ]]; then
+  printf '  ISO: %s\n' "$output_dir/$DOSBOX_TOMB_ISO"
+else
+  printf '  ISO: not copied (provide --iso if needed)\n'
+fi

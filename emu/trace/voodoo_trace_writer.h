@@ -18,6 +18,7 @@ extern "C" {
 
 typedef struct {
     FILE     *file;
+    int       fd;
     uint64_t  entry_count;
     uint32_t  seq;               /* monotonic timestamp counter */
     int       has_pending;
@@ -44,6 +45,11 @@ void trace_writer_flush(voodoo_trace_writer_t *w);
 
 /* Flush, update entry count in header, and close the file. */
 void trace_writer_close(voodoo_trace_writer_t *w);
+
+/* Best-effort signal-safe finalization.
+ * Does not flush any pending coalesced entry, but updates the header with the
+ * number of entries already written and closes the fd. */
+void trace_writer_finalize_signal_safe(voodoo_trace_writer_t *w);
 
 #ifdef __cplusplus
 }

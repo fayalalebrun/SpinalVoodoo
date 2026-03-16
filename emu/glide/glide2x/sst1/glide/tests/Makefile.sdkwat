@@ -1,0 +1,55 @@
+# Open Watcom + original 3dfx SDK workflow for DOSBox-X OVL guests
+
+.PHONY: all clean sdk
+.SUFFIXES: .c .obj .exe
+
+SDK_DEST ?= /tmp/3dfx-sdk/sdk243
+SDK_GLIDE = $(SDK_DEST)/Glide
+SDK_FETCH = python ../../../../../../scripts/fetch-3dfx-sdk243.py $(SDK_DEST)
+WATCOM_ROOT = $(shell python -c 'import pathlib, shutil; print(pathlib.Path(shutil.which("wcc386")).resolve().parent.parent)')
+WATCOM_ENV = WATCOM=$(WATCOM_ROOT) EDPATH=$(WATCOM_ROOT)/eddat INCLUDE=$(WATCOM_ROOT)/h
+
+CC = wcc386
+LINK = wlink
+
+SDK_INCLUDE = $(SDK_GLIDE)/Src/Sst1/include
+SDK_LIB = $(SDK_GLIDE)/Lib/Dos/Stack/glide2x.lib
+DOS4GW = $(SDK_GLIDE)/Diags/Dos/DOS4GW.EXE
+STUB = $(WATCOM_ROOT)/binw/wstub.exe
+
+CFLAGS = -s -otexan -D__DOS32__ -D__DOS__ -DSST1
+CFLAGS += -w4 -e25 -fp5 -zq -5s -ei -mf -bt=dos
+CFLAGS += -I$(SDK_INCLUDE)
+
+TARGETS = df00sdk.exe df01sdk.exe df02sdk.exe
+
+all: $(TARGETS) dos4gw.exe
+
+sdk: $(SDK_LIB) $(DOS4GW)
+
+$(SDK_LIB):
+	$(SDK_FETCH)
+
+$(DOS4GW):
+	$(SDK_FETCH)
+
+.c.obj:
+	$(WATCOM_ENV) $(CC) -fo=$@ $(CFLAGS) $<
+
+df00sdk.exe: sdk tlib_dosbx.obj dosflow00.obj
+	printf "%s\n" "option stack=64k" "option nocaseexact" "lib $(SDK_LIB)" "sys dos4g" "option stub=$(STUB)" "name df00sdk" "file tlib_dosbx.obj" "file dosflow00.obj" > df00sdk.lnk
+	$(WATCOM_ENV) $(LINK) @df00sdk.lnk
+
+df01sdk.exe: sdk tlib_dosbx.obj dosflow01.obj
+	printf "%s\n" "option stack=64k" "option nocaseexact" "lib $(SDK_LIB)" "sys dos4g" "option stub=$(STUB)" "name df01sdk" "file tlib_dosbx.obj" "file dosflow01.obj" > df01sdk.lnk
+	$(WATCOM_ENV) $(LINK) @df01sdk.lnk
+
+df02sdk.exe: sdk tlib_dosbx.obj dosflow02.obj
+	printf "%s\n" "option stack=64k" "option nocaseexact" "lib $(SDK_LIB)" "sys dos4g" "option stub=$(STUB)" "name df02sdk" "file tlib_dosbx.obj" "file dosflow02.obj" > df02sdk.lnk
+	$(WATCOM_ENV) $(LINK) @df02sdk.lnk
+
+dos4gw.exe: $(DOS4GW)
+	cp "$(DOS4GW)" dos4gw.exe
+
+clean:
+	rm -f *.obj *.exe *.lnk

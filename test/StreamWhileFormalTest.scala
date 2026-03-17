@@ -1,3 +1,5 @@
+//> using target.scope test
+
 package voodoo
 
 import spinal.core._

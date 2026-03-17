@@ -1,21 +1,13 @@
 # Top-level Makefile for SpinalVoodoo simulation + DE10 scaffolding
 #
-# Builds everything in dependency order:
-#   1. sim    - SpinalHDL → Verilog → Verilator model
-#   2. glide  - Glide2x library linked with Verilator model
-#   3. tests  - Test programs linked against Glide2x
-#
-# Usage:
-#   make              # build everything
-#   make run/test00   # build only what's needed + run test00
-#   make sim          # just the Verilator model
-#   make glide        # sim + Glide library
-#   make tests        # sim + Glide + all test binaries
-#   make dos/help     # DOS guest workflow entrypoints
-#   make de10/help    # DE10 workflow entrypoints
-#   make clean        # clean all build artifacts
+# Canonical command taxonomy:
+#   native/<runtime>/<action>[/<name>]
+#   dos/<runtime>/<action>[/<name>]
+#   tomb/<runtime>/<action>
+#   de10/<action>
 
-.PHONY: all sim glide tests clean clean-sim clean-glide clean-tests run-all trace-test check-all dos/help dos/sdk dosbox tomb/help tomb/prepare tomb/run tomb/headless tomb/screenshot de10/help de10/plan de10/rtl de10/qsys de10/bitstream de10/program de10/deploy de10/mmio-smoke de10/sync-sysroot de10/glide de10/glide-tests de10/glide-cross de10/glide-tests-cross FORCE
+.PHONY: all clean clean-sim clean-glide clean-tests native/help native/sim/build native/trace/build native/sim/run-all native/sim/check-all dos/help dos/sim/build dos/trace/build dos/dosbox tomb/help tomb/prepare tomb/sim/run tomb/sim/headless tomb/sim/capture tomb/trace/run tomb/trace/headless de10/help de10/plan de10/rtl de10/qsys de10/bitstream de10/program de10/deploy de10/mmio-smoke de10/sync-sysroot de10/glide de10/glide-tests de10/glide-cross de10/glide-tests-cross FORCE
+.PRECIOUS: dos/sim/build/% dos/trace/build/%
 
 # Derive CXX32 from CC32 for sub-makefiles that need it
 CC32 ?= gcc -m32
@@ -51,46 +43,46 @@ DE10_SYNC_SYSROOT_SCRIPT = scripts/sync-de10-sysroot
 DE10_CROSS_GLIDE_SCRIPT = scripts/build-de10-glide-cross
 DE10_MMIO_SMOKE_BIN = tools/de10-mmio-smoke
 
-all: tests
+all: native/sim/build
+
+native/help:
+	@echo "Native targets:"
+	@echo "  runtimes: sim, trace"
+	@echo "  make native/sim/build             # build all Linux-hosted Glide test binaries"
+	@echo "  make native/sim/build/test00      # build one Linux-hosted test binary"
+	@echo "  make native/sim/run/test00        # run one Linux-hosted test with screenshot output"
+	@echo "  make native/trace/build           # build the trace-capture Glide runtime"
+	@echo "  make native/trace/run/test00      # capture a trace from one Linux-hosted test"
+	@echo "  make native/sim/check/test00      # replay an existing trace through the check pipeline"
+	@echo "  make native/sim/test/test00       # capture and check in one step"
+	@echo "  make native/sim/check-all         # replay every existing trace"
 
 dos/help:
 	@echo "DOS targets:"
-	@echo "  make dos/sdk                  # build all DOS SDK-style test binaries"
-	@echo "  make dos/sdk/df00sdk         # build one DOS SDK-style test binary"
-	@echo "  make dos/run/df00sdk         # run one DOS SDK-style test in DOSBox-X"
-	@echo "  make dos/run/df00sdk-headless # run one DOS SDK-style test headlessly"
-	@echo "  make dosbox ARGS='...'       # launch DOSBox-X with the repo Glide backend"
-	@echo "  make tomb/help               # print Tomb Raider setup requirements"
-	@echo "  make tomb/prepare ARGS='...' # prepare a Tomb Raider source tree from assets"
-	@echo "  make tomb/run                # run Tomb Raider with a window"
-	@echo "  make tomb/headless           # run Tomb Raider headlessly"
-	@echo "  make tomb/screenshot         # run Tomb Raider and capture a screenshot"
+	@echo "  runtimes: sim, trace"
+	@echo "  make dos/sim/build                # build all DOS SDK-style test binaries"
+	@echo "  make dos/sim/build/df00sdk        # build one DOS SDK-style test binary"
+	@echo "  make dos/sim/run/df00sdk          # run one DOS SDK-style test in DOSBox-X"
+	@echo "  make dos/sim/headless/df00sdk     # run one DOS SDK-style test headlessly"
+	@echo "  make dos/trace/run/df00sdk        # run one DOS SDK-style test with trace backend"
+	@echo "  make dos/trace/headless/df00sdk   # run one DOS SDK-style test headlessly with trace backend"
+	@echo "  make dos/dosbox ARGS='...'        # launch DOSBox-X with the sim Glide backend"
+	@echo "  make tomb/help                    # print Tomb Raider setup requirements"
 
-dos/sdk:
+native/sim/build: $(GLIDE_STAMP)
+	$(MAKE) -C $(GLIDE_TST_DIR) -f Makefile.sim all SIM_INTERFACE=$(SIM_INTERFACE)
+
+native/trace/build: $(SIM_DIR)/obj_dir/sim_trace_harness.o
+	$(MAKE) -C $(GLIDE_SRC_DIR) -f Makefile.sim TRACE_CAPTURE=1 SIM_INTERFACE=$(SIM_INTERFACE)
+
+dos/sim/build: $(GLIDE_STAMP)
 	$(MAKE) -C $(GLIDE_TST_DIR) -f $(DOS_SDK_MAKEFILE) all
 
-dos/sdk/%:
-	$(MAKE) -C $(GLIDE_TST_DIR) -f $(DOS_SDK_MAKEFILE) $*.exe
+dos/trace/build: native/trace/build
+	$(MAKE) -C $(GLIDE_TST_DIR) -f $(DOS_SDK_MAKEFILE) all
 
-dosbox: glide
+dos/dosbox: $(GLIDE_STAMP)
 	bash ./scripts/run-dosboxx32-glide $(ARGS)
-
-dos/run/%: dos/sdk/% glide
-	bash ./scripts/run-dosboxx32-glide \
-	  -c "mount c $(DOS_TEST_MOUNT_DIR)" \
-	  -c "c:" \
-	  -c "$*.exe" \
-	  $(ARGS)
-
-dos/run/%-headless: dos/sdk/% glide
-	DOSBOXX32_HEADLESS=1 bash ./scripts/run-dosboxx32-glide \
-	  -c "mount c $(DOS_TEST_MOUNT_DIR)" \
-	  -c "c:" \
-	  -c "$*.exe" \
-	  $(ARGS)
-
-tomb/run: glide
-	bash ./scripts/run-tomb-glide-live $(ARGS)
 
 tomb/help:
 	@echo "Tomb Raider setup:"
@@ -100,18 +92,29 @@ tomb/help:
 	@echo "  4) The runner copies that tree to DOSBOX_TOMB_STAGE_ROOT and disables bundled glide2x.ovl"
 	@echo "  5) Override paths with DOSBOX_TOMB_SRC, DOSBOX_TOMB_STAGE_ROOT, DOSBOX_TOMB_GAME_DIR, DOSBOX_TOMB_ISO, DOSBOX_TOMB_EXE"
 	@echo "  6) Pass --output PATH or --force through make tomb/prepare ARGS='...' when needed"
+	@echo "  7) Canonical runs are make tomb/sim/run, make tomb/sim/headless, make tomb/sim/capture, make tomb/trace/run"
 
 tomb/prepare:
 	bash ./scripts/prepare-tomb-glide-tree $(ARGS)
 
-tomb/headless: glide
+tomb/sim/run: $(GLIDE_STAMP)
+	bash ./scripts/run-tomb-glide-live $(ARGS)
+
+tomb/sim/headless: $(GLIDE_STAMP)
 	bash ./scripts/run-tomb-glide-headless $(ARGS)
 
-tomb/screenshot: glide
+tomb/sim/capture: $(GLIDE_STAMP)
 	bash ./scripts/capture-tomb-screenshot $(ARGS)
+
+tomb/trace/run: native/trace/build
+	bash ./scripts/run-tomb-glide-live $(ARGS)
+
+tomb/trace/headless: native/trace/build
+	bash ./scripts/run-tomb-glide-headless $(ARGS)
 
 de10/help:
 	@echo "DE10 targets:"
+	@echo "  runtime: de10"
 	@echo "  make de10/plan         # open goals and bring-up docs"
 	@echo "  make de10/rtl          # generate DE10-targeted RTL"
 	@echo "  make de10/qsys         # generate Platform Designer system"
@@ -167,15 +170,12 @@ de10/glide-tests-cross:
 $(DE10_MMIO_SMOKE_BIN): tools/de10-mmio-smoke.c
 	$(CC) -O2 -Wall -Wextra -o $@ $<
 
-# Phony targets: always recurse into sub-make (for explicit builds)
-sim:
+# Internal sim build target: always recurse into sub-make
+_sim_build:
 	$(MAKE) -C $(SIM_DIR) all SIM_INTERFACE=$(SIM_INTERFACE)
 
-glide: sim
+_glide_build: _sim_build
 	$(MAKE) -C $(GLIDE_SRC_DIR) -f Makefile.sim SIM_INTERFACE=$(SIM_INTERFACE)
-
-tests: glide
-	$(MAKE) -C $(GLIDE_TST_DIR) -f Makefile.sim all SIM_INTERFACE=$(SIM_INTERFACE)
 
 # Trace mode sentinel: force sim+glide rebuild when TRACE= setting changes.
 # Updated at parse time via $(shell) so the timestamp only changes on real transitions.
@@ -183,6 +183,9 @@ TRACE_MODE_FILE = $(SIM_DIR)/obj_dir/.trace_mode
 TRACE_MODE_VAL  = $(if $(filter 1,$(TRACE)),trace,notrace)
 $(shell mkdir -p $(dir $(TRACE_MODE_FILE)))
 $(shell [ -f $(TRACE_MODE_FILE) ] && [ "$$(cat $(TRACE_MODE_FILE))" = "$(TRACE_MODE_VAL)" ] || echo "$(TRACE_MODE_VAL)" > $(TRACE_MODE_FILE))
+
+$(SIM_DIR)/obj_dir/sim_trace_harness.o: FORCE
+	$(MAKE) -C $(SIM_DIR) trace-harness SIM_INTERFACE=$(SIM_INTERFACE)
 
 # File-based build chain: only recurse when outputs are stale.
 # The sub-makes handle fine-grained .c/.o dependency tracking internally.
@@ -197,9 +200,8 @@ $(GLIDE_STAMP): $(SIM_STAMP) FORCE
 $(GLIDE_TST_DIR)/%.exe: $(GLIDE_STAMP) FORCE
 	$(MAKE) -C $(GLIDE_TST_DIR) -f Makefile.sim $*.exe SIM_INTERFACE=$(SIM_INTERFACE)
 
-# Run a single test: make run/test00
-# Pass TRACE=1 to enable FST trace output
-run/%: $(GLIDE_TST_DIR)/%.exe scripts/srle2png
+# Run a single Linux-hosted test with the sim backend.
+native/sim/run/%: $(GLIDE_TST_DIR)/%.exe scripts/srle2png
 	@rm -rf $(OUTPUT_DIR)/$*
 	@mkdir -p $(OUTPUT_DIR)/$*
 	@ln -sfn ../../$(SIM_RTL) $(OUTPUT_DIR)/$*/$(SIM_MODEL).v
@@ -212,8 +214,12 @@ run/%: $(GLIDE_TST_DIR)/%.exe scripts/srle2png
 	  python3 scripts/srle2png "$$f" "$${f%.srle}.png" && rm -f "$$f"; \
 	done
 
-# Run all tests that support -d
-run-all: $(patsubst %,run/%,test00 test01 test02 test03 test04 test05 test06 test07 test08 test09 test13 test16 test17 test18 test19)
+# Build one Linux-hosted test binary.
+native/sim/build/%: $(GLIDE_STAMP) FORCE
+	$(MAKE) -C $(GLIDE_TST_DIR) -f Makefile.sim $*.exe SIM_INTERFACE=$(SIM_INTERFACE)
+
+# Run all Linux-hosted screenshot tests.
+native/sim/run-all: $(patsubst %,native/sim/run/%,test00 test01 test02 test03 test04 test05 test06 test07 test08 test09 test13 test16 test17 test18 test19)
 
 
 # --------------------------------------------------------------------------
@@ -228,37 +234,70 @@ STATE_ROUNDTRIP_BIN = emu/test/obj_dir/state_roundtrip_test
 $(TRACE_TEST_BIN): FORCE
 	$(MAKE) -C emu/test
 
-trace-test: $(TRACE_TEST_BIN)
-
 $(STATE_ROUNDTRIP_BIN): FORCE
 	$(MAKE) -C emu/test state-roundtrip
 
-check/state-roundtrip: $(STATE_ROUNDTRIP_BIN)
+native/sim/check/state-roundtrip: $(STATE_ROUNDTRIP_BIN)
 	$(STATE_ROUNDTRIP_BIN)
 
-# Capture trace from Glide test.
-# TRACE_CAPTURE=1 swaps the Verilator backend for a lightweight trace writer.
-# This overwrites the normal Glide library; next run/% will rebuild it via FORCE.
-trace/%:
-	$(MAKE) -C $(SIM_DIR) trace-harness
-	$(MAKE) -C $(GLIDE_SRC_DIR) -f Makefile.sim TRACE_CAPTURE=1
-	$(MAKE) -C $(GLIDE_TST_DIR) -f Makefile.sim $*.exe TRACE_CAPTURE=1
+# Capture trace from a Linux-hosted Glide test.
+native/trace/run/%: native/trace/build
+	$(MAKE) -C $(GLIDE_TST_DIR) -f Makefile.sim $*.exe TRACE_CAPTURE=1 SIM_INTERFACE=$(SIM_INTERFACE)
 	@mkdir -p traces
 	cd $(GLIDE_TST_DIR) && \
 	  SIM_TRACE_FILE=$(abspath traces)/$*.bin \
 	  LD_LIBRARY_PATH=../../lib/sst1 \
 	  ./$*.exe -n 1 < /dev/null
 
+# Run one DOS SDK binary in DOSBox-X with the sim backend.
+dos/sim/build/%: $(GLIDE_STAMP)
+	$(MAKE) -C $(GLIDE_TST_DIR) -f $(DOS_SDK_MAKEFILE) $*.exe
+
+dos/sim/run/%: dos/sim/build/% $(GLIDE_STAMP)
+	bash ./scripts/run-dosboxx32-glide \
+	  -c "mount c $(DOS_TEST_MOUNT_DIR)" \
+	  -c "c:" \
+	  -c "$*.exe" \
+	  $(ARGS)
+
+dos/sim/headless/%: dos/sim/build/% $(GLIDE_STAMP)
+	DOSBOXX32_HEADLESS=1 bash ./scripts/run-dosboxx32-glide \
+	  -c "mount c $(DOS_TEST_MOUNT_DIR)" \
+	  -c "c:" \
+	  -c "$*.exe" \
+	  $(ARGS)
+
+dos/trace/build/%: native/trace/build
+	$(MAKE) -C $(GLIDE_TST_DIR) -f $(DOS_SDK_MAKEFILE) $*.exe
+
+dos/trace/run/%: dos/trace/build/%
+	@mkdir -p traces
+	SIM_TRACE_FILE=$(abspath traces)/$*.bin \
+	bash ./scripts/run-dosboxx32-glide \
+	  -c "mount c $(DOS_TEST_MOUNT_DIR)" \
+	  -c "c:" \
+	  -c "$*.exe" \
+	  $(ARGS)
+
+dos/trace/headless/%: dos/trace/build/%
+	@mkdir -p traces
+	DOSBOXX32_HEADLESS=1 SIM_TRACE_FILE=$(abspath traces)/$*.bin \
+	bash ./scripts/run-dosboxx32-glide \
+	  -c "mount c $(DOS_TEST_MOUNT_DIR)" \
+	  -c "c:" \
+	  -c "$*.exe" \
+	  $(ARGS)
+
 # Replay a .bin trace through both 86Box ref model and Verilator CoreSim.
 # Produces _ref.png, _sim.png, _diff.png in test-output/<name>/.
-check/%: $(TRACE_TEST_BIN)
+native/sim/check/%: $(TRACE_TEST_BIN)
 	@mkdir -p test-output/$*
 	@if [ -f traces/$*.bin ]; then \
 	  src=traces/$*.bin; \
 	elif [ -d traces/$* ]; then \
 	  src=traces/$*/; \
 	else \
-	  echo "ERROR: neither traces/$*.bin nor traces/$*/ found. Run 'make trace/$*' first."; exit 1; \
+	  echo "ERROR: neither traces/$*.bin nor traces/$*/ found. Run 'make native/trace/run/$*' first."; exit 1; \
 	fi; \
 	extra_args=""; \
 	if [ "$*" = "screamer2" ]; then \
@@ -271,12 +310,12 @@ check/%: $(TRACE_TEST_BIN)
 	$(TRACE_TEST_BIN) "$$src" --output-dir test-output/$* $$extra_args
 
 # Capture + check in one step (sequential: trace must finish before check starts)
-test/%:
-	$(MAKE) trace/$*
-	$(MAKE) check/$*
+native/sim/test/%:
+	$(MAKE) native/trace/run/$*
+	$(MAKE) native/sim/check/$*
 
 # Replay all existing traces
-check-all: $(TRACE_TEST_BIN)
+native/sim/check-all: $(TRACE_TEST_BIN)
 	@for f in traces/*.bin; do \
 	    [ -f "$$f" ] || continue; \
 	    name=$$(basename $$f .bin); \

@@ -5,8 +5,8 @@
 
 SDK_DEST ?= /tmp/3dfx-sdk/sdk243
 SDK_GLIDE = $(SDK_DEST)/Glide
-SDK_FETCH = python ../../../../../../scripts/fetch-3dfx-sdk243.py $(SDK_DEST)
-WATCOM_ROOT = $(shell python -c 'import pathlib, shutil; print(pathlib.Path(shutil.which("wcc386")).resolve().parent.parent)')
+SDK_FETCH = python3 ../../../../../../scripts/fetch-3dfx-sdk243.py $(SDK_DEST)
+WATCOM_ROOT = $(shell python3 -c 'import pathlib, shutil; print(pathlib.Path(shutil.which("wcc386")).resolve().parent.parent)')
 WATCOM_ENV = WATCOM=$(WATCOM_ROOT) EDPATH=$(WATCOM_ROOT)/eddat INCLUDE=$(WATCOM_ROOT)/h
 
 CC = wcc386

@@ -169,9 +169,9 @@ scala-cli compile .
 Run the Glide2x test suite against the Verilator model:
 
 ```bash
-make run/test00          # single test
-make run-all             # all tests
-TRACE=1 make run/test00  # with FST waveform dump
+make native/sim/run/test00      # single test
+make native/sim/run-all         # all screenshot tests
+TRACE=1 make native/sim/run/test00  # with FST waveform dump
 ```
 
 Screenshots are saved to `output/<test>/screenshot.png`.
@@ -191,41 +191,65 @@ The sim backend builds a **32-bit** `libglide2x`, so DOSBox-X must also be
 32-bit to `dlopen()` it.
 
 ```bash
-# Build sim + Glide backend
-make glide
+# Linux-hosted sim test
+make native/sim/run/test00
 
-# Build DOS guest binaries that use the original 3dfx DOS SDK import libs
-make dos/sdk
+# Linux-hosted trace capture
+make native/trace/run/df00sim
 
-# Build one DOS guest binary
-make dos/sdk/df00sdk
+# Build and run a DOS guest binary inside DOSBox-X through its built-in GLIDE2X.OVL
+make dos/sim/run/df00sdk
 
-# Run one DOS guest binary inside DOSBox-X through its built-in GLIDE2X.OVL
-make dos/run/df00sdk
+# Headless DOS guest variant
+make dos/sim/headless/df00sdk
 
-# Headless variant
-make dos/run/df00sdk-headless
+# DOS guest with trace backend
+make dos/trace/run/df00sdk
 
-# Launch a raw DOSBox-X session with this repo's Glide library injected
-make dosbox
+# Launch a raw DOSBox-X session with the sim Glide backend injected
+make dos/dosbox
 ```
 
 Common top-level commands:
 
-- `make dos/help` prints the DOS and Tomb entry points.
-- `make dos/sdk` builds all DOS SDK-style test binaries from `emu/glide/glide2x/sst1/glide/tests/Makefile.sdkwat`.
-- `make dos/sdk/<name>` builds one DOS SDK-style binary, for example `make dos/sdk/df00sdk`.
-- `make dos/run/<name>` mounts `emu/glide/glide2x/sst1/glide/tests` as `C:` in DOSBox-X and runs `<name>.exe`.
-- `make dos/run/<name>-headless` does the same with `DOSBOXX32_HEADLESS=1`.
-- `make dosbox ARGS='...'` launches DOSBox-X with the repo Glide backend and forwards extra DOSBox-X arguments.
+- `make native/help` prints the Linux-hosted and trace command surface.
+- `make native/sim/build` builds all Linux-hosted Glide test binaries.
+- `make native/sim/build/<name>` builds one Linux-hosted test binary.
+- `make native/sim/run/<name>` runs one Linux-hosted test and writes screenshot output under `output/`.
+- `make native/trace/run/<name>` rebuilds the host Glide runtime with the trace harness and captures `traces/<name>.bin`.
+- `make native/sim/check/<name>` replays an existing trace through the check pipeline.
+- `make native/sim/test/<name>` captures and checks in one step.
+- `make native/sim/check-all` replays every existing trace under `traces/`.
+- `make dos/help` prints the DOS and Tomb command surface.
+- `make dos/sim/build` builds all DOS SDK-style test binaries from `emu/glide/glide2x/sst1/glide/tests/Makefile.sdkwat`.
+- `make dos/sim/build/<name>` builds one DOS SDK-style binary, for example `make dos/sim/build/df00sdk`.
+- `make dos/sim/run/<name>` mounts `emu/glide/glide2x/sst1/glide/tests` as `C:` in DOSBox-X and runs `<name>.exe` with the sim backend.
+- `make dos/sim/headless/<name>` does the same with `DOSBOXX32_HEADLESS=1`.
+- `make dos/trace/run/<name>` runs a DOS guest against the trace-capture Glide backend and writes `traces/<name>.bin`.
+- `make dos/trace/headless/<name>` does the same headlessly.
+- `make dos/dosbox ARGS='...'` launches DOSBox-X with the sim Glide backend and forwards extra DOSBox-X arguments.
 - `make tomb/help` prints the Tomb Raider setup requirements.
 - `make tomb/prepare ARGS='--game-dir ... --patch ... --iso ...'` prepares a reusable Tomb Raider source tree from your game files and 3dfx patch assets.
-- `make tomb/run`, `make tomb/headless`, and `make tomb/screenshot` expose the existing Tomb helper scripts through the top-level `Makefile`.
+- `make tomb/sim/run`, `make tomb/sim/headless`, and `make tomb/sim/capture` run Tomb Raider against the sim backend.
+- `make tomb/trace/run` and `make tomb/trace/headless` run Tomb Raider against the trace backend.
 
-The split is intentional:
+The hierarchy is intentional:
 
-- `make run/<name>` runs a Linux-hosted test binary linked directly against the sim backend.
-- `make dos/run/<name>` runs a DOS guest binary inside DOSBox-X through its built-in `GLIDE2X.OVL` bridge.
+- `native/<runtime>/<action>[/<name>]` is for Linux-hosted test binaries.
+- `dos/<runtime>/<action>[/<name>]` is for DOS guest binaries inside DOSBox-X.
+- `tomb/<runtime>/<action>` is for Tomb Raider convenience flows.
+- `de10/<action>` is for board-oriented workflows using the `de10` runtime.
+
+Runtimes are explicit and non-stateful:
+
+- `sim` means the normal in-process Verilator-backed Glide runtime.
+- `trace` means the trace-capture Glide runtime.
+- `de10` means the board/MMIO-backed Glide runtime.
+
+In practice:
+
+- `native/...` and `dos/...` currently expose `sim` and `trace` directly in the command path.
+- `de10/...` keeps the runtime implicit in the namespace because every `de10` command already targets the board runtime.
 
 ### Tomb Raider Setup
 
@@ -261,7 +285,7 @@ Typical flow:
 
 - Prepare the tree with `make tomb/prepare ...`, or assemble the layout manually.
 - Run `make tomb/help` to print the current assumptions.
-- Run `make tomb/run` or `make tomb/headless`.
+- Run `make tomb/sim/run` or `make tomb/sim/headless`.
 
 At launch time the helper scripts copy the source tree into `DOSBOX_TOMB_STAGE_ROOT`
 (default `/tmp/tr1-run`) and automatically rename any bundled `glide2x.ovl` so that
@@ -289,17 +313,17 @@ Glide trace files (`.bin`) capture PCI bus operations for offline replay against
 the RTL simulation and a software reference model:
 
 ```bash
-# Capture a trace (rebuilds Glide with trace harness)
-make trace/test_alphabet
+# Capture a trace from a Linux-hosted test
+make native/trace/run/test_alphabet
 
-# Replay a trace through the reference model and RTL simulator
-make check/test_alphabet
+# Replay one trace through the reference model and RTL simulator
+make native/sim/check/test_alphabet
 
 # Capture and replay in one step
-make test/test_alphabet
+make native/sim/test/test_alphabet
 
-# Replay all existing traces under traces/
-make check-all
+# Replay every existing trace
+make native/sim/check-all
 ```
 
 Replay outputs are written to `test-output/<trace>/` as `<trace>_ref.png`, `<trace>_sim.png`, and `<trace>_diff.png`.

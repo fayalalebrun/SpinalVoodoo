@@ -135,6 +135,7 @@ BACKEND_LIB =
 else
 BACKEND_OBJ = \
 	$(SIM_DIR)/obj_dir/sim_harness.o \
+	$(SIM_DIR)/obj_dir/voodoo_trace_writer.o \
 	$(SIM_DIR)/obj_dir/verilated.o \
 	$(SIM_DIR)/obj_dir/verilated_threads.o
 ifeq ($(TRACE),1)

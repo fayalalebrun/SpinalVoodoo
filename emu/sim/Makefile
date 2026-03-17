@@ -56,7 +56,7 @@ CXXFLAGS = -O3 -DVL_TIME_CONTEXT
 ifeq ($(TRACE),1)
 CXXFLAGS += -DVM_TRACE_FST
 endif
-CXXFLAGS += -I$(OBJ_DIR) -I$(VERILATOR_ROOT)/include -I$(VERILATOR_ROOT)/include/vltstd
+CXXFLAGS += -I$(OBJ_DIR) -I$(VERILATOR_ROOT)/include -I$(VERILATOR_ROOT)/include/vltstd -I$(TRACE_DIR)
 
 TRACE_IO_FLAGS = -D_FILE_OFFSET_BITS=64 -D_LARGEFILE_SOURCE -D_LARGEFILE64_SOURCE
 
@@ -108,7 +108,7 @@ $(SIM_LIB): $(VERILATE_STAMP)
 		OPT_GLOBAL="-DVL_USER_WARN"
 
 # Step 4: Build harness object + verilated runtime
-HARNESS_OBJS = $(OBJ_DIR)/sim_harness.o $(OBJ_DIR)/verilated.o
+HARNESS_OBJS = $(OBJ_DIR)/sim_harness.o $(OBJ_DIR)/verilated.o $(OBJ_DIR)/voodoo_trace_writer.o
 ifeq ($(TRACE),1)
 HARNESS_OBJS += $(OBJ_DIR)/verilated_fst_c.o
 endif

@@ -6,7 +6,7 @@
 #   tomb/<runtime>/<action>
 #   de10/<action>
 
-.PHONY: all clean clean-sim clean-glide clean-tests native/help native/sim/build native/trace/build native/sim/run-all native/sim/check-all dos/help dos/sim/build dos/trace/build dos/dosbox tomb/help tomb/prepare tomb/sim/run tomb/sim/headless tomb/sim/capture tomb/trace/run tomb/trace/headless de10/help de10/plan de10/rtl de10/qsys de10/bitstream de10/program de10/deploy de10/mmio-smoke de10/sync-sysroot de10/glide de10/glide-tests de10/glide-cross de10/glide-tests-cross FORCE
+.PHONY: all clean clean-sim clean-glide clean-tests native/help native/sim/build native/trace/build native/sim/run-all native/sim/check-all dos/help dos/sim/build dos/trace/build dos/dosbox tomb/help tomb/prepare tomb/sim/run tomb/sim/headless tomb/sim/capture tomb/sim/trace tomb/sim/trace/check tomb/trace/run tomb/trace/headless tomb/trace/check de10/help de10/plan de10/rtl de10/qsys de10/bitstream de10/program de10/deploy de10/mmio-smoke de10/sync-sysroot de10/glide de10/glide-tests de10/glide-cross de10/glide-tests-cross FORCE
 .PRECIOUS: dos/sim/build/% dos/trace/build/%
 
 # Derive CXX32 from CC32 for sub-makefiles that need it
@@ -64,24 +64,27 @@ dos/help:
 	@echo "  make dos/sim/build/df00sdk        # build one DOS SDK-style test binary"
 	@echo "  make dos/sim/run/df00sdk          # run one DOS SDK-style test in DOSBox-X"
 	@echo "  make dos/sim/headless/df00sdk     # run one DOS SDK-style test headlessly"
-	@echo "  make dos/trace/run/df00sdk        # run one DOS SDK-style test with trace backend"
-	@echo "  make dos/trace/headless/df00sdk   # run one DOS SDK-style test headlessly with trace backend"
+	@echo "  make dos/trace/run/df00sdk        # run one DOS SDK-style test with trace runtime to traces/dos/df00sdk.bin"
+	@echo "  make dos/trace/headless/df00sdk   # run one DOS SDK-style test headlessly with trace runtime"
 	@echo "  make dos/dosbox ARGS='...'        # launch DOSBox-X with the sim Glide backend"
 	@echo "  make tomb/help                    # print Tomb Raider setup requirements"
 
 native/sim/build: $(GLIDE_STAMP)
+	$(MAKE) _glide_build_sim
 	$(MAKE) -C $(GLIDE_TST_DIR) -f Makefile.sim all SIM_INTERFACE=$(SIM_INTERFACE)
 
 native/trace/build: $(SIM_DIR)/obj_dir/sim_trace_harness.o
-	$(MAKE) -C $(GLIDE_SRC_DIR) -f Makefile.sim TRACE_CAPTURE=1 SIM_INTERFACE=$(SIM_INTERFACE)
+	$(MAKE) _glide_build_trace
 
 dos/sim/build: $(GLIDE_STAMP)
+	$(MAKE) _glide_build_sim
 	$(MAKE) -C $(GLIDE_TST_DIR) -f $(DOS_SDK_MAKEFILE) all
 
 dos/trace/build: native/trace/build
 	$(MAKE) -C $(GLIDE_TST_DIR) -f $(DOS_SDK_MAKEFILE) all
 
-dos/dosbox: $(GLIDE_STAMP)
+dos/dosbox:
+	$(MAKE) _glide_build_sim
 	bash ./scripts/run-dosboxx32-glide $(ARGS)
 
 tomb/help:
@@ -92,25 +95,47 @@ tomb/help:
 	@echo "  4) The runner copies that tree to DOSBOX_TOMB_STAGE_ROOT and disables bundled glide2x.ovl"
 	@echo "  5) Override paths with DOSBOX_TOMB_SRC, DOSBOX_TOMB_STAGE_ROOT, DOSBOX_TOMB_GAME_DIR, DOSBOX_TOMB_ISO, DOSBOX_TOMB_EXE"
 	@echo "  6) Pass --output PATH or --force through make tomb/prepare ARGS='...' when needed"
-	@echo "  7) Canonical runs are make tomb/sim/run, make tomb/sim/headless, make tomb/sim/capture, make tomb/trace/run"
+	@echo "  7) Canonical runs are make tomb/sim/run, make tomb/sim/headless, make tomb/sim/capture, make tomb/sim/trace, make tomb/trace/run"
+	@echo "  8) Use make tomb/sim/trace/check to replay traces/tomb_live/trace.bin and tomb/trace/check for traces/tomb/trace.bin"
 
 tomb/prepare:
 	bash ./scripts/prepare-tomb-glide-tree $(ARGS)
 
-tomb/sim/run: $(GLIDE_STAMP)
+tomb/sim/run:
+	$(MAKE) _glide_build_sim
 	bash ./scripts/run-tomb-glide-live $(ARGS)
 
-tomb/sim/headless: $(GLIDE_STAMP)
+tomb/sim/headless:
+	$(MAKE) _glide_build_sim
 	bash ./scripts/run-tomb-glide-headless $(ARGS)
 
-tomb/sim/capture: $(GLIDE_STAMP)
+tomb/sim/capture:
+	$(MAKE) _glide_build_sim
 	bash ./scripts/capture-tomb-screenshot $(ARGS)
 
+tomb/sim/trace:
+	@mkdir -p traces/tomb_live
+	$(MAKE) _glide_build_sim
+	SIM_TRACE_FILE=$(abspath traces)/tomb_live/trace.bin \
+	bash ./scripts/run-tomb-glide-live $(ARGS)
+
+tomb/sim/trace/check: $(TRACE_TEST_BIN)
+	@mkdir -p output/tomb/trace_replay_live
+	$(TRACE_TEST_BIN) traces/tomb_live/trace.bin --output-dir output/tomb/trace_replay_live
+
 tomb/trace/run: native/trace/build
+	@mkdir -p traces/tomb
+	SIM_TRACE_FILE=$(abspath traces)/tomb/trace.bin \
 	bash ./scripts/run-tomb-glide-live $(ARGS)
 
 tomb/trace/headless: native/trace/build
+	@mkdir -p traces/tomb
+	SIM_TRACE_FILE=$(abspath traces)/tomb/trace.bin \
 	bash ./scripts/run-tomb-glide-headless $(ARGS)
+
+tomb/trace/check: $(TRACE_TEST_BIN)
+	@mkdir -p output/tomb/trace_replay
+	$(TRACE_TEST_BIN) traces/tomb/trace.bin --output-dir output/tomb/trace_replay
 
 de10/help:
 	@echo "DE10 targets:"
@@ -174,8 +199,13 @@ $(DE10_MMIO_SMOKE_BIN): tools/de10-mmio-smoke.c
 _sim_build:
 	$(MAKE) -C $(SIM_DIR) all SIM_INTERFACE=$(SIM_INTERFACE)
 
-_glide_build: _sim_build
+_glide_build_sim: _sim_build
+	$(MAKE) -C $(GLIDE_SRC_DIR) -f Makefile.sim clean
 	$(MAKE) -C $(GLIDE_SRC_DIR) -f Makefile.sim SIM_INTERFACE=$(SIM_INTERFACE)
+
+_glide_build_trace: $(SIM_DIR)/obj_dir/sim_trace_harness.o
+	$(MAKE) -C $(GLIDE_SRC_DIR) -f Makefile.sim clean
+	$(MAKE) -C $(GLIDE_SRC_DIR) -f Makefile.sim TRACE_CAPTURE=1 SIM_INTERFACE=$(SIM_INTERFACE)
 
 # Trace mode sentinel: force sim+glide rebuild when TRACE= setting changes.
 # Updated at parse time via $(shell) so the timestamp only changes on real transitions.
@@ -215,7 +245,8 @@ native/sim/run/%: $(GLIDE_TST_DIR)/%.exe scripts/srle2png
 	done
 
 # Build one Linux-hosted test binary.
-native/sim/build/%: $(GLIDE_STAMP) FORCE
+native/sim/build/%: FORCE
+	$(MAKE) _glide_build_sim
 	$(MAKE) -C $(GLIDE_TST_DIR) -f Makefile.sim $*.exe SIM_INTERFACE=$(SIM_INTERFACE)
 
 # Run all Linux-hosted screenshot tests.
@@ -250,17 +281,18 @@ native/trace/run/%: native/trace/build
 	  ./$*.exe -n 1 < /dev/null
 
 # Run one DOS SDK binary in DOSBox-X with the sim backend.
-dos/sim/build/%: $(GLIDE_STAMP)
+dos/sim/build/%:
+	$(MAKE) _glide_build_sim
 	$(MAKE) -C $(GLIDE_TST_DIR) -f $(DOS_SDK_MAKEFILE) $*.exe
 
-dos/sim/run/%: dos/sim/build/% $(GLIDE_STAMP)
+dos/sim/run/%: dos/sim/build/%
 	bash ./scripts/run-dosboxx32-glide \
 	  -c "mount c $(DOS_TEST_MOUNT_DIR)" \
 	  -c "c:" \
 	  -c "$*.exe" \
 	  $(ARGS)
 
-dos/sim/headless/%: dos/sim/build/% $(GLIDE_STAMP)
+dos/sim/headless/%: dos/sim/build/%
 	DOSBOXX32_HEADLESS=1 bash ./scripts/run-dosboxx32-glide \
 	  -c "mount c $(DOS_TEST_MOUNT_DIR)" \
 	  -c "c:" \
@@ -271,8 +303,8 @@ dos/trace/build/%: native/trace/build
 	$(MAKE) -C $(GLIDE_TST_DIR) -f $(DOS_SDK_MAKEFILE) $*.exe
 
 dos/trace/run/%: dos/trace/build/%
-	@mkdir -p traces
-	SIM_TRACE_FILE=$(abspath traces)/$*.bin \
+	@mkdir -p traces/dos
+	SIM_TRACE_FILE=$(abspath traces)/dos/$*.bin \
 	bash ./scripts/run-dosboxx32-glide \
 	  -c "mount c $(DOS_TEST_MOUNT_DIR)" \
 	  -c "c:" \
@@ -280,8 +312,8 @@ dos/trace/run/%: dos/trace/build/%
 	  $(ARGS)
 
 dos/trace/headless/%: dos/trace/build/%
-	@mkdir -p traces
-	DOSBOXX32_HEADLESS=1 SIM_TRACE_FILE=$(abspath traces)/$*.bin \
+	@mkdir -p traces/dos
+	DOSBOXX32_HEADLESS=1 SIM_TRACE_FILE=$(abspath traces)/dos/$*.bin \
 	bash ./scripts/run-dosboxx32-glide \
 	  -c "mount c $(DOS_TEST_MOUNT_DIR)" \
 	  -c "c:" \

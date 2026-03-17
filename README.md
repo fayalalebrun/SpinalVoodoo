@@ -225,13 +225,16 @@ Common top-level commands:
 - `make dos/sim/build/<name>` builds one DOS SDK-style binary, for example `make dos/sim/build/df00sdk`.
 - `make dos/sim/run/<name>` mounts `emu/glide/glide2x/sst1/glide/tests` as `C:` in DOSBox-X and runs `<name>.exe` with the sim backend.
 - `make dos/sim/headless/<name>` does the same with `DOSBOXX32_HEADLESS=1`.
-- `make dos/trace/run/<name>` runs a DOS guest against the trace-capture Glide backend and writes `traces/<name>.bin`.
+- `make dos/trace/run/<name>` runs a DOS guest against the trace-capture Glide runtime and writes `traces/dos/<name>.bin`.
 - `make dos/trace/headless/<name>` does the same headlessly.
 - `make dos/dosbox ARGS='...'` launches DOSBox-X with the sim Glide backend and forwards extra DOSBox-X arguments.
 - `make tomb/help` prints the Tomb Raider setup requirements.
 - `make tomb/prepare ARGS='--game-dir ... --patch ... --iso ...'` prepares a reusable Tomb Raider source tree from your game files and 3dfx patch assets.
 - `make tomb/sim/run`, `make tomb/sim/headless`, and `make tomb/sim/capture` run Tomb Raider against the sim backend.
-- `make tomb/trace/run` and `make tomb/trace/headless` run Tomb Raider against the trace backend.
+- `make tomb/sim/trace` runs Tomb Raider against the live sim runtime and also dumps a trace to `traces/tomb_live/trace.bin`.
+- `make tomb/sim/trace/check` replays `traces/tomb_live/trace.bin` into `output/tomb/trace_replay_live/`.
+- `make tomb/trace/run` and `make tomb/trace/headless` run Tomb Raider against the trace runtime and write `traces/tomb/trace.bin` automatically.
+- `make tomb/trace/check` replays `traces/tomb/trace.bin` directly into `output/tomb/trace_replay/` without pulling in any stale `state.bin` from an old trace directory.
 
 The hierarchy is intentional:
 

@@ -300,17 +300,8 @@ static int simGetDebugLevel(void) {
 static unsigned char texDirtyPages[TEX_NUM_PAGES];
 static int texHasDirty = 0;
 
-/* Track current texBaseAddr register value.
- * On real SST1, the texture download logic adds texBaseAddr*8 to PCI
- * aperture offsets when writing to physical texture RAM.  Our sim
- * buffers the raw aperture writes in simMem and applies this offset
- * at flush time so the data ends up where the TMU will read it. */
-static FxU32 simTexBaseAddr = 0;
-
 static void simFlushTexture(void) {
     if (!texHasDirty || !simInitialized) return;
-
-    FxU32 baseOffset = simTexBaseAddr * 8;
 
     /* Find contiguous runs of dirty pages and flush each run */
     int totalBytes = 0;
@@ -326,106 +317,25 @@ static void simFlushTexture(void) {
             i++;
         }
 
-        /* Write each word in the dirty range via unified bus.
-         *
-         * CoreSim expects fxsim to emulate legacy SST-1 texture download
-         * address translation in software (texBaseAddr relocation plus the
-         * interleaved-to-linear repack).
-         *
-         * CoreDe10 already implements that translation in RTL, so doing it
-         * here would double-apply the relocation/repacking and corrupt TMU
-         * reads. In that mode we simply replay the raw aperture writes.
-         */
+        /* Write each word in the dirty range using the raw PCI texture aperture
+         * layout. Address translation into packed TMU SRAM now lives in shared
+         * RTL (Core.scala), so fxsim must not relocate or deinterleave here. */
         FxU32 offset = (FxU32)start << TEX_PAGE_SHIFT;
         FxU32 length = (FxU32)(i - start) << TEX_PAGE_SHIFT;
         FxU32 *data = (FxU32 *)(simMem + 0x800000 + offset);
         FxU32 words = length / 4;
         FxU32 j;
         for (j = 0; j < words; j++) {
-            FxU32 srcByteOff = offset + j * 4;
-#ifdef SIM_DE10_INTERFACE
-            FxU32 posInRow = srcByteOff & 0x1FF;  /* position within 512-byte row */
-
-            if (posInRow & 4) continue;
-
-            FxU32 rowBase = srcByteOff & ~0x1FFu;
-            FxU32 linearPos = posInRow >> 1;
-            FxU32 linearOff = rowBase + linearPos;
-            FxU32 byteOff = (baseOffset + linearOff) & 0x7FFFFF;
-            sim_write_tex_bulk(byteOff, &data[j], 1);
-#else
-            FxU32 posInRow = srcByteOff & 0x1FF;  /* position within 512-byte row */
-
-            /* In the interleaved layout, valid words are at 8-byte-aligned
-             * offsets (bit 2 clear).  Words where bit 2 is set are gaps. */
-            if (posInRow & 4) continue;
-
-            /* Deinterleave: linear column = interleaved column / 2 */
-            FxU32 rowBase = srcByteOff & ~0x1FFu;
-            FxU32 linearPos = posInRow >> 1;
-            FxU32 linearOff = rowBase + linearPos;
-
-            FxU32 physAddr = 0x800000 | ((baseOffset + linearOff) & 0x7FFFFF);
-            sim_write(physAddr, data[j]);
-#endif
+            FxU32 texOffset = offset + j * 4;
+            sim_write(0x800000 | texOffset, data[j]);
         }
 
         totalBytes += length;
         numRuns++;
     }
 
-    fprintf(stderr, "[fxsim] FLUSH TEX %d runs, %d bytes total (texBase=0x%x, byteOffset=0x%x)\n",
-            numRuns, totalBytes, simTexBaseAddr, simTexBaseAddr * 8);
-
-    /* Diagnostic: check source data and verify writes */
-    if (getenv("FXSIM_VERIFY_TEX") && totalBytes > 4096 && baseOffset != 0) {
-        /* Scan entire font data region in simMem for non-zero content.
-         * Font uploads go to LOD7 offset: (7<<17)=0xE0000.
-         * Check simMem at raw aperture offsets 0xE0000-0xE8FFF. */
-        int srcNonZero = 0;
-        FxU32 *fontRegion = (FxU32 *)(simMem + 0x800000 + 0xE0000);
-        for (int k = 0; k < 36864/4; k++) {
-            if (fontRegion[k] != 0) srcNonZero++;
-        }
-        fprintf(stderr, "[fxsim] DIAG simMem[0x8E0000..0x8E8FFF]: %d/%d non-zero words\n",
-                srcNonZero, 36864/4);
-        /* Also dump first few non-zero words */
-        for (int k = 0; k < 36864/4 && srcNonZero > 0; k++) {
-            if (fontRegion[k] != 0) {
-                fprintf(stderr, "[fxsim] DIAG simMem[0x%06x] = 0x%08x\n",
-                        0x8E0000 + k*4, fontRegion[k]);
-                srcNonZero--;
-                if (srcNonZero > 36864/4 - 5) continue; /* show first 5 */
-                break;
-            }
-        }
-        /* This is likely the font data flush. Read back a few words to verify. */
-        int nonzero = 0;
-        FxU32 firstAddr = 0x800000 | (baseOffset & 0x7FFFFF);
-        for (int k = 0; k < 16; k++) {
-            FxU32 readAddr = 0x800000 | ((baseOffset + k * 4) & 0x7FFFFF);
-            FxU32 readVal = sim_read(readAddr);
-            if (readVal != 0) nonzero++;
-            if (k < 4) {
-                fprintf(stderr, "[fxsim] VERIFY texRam[0x%06x] = 0x%08x\n",
-                        readAddr, readVal);
-            }
-        }
-        fprintf(stderr, "[fxsim] VERIFY %d/16 non-zero at base+0..base+60\n", nonzero);
-
-        /* Also check where font data should be: base + LOD7 offset (0xE0000) */
-        nonzero = 0;
-        for (int k = 0; k < 64; k++) {
-            FxU32 readAddr = 0x800000 | ((baseOffset + 0xE0000 + k * 4) & 0x7FFFFF);
-            FxU32 readVal = sim_read(readAddr);
-            if (readVal != 0) nonzero++;
-            if (k < 4) {
-                fprintf(stderr, "[fxsim] VERIFY texRam[0x%06x] (lod7+%d) = 0x%08x\n",
-                        readAddr, k*4, readVal);
-            }
-        }
-        fprintf(stderr, "[fxsim] VERIFY %d/64 non-zero at lod7 offset\n", nonzero);
-    }
+    fprintf(stderr, "[fxsim] FLUSH TEX %d runs, %d bytes total\n",
+            numRuns, totalBytes);
 
     texHasDirty = 0;
 }
@@ -457,14 +367,10 @@ void simWriteReg(volatile void *addr, FxU32 value) {
             simFlushTexture();
         }
 
-        /* Track texBaseAddr (0x30C) for texture download address translation.
-         * On real SST1, PCI texture writes are offset by texBaseAddr*8.
-         * Flush any pending texture data first (it was written with the old base). */
+        /* Flush pending raw texture aperture writes before texBaseAddr changes so
+         * Core sees the command stream in-order relative to later draws/reads. */
         if (regOff == 0x30C) {
             simFlushTexture();
-            simTexBaseAddr = value & 0xFFFFFF;
-            fprintf(stderr, "[fxsim] texBaseAddr = 0x%06x (byte offset 0x%06x)\n",
-                    simTexBaseAddr, simTexBaseAddr * 8);
         }
 
         /* Wait for pipeline drain before swapbuffer */

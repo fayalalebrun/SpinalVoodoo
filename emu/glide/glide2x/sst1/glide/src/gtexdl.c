@@ -560,7 +560,6 @@ GR_DDFUNC(_grTexDownloadPalette, void, ( GrChipID_t tmu, GuTexPalette *pal, int 
 } /* _grTexDownloadPalette */ 
 
 
-#ifndef __linux__
 /* 
    Let me take this opportunity to register my formal opposition to
    this function.  Either we do this or we don't.  Let's not hack like
@@ -719,24 +718,3 @@ all_done:
   _GlideRoot.stats.texDownloads++;
   GR_END_SLOPPY();
 }
-#else
-GR_ENTRY(ConvertAndDownloadRle, void, ( GrChipID_t tmu, FxU32 startAddress, GrLOD_t thisLod, GrLOD_t largeLod, GrAspectRatio_t aspectRatio, GrTextureFormat_t format, FxU32 evenOdd, FxU8 *bm_data, long bm_h, FxU32 u0, FxU32 v0, FxU32 width, FxU32 height, FxU32 dest_width, FxU32 dest_height, FxU16 *tlut))
-{
-  (void)tmu;
-  (void)startAddress;
-  (void)thisLod;
-  (void)largeLod;
-  (void)aspectRatio;
-  (void)format;
-  (void)evenOdd;
-  (void)bm_data;
-  (void)bm_h;
-  (void)u0;
-  (void)v0;
-  (void)width;
-  (void)height;
-  (void)dest_width;
-  (void)dest_height;
-  (void)tlut;
-}
-#endif

@@ -8,6 +8,8 @@
 #include "sim_harness.h"
 #include "VCoreSim.h"
 #include "VCoreSim___024root.h"
+#include "voodoo_trace_format.h"
+#include "voodoo_trace_writer.h"
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
@@ -62,6 +64,33 @@ static FILE *tmu_log = nullptr;
 
 /* Unified bus logging for trace-vs-live comparisons. */
 static FILE *bus_log = nullptr;
+static voodoo_trace_writer_t trace_writer;
+static bool trace_writer_active = false;
+
+static uint8_t trace_cmd_for_write(uint32_t addr, bool wide) {
+    if (addr < 0x400000u) return wide ? VOODOO_TRACE_WRITE_REG_L : VOODOO_TRACE_WRITE_REG_W;
+    if (addr < 0x800000u) return wide ? VOODOO_TRACE_WRITE_FB_L : VOODOO_TRACE_WRITE_FB_W;
+    return VOODOO_TRACE_WRITE_TEX_L;
+}
+
+static uint8_t trace_cmd_for_read(uint32_t addr) {
+    if (addr < 0x400000u) return VOODOO_TRACE_READ_REG_L;
+    if (addr < 0x800000u) return VOODOO_TRACE_READ_FB_L;
+    return VOODOO_TRACE_READ_REG_L;
+}
+
+static void trace_record_write(uint32_t addr, uint32_t data, bool wide) {
+    if (!trace_writer_active) return;
+    if ((addr & 0x3FCu) == 0x128u) {
+        trace_writer_record(&trace_writer, VOODOO_TRACE_SWAP, sim_get_swap_count(), data);
+    }
+    trace_writer_record(&trace_writer, trace_cmd_for_write(addr, wide), addr, data);
+}
+
+static void trace_record_read(uint32_t addr, uint32_t data) {
+    if (!trace_writer_active) return;
+    trace_writer_record(&trace_writer, trace_cmd_for_read(addr), addr, data);
+}
 
 static void log_bus_event(char op, uint32_t addr, uint32_t data) {
     if (!bus_log) return;
@@ -489,6 +518,7 @@ static void print_periodic_stats(void) {
  * Checking cmd_ready AFTER tick_one() would miss the acceptance. */
 static void bus_write_masked(uint32_t addr, uint32_t data, uint8_t mask, uint8_t length) {
     uint64_t t0 = sim_time;
+    const bool wide = (length != 1) || (mask == 0xFu);
     top->io_cpuBus_cmd_valid = 1;
     top->io_cpuBus_cmd_payload_fragment_opcode = BMB_OPCODE_WRITE;
     top->io_cpuBus_cmd_payload_fragment_address = addr & 0xFFFFFF;
@@ -540,6 +570,8 @@ static void bus_write_masked(uint32_t addr, uint32_t data, uint8_t mask, uint8_t
 
     total_write_ticks += (sim_time - t0) / 2;
     total_write_count++;
+    log_bus_event('W', addr, data);
+    trace_record_write(addr, wide ? data : ((mask & 0xCu) ? (data >> 16) : (data & 0xFFFFu)), wide);
     print_periodic_stats();
 }
 
@@ -593,6 +625,8 @@ static uint32_t bus_read(uint32_t addr) {
             uint64_t ticks = (sim_time - t0) / 2;
             total_read_ticks += ticks;
             total_read_count++;
+            log_bus_event('R', addr, data);
+            trace_record_read(addr, data);
             print_periodic_stats();
             return data;
         }
@@ -702,6 +736,24 @@ int sim_init(void) {
         }
     }
 
+    const char *trace_path = getenv("SIM_TRACE_FILE");
+    if (trace_path && trace_path[0]) {
+        voodoo_trace_header_t hdr;
+        memset(&hdr, 0, sizeof(hdr));
+        hdr.magic = VOODOO_TRACE_MAGIC;
+        hdr.version = 1;
+        hdr.voodoo_type = 1;
+        hdr.fb_size_mb = 4;
+        hdr.tex_size_mb = 4;
+        hdr.num_tmus = 1;
+        if (trace_writer_open(&trace_writer, trace_path, &hdr) == 0) {
+            trace_writer_active = true;
+            fprintf(stderr, "[sim_harness] Trace capture to %s\n", trace_path);
+        } else {
+            fprintf(stderr, "[sim_harness] Failed to open trace file: %s\n", trace_path);
+        }
+    }
+
     /* Optional cycle timeout */
     const char *cycle_limit_str = getenv("SIM_CYCLE_LIMIT");
     if (cycle_limit_str) {
@@ -726,6 +778,10 @@ int sim_init(void) {
 }
 
 void sim_shutdown(void) {
+    if (trace_writer_active) {
+        trace_writer_close(&trace_writer);
+        trace_writer_active = false;
+    }
     if (bus_log) {
         fclose(bus_log);
         bus_log = nullptr;
@@ -775,7 +831,6 @@ void sim_shutdown(void) {
 
 void sim_write(uint32_t addr, uint32_t data) {
     bus_write(addr, data);
-    log_bus_event('W', addr, data);
 }
 
 void sim_write16(uint32_t addr, uint16_t data) {
@@ -786,9 +841,7 @@ void sim_write16(uint32_t addr, uint16_t data) {
 }
 
 uint32_t sim_read(uint32_t addr) {
-    uint32_t data = bus_read(addr);
-    log_bus_event('R', addr, data);
-    return data;
+    return bus_read(addr);
 }
 
 
@@ -893,6 +946,7 @@ void sim_write_fb_bulk(uint32_t byte_offset, const uint32_t *src, uint32_t word_
         r->CoreSim__DOT__fbRam__DOT__ram_symbol1[idx + i] = (src[i] >> 8) & 0xff;
         r->CoreSim__DOT__fbRam__DOT__ram_symbol2[idx + i] = (src[i] >> 16) & 0xff;
         r->CoreSim__DOT__fbRam__DOT__ram_symbol3[idx + i] = (src[i] >> 24) & 0xff;
+        trace_record_write(0x400000u + byte_offset + i * 4u, src[i], true);
     }
 }
 
@@ -904,6 +958,7 @@ void sim_write_tex_bulk(uint32_t byte_offset, const uint32_t *src, uint32_t word
         r->CoreSim__DOT__texRam__DOT__ram_symbol1[idx + i] = (src[i] >> 8) & 0xff;
         r->CoreSim__DOT__texRam__DOT__ram_symbol2[idx + i] = (src[i] >> 16) & 0xff;
         r->CoreSim__DOT__texRam__DOT__ram_symbol3[idx + i] = (src[i] >> 24) & 0xff;
+        trace_record_write(0x800000u + byte_offset + i * 4u, src[i], true);
     }
 }
 

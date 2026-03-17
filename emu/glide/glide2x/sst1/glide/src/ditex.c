@@ -628,7 +628,21 @@ FxU16 *rle_line_end;
 #ifndef  __WATCOMC__
 void rle_decode_line_asm(FxU16 *tlut,FxU8 *src,FxU16 *dest)
 {
-   /* don't do anything just shut up the compiler */
+   while (dest < rle_line_end) {
+      FxU8 code = *src++;
+
+      if ((code & RLE_CODE) == RLE_CODE) {
+         FxU8 count = code & NOT_RLE_CODE;
+         FxU16 value;
+
+         if (count == 0) break;
+         value = tlut[*src++];
+         while (count-- != 0 && dest < rle_line_end) {
+            *dest++ = value;
+         }
+      } else {
+         *dest++ = tlut[code];
+      }
+   }
 }
 #endif
-

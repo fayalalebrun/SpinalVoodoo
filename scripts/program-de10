@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-HOST="${DE10_HOST:-}"
-USER_NAME="${DE10_USER:-root}"
+HOST="${DE10_HOST:-debian-fpga.local}"
+USER_NAME="${DE10_USER:-fpga}"
 RBF_FILE="${DE10_RBF:-output/de10/bitstream/SpinalVoodoo_de10.rbf}"
 REMOTE_TMP_DIR="${DE10_REMOTE_TMP_DIR:-/tmp/spinalvoodoo}"
 STATE_FILE="${DE10_STATE_FILE:-}"

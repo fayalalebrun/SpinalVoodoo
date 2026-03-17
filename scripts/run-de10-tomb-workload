@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+HOST="${DE10_HOST:-debian-fpga.local}"
+USER_NAME="${DE10_USER:-fpga}"
+REMOTE_PREFIX="${DE10_REMOTE_PREFIX:-/home/fpga/spinalvoodoo}"
+REMOTE_LAUNCHER="${DE10_REMOTE_LAUNCHER:-$REMOTE_PREFIX/current/bin/run-dosboxx-de10-glide}"
+REMOTE_TOMB_SRC="${DE10_TOMB_SRC:-/home/fpga/tr1-3dfx}"
+REMOTE_TOMB_GAME_DIR="${DE10_TOMB_GAME_DIR:-TOMBRAID}"
+REMOTE_TOMB_ISO="${DE10_TOMB_ISO:-tr1disc01.iso}"
+REMOTE_TOMB_EXE="${DE10_TOMB_EXE:-TOMB.EXE}"
+REMOTE_DISPLAY="${DE10_DISPLAY:-:99}"
+REMOTE_SCREEN="${DE10_SCREEN:-1024x768x24}"
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/run-de10-tomb-workload --host <host> [options]
+
+Options:
+  --host <host>         DE10 host
+  --user <user>         SSH user (default: fpga)
+  --launcher <path>     Remote deployed launcher (default: /home/fpga/spinalvoodoo/current/bin/run-dosboxx-de10-glide)
+  --src <dir>           Remote prepared Tomb source tree (default: /home/fpga/tr1-3dfx)
+  --game-dir <name>     Game directory inside the source tree (default: TOMBRAID)
+  --iso <name>          ISO filename inside the source tree (default: tr1disc01.iso)
+  --exe <name>          Tomb executable name (default: TOMB.EXE)
+  --display <display>   Remote X display for Xvfb (default: :99)
+  --screen <spec>       Xvfb screen spec (default: 1024x768x24)
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --host)
+      HOST="$2"
+      shift 2
+      ;;
+    --user)
+      USER_NAME="$2"
+      shift 2
+      ;;
+    --launcher)
+      REMOTE_LAUNCHER="$2"
+      shift 2
+      ;;
+    --src)
+      REMOTE_TOMB_SRC="$2"
+      shift 2
+      ;;
+    --game-dir)
+      REMOTE_TOMB_GAME_DIR="$2"
+      shift 2
+      ;;
+    --iso)
+      REMOTE_TOMB_ISO="$2"
+      shift 2
+      ;;
+    --exe)
+      REMOTE_TOMB_EXE="$2"
+      shift 2
+      ;;
+    --display)
+      REMOTE_DISPLAY="$2"
+      shift 2
+      ;;
+    --screen)
+      REMOTE_SCREEN="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
+
+if [[ -z "$HOST" ]]; then
+  usage >&2
+  exit 1
+fi
+
+REMOTE_TARGET="${USER_NAME}@${HOST}"
+ssh "$REMOTE_TARGET" "test -x '$REMOTE_LAUNCHER' && test -d '$REMOTE_TOMB_SRC/$REMOTE_TOMB_GAME_DIR' && test -f '$REMOTE_TOMB_SRC/$REMOTE_TOMB_ISO' && command -v Xvfb >/dev/null"
+exec ssh -t "$REMOTE_TARGET" "bash -s -- '$REMOTE_LAUNCHER' '$REMOTE_TOMB_SRC' '$REMOTE_TOMB_GAME_DIR' '$REMOTE_TOMB_ISO' '$REMOTE_TOMB_EXE' '$REMOTE_DISPLAY' '$REMOTE_SCREEN'" <<'EOF'
+set -euo pipefail
+launcher="$1"
+tomb_src="$2"
+game_dir="$3"
+iso_name="$4"
+exe_name="$5"
+display_num="$6"
+screen_spec="$7"
+
+Xvfb "$display_num" -screen 0 "$screen_spec" >/tmp/de10-tomb-xvfb.log 2>&1 &
+xvfb_pid=$!
+cleanup() {
+  kill "$xvfb_pid" >/dev/null 2>&1 || true
+  wait "$xvfb_pid" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+export DISPLAY="$display_num"
+"$launcher" \
+  -c "mount c $tomb_src" \
+  -c "imgmount d $tomb_src/$iso_name -t iso" \
+  -c "c:" \
+  -c "cd $game_dir" \
+  -c "$exe_name"
+EOF

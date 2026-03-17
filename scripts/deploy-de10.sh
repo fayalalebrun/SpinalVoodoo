@@ -3,13 +3,14 @@ set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 
-HOST="${DE10_HOST:-}"
-USER_NAME="${DE10_USER:-root}"
+HOST="${DE10_HOST:-debian-fpga.local}"
+USER_NAME="${DE10_USER:-fpga}"
 RBF_FILE="${DE10_RBF:-$ROOT_DIR/output/de10/bitstream/SpinalVoodoo_de10.rbf}"
 GLIDE_LIB="${DE10_GLIDE_LIB:-$ROOT_DIR/emu/glide/glide2x/sst1/lib/de10/libglide2x.so.2}"
+GLIDE_LIB_LINK="${DE10_GLIDE_LIB_LINK:-$ROOT_DIR/emu/glide/glide2x/sst1/lib/de10/libglide2x.so}"
 LAUNCHER="${DE10_LAUNCHER:-$ROOT_DIR/scripts/run-dosboxx-de10-glide}"
 CONF_FILE="${DE10_CONF:-$ROOT_DIR/scripts/dosboxx-de10-glide.conf}"
-REMOTE_PREFIX="${DE10_REMOTE_PREFIX:-/opt/spinalvoodoo}"
+REMOTE_PREFIX="${DE10_REMOTE_PREFIX:-/home/fpga/spinalvoodoo}"
 BUNDLE_ID="${DE10_BUNDLE_ID:-$(date +%Y%m%d-%H%M%S)}"
 MANIFEST_FILE=""
 MANIFEST_LINES=()
@@ -125,6 +126,11 @@ copy_verified "$RBF_FILE" "$REMOTE_RELEASE_DIR/fpga/$(basename "$RBF_FILE")" "fp
 if [[ -f "$GLIDE_LIB" ]]; then
   echo "[de10] Uploading Glide library"
   copy_verified "$GLIDE_LIB" "$REMOTE_RELEASE_DIR/lib/libglide2x.so.2" "lib/libglide2x.so.2"
+  if [[ -f "$GLIDE_LIB_LINK" ]]; then
+    copy_verified "$GLIDE_LIB_LINK" "$REMOTE_RELEASE_DIR/lib/libglide2x.so" "lib/libglide2x.so"
+  else
+    ssh "$REMOTE_TARGET" "ln -sfn 'libglide2x.so.2' '$REMOTE_RELEASE_DIR/lib/libglide2x.so'"
+  fi
 else
   echo "[de10] Glide library not found, skipping: $GLIDE_LIB"
 fi

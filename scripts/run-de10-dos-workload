@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+
+HOST="${DE10_HOST:-debian-fpga.local}"
+USER_NAME="${DE10_USER:-fpga}"
+RBF_FILE="${DE10_RBF:-$ROOT_DIR/output/de10/bitstream/SpinalVoodoo_de10.rbf}"
+STATE_FILE="${DE10_STATE_FILE:-/home/fpga/spinalvoodoo/current/.fpga-programmed.sha256}"
+REMOTE_PREFIX="${DE10_REMOTE_PREFIX:-/home/fpga/spinalvoodoo}"
+REMOTE_RUNTIME_DIR="${DE10_RUNTIME_DIR:-/home/fpga/de10-cross}"
+REMOTE_LAUNCHER="${DE10_REMOTE_LAUNCHER:-$REMOTE_PREFIX/current/bin/run-dosboxx-de10-glide}"
+REMOTE_DISPLAY="${DE10_DISPLAY:-:99}"
+REMOTE_SCREEN="${DE10_SCREEN:-1024x768x24}"
+EXE=""
+EXE_ARGS=""
+VERIFY_ONLY=0
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/run-de10-dos-workload --host <host> --exe <dos-exe> [options]
+
+Options:
+  --host <host>          DE10 host
+  --user <user>          SSH user (default: fpga)
+  --verify-programmed    Skip programming and require the board state marker to match
+  --runtime-dir <dir>    Remote DOS runtime directory mounted as C: (default: /home/fpga/de10-cross)
+  --launcher <path>      Remote deployed launcher (default: /home/fpga/spinalvoodoo/current/bin/run-dosboxx-de10-glide)
+  --display <display>    Remote X display for Xvfb (default: :99)
+  --screen <spec>        Xvfb screen spec (default: 1024x768x24)
+  --exe <dos-exe>        DOS executable name inside the runtime dir
+  --exe-args <args>      Arguments appended to the DOS command
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --host)
+      HOST="$2"
+      shift 2
+      ;;
+    --user)
+      USER_NAME="$2"
+      shift 2
+      ;;
+    --verify-programmed)
+      VERIFY_ONLY=1
+      shift
+      ;;
+    --runtime-dir)
+      REMOTE_RUNTIME_DIR="$2"
+      shift 2
+      ;;
+    --launcher)
+      REMOTE_LAUNCHER="$2"
+      shift 2
+      ;;
+    --display)
+      REMOTE_DISPLAY="$2"
+      shift 2
+      ;;
+    --screen)
+      REMOTE_SCREEN="$2"
+      shift 2
+      ;;
+    --exe)
+      EXE="$2"
+      shift 2
+      ;;
+    --exe-args)
+      EXE_ARGS="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
+
+if [[ -z "$HOST" || -z "$EXE" ]]; then
+  usage >&2
+  exit 1
+fi
+
+REMOTE_TARGET="${USER_NAME}@${HOST}"
+dos_cmd="$EXE"
+if [[ -n "$EXE_ARGS" ]]; then
+  dos_cmd+=" $EXE_ARGS"
+fi
+
+if [[ "$VERIFY_ONLY" -eq 0 ]]; then
+  "$ROOT_DIR/scripts/program-de10" --host "$HOST" --user "$USER_NAME" --rbf "$RBF_FILE" --state-file "$STATE_FILE"
+else
+  local_hash="$(sha256sum "$RBF_FILE" | cut -d ' ' -f 1)"
+  remote_hash="$(ssh "$REMOTE_TARGET" "test -f '$STATE_FILE' && head -n 1 '$STATE_FILE' | cut -d ' ' -f 1 || true")"
+  if [[ "$remote_hash" != "$local_hash" ]]; then
+    echo "Remote programmed bitstream marker does not match $RBF_FILE" >&2
+    exit 1
+  fi
+fi
+
+ssh "$REMOTE_TARGET" "test -x '$REMOTE_LAUNCHER' && test -d '$REMOTE_RUNTIME_DIR' && command -v Xvfb >/dev/null"
+exec ssh "$REMOTE_TARGET" "sudo -n bash -s -- '$REMOTE_LAUNCHER' '$REMOTE_RUNTIME_DIR' '$dos_cmd' '$REMOTE_DISPLAY' '$REMOTE_SCREEN'" <<'EOF'
+set -euo pipefail
+launcher="$1"
+runtime_dir="$2"
+dos_cmd="$3"
+display_num="$4"
+screen_spec="$5"
+
+Xvfb "$display_num" -screen 0 "$screen_spec" >/tmp/de10-dos-xvfb.log 2>&1 &
+xvfb_pid=$!
+cleanup() {
+  kill "$xvfb_pid" >/dev/null 2>&1 || true
+  wait "$xvfb_pid" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+export DISPLAY="$display_num"
+"$launcher" -c "mount c $runtime_dir" -c "c:" -c "$dos_cmd"
+EOF

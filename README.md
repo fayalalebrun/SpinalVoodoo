@@ -356,13 +356,31 @@ make de10/qsys
 # Build bitstream (requires Quartus in PATH)
 make de10/bitstream
 
-# Program/deploy to a network-accessible board
-make de10/program ARGS="--host <de10-host> --user <user>"
-make de10/deploy  ARGS="--host <de10-host> --user <user>"
+# Program/deploy to the default board (fpga@debian-fpga.local)
+make de10/setup/program
+make de10/setup/deploy
 
-# Build MMIO smoke utility for board-side validation
-make de10/mmio-smoke
+# Board validation
+make de10/check/mmio
+
+# Run workloads on the board
+make de10/run/dos/df00sdk
+make de10/run/tomb
 ```
+
+Recommended DE10 organization:
+
+- `de10/setup/*` is for infrequent board preparation such as FPGA programming and runtime deployment.
+- `de10/check/*` is for board validation and smoke checks.
+- `de10/run/*` is for actual workload execution on programmed hardware.
+- The older low-level `de10/rtl`, `de10/qsys`, `de10/bitstream`, and `de10/glide*` commands remain available as advanced build plumbing.
+
+Board workload assumptions:
+
+- Default board target is `fpga@debian-fpga.local` unless `DE10_HOST` or `DE10_USER` override it.
+- Default deployed runtime prefix is `/home/fpga/spinalvoodoo` unless `DE10_REMOTE_PREFIX` overrides it.
+- `make de10/run/dos/<name>` uses the deployed launcher on the board and mounts `DE10_RUNTIME_DIR` (default `/home/fpga/de10-cross`) as `C:`.
+- `make de10/run/tomb` expects a prepared remote Tomb tree at `DE10_TOMB_SRC` (default `/home/fpga/tr1-3dfx`) containing the game directory and ISO.
 
 Current scope of this scaffold:
 

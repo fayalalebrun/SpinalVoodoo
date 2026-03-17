@@ -6,7 +6,7 @@
 #   tomb/<runtime>/<action>
 #   de10/<action>
 
-.PHONY: all clean clean-sim clean-glide clean-tests native/help native/sim/build native/trace/build native/sim/run-all native/sim/check-all dos/help dos/sim/build dos/trace/build dos/dosbox tomb/help tomb/prepare tomb/sim/run tomb/sim/headless tomb/sim/capture tomb/sim/trace tomb/sim/trace/check tomb/trace/run tomb/trace/headless tomb/trace/check de10/help de10/plan de10/rtl de10/qsys de10/bitstream de10/program de10/deploy de10/mmio-smoke de10/sync-sysroot de10/glide de10/glide-tests de10/glide-cross de10/glide-tests-cross FORCE
+.PHONY: all clean clean-sim clean-glide clean-tests native/help native/sim/build native/trace/build native/sim/run-all native/sim/check-all dos/help dos/sim/build dos/trace/build dos/dosbox tomb/help tomb/prepare tomb/sim/run tomb/sim/headless tomb/sim/capture tomb/sim/trace tomb/sim/trace/check tomb/trace/run tomb/trace/headless tomb/trace/check de10/help de10/setup/program de10/setup/deploy de10/check/mmio de10/run/tomb de10/plan de10/rtl de10/qsys de10/bitstream de10/sync-sysroot de10/glide de10/glide-tests de10/glide-cross de10/glide-tests-cross FORCE
 .PRECIOUS: dos/sim/build/% dos/trace/build/%
 
 # Derive CXX32 from CC32 for sub-makefiles that need it
@@ -138,20 +138,38 @@ tomb/trace/check: $(TRACE_TEST_BIN)
 	$(TRACE_TEST_BIN) traces/tomb/trace.bin --output-dir output/tomb/trace_replay
 
 de10/help:
-	@echo "DE10 targets:"
+	@echo "DE10 workflow targets:"
 	@echo "  runtime: de10"
+	@echo "  make de10/setup/program    # program the FPGA on the board"
+	@echo "  make de10/setup/deploy     # deploy the board runtime bundle"
+	@echo "  make de10/check/mmio       # run the board MMIO smoke utility"
+	@echo "  make de10/run/dos/df00sdk  # run one DOS workload from the board runtime dir"
+	@echo "  make de10/run/tomb         # run Tomb from a prepared remote Tomb tree"
+	@echo ""
+	@echo "Advanced DE10 targets:"
 	@echo "  make de10/plan         # open goals and bring-up docs"
 	@echo "  make de10/rtl          # generate DE10-targeted RTL"
 	@echo "  make de10/qsys         # generate Platform Designer system"
 	@echo "  make de10/bitstream    # run Quartus bitstream build flow"
-	@echo "  make de10/program      # program DE10 FPGA image remotely"
-	@echo "  make de10/deploy       # deploy runtime bundle to DE10"
-	@echo "  make de10/mmio-smoke   # build board MMIO smoke utility"
 	@echo "  make de10/sync-sysroot # fetch DE10 userspace sysroot locally"
 	@echo "  make de10/glide        # build DE10-targeted Glide library"
 	@echo "  make de10/glide-tests  # build DE10-targeted Glide test binaries"
 	@echo "  make de10/glide-cross  # cross-build DE10 Glide library locally"
 	@echo "  make de10/glide-tests-cross # cross-build DE10 Glide tests locally"
+
+de10/setup/program:
+	$(DE10_PROGRAM_SCRIPT) $(ARGS)
+
+de10/setup/deploy:
+	$(DE10_DEPLOY_SCRIPT) $(ARGS)
+
+de10/check/mmio: $(DE10_MMIO_SMOKE_BIN)
+
+de10/run/dos/%:
+	bash ./scripts/run-de10-dos-workload --exe $*.EXE $(ARGS)
+
+de10/run/tomb:
+	bash ./scripts/run-de10-tomb-workload $(ARGS)
 
 de10/plan:
 	@echo "See docs/DE10_MILESTONES.md"
@@ -167,14 +185,6 @@ de10/qsys:
 
 de10/bitstream:
 	$(DE10_BUILD_SCRIPT)
-
-de10/program:
-	$(DE10_PROGRAM_SCRIPT) $(ARGS)
-
-de10/deploy:
-	$(DE10_DEPLOY_SCRIPT) $(ARGS)
-
-de10/mmio-smoke: $(DE10_MMIO_SMOKE_BIN)
 
 de10/sync-sysroot:
 	$(DE10_SYNC_SYSROOT_SCRIPT) $(ARGS)

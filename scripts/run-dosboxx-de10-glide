@@ -1,18 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DOSBOX_BIN="${DOSBOXX_BIN:-}"
-GLIDE_LIB_DIR="${DE10_GLIDE_LIB_DIR:-/opt/spinalvoodoo/current/lib}"
-CONF_FILE="${DE10_DOSBOX_CONF:-/opt/spinalvoodoo/current/etc/dosboxx-de10-glide.conf}"
-
-if [[ -z "$DOSBOX_BIN" ]]; then
-  if command -v dosbox-x >/dev/null 2>&1; then
-    DOSBOX_BIN="$(command -v dosbox-x)"
-  else
-    echo "dosbox-x not found and DOSBOXX_BIN is not set" >&2
-    exit 1
-  fi
-fi
+DOSBOX_BIN="${DOSBOXX_BIN:-${DE10_DOSBOX_BIN:-/home/fpga/de10-cross/dosboxx-src/src/dosbox-x}}"
+GLIDE_LIB_DIR="${DE10_GLIDE_LIB_DIR:-/home/fpga/spinalvoodoo/current/lib}"
+CONF_FILE="${DE10_DOSBOX_CONF:-/home/fpga/spinalvoodoo/current/etc/dosboxx-de10-glide.conf}"
 
 if [[ ! -x "$DOSBOX_BIN" ]]; then
   echo "DOSBox-X binary is not executable: $DOSBOX_BIN" >&2

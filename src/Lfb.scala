@@ -304,9 +304,14 @@ case class Lfb(c: Config) extends Component {
   pipelinePayload.iteratedAlpha := decodedAlpha
   pipelinePayload.rawW := S(0, 32 bits) // LFB has no W data
   pipelinePayload.fogColor := io.fogColor
+  pipelinePayload.chromaKey := B(0, 32 bits)
+  pipelinePayload.zaColor := io.zaColor
   pipelinePayload.alphaMode := io.alphaMode
   pipelinePayload.fogMode := io.fogMode
   pipelinePayload.fbzMode := io.fbzMode
+  pipelinePayload.drawColorBufferBase := io.fbWriteColorBaseAddr
+  pipelinePayload.drawAuxBufferBase := io.fbWriteAuxBaseAddr
+  pipelinePayload.fbPixelStride := io.fbPixelStride
   if (c.trace.enabled) {
     pipelinePayload.trace := Trace.originPixelKey(Trace.Origin.lfb)
   }

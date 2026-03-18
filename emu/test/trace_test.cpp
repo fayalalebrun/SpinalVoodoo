@@ -388,11 +388,16 @@ int main(int argc, char **argv) {
                     ref_write_reg(addr, e->data);
 
                     if (!ref_only) {
+                        if (reg == 0x128)
+                            sim_idle_wait();
+
                         sim_write(addr, e->data);
 
-                        /* On triangle/fastfill commands, wait for pipeline to drain */
-                        if (reg == 0x080 || reg == 0x100 || reg == 0x124 || reg == 0x128)
+                        if (reg == 0x128)
                             sim_idle_wait();
+
+                        /* Swapbuffer is the only replay synchronization point.
+                         * Triangle / fastfill writes rely on normal bus backpressure. */
                     }
 
                     if (reg == 0x080 || reg == 0x100 || reg == 0x124) {
@@ -544,6 +549,10 @@ int main(int argc, char **argv) {
 
     if (!ref_only)
         sim_flush_fb_cache();
+
+    if (!ref_only) {
+        fprintf(stderr, "[trace_test] Sim swap count after replay: %u\n", sim_get_swap_count());
+    }
 
     /* ---------------------------------------------------------------
      * Texture memory comparison (sim vs ref)

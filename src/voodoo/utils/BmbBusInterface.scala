@@ -190,6 +190,36 @@ case class BmbBusInterface(
     (VoodooRegInst(reg), bufferedStream)
   }
 
+  /** Create a command register that produces a payload-carrying Stream
+    *
+    * The payload is sampled in the same cycle as the register write and then buffered using the
+    * same command-stream pipeline as newCommandReg, so PCI backpressure still blocks the write
+    * source before any command is dropped.
+    */
+  def newCommandRegWithPayload[T <: Data](
+      addr: BigInt,
+      name: String,
+      category: RegisterCategory,
+      payloadType: HardType[T],
+      sec: Secure = null
+  )(
+      buildPayload: (RegInst, T) => Unit
+  ): (RegInst, Stream[T]) = {
+    registerCategories(addr) = category
+    val reg = newRegAt(addr, name, sec)
+
+    val src = Stream(payloadType())
+    src.valid := reg.hitDoWrite
+    buildPayload(reg, src.payload)
+
+    val s2m = src.s2mPipe()
+    val bufferedStream = s2m.m2sPipe()
+
+    commandStreamReady(addr) = src.ready
+
+    (reg, bufferedStream)
+  }
+
   /** Implicit enrichment for field-level .withFloatAlias()
     *
     * Registers a float alias address (integer addr + 0x080). Hardware generation is in PciFifo;

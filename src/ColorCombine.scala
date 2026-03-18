@@ -64,6 +64,8 @@ object ColorCombine {
 
     // Fog color (per-triangle, passed through to Fog stage)
     val fogColor = Bits(32 bits)
+    val chromaKey = Bits(32 bits)
+    val zaColor = Bits(32 bits)
 
     // Configuration (decoded enums)
     val config = ColorCombine.Config()
@@ -72,6 +74,9 @@ object ColorCombine {
     val alphaMode = AlphaMode()
     val fogMode = FogMode()
     val fbzMode = FbzMode()
+    val drawColorBufferBase = UInt(c.addressWidth.value bits)
+    val drawAuxBufferBase = UInt(c.addressWidth.value bits)
+    val fbPixelStride = UInt(11 bits)
     val trace = if (c.trace.enabled) Trace.PixelKey() else null
   }
 
@@ -86,11 +91,16 @@ object ColorCombine {
 
     // Fog color (per-triangle, pass-through for Fog stage)
     val fogColor = Bits(32 bits)
+    val chromaKey = Bits(32 bits)
+    val zaColor = Bits(32 bits)
 
     // Per-triangle FIFO registers (pass-through for downstream stages)
     val alphaMode = AlphaMode()
     val fogMode = FogMode()
     val fbzMode = FbzMode()
+    val drawColorBufferBase = UInt(c.addressWidth.value bits)
+    val drawAuxBufferBase = UInt(c.addressWidth.value bits)
+    val fbPixelStride = UInt(11 bits)
     val trace = if (c.trace.enabled) Trace.PixelKey() else null
   }
 }
@@ -113,11 +123,16 @@ case class ColorCombine(c: voodoo.Config) extends Component {
 
   // Fog color pass-through (per-triangle, must travel with pixels through pipeline)
   val FOG_COLOR = Payload(Bits(32 bits))
+  val CHROMA_KEY = Payload(Bits(32 bits))
+  val ZA_COLOR = Payload(Bits(32 bits))
 
   // Per-triangle FIFO registers pass-through (must travel with pixels through pipeline)
   val ALPHA_MODE = Payload(AlphaMode())
   val FOG_MODE = Payload(FogMode())
   val FBZ_MODE = Payload(FbzMode())
+  val DRAW_COLOR_BUFFER_BASE = Payload(UInt(c.addressWidth.value bits))
+  val DRAW_AUX_BUFFER_BASE = Payload(UInt(c.addressWidth.value bits))
+  val FB_PIXEL_STRIDE = Payload(UInt(11 bits))
   val TRACE = if (c.trace.enabled) Payload(Trace.PixelKey()) else null
 
   // Color payloads at various precisions
@@ -213,9 +228,14 @@ case class ColorCombine(c: voodoo.Config) extends Component {
     self(RAW_W) := payload.rawW
     self(CONFIG) := payload.config
     self(FOG_COLOR) := payload.fogColor
+    self(CHROMA_KEY) := payload.chromaKey
+    self(ZA_COLOR) := payload.zaColor
     self(ALPHA_MODE) := payload.alphaMode
     self(FOG_MODE) := payload.fogMode
     self(FBZ_MODE) := payload.fbzMode
+    self(DRAW_COLOR_BUFFER_BASE) := payload.drawColorBufferBase
+    self(DRAW_AUX_BUFFER_BASE) := payload.drawAuxBufferBase
+    self(FB_PIXEL_STRIDE) := payload.fbPixelStride
     if (c.trace.enabled) {
       self(TRACE) := payload.trace
     }
@@ -454,9 +474,14 @@ case class ColorCombine(c: voodoo.Config) extends Component {
     payload.iteratedAlpha := self(ITERATED_ALPHA_PT)
     payload.rawW := self(RAW_W)
     payload.fogColor := self(FOG_COLOR)
+    payload.chromaKey := self(CHROMA_KEY)
+    payload.zaColor := self(ZA_COLOR)
     payload.alphaMode := self(ALPHA_MODE)
     payload.fogMode := self(FOG_MODE)
     payload.fbzMode := self(FBZ_MODE)
+    payload.drawColorBufferBase := self(DRAW_COLOR_BUFFER_BASE)
+    payload.drawAuxBufferBase := self(DRAW_AUX_BUFFER_BASE)
+    payload.fbPixelStride := self(FB_PIXEL_STRIDE)
     if (c.trace.enabled) {
       payload.trace := self(TRACE)
     }

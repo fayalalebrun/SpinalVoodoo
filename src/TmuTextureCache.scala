@@ -11,6 +11,7 @@ case class TmuTextureCache(c: voodoo.Config, formalStrong: Boolean = true) exten
     val sampleRequest = slave Stream (Tmu.SampleRequest(c))
     val fetched = master Stream (Tmu.FetchResult(c))
     val fastFetch = master Stream (Tmu.FastFetch(c))
+    val outputRoute = master Stream (Bool())
     val texRead = master(Bmb(Tmu.bmbParams(c)))
     val busy = out Bool ()
   }
@@ -440,7 +441,13 @@ case class TmuTextureCache(c: voodoo.Config, formalStrong: Boolean = true) exten
     }
   }
 
-  io.sampleRequest.ready := (!isExpanding && expandedStream.fire) || (useFastBilinear && !fastHoldValid)
+  val acceptSlow = !isExpanding && !useFastBilinear && expandedStream.ready
+  val acceptFast = useFastBilinear && !fastHoldValid
+  val canAcceptSample = acceptSlow || acceptFast
+
+  io.outputRoute.valid := io.sampleRequest.valid && canAcceptSample
+  io.outputRoute.payload := useFastBilinear
+  io.sampleRequest.ready := io.outputRoute.ready && canAcceptSample
   io.fetched << joined
   io.busy := fetchBusy
 }

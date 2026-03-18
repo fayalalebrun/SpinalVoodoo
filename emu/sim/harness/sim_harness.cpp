@@ -387,17 +387,9 @@ static void tick_one(void) {
             int16_t px = sext12(r->CoreSim__DOT__core_1__DOT__preDitherMerged_payload_coords_0);
             int16_t py = sext12(r->CoreSim__DOT__core_1__DOT__preDitherMerged_payload_coords_1);
             if (px == watch_x && py == watch_y) {
-                uint8_t chosen = r->CoreSim__DOT__core_1__DOT__streamArbiter_7__DOT__io_chosen;
                 fprintf(stderr,
-                        "[PIXEL %d,%d] PRE: src=%s chosen=%u valids=%d%d%d readies=%d%d%d rgb888=(%d,%d,%d) rgbWrite=%d auxWrite=%d fbBase=0x%06x auxBase=0x%06x stride=%u\n",
+                        "[PIXEL %d,%d] PRE: rgb888=(%d,%d,%d) rgbWrite=%d auxWrite=%d fbBase=0x%06x auxBase=0x%06x stride=%u\n",
                         px, py,
-                        predither_source_name(chosen), chosen,
-                        r->CoreSim__DOT__core_1__DOT__streamArbiter_7__DOT__io_inputs_0_valid,
-                        r->CoreSim__DOT__core_1__DOT__streamArbiter_7__DOT__io_inputs_1_valid,
-                        r->CoreSim__DOT__core_1__DOT__streamArbiter_7__DOT__io_inputs_2_valid,
-                        r->CoreSim__DOT__core_1__DOT__streamArbiter_7__DOT__io_inputs_0_ready,
-                        r->CoreSim__DOT__core_1__DOT__streamArbiter_7__DOT__io_inputs_1_ready,
-                        r->CoreSim__DOT__core_1__DOT__streamArbiter_7__DOT__io_inputs_2_ready,
                         r->CoreSim__DOT__core_1__DOT__preDitherMerged_payload_r,
                         r->CoreSim__DOT__core_1__DOT__preDitherMerged_payload_g,
                         r->CoreSim__DOT__core_1__DOT__preDitherMerged_payload_b,
@@ -442,6 +434,7 @@ static void tick_one(void) {
                         r->CoreSim__DOT__core_1__DOT__swapBuffer_1__DOT__swapCountReg);
             }
         }
+
     }
 
     /* Check cycle limit (sim_time/2 = tick count) */
@@ -596,7 +589,7 @@ static uint32_t bus_read(uint32_t addr) {
     top->io_cpuBus_rsp_ready = 1;
 
     /* Tick until cmd accepted: check ready BEFORE each rising edge */
-    int timeout = 5000000;
+    int timeout = 1000000;
     while (timeout > 0) {
         top->eval();
         if (top->io_cpuBus_cmd_ready) {
@@ -880,7 +873,7 @@ uint32_t sim_idle_wait(void) {
 
     uint32_t status = bus_read(0x000000);
     auto r = top->rootp;
-    fprintf(stderr, "[sim_harness] WARNING: idle_wait timeout after %lu ticks! status=0x%08x fifo=%u busy=%u swaps=%u\n",
+    fprintf(stderr, "[sim_harness] WARNING: idle_wait timeout after 1M ticks (%lu elapsed)! status=0x%08x fifo=%u busy=%u swaps=%u\n",
             (unsigned long)((sim_time - t0) / 2), status,
             status & SST_FIFOFREE_MASK,
             (status & SST_BUSY) ? 1u : 0u,

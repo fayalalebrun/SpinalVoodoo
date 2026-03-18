@@ -253,6 +253,13 @@ object TriangleSetup {
     val color0 = Bits(32 bits)
     val color1 = Bits(32 bits)
     val fogColor = Bits(32 bits)
+    val chromaKey = Bits(32 bits)
+    val zaColor = Bits(32 bits)
+
+    // Framebuffer routing (captured per-triangle so in-flight pixels survive swaps)
+    val drawColorBufferBase = UInt(c.addressWidth.value bits)
+    val drawAuxBufferBase = UInt(c.addressWidth.value bits)
+    val fbPixelStride = UInt(11 bits)
   }
 
   /** Input bundle - triangle with gradients and render config captured at command time */

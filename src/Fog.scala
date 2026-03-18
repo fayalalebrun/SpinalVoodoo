@@ -16,10 +16,15 @@ object Fog {
       UInt(8 bits),
       UInt(8 bits)
     ) // pre-fog color for ACOLORBEFOREFOG blend factor
+    val chromaKey = Bits(32 bits)
+    val zaColor = Bits(32 bits)
 
     // Per-triangle FIFO registers (pass-through for alpha test and framebuffer access)
     val alphaMode = AlphaMode()
     val fbzMode = FbzMode()
+    val drawColorBufferBase = UInt(c.addressWidth.value bits)
+    val drawAuxBufferBase = UInt(c.addressWidth.value bits)
+    val fbPixelStride = UInt(11 bits)
     val trace = if (c.trace.enabled) Trace.PixelKey() else null
   }
 }
@@ -47,8 +52,13 @@ case class Fog(c: Config) extends Component {
   io.output.payload.alpha := payload.alpha
   io.output.payload.depth := payload.depth
   io.output.payload.colorBeforeFog := payload.color
+  io.output.payload.chromaKey := payload.chromaKey
+  io.output.payload.zaColor := payload.zaColor
   io.output.payload.alphaMode := payload.alphaMode
   io.output.payload.fbzMode := payload.fbzMode
+  io.output.payload.drawColorBufferBase := payload.drawColorBufferBase
+  io.output.payload.drawAuxBufferBase := payload.drawAuxBufferBase
+  io.output.payload.fbPixelStride := payload.fbPixelStride
   if (c.trace.enabled) {
     io.output.payload.trace := payload.trace
   }

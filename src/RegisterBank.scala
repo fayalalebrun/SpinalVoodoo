@@ -67,6 +67,25 @@ case class RegisterBank(config: Config) extends Component {
     // Command stream ready signals (exposed for PciFifo drain blocking)
     // One per command register, sorted by address to match PciFifo.commandAddresses ordering
     val commandReady = out Vec (Bool(), 5)
+
+    // Triangle command snapshot inputs from Core
+    val triangleCapture = in(new Bundle {
+      val floatShadowStartS = SInt(60 bits)
+      val floatShadowStartT = SInt(60 bits)
+      val floatShadowStartW = SInt(60 bits)
+      val floatShadowDSdX = SInt(60 bits)
+      val floatShadowDTdX = SInt(60 bits)
+      val floatShadowDWdX = SInt(60 bits)
+      val floatShadowDSdY = SInt(60 bits)
+      val floatShadowDTdY = SInt(60 bits)
+      val floatShadowDWdY = SInt(60 bits)
+      val floatShadowStartA = SInt(60 bits)
+      val floatShadowDAdX = SInt(60 bits)
+      val floatShadowDAdY = SInt(60 bits)
+      val drawColorBufferBase = UInt(config.addressWidth.value bits)
+      val drawAuxBufferBase = UInt(config.addressWidth.value bits)
+      val fbPixelStride = UInt(11 bits)
+    })
   }
 
   // Create BMB bus interface for RegIf - shared across all Areas
@@ -75,6 +94,10 @@ case class RegisterBank(config: Config) extends Component {
     spinal.lib.bus.regif.ClassName("RegisterBank")
   val busif = BmbBusInterface(io.bus, SizeMapping(0x000, 4 KiB), "VDO")
   import busif.FieldFloatAlias // Bring .withFloatAlias() implicit into scope
+
+  private val triangleDrawTraceId = if (config.trace.enabled) Reg(UInt(32 bits)) init (0) else null
+  private val trianglePrimitiveTraceId =
+    if (config.trace.enabled) Reg(UInt(32 bits)) init (0) else null
 
   // Track sync pulse - from PciFifo syncDrained signal
   val syncPulse = Reg(Bool()) init (False)
@@ -327,6 +350,173 @@ case class RegisterBank(config: Config) extends Component {
       .asOutput()
   }
 
+  private def captureTriangleGradientsFrom(
+      sources: Seq[(Bits, Bits, Bits)]
+  ): Rasterizer.GradientBundle[Rasterizer.InputGradient] = {
+    val grads = Rasterizer.GradientBundle(Rasterizer.InputGradient(_), config)
+    grads.all.zip(sources).foreach { case (grad, (start, dx, dy)) =>
+      grad.start.raw := start.asSInt.resize(grad.start.raw.getWidth bits).asBits
+      grad.d(0).raw := dx.asSInt.resize(grad.d(0).raw.getWidth bits).asBits
+      grad.d(1).raw := dy.asSInt.resize(grad.d(1).raw.getWidth bits).asBits
+    }
+    grads
+  }
+
+  private def captureTriangleHiTexCoords(useFloatShadow: Bool): TriangleSetup.HiTexCoords = {
+    val hi = TriangleSetup.HiTexCoords(config)
+    val startSInt = triangleGeometry.startS.resize(60 bits) |<< 12
+    val startTInt = triangleGeometry.startT.resize(60 bits) |<< 12
+    val dSdXInt = triangleGeometry.dSdX.resize(60 bits) |<< 12
+    val dTdXInt = triangleGeometry.dTdX.resize(60 bits) |<< 12
+    val dSdYInt = triangleGeometry.dSdY.resize(60 bits) |<< 12
+    val dTdYInt = triangleGeometry.dTdY.resize(60 bits) |<< 12
+
+    hi.sStart.raw := Mux(
+      useFloatShadow,
+      io.triangleCapture.floatShadowStartS.asBits,
+      startSInt.asBits
+    )
+    hi.tStart.raw := Mux(
+      useFloatShadow,
+      io.triangleCapture.floatShadowStartT.asBits,
+      startTInt.asBits
+    )
+    hi.dSdX.raw := Mux(useFloatShadow, io.triangleCapture.floatShadowDSdX.asBits, dSdXInt.asBits)
+    hi.dTdX.raw := Mux(useFloatShadow, io.triangleCapture.floatShadowDTdX.asBits, dTdXInt.asBits)
+    hi.dSdY.raw := Mux(useFloatShadow, io.triangleCapture.floatShadowDSdY.asBits, dSdYInt.asBits)
+    hi.dTdY.raw := Mux(useFloatShadow, io.triangleCapture.floatShadowDTdY.asBits, dTdYInt.asBits)
+    hi
+  }
+
+  private def captureTriangleHiAlpha(useFloatShadow: Bool): TriangleSetup.HiAlpha = {
+    val hi = TriangleSetup.HiAlpha(config)
+    val startAInt = triangleGeometry.startA.resize(60 bits) |<< 18
+    val dAdXInt = triangleGeometry.dAdX.resize(60 bits) |<< 18
+    val dAdYInt = triangleGeometry.dAdY.resize(60 bits) |<< 18
+
+    hi.start.raw := Mux(
+      useFloatShadow,
+      io.triangleCapture.floatShadowStartA.asBits,
+      startAInt.asBits
+    )
+    hi.dAdX.raw := Mux(useFloatShadow, io.triangleCapture.floatShadowDAdX.asBits, dAdXInt.asBits)
+    hi.dAdY.raw := Mux(useFloatShadow, io.triangleCapture.floatShadowDAdY.asBits, dAdYInt.asBits)
+    hi
+  }
+
+  private def captureTriangleGradients(
+      useFloatShadow: Bool
+  ): Rasterizer.GradientBundle[Rasterizer.InputGradient] = {
+    val g = triangleGeometry
+    captureTriangleGradientsFrom(
+      Seq(
+        (g.startR.asBits, g.dRdX.asBits, g.dRdY.asBits),
+        (g.startG.asBits, g.dGdX.asBits, g.dGdY.asBits),
+        (g.startB.asBits, g.dBdX.asBits, g.dBdY.asBits),
+        (g.startZ.asBits, g.dZdX.asBits, g.dZdY.asBits),
+        (g.startA.asBits, g.dAdX.asBits, g.dAdY.asBits),
+        (
+          Mux(
+            useFloatShadow,
+            io.triangleCapture.floatShadowStartW.asBits,
+            g.startW.resize(60 bits).asBits
+          ),
+          Mux(
+            useFloatShadow,
+            io.triangleCapture.floatShadowDWdX.asBits,
+            g.dWdX.resize(60 bits).asBits
+          ),
+          Mux(
+            useFloatShadow,
+            io.triangleCapture.floatShadowDWdY.asBits,
+            g.dWdY.resize(60 bits).asBits
+          )
+        ),
+        (g.startS.asBits, g.dSdX.asBits, g.dSdY.asBits),
+        (g.startT.asBits, g.dTdX.asBits, g.dTdY.asBits)
+      )
+    )
+  }
+
+  private def captureTriangleConfig(): TriangleSetup.PerTriangleConfig = {
+    val g = triangleGeometry
+    val cfg = TriangleSetup.PerTriangleConfig(config)
+
+    cfg.fbzColorPath := renderConfig.fbzColorPathBundle
+    cfg.fogMode := renderConfig.fogModeBundle
+    cfg.alphaMode := renderConfig.alphaModeBundle
+    cfg.fbzMode := renderConfig.fbzModeBundle
+
+    cfg.tmuTextureMode := tmuConfig.textureMode
+    cfg.tmuTexBaseAddr := tmuConfig.texBaseAddr
+    cfg.tmuTLOD := tmuConfig.tLOD.resized
+    cfg.tmuSendConfig := tmuConfig.trexInit1(18)
+    cfg.tmudSdX.raw := g.dSdX.asBits
+    cfg.tmudTdX.raw := g.dTdX.asBits
+    cfg.tmudSdY.raw := g.dSdY.asBits
+    cfg.tmudTdY.raw := g.dTdY.asBits
+
+    cfg.color0 := renderConfig.color0
+    cfg.color1 := renderConfig.color1
+    cfg.fogColor := renderConfig.fogColor
+    cfg.chromaKey := renderConfig.chromaKey
+    cfg.zaColor := renderConfig.zaColor
+    cfg.drawColorBufferBase := io.triangleCapture.drawColorBufferBase
+    cfg.drawAuxBufferBase := io.triangleCapture.drawAuxBufferBase
+    cfg.fbPixelStride := io.triangleCapture.fbPixelStride
+
+    if (config.packedTexLayout) {
+      val triCfg = TexLayoutTables.TexConfig()
+      triCfg.texBaseAddr := tmuConfig.texBaseAddr(18 downto 0)
+      triCfg.tformat := tmuConfig.textureMode(11 downto 8).asUInt
+      triCfg.tLOD_aspect := tmuConfig.tLOD(22 downto 21).asUInt
+      triCfg.tLOD_sIsWider := tmuConfig.tLOD(20)
+      cfg.texTables := TexLayoutTables.compute(triCfg)
+    }
+
+    val nccSel = tmuConfig.textureMode(5)
+    for (r <- 0 until 4; b <- 0 until 4) {
+      cfg.ncc.y(r * 4 + b) := Mux(
+        nccSel,
+        nccTable.table1Y(r)((b + 1) * 8 - 1 downto b * 8).asUInt,
+        nccTable.table0Y(r)((b + 1) * 8 - 1 downto b * 8).asUInt
+      )
+    }
+    for (i <- 0 until 4) {
+      cfg.ncc
+        .i(i) := Mux(nccSel, nccTable.table1I(i)(26 downto 0), nccTable.table0I(i)(26 downto 0))
+      cfg.ncc
+        .q(i) := Mux(nccSel, nccTable.table1Q(i)(26 downto 0), nccTable.table0Q(i)(26 downto 0))
+    }
+
+    cfg
+  }
+
+  private def buildTriangleCommandInput(
+      signBit: Bool,
+      useFloatShadow: Bool
+  ): TriangleSetup.Input = {
+    val out = TriangleSetup.Input(config)
+    out.triWithSign.tri(0)(0).raw := triangleGeometry.vertexAx.asBits
+    out.triWithSign.tri(0)(1).raw := triangleGeometry.vertexAy.asBits
+    out.triWithSign.tri(1)(0).raw := triangleGeometry.vertexBx.asBits
+    out.triWithSign.tri(1)(1).raw := triangleGeometry.vertexBy.asBits
+    out.triWithSign.tri(2)(0).raw := triangleGeometry.vertexCx.asBits
+    out.triWithSign.tri(2)(1).raw := triangleGeometry.vertexCy.asBits
+    out.triWithSign.signBit := signBit
+    out.grads := captureTriangleGradients(useFloatShadow)
+    out.hiAlpha := captureTriangleHiAlpha(useFloatShadow)
+    out.texHi := captureTriangleHiTexCoords(useFloatShadow)
+    out.config := captureTriangleConfig()
+    if (config.trace.enabled) {
+      out.trace.valid := True
+      out.trace.origin := Trace.Origin.triangle
+      out.trace.drawId := triangleDrawTraceId
+      out.trace.primitiveId := trianglePrimitiveTraceId
+    }
+    out
+  }
+
   // Float Triangle Geometry Area (0x088-0x0FC) is handled by float alias conversion
   // in BmbBusInterface. Writes to float addresses are automatically converted to fixed-point
   // and written to the corresponding integer registers above.
@@ -337,9 +527,27 @@ case class RegisterBank(config: Config) extends Component {
   // ========================================================================
   val commands = new Area {
     val (triangleCmdReg, triangleCmdStream) =
-      busif.newCommandReg(0x080, "triangleCMD", RegisterCategory.fifoNoSync)
+      busif.newCommandRegWithPayload(
+        0x080,
+        "triangleCMD",
+        RegisterCategory.fifoNoSync,
+        HardType(TriangleSetup.Input(config))
+      ) { (reg, payload) =>
+        Component.current.addPrePopTask { () =>
+          payload.assignFromBits(buildTriangleCommandInput(io.bus.cmd.data(31), False).asBits)
+        }
+      }
     val (ftriangleCmdReg, ftriangleCmdStream) =
-      busif.newCommandReg(0x100, "ftriangleCMD", RegisterCategory.fifoNoSync)
+      busif.newCommandRegWithPayload(
+        0x100,
+        "ftriangleCMD",
+        RegisterCategory.fifoNoSync,
+        HardType(TriangleSetup.Input(config))
+      ) { (reg, payload) =>
+        Component.current.addPrePopTask { () =>
+          payload.assignFromBits(buildTriangleCommandInput(io.bus.cmd.data(31), True).asBits)
+        }
+      }
     val (nopCmdReg, nopCmdStream) =
       busif.newCommandReg(0x120, "nopCMD", RegisterCategory.fifoWithSync)
     val (fastfillCmdReg, fastfillCmdStream) =
@@ -347,16 +555,14 @@ case class RegisterBank(config: Config) extends Component {
     val (swapbufferCmdReg, swapbufferCmdStream) =
       busif.newCommandReg(0x128, "swapbufferCMD", RegisterCategory.fifoWithSync)
 
-    // Define fields for triangle command registers
-    // Bit 31: sign bit (0=CCW, 1=CW), bits 0-30: reserved/unused in register definition
-    // Full register value is accessed through the FIFO for queuing
-    val triangleSignBit = triangleCmdReg
-      .fieldAt(31, Bool(), AccessType.RW, 0, "Triangle sign bit (0=CCW, 1=CW)")
-      .asOutput()
-
-    val ftriangleSignBit = ftriangleCmdReg
-      .fieldAt(31, Bool(), AccessType.RW, 0, "Float triangle sign bit (0=CCW, 1=CW)")
-      .asOutput()
+    if (config.trace.enabled) {
+      when(swapbufferCmdReg.hitDoWrite) {
+        triangleDrawTraceId := triangleDrawTraceId + 1
+      }
+      when(triangleCmdReg.hitDoWrite || ftriangleCmdReg.hitDoWrite) {
+        trianglePrimitiveTraceId := trianglePrimitiveTraceId + 1
+      }
+    }
 
     // Define full 32-bit fields for other command registers
     nopCmdReg.field(Bits(32 bits), AccessType.RW, 0, "NOP command data")

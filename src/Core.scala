@@ -350,6 +350,22 @@ case class Core(c: Config) extends Component {
     regBank.renderConfig.fbzMode.drawBuffer(0) ? backBufferBase | frontBufferBase
   val drawAuxBufferBase = auxBufferBase
 
+  regBank.io.triangleCapture.floatShadowStartS := floatShadowStartS
+  regBank.io.triangleCapture.floatShadowStartT := floatShadowStartT
+  regBank.io.triangleCapture.floatShadowStartW := floatShadowStartW
+  regBank.io.triangleCapture.floatShadowDSdX := floatShadowDSdX
+  regBank.io.triangleCapture.floatShadowDTdX := floatShadowDTdX
+  regBank.io.triangleCapture.floatShadowDWdX := floatShadowDWdX
+  regBank.io.triangleCapture.floatShadowDSdY := floatShadowDSdY
+  regBank.io.triangleCapture.floatShadowDTdY := floatShadowDTdY
+  regBank.io.triangleCapture.floatShadowDWdY := floatShadowDWdY
+  regBank.io.triangleCapture.floatShadowStartA := floatShadowStartA
+  regBank.io.triangleCapture.floatShadowDAdX := floatShadowDAdX
+  regBank.io.triangleCapture.floatShadowDAdY := floatShadowDAdY
+  regBank.io.triangleCapture.drawColorBufferBase := drawColorBufferBase
+  regBank.io.triangleCapture.drawAuxBufferBase := drawAuxBufferBase
+  regBank.io.triangleCapture.fbPixelStride := fbPixelStride
+
   // LFB color buffer bases: lfbMode[5:4] writeBufferSelect, lfbMode[7:6] readBufferSelect
   val lfbWriteColorBufferBase =
     regBank.renderConfig.lfbMode.writeBufferSelect(0) ? backBufferBase | frontBufferBase
@@ -456,6 +472,11 @@ case class Core(c: Config) extends Component {
     cfg.color0 := regBank.renderConfig.color0
     cfg.color1 := regBank.renderConfig.color1
     cfg.fogColor := regBank.renderConfig.fogColor
+    cfg.chromaKey := regBank.renderConfig.chromaKey
+    cfg.zaColor := regBank.renderConfig.zaColor
+    cfg.drawColorBufferBase := drawColorBufferBase
+    cfg.drawAuxBufferBase := drawAuxBufferBase
+    cfg.fbPixelStride := fbPixelStride
 
     // Packed texture layout tables (computed from post-FIFO register values)
     if (c.packedTexLayout) {
@@ -509,39 +530,22 @@ case class Core(c: Config) extends Component {
     if (c.trace.enabled) {
       out.trace.valid := True
       out.trace.origin := Trace.Origin.triangle
-      out.trace.drawId := drawTraceId
-      out.trace.primitiveId := primitiveTraceId
+      out.trace.drawId := 0
+      out.trace.primitiveId := 0
     }
     out
   }
 
-  val drawTraceId = if (c.trace.enabled) Reg(UInt(32 bits)) init (0) else null
-  val primitiveTraceId = if (c.trace.enabled) Reg(UInt(32 bits)) init (0) else null
-  if (c.trace.enabled) {
-    when(regBank.commands.swapbufferCmd.fire) {
-      drawTraceId := drawTraceId + 1
-    }
-    when(regBank.commands.triangleCmd.fire || regBank.commands.ftriangleCmd.fire) {
-      primitiveTraceId := primitiveTraceId + 1
-    }
-  }
-
-  val triangleCmdPath = regBank.commands.triangleCmd.translateWith {
-    buildTriangleInput(regBank.commands.triangleSignBit, False)
-  }
-
-  val ftriangleCmdPath = regBank.commands.ftriangleCmd.translateWith {
-    buildTriangleInput(regBank.commands.ftriangleSignBit, True)
-  }
+  val triangleSetupInput = StreamArbiterFactory.assumeOhInput
+    .on(Seq(regBank.commands.triangleCmd, regBank.commands.ftriangleCmd))
+    .queue(16)
 
   // Merge integer and float triangle paths
   // Use assumeOhInput since only one path is active at a time (no arbitration needed)
-  triangleSetup.i << StreamArbiterFactory.assumeOhInput.on(
-    Seq(triangleCmdPath, ftriangleCmdPath)
-  )
+  triangleSetup.i << triangleSetupInput
 
   // Make triangle streams accessible for simulation monitoring
-  triangleCmdPath.simPublic()
+  regBank.commands.triangleCmd.simPublic()
   triangleSetup.i.simPublic()
   triangleSetup.o.simPublic()
   rasterizer.i.simPublic()
@@ -559,7 +563,7 @@ case class Core(c: Config) extends Component {
 
   // Connect triangle setup directly to rasterizer
   // Gradients are now captured at command time and flow through TriangleSetup
-  triangleSetup.o >/-> rasterizer.i
+  rasterizer.i << triangleSetup.o
 
   // Wire scissor clip bounds from register bank to rasterizer
   rasterizer.enableClipping := regBank.renderConfig.fbzMode.enableClipping
@@ -677,7 +681,7 @@ case class Core(c: Config) extends Component {
 
   // Queue to hold rasterizer data while TMU processes
   // Depth must be >= TMU's maximum in-flight transactions
-  val tmuGradQueue = rasterFork._2.queue(4).stage()
+  val tmuGradQueue = rasterFork._2.queue(4).stage().stage()
 
   // Connect fork path 1 to TMU
   val tmuInput = Stream(Tmu.Input(c))
@@ -773,6 +777,8 @@ case class Core(c: Config) extends Component {
 
     // Fog color from per-triangle captured config (pass-through to Fog stage)
     out.fogColor := rasterOut.config.fogColor
+    out.chromaKey := rasterOut.config.chromaKey
+    out.zaColor := rasterOut.config.zaColor
 
     // Decode configuration from captured per-triangle fbzColorPath
     out.config := decodeColorCombineConfig(rasterOut.config.fbzColorPath)
@@ -781,6 +787,9 @@ case class Core(c: Config) extends Component {
     out.alphaMode := rasterOut.config.alphaMode
     out.fogMode := rasterOut.config.fogMode
     out.fbzMode := rasterOut.config.fbzMode
+    out.drawColorBufferBase := rasterOut.config.drawColorBufferBase
+    out.drawAuxBufferBase := rasterOut.config.drawAuxBufferBase
+    out.fbPixelStride := rasterOut.config.fbPixelStride
     if (c.trace.enabled) {
       out.trace := rasterOut.trace
     }
@@ -799,7 +808,7 @@ case class Core(c: Config) extends Component {
   })
 
   // Chroma key: discard pixels where color combine output matches chromaKey register
-  val ckBits = regBank.renderConfig.chromaKey
+  val ckBits = colorCombine.io.output.payload.chromaKey
   val ckR = ckBits(23 downto 16).asUInt
   val ckG = ckBits(15 downto 8).asUInt
   val ckB = ckBits(7 downto 0).asUInt
@@ -847,14 +856,9 @@ case class Core(c: Config) extends Component {
   afterAlphaTest >/-> fbAccess.io.input
   fbAccess.io.input.simPublic()
   fbAccess.io.output.simPublic()
-  fbAccess.io.fbColorBaseAddr := drawColorBufferBase
-  fbAccess.io.fbAuxBaseAddr := drawAuxBufferBase
-  fbAccess.io.fbPixelStride := fbPixelStride
 
   // fbzMode fields are now per-pixel (carried through pipeline in Fog.Output.fbzMode)
   // alphaMode blend fields are now per-pixel (carried through pipeline in Fog.Output.alphaMode)
-  fbAccess.io.zaColor := regBank.renderConfig.zaColor
-
   val pixelsInCounter = Reg(UInt(24 bits)) init (0)
   val chromaFailCounter = Reg(UInt(24 bits)) init (0)
   val zFuncFailCounter = Reg(UInt(24 bits)) init (0)
@@ -874,7 +878,7 @@ case class Core(c: Config) extends Component {
   // ========================================================================
   // Triangle → Write.PreDither (from FramebufferAccess output)
   // ========================================================================
-  val trianglePreDither = fbAccess.io.output.stage().translateWith {
+  val trianglePreDither = fbAccess.io.output.translateWith {
     val fbIn = fbAccess.io.output.payload
     val out = Write.PreDither(c)
     out.r := fbIn.color.r
@@ -886,9 +890,9 @@ case class Core(c: Config) extends Component {
     out.depthAlpha := (fbIn.enableAlphaPlanes ? fbIn.alpha.resize(16 bits) | fbIn.newDepth).asBits
     out.rgbWrite := fbIn.rgbWrite
     out.auxWrite := fbIn.auxWrite
-    out.fbBaseAddr := drawColorBufferBase
-    out.auxBaseAddr := drawAuxBufferBase
-    out.fbPixelStride := fbPixelStride
+    out.fbBaseAddr := fbIn.fbBaseAddr
+    out.auxBaseAddr := fbIn.auxBaseAddr
+    out.fbPixelStride := fbIn.fbPixelStride
     if (c.trace.enabled) {
       out.trace := fbIn.trace
     }

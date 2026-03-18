@@ -435,13 +435,19 @@ case class Tmu(c: voodoo.Config) extends Component {
   val collector = TmuCollector(c)
   texelDecoder.io.decoded >/-> collector.io.decoded
 
-  val fastOutput = texelDecoder.io.fastOutput.stage()
-  val normalOutput = collector.io.output.stage()
+  val fastOutput = texelDecoder.io.fastOutput
+  val normalOutput = collector.io.output
+  val outputRoute = textureCache.io.outputRoute.queue(16)
 
-  io.output.valid := fastOutput.valid || normalOutput.valid
-  io.output.payload := fastOutput.valid ? fastOutput.payload | normalOutput.payload
-  fastOutput.ready := io.output.ready
-  normalOutput.ready := io.output.ready && !fastOutput.valid
+  io.output.valid := outputRoute.valid && Mux(
+    outputRoute.payload,
+    fastOutput.valid,
+    normalOutput.valid
+  )
+  io.output.payload := outputRoute.payload ? fastOutput.payload | normalOutput.payload
+  fastOutput.ready := io.output.ready && outputRoute.valid && outputRoute.payload
+  normalOutput.ready := io.output.ready && outputRoute.valid && !outputRoute.payload
+  outputRoute.ready := io.output.fire
 
   when(io.input.fire && !io.output.fire) {
     inFlightCount := inFlightCount + 1

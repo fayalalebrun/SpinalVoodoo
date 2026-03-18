@@ -135,7 +135,7 @@ tomb/trace/headless: native/trace/build
 
 tomb/trace/check: $(TRACE_TEST_BIN)
 	@mkdir -p output/tomb/trace_replay
-	$(TRACE_TEST_BIN) traces/tomb/trace.bin --output-dir output/tomb/trace_replay
+	$(TRACE_TEST_BIN) traces/tomb --output-dir output/tomb/trace_replay
 
 de10/help:
 	@echo "DE10 workflow targets:"

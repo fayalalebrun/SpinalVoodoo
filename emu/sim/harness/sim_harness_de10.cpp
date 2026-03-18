@@ -324,7 +324,7 @@ static uint32_t bus_read(uint32_t addr) {
     mmio_begin(addr, false, 0);
     maybe_log_mmio("READ", "begin", addr, 0, 0);
 
-    int timeout = 5000000;
+    int timeout = 1000000;
     uint64_t iter = 0;
     const uint64_t stall_log_period = (addr == 0x000000) ? 10000 : 100000;
     while (timeout > 0) {
@@ -519,7 +519,7 @@ uint32_t sim_idle_wait(void) {
     }
 
     uint32_t status = bus_read(0x000000);
-    fprintf(stderr, "[sim_harness_de10] WARNING: idle_wait timeout after %lu ticks! status=0x%08x\n",
+    fprintf(stderr, "[sim_harness_de10] WARNING: idle_wait timeout after 1M ticks (%lu elapsed)! status=0x%08x\n",
             (unsigned long)((sim_time - t0) / 2), status);
     return status;
 }

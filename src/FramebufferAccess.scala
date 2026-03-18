@@ -25,12 +25,6 @@ case class FramebufferAccess(c: Config) extends Component {
     val fbReadAuxReq = master Stream (FramebufferPlaneCache.ReadReq(c))
     val fbReadAuxRsp = slave Stream (FramebufferPlaneCache.ReadRsp())
 
-    // Other registers (not yet per-triangle)
-    val zaColor = in Bits (32 bits)
-    val fbColorBaseAddr = in UInt (c.addressWidth)
-    val fbAuxBaseAddr = in UInt (c.addressWidth)
-    val fbPixelStride = in UInt (11 bits)
-
     // Pipeline busy: pixels in flight inside fork-queue-join
     val busy = out Bool ()
     val zFuncFail = out Bool ()
@@ -46,7 +40,7 @@ case class FramebufferAccess(c: Config) extends Component {
   // ========================================================================
 
   // Depth source selection
-  val zaDepth = io.zaColor(15 downto 0).asUInt
+  val zaDepth = payload.zaColor(15 downto 0).asUInt
 
   // Z-buffer depth: clamp SQ(32,12) >> 12 to 16 bits
   val depthRaw = payload.depth.raw.asSInt
@@ -67,7 +61,7 @@ case class FramebufferAccess(c: Config) extends Component {
   val compDepthPreBias = fbzMode.depthSourceSelect ? zaDepth | baseDepth
 
   // Depth bias: signed add of zaColor[15:0]
-  val zaColorSigned = io.zaColor(15 downto 0).asSInt
+  val zaColorSigned = payload.zaColor(15 downto 0).asSInt
   val biasedDepthRaw = (compDepthPreBias.resize(17 bits).asSInt + zaColorSigned.resize(17 bits))
   val biasedDepth = UInt(16 bits)
   when(biasedDepthRaw < 0) {
@@ -92,6 +86,9 @@ case class FramebufferAccess(c: Config) extends Component {
     val newDepth = UInt(16 bits)
     val alphaMode = AlphaMode()
     val fbzMode = FbzMode()
+    val fbColorBaseAddr = UInt(c.addressWidth.value bits)
+    val fbAuxBaseAddr = UInt(c.addressWidth.value bits)
+    val fbPixelStride = UInt(11 bits)
     val colorLaneHi = Bool()
     val auxLaneHi = Bool()
     val trace = if (c.trace.enabled) Trace.PixelKey() else null
@@ -105,11 +102,11 @@ case class FramebufferAccess(c: Config) extends Component {
   }
 
   val request = Internal()
-  val strideSInt = (False ## io.fbPixelStride).asSInt
+  val strideSInt = (False ## payload.fbPixelStride).asSInt
   val rowStartPixel = (payload.coords(1) * strideSInt).asUInt
   val pixelFlat = (rowStartPixel + payload.coords(0).asUInt).resized
-  val colorPlaneAddress = (io.fbColorBaseAddr + (pixelFlat << 1)).resized
-  val auxPlaneAddress = (io.fbAuxBaseAddr + (pixelFlat << 1)).resized
+  val colorPlaneAddress = (payload.drawColorBufferBase + (pixelFlat << 1)).resized
+  val auxPlaneAddress = (payload.drawAuxBufferBase + (pixelFlat << 1)).resized
   request.colorAddress := (colorPlaneAddress(c.addressWidth.value - 1 downto 2) ## U"2'b00").asUInt
   request.auxAddress := (auxPlaneAddress(c.addressWidth.value - 1 downto 2) ## U"2'b00").asUInt
   request.passthrough.coords := payload.coords
@@ -119,6 +116,9 @@ case class FramebufferAccess(c: Config) extends Component {
   request.passthrough.newDepth := compDepth
   request.passthrough.alphaMode := payload.alphaMode
   request.passthrough.fbzMode := fbzMode
+  request.passthrough.fbColorBaseAddr := payload.drawColorBufferBase
+  request.passthrough.fbAuxBaseAddr := payload.drawAuxBufferBase
+  request.passthrough.fbPixelStride := payload.fbPixelStride
   request.passthrough.colorLaneHi := colorPlaneAddress(1)
   request.passthrough.auxLaneHi := auxPlaneAddress(1)
   if (c.trace.enabled) {
@@ -325,6 +325,9 @@ case class FramebufferAccess(c: Config) extends Component {
     out.enableAlphaPlanes := pd.fbzMode.enableAlphaPlanes
     out.enableDithering := pd.fbzMode.enableDithering
     out.ditherAlgorithm := pd.fbzMode.ditherAlgorithm
+    out.fbBaseAddr := pd.fbColorBaseAddr
+    out.auxBaseAddr := pd.fbAuxBaseAddr
+    out.fbPixelStride := pd.fbPixelStride
     if (c.trace.enabled) {
       out.trace := pd.trace
     }
@@ -342,6 +345,9 @@ object FramebufferAccess {
     val enableAlphaPlanes = Bool()
     val enableDithering = Bool()
     val ditherAlgorithm = Bool()
+    val fbBaseAddr = UInt(c.addressWidth.value bits)
+    val auxBaseAddr = UInt(c.addressWidth.value bits)
+    val fbPixelStride = UInt(11 bits)
     val trace = if (c.trace.enabled) Trace.PixelKey() else null
   }
 }

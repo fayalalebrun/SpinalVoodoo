@@ -424,19 +424,19 @@ case class Tmu(c: voodoo.Config) extends Component {
     .queue(16)
 
   val textureCache = TmuTextureCache(c)
-  textureCache.io.sampleRequest << sampleRequest
+  sampleRequest >/-> textureCache.io.sampleRequest
   io.texRead <> textureCache.io.texRead
 
   val texelDecoder = TmuTexelDecoder(c)
-  texelDecoder.io.fetched << textureCache.io.fetched
-  texelDecoder.io.fastFetch << textureCache.io.fastFetch
+  textureCache.io.fetched >/-> texelDecoder.io.fetched
+  textureCache.io.fastFetch >/-> texelDecoder.io.fastFetch
   texelDecoder.io.paletteWrite <> io.paletteWrite
 
   val collector = TmuCollector(c)
-  collector.io.decoded << texelDecoder.io.decoded
+  texelDecoder.io.decoded >/-> collector.io.decoded
 
-  val fastOutput = texelDecoder.io.fastOutput
-  val normalOutput = collector.io.output
+  val fastOutput = texelDecoder.io.fastOutput.stage()
+  val normalOutput = collector.io.output.stage()
 
   io.output.valid := fastOutput.valid || normalOutput.valid
   io.output.payload := fastOutput.valid ? fastOutput.payload | normalOutput.payload

@@ -44,7 +44,7 @@ endif
 
 CFLAGS   = -O2 -fwrapv -w -I$(STUBS_DIR) -I$(EBOX_INC) -I$(TRACE_DIR)
 CXXFLAGS = -O2 -std=c++17 -I$(OBJ_DIR) -I$(VERILATOR_ROOT)/include -I$(VERILATOR_ROOT)/include/vltstd \
-           -I$(SIM_DIR)/harness -I. -DVL_TIME_CONTEXT
+           -I$(SIM_DIR)/harness -I$(TRACE_DIR) -I. -DVL_TIME_CONTEXT
 DEPFLAGS = -MMD -MP
 ifeq ($(TRACE),1)
 CXXFLAGS += -DVM_TRACE_FST

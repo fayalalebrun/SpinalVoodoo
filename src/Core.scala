@@ -559,7 +559,7 @@ case class Core(c: Config) extends Component {
 
   // Connect triangle setup directly to rasterizer
   // Gradients are now captured at command time and flow through TriangleSetup
-  rasterizer.i << triangleSetup.o
+  triangleSetup.o >/-> rasterizer.i
 
   // Wire scissor clip bounds from register bank to rasterizer
   rasterizer.enableClipping := regBank.renderConfig.fbzMode.enableClipping
@@ -672,14 +672,16 @@ case class Core(c: Config) extends Component {
   rasterYTransformed.simPublic()
 
   // Fork rasterizer output: one to TMU, one to a queue for synchronization
-  val rasterFork = StreamFork2(rasterYTransformed, synchronous = true)
+  val rasterYPipe = rasterYTransformed.stage()
+  val rasterFork = StreamFork2(rasterYPipe, synchronous = true)
 
   // Queue to hold rasterizer data while TMU processes
   // Depth must be >= TMU's maximum in-flight transactions
-  val tmuGradQueue = rasterFork._2.queue(4)
+  val tmuGradQueue = rasterFork._2.queue(4).stage()
 
   // Connect fork path 1 to TMU
-  tmu.io.input.translateFrom(rasterFork._1) { (out, in) =>
+  val tmuInput = Stream(Tmu.Input(c))
+  tmuInput.translateFrom(rasterFork._1.stage()) { (out, in) =>
     out.s := in.grads.sGrad // TMU's S/W coordinate (interpolated value from rasterizer)
     out.t := in.grads.tGrad // TMU's T/W coordinate (interpolated value from rasterizer)
     out.w := in.grads.wGrad // Shared 1/W (interpolated value from rasterizer)
@@ -705,9 +707,10 @@ case class Core(c: Config) extends Component {
       out.trace := in.trace
     }
   }
+  tmuInput >/-> tmu.io.input
 
   // Join TMU output with queued gradients
-  val tmuJoined = StreamJoin(tmu.io.output, tmuGradQueue)
+  val tmuJoined = StreamJoin(tmu.io.output.stage(), tmuGradQueue)
   if (c.trace.enabled) {
     tmuGradQueue.simPublic()
     tmuJoined.simPublic()
@@ -717,7 +720,8 @@ case class Core(c: Config) extends Component {
   }
 
   // Connect TMU joined output to ColorCombine
-  colorCombine.io.input.translateFrom(tmuJoined) { (out, payload) =>
+  val colorCombineInput = Stream(ColorCombine.Input(c))
+  colorCombineInput.translateFrom(tmuJoined.stage()) { (out, payload) =>
     val tmuOut = payload._1
     val rasterOut = payload._2 // Original rasterizer output
 
@@ -781,6 +785,7 @@ case class Core(c: Config) extends Component {
       out.trace := rasterOut.trace
     }
   }
+  colorCombineInput >/-> colorCombine.io.input
 
   // ========================================================================
   // Fog Stage
@@ -801,16 +806,17 @@ case class Core(c: Config) extends Component {
   val ccColor = colorCombine.io.output.payload.color
   val chromaKill = colorCombine.io.output.payload.fbzMode.enableChromaKey &&
     ccColor.r === ckR && ccColor.g === ckG && ccColor.b === ckB
-  val afterChromaKey = colorCombine.io.output.throwWhen(chromaKill)
+  val afterChromaKey = colorCombine.io.output.throwWhen(chromaKill).stage()
 
   val fog = Fog(c)
   fog.io.fogTable := fogTableVec
   fog.io.input.simPublic()
   fog.io.output.simPublic()
   // Arbiter: CC output (after chromakey, priority) and LFB pipeline output feed into Fog
-  fog.io.input << StreamArbiterFactory.lowerFirst.on(
+  val fogArbiterInput = StreamArbiterFactory.lowerFirst.on(
     Seq(afterChromaKey, lfb.io.pipelineOutput)
   )
+  fogArbiterInput >/-> fog.io.input
 
   // Alpha test: discard pixels that fail alpha comparison
   // Use per-triangle captured alphaMode (not live register) to avoid FIFO sync issues
@@ -832,13 +838,13 @@ case class Core(c: Config) extends Component {
   )
 
   val alphaKill = alphaTestEnable && !alphaPassed
-  val afterAlphaTest = fog.io.output.throwWhen(alphaKill)
+  val afterAlphaTest = fog.io.output.throwWhen(alphaKill).stage()
 
   // ========================================================================
   // Framebuffer Access (depth test + alpha blend)
   // ========================================================================
   val fbAccess = FramebufferAccess(c)
-  fbAccess.io.input << afterAlphaTest
+  afterAlphaTest >/-> fbAccess.io.input
   fbAccess.io.input.simPublic()
   fbAccess.io.output.simPublic()
   fbAccess.io.fbColorBaseAddr := drawColorBufferBase
@@ -868,7 +874,7 @@ case class Core(c: Config) extends Component {
   // ========================================================================
   // Triangle → Write.PreDither (from FramebufferAccess output)
   // ========================================================================
-  val trianglePreDither = fbAccess.io.output.translateWith {
+  val trianglePreDither = fbAccess.io.output.stage().translateWith {
     val fbIn = fbAccess.io.output.payload
     val out = Write.PreDither(c)
     out.r := fbIn.color.r
@@ -916,9 +922,11 @@ case class Core(c: Config) extends Component {
   // Shared Dither: merge all three PreDither paths, dither, produce plane writes
   // ========================================================================
   // lowerFirst gives fastfill priority (index 0), then triangle, then LFB bypass
-  val preDitherMerged = StreamArbiterFactory.lowerFirst.on(
-    Seq(fastfillWrite.io.output, trianglePreDither, lfb.io.writeOutput)
-  )
+  val preDitherMerged = StreamArbiterFactory.lowerFirst
+    .on(
+      Seq(fastfillWrite.io.output, trianglePreDither, lfb.io.writeOutput)
+    )
+    .stage()
 
   val dither = Dither()
   val (forDither, forPipe) = StreamFork2(preDitherMerged, synchronous = true)
@@ -953,7 +961,7 @@ case class Core(c: Config) extends Component {
       }
       out
     }
-  writeColor.i.fromPipeline << colorWriteInput
+  colorWriteInput >/-> writeColor.i.fromPipeline
 
   val auxWriteInput = forAuxWrite
     .throwWhen(!forAuxWrite.payload._2.auxWrite)
@@ -969,7 +977,7 @@ case class Core(c: Config) extends Component {
       }
       out
     }
-  writeAux.i.fromPipeline << auxWriteInput
+  auxWriteInput >/-> writeAux.i.fromPipeline
 
   when(writeColor.i.fromPipeline.fire) {
     pixelsOutCounter := pixelsOutCounter + 1

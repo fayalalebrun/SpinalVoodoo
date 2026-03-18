@@ -18,15 +18,25 @@ case class TmuTexelDecoder(c: voodoo.Config) extends Component {
     paletteRam.write(io.paletteWrite.payload.address, io.paletteWrite.payload.data)
   }
 
+  def selectTexelData(rspData32: Bits, addrHalf: Bool): Bits = {
+    Mux(addrHalf, rspData32(31 downto 16), rspData32(15 downto 0))
+  }
+
+  def selectTexelByte(rspData32: Bits, addrHalf: Bool, addrByte: Bool): Bits = {
+    val texelData = selectTexelData(rspData32, addrHalf)
+    Mux(addrByte, texelData(15 downto 8), texelData(7 downto 0))
+  }
+
   def decodeTexelWord(
       rspData32: Bits,
       addrHalf: Bool,
       addrByte: Bool,
       format: UInt,
-      ncc: Tmu.NccTableData
+      ncc: Tmu.NccTableData,
+      paletteColor: Bits
   ): (UInt, UInt, UInt, UInt) = {
-    val texelData = Mux(addrHalf, rspData32(31 downto 16), rspData32(15 downto 0))
-    val texelByte = Mux(addrByte, texelData(15 downto 8), texelData(7 downto 0))
+    val texelData = selectTexelData(rspData32, addrHalf)
+    val texelByte = selectTexelByte(rspData32, addrHalf, addrByte)
     val dr = UInt(8 bits)
     val dg = UInt(8 bits)
     val db = UInt(8 bits)
@@ -45,9 +55,6 @@ case class TmuTexelDecoder(c: voodoo.Config) extends Component {
       val bRaw = (False ## yVal).asSInt.resize(11 bits) + iB.resize(11 bits) + qB.resize(11 bits)
       (clampToU8(rRaw), clampToU8(gRaw), clampToU8(bRaw))
     }
-
-    val paletteColor = paletteRam.readAsync(texelByte.asUInt)
-
     switch(format) {
       is(Tmu.TextureFormat.RGB332) {
         dr := expandTo8(texelByte(7 downto 5).asUInt, 3)
@@ -130,12 +137,29 @@ case class TmuTexelDecoder(c: voodoo.Config) extends Component {
     (dr, dg, db, da)
   }
 
-  io.decoded << io.fetched.translateWith {
-    val rspData32 = io.fetched.payload.rspData32
-    val queued = io.fetched.payload.queued
+  val fetchedPaletteColor = paletteRam.readSync(
+    address = selectTexelByte(
+      io.fetched.payload.rspData32,
+      io.fetched.payload.queued.addrHalf,
+      io.fetched.payload.queued.addrByte
+    ).asUInt,
+    enable = io.fetched.fire
+  )
+  val fetchedPipe = io.fetched.m2sPipe()
+
+  io.decoded << fetchedPipe.translateWith {
+    val rspData32 = fetchedPipe.payload.rspData32
+    val queued = fetchedPipe.payload.queued
     val pass = queued.passthrough
     val (dr, dg, db, da) =
-      decodeTexelWord(rspData32, queued.addrHalf, queued.addrByte, pass.format, pass.ncc)
+      decodeTexelWord(
+        rspData32,
+        queued.addrHalf,
+        queued.addrByte,
+        pass.format,
+        pass.ncc,
+        fetchedPaletteColor
+      )
 
     val result = Tmu.DecodedTexel(c)
     result.r := dr
@@ -164,39 +188,55 @@ case class TmuTexelDecoder(c: voodoo.Config) extends Component {
     (sum >> 8).resize(8 bits)
   }
 
-  io.fastOutput << io.fastFetch.translateWith {
-    val pass = io.fastFetch.payload.passthrough
+  val fastPaletteColors = Seq.tabulate(4) { idx =>
+    paletteRam.readSync(
+      address = selectTexelByte(
+        io.fastFetch.payload.texels(idx).rspData32,
+        io.fastFetch.payload.texels(idx).addrHalf,
+        io.fastFetch.payload.texels(idx).addrByte
+      ).asUInt,
+      enable = io.fastFetch.fire
+    )
+  }
+  val fastFetchPipe = io.fastFetch.m2sPipe()
+
+  io.fastOutput << fastFetchPipe.translateWith {
+    val pass = fastFetchPipe.payload.passthrough
     val (r0, g0, b0, a0) =
       decodeTexelWord(
-        io.fastFetch.payload.texels(0).rspData32,
-        io.fastFetch.payload.texels(0).addrHalf,
-        io.fastFetch.payload.texels(0).addrByte,
+        fastFetchPipe.payload.texels(0).rspData32,
+        fastFetchPipe.payload.texels(0).addrHalf,
+        fastFetchPipe.payload.texels(0).addrByte,
         pass.format,
-        pass.ncc
+        pass.ncc,
+        fastPaletteColors(0)
       )
     val (r1, g1, b1, a1) =
       decodeTexelWord(
-        io.fastFetch.payload.texels(1).rspData32,
-        io.fastFetch.payload.texels(1).addrHalf,
-        io.fastFetch.payload.texels(1).addrByte,
+        fastFetchPipe.payload.texels(1).rspData32,
+        fastFetchPipe.payload.texels(1).addrHalf,
+        fastFetchPipe.payload.texels(1).addrByte,
         pass.format,
-        pass.ncc
+        pass.ncc,
+        fastPaletteColors(1)
       )
     val (r2, g2, b2, a2) =
       decodeTexelWord(
-        io.fastFetch.payload.texels(2).rspData32,
-        io.fastFetch.payload.texels(2).addrHalf,
-        io.fastFetch.payload.texels(2).addrByte,
+        fastFetchPipe.payload.texels(2).rspData32,
+        fastFetchPipe.payload.texels(2).addrHalf,
+        fastFetchPipe.payload.texels(2).addrByte,
         pass.format,
-        pass.ncc
+        pass.ncc,
+        fastPaletteColors(2)
       )
     val (r3, g3, b3, a3) =
       decodeTexelWord(
-        io.fastFetch.payload.texels(3).rspData32,
-        io.fastFetch.payload.texels(3).addrHalf,
-        io.fastFetch.payload.texels(3).addrByte,
+        fastFetchPipe.payload.texels(3).rspData32,
+        fastFetchPipe.payload.texels(3).addrHalf,
+        fastFetchPipe.payload.texels(3).addrByte,
         pass.format,
-        pass.ncc
+        pass.ncc,
+        fastPaletteColors(3)
       )
 
     val result = Tmu.Output(c)

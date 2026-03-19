@@ -85,11 +85,8 @@ case class TmuTextureCache(c: voodoo.Config, formalStrong: Boolean = true) exten
   val joined = Stream(Tmu.FetchResult(c))
   val fetchBusy = Bool()
 
-  io.fastFetch.valid := fastHoldValid
+  io.fastFetch.valid := False
   io.fastFetch.payload := fastHoldPayload
-  when(io.fastFetch.fire) {
-    fastHoldValid := False
-  }
 
   if (c.useTexFillCache) {
     require(c.texFillLineWords > 0 && ((c.texFillLineWords & (c.texFillLineWords - 1)) == 0))
@@ -129,15 +126,6 @@ case class TmuTextureCache(c: voodoo.Config, formalStrong: Boolean = true) exten
 
     val slotTagValid = Vec(Reg(Bool()) init (False), slotCount)
     val slotBase = Vec(Reg(UInt(c.addressWidth.value bits)) init (0), slotCount)
-    val slotBanks = Vec(
-      (0 until slotCount).map(_ =>
-        Vec(
-          (0 until bankCount).map(_ =>
-            Vec((0 until bankEntries).map(_ => Reg(Bits(32 bits)) init (0)))
-          )
-        )
-      )
-    )
     val slotWordValid = Vec(
       (0 until slotCount).map(_ =>
         Vec(
@@ -147,28 +135,65 @@ case class TmuTextureCache(c: voodoo.Config, formalStrong: Boolean = true) exten
         )
       )
     )
+    val bankMems = Seq.fill(bankCount)(Mem(Bits(32 bits), slotCount * bankEntries))
+    val bankReadPorts = bankMems.map(_.readSyncPort(readUnderWrite = readFirst))
     val nextVictim = Reg(UInt(slotIndexWidth bits)) init (0)
 
-    def cachedWordForLine(lineBase: UInt, bankSel: UInt, bankEntry: UInt): (Bool, Bits) = {
-      val hit = Bool()
-      val data = Bits(32 bits)
-      hit := False
-      data := 0
-      for (i <- 0 until slotCount) {
-        when(slotTagValid(i) && slotBase(i) === lineBase && slotWordValid(i)(bankSel)(bankEntry)) {
-          hit := True
-          val bankWords = Vec(Bits(32 bits), bankCount)
-          for (b <- 0 until bankCount) {
-            bankWords(b) := slotBanks(i)(b)(bankEntry)
-          }
-          data := bankWords(bankSel)
-        }
-      }
-      (hit, data)
+    def cacheIndex(slot: UInt, bankEntry: UInt): UInt = {
+      ((slot.resize(slotIndexWidth bits) ## U(0, bankEntryWidth bits)) | bankEntry
+        .resize(slotIndexWidth + bankEntryWidth bits)
+        .asBits).asUInt
     }
 
-    val (hitAny, hitWord) =
-      cachedWordForLine(activeReq.lineBase, activeReq.bankSel, activeReq.bankEntry)
+    val hitVec = Bits(slotCount bits)
+    for (i <- 0 until slotCount) {
+      hitVec(i) := activeValid && slotTagValid(i) && slotBase(
+        i
+      ) === activeReq.lineBase && slotWordValid(i)(
+        activeReq.bankSel
+      )(activeReq.bankEntry)
+    }
+    val hitAny = hitVec.orR
+    val hitSlot = OHToUInt(hitVec)
+
+    val hitReadIssued = Reg(Bool()) init (False)
+    val hitReadBankSel = Reg(UInt(2 bits)) init (0)
+    val hitReadQueued = Reg(Tmu.QueuedData(c))
+    val hitRspValid = Reg(Bool()) init (False)
+    val hitRspData = Reg(Bits(32 bits)) init (0)
+    val hitRspQueued = Reg(Tmu.QueuedData(c))
+
+    for (bank <- 0 until bankCount) {
+      bankReadPorts(bank).cmd.valid := False
+      bankReadPorts(bank).cmd.payload := 0
+    }
+
+    val canIssueHitRead = activeValid && hitAny && !hitReadIssued && !hitRspValid
+    when(canIssueHitRead) {
+      bankReadPorts(activeReq.bankSel).cmd.valid := True
+      bankReadPorts(activeReq.bankSel).cmd.payload := cacheIndex(hitSlot, activeReq.bankEntry)
+      requestStream.ready := True
+      hitReadIssued := True
+      hitReadBankSel := activeReq.bankSel
+      hitReadQueued := activeReq.queued
+    } otherwise {
+      requestStream.ready := False
+    }
+
+    when(hitReadIssued) {
+      hitRspValid := True
+      hitRspData := Vec(bankReadPorts.map(_.rsp))(hitReadBankSel)
+      hitRspQueued := hitReadQueued
+      hitReadIssued := False
+    }
+
+    joined.valid := hitRspValid
+    joined.payload.rspData32 := hitRspData
+    joined.payload.queued := hitRspQueued
+    when(joined.fire) {
+      hitRspValid := False
+      texFillHits := texFillHits + 1
+    }
 
     val fillActive = Reg(Bool()) init False
     val fillSlot = Reg(UInt(slotIndexWidth bits)) init (0)
@@ -202,6 +227,12 @@ case class TmuTextureCache(c: voodoo.Config, formalStrong: Boolean = true) exten
           slotWordValid(fillStartSlot)(b)(e) := False
         }
       }
+      texFillMisses := texFillMisses + 1
+      texFillBurstCount := texFillBurstCount + 1
+      texFillBurstBeats := texFillBurstBeats + U(lineWords, 32 bits)
+    }
+    when(activeValid && !hitAny) {
+      texFillStallCycles := texFillStallCycles + 1
     }
 
     val fillLength = U(lineWords * 4 - 1, c.memBurstLengthWidth bits)
@@ -216,11 +247,20 @@ case class TmuTextureCache(c: voodoo.Config, formalStrong: Boolean = true) exten
     }
 
     io.texRead.rsp.ready := fillActive
+    for (bank <- 0 until bankCount) {
+      val rspWordIndex = fillRspCount.resize(lineShift bits)
+      val rspBank = rspWordIndex(1 downto 0)
+      val rspEntry = (rspWordIndex >> 2).resize(bankEntryWidth bits)
+      bankMems(bank).write(
+        address = cacheIndex(fillSlot, rspEntry),
+        data = io.texRead.rsp.fragment.data,
+        enable = io.texRead.rsp.fire && rspBank === bank
+      )
+    }
     when(io.texRead.rsp.fire) {
       val rspWordIndex = fillRspCount.resize(lineShift bits)
       val rspBank = rspWordIndex(1 downto 0)
       val rspEntry = (rspWordIndex >> 2).resize(bankEntryWidth bits)
-      slotBanks(fillSlot)(rspBank)(rspEntry) := io.texRead.rsp.fragment.data
       slotWordValid(fillSlot)(rspBank)(rspEntry) := True
       fillRspCount := fillRspCount + 1
       when(io.texRead.rsp.last) {
@@ -228,124 +268,11 @@ case class TmuTextureCache(c: voodoo.Config, formalStrong: Boolean = true) exten
       }
     }
 
-    when(startFill) {
-      texFillMisses := texFillMisses + 1
-      texFillBurstCount := texFillBurstCount + 1
-      texFillBurstBeats := texFillBurstBeats + U(lineWords, 32 bits)
-    }
-    when(activeValid && !hitAny) {
-      texFillStallCycles := texFillStallCycles + 1
-    }
-
-    joined.valid := activeValid && hitAny
-    joined.payload.rspData32 := hitWord
-    joined.payload.queued := activeReq.queued
-    requestStream.ready := joined.ready && hitAny
-    when(joined.fire) {
-      texFillHits := texFillHits + 1
-    }
-
-    def cachedWordForAddr(addr: UInt): (Bool, Bits) = {
-      val wordAddr = (addr >> 2).resize(c.addressWidth.value bits)
-      val localLineBaseWord =
-        ((wordAddr >> lineShift) << lineShift).resize(c.addressWidth.value bits)
-      val localWordIndex = wordAddr(lineShift - 1 downto 0)
-      val localBankSel = localWordIndex(1 downto 0)
-      val localBankEntry = (localWordIndex >> 2).resize(bankEntryWidth bits)
-      cachedWordForLine((localLineBaseWord << 2).resized, localBankSel, localBankEntry)
-    }
-
-    val (fastHit0, fastWord0) = cachedWordForAddr(io.sampleRequest.payload.biAddr0)
-    val (fastHit1, fastWord1) = cachedWordForAddr(io.sampleRequest.payload.biAddr1)
-    val (fastHit2, fastWord2) = cachedWordForAddr(io.sampleRequest.payload.biAddr2)
-    val (fastHit3, fastWord3) = cachedWordForAddr(io.sampleRequest.payload.biAddr3)
-    val fastBilinearReady =
-      io.sampleRequest.valid && io.sampleRequest.payload.bilinear && !isExpanding && !activeValid && !fastHoldValid &&
-        fastHit0 && fastHit1 && fastHit2 && fastHit3
-    useFastBilinear := fastBilinearReady
-
-    val fastPayload = Tmu.FastFetch(c)
-    fastPayload.passthrough := io.sampleRequest.payload.passthrough
-    fastPayload.texels(0).rspData32 := fastWord0
-    fastPayload.texels(0).addrHalf := io.sampleRequest.payload.biAddr0(1)
-    fastPayload.texels(0).addrByte := io.sampleRequest.payload.biAddr0(0)
-    fastPayload.texels(1).rspData32 := fastWord1
-    fastPayload.texels(1).addrHalf := io.sampleRequest.payload.biAddr1(1)
-    fastPayload.texels(1).addrByte := io.sampleRequest.payload.biAddr1(0)
-    fastPayload.texels(2).rspData32 := fastWord2
-    fastPayload.texels(2).addrHalf := io.sampleRequest.payload.biAddr2(1)
-    fastPayload.texels(2).addrByte := io.sampleRequest.payload.biAddr2(0)
-    fastPayload.texels(3).rspData32 := fastWord3
-    fastPayload.texels(3).addrHalf := io.sampleRequest.payload.biAddr3(1)
-    fastPayload.texels(3).addrByte := io.sampleRequest.payload.biAddr3(0)
-
-    when(io.sampleRequest.fire && useFastBilinear) {
-      fastHoldValid := True
-      fastHoldPayload := fastPayload
-      texFillHits := texFillHits + U(4, 32 bits)
-      texFastBilinearHits := texFastBilinearHits + 1
-    }
+    useFastBilinear := False
 
     GenerationFlags.formal {
-      if (formalStrong) {
-        val fWordAddr = anyconst(UInt(c.addressWidth.value bits))
-        val fData = anyconst(Bits(32 bits))
-        assume(fWordAddr(1 downto 0) === U(0, 2 bits))
-
-        val fWordIndex = (fWordAddr >> 2).resize(lineShift bits)
-        val fLineBase =
-          (((fWordAddr >> (lineShift + 2)) << (lineShift + 2))).resize(c.addressWidth.value bits)
-        val fBankSel = fWordIndex(1 downto 0)
-        val fBankEntry = (fWordIndex >> 2).resize(bankEntryWidth bits)
-        val fTrackedActive =
-          activeValid && activeReq.lineBase === fLineBase && activeReq.bankSel === fBankSel && activeReq.bankEntry === fBankEntry
-        val fRspWordIndex = fillRspCount.resize(lineShift bits)
-        val fRspBank = fRspWordIndex(1 downto 0)
-        val fRspEntry = (fRspWordIndex >> 2).resize(bankEntryWidth bits)
-        val fTrackedRspBeat = io.texRead.rsp.fire && slotBase(
-          fillSlot
-        ) === fLineBase && fRspBank === fBankSel && fRspEntry === fBankEntry
-
-        when(fTrackedRspBeat) {
-          assume(io.texRead.rsp.fragment.data === fData)
-        }
-
-        for (i <- 0 until slotCount) {
-          when(
-            slotTagValid(i) && slotBase(i) === fLineBase && slotWordValid(i)(fBankSel)(fBankEntry)
-          ) {
-            assert(slotBanks(i)(fBankSel)(fBankEntry) === fData)
-          }
-        }
-
-        when(fTrackedActive && hitAny) {
-          assert(hitWord === fData)
-        }
-
-        when(
-          io.sampleRequest.fire && useFastBilinear && io.sampleRequest.payload.biAddr0 === fWordAddr
-        ) {
-          assert(fastPayload.texels(0).rspData32 === fData)
-        }
-        when(
-          io.sampleRequest.fire && useFastBilinear && io.sampleRequest.payload.biAddr1 === fWordAddr
-        ) {
-          assert(fastPayload.texels(1).rspData32 === fData)
-        }
-        when(
-          io.sampleRequest.fire && useFastBilinear && io.sampleRequest.payload.biAddr2 === fWordAddr
-        ) {
-          assert(fastPayload.texels(2).rspData32 === fData)
-        }
-        when(
-          io.sampleRequest.fire && useFastBilinear && io.sampleRequest.payload.biAddr3 === fWordAddr
-        ) {
-          assert(fastPayload.texels(3).rspData32 === fData)
-        }
-      }
-
-      assert(joined.valid === (activeValid && hitAny))
-      assert(requestStream.ready === (joined.ready && hitAny))
+      assert(!useFastBilinear)
+      assert(!io.fastFetch.valid)
       assert(io.texRead.cmd.valid === (fillActive && !fillCmdIssued))
 
       when(io.texRead.cmd.valid) {
@@ -363,45 +290,14 @@ case class TmuTextureCache(c: voodoo.Config, formalStrong: Boolean = true) exten
         when(prevStartFill) {
           assert(slotTagValid(prevFillStartSlot))
           assert(slotBase(prevFillStartSlot) === prevLineBase)
-          for (b <- 0 until bankCount) {
-            for (e <- 0 until bankEntries) {
-              assert(!slotWordValid(prevFillStartSlot)(b)(e))
-            }
-          }
-        }
-
-        val prevRspFire = RegNext(io.texRead.rsp.fire) init (False)
-        val prevFillSlot = RegNext(fillSlot) init (0)
-        val prevRspWordIndex = RegNext(fillRspCount.resize(lineShift bits)) init (0)
-        val prevRspBank = prevRspWordIndex(1 downto 0)
-        val prevRspEntry = (prevRspWordIndex >> 2).resize(bankEntryWidth bits)
-
-        when(prevRspFire) {
-          assert(slotWordValid(prevFillSlot)(prevRspBank)(prevRspEntry))
-        }
-      }
-
-      if (formalStrong) {
-        assert(useFastBilinear === fastBilinearReady)
-        when(useFastBilinear) {
-          assert(io.sampleRequest.valid)
-          assert(io.sampleRequest.payload.bilinear)
-          assert(!isExpanding)
-          assert(!activeValid)
-          assert(!fastHoldValid)
-          assert(fastHit0)
-          assert(fastHit1)
-          assert(fastHit2)
-          assert(fastHit3)
         }
       }
 
       cover(startFill)
       cover(hitAny)
-      cover(useFastBilinear)
     }
 
-    fetchBusy := activeValid || fillActive
+    fetchBusy := activeValid || fillActive || hitReadIssued || hitRspValid
   } else {
     useFastBilinear := False
     fetchBusy := False

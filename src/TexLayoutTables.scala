@@ -21,6 +21,7 @@ object TexLayoutTables {
   /** Computed per-LOD layout tables */
   case class Tables() extends Bundle {
     val texBase = Vec(UInt(22 bits), 9) // packed byte offset per LOD
+    val texEnd = Vec(UInt(22 bits), 9) // packed end byte offset per LOD
     val texShift = Vec(UInt(4 bits), 9) // log2(row width in texels) per LOD
   }
 
@@ -79,6 +80,7 @@ object TexLayoutTables {
       // We compute this as a shift amount and add to offset for next LOD
       val shiftAmount = (wBits +^ hBits +^ is16bit.asUInt.resize(5 bits)).resize(5 bits)
       val lodSize = (U(1, 22 bits) |<< shiftAmount).resize(22 bits)
+      tables.texEnd(lod) := (base + offsetExpr + lodSize).resize(22 bits)
       offsetExpr = (offsetExpr + lodSize).resize(22 bits)
     }
 

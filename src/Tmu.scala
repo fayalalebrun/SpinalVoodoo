@@ -31,6 +31,9 @@ case class Tmu(c: voodoo.Config) extends Component {
     // Palette write port (from Core, driven by NCC table 0 I/Q register writes with bit 31 set)
     val paletteWrite = slave Flow (Tmu.PaletteWrite())
 
+    // Invalidate texture-side fast caches after texture memory writes
+    val invalidate = in Bool ()
+
     // Pipeline busy: pixels in flight inside fork-queue-join and collector
     val busy = out Bool ()
   }
@@ -123,6 +126,9 @@ case class Tmu(c: voodoo.Config) extends Component {
   // Per-pixel LOD adjustment for perspective correction
   val perspLodAdjust = SInt(16 bits)
   perspLodAdjust := S(0, 16 bits)
+
+  val requestIdWidth = 5
+  val maxOutstanding = (1 << requestIdWidth) - 1
 
   when(!texMode.perspectiveEnable) {
     // Non-perspective: sow.raw is SQ(32,18), shift >>14 to get X.4 format
@@ -349,6 +355,22 @@ case class Tmu(c: voodoo.Config) extends Component {
 
   val is16BitFormat = texMode.format >= Tmu.TextureFormat.ARGB8332
   val bytesPerTexel = Mux(is16BitFormat, U(2), U(1))
+  val packedTables = if (c.packedTexLayout) io.input.payload.config.texTables else null
+  val packedLodBase =
+    if (c.packedTexLayout) packedTables.texBase(lodLevel).resize(c.addressWidth.value bits)
+    else U(0, c.addressWidth.value bits)
+  val packedLodShift = if (c.packedTexLayout) packedTables.texShift(lodLevel) else U(0, 4 bits)
+  val lodWidthBits = texWidthBits.resize(5 bits)
+  val lodHeightBits = texHeightBits.resize(5 bits)
+  val lodSizeShift =
+    (lodWidthBits +^ lodHeightBits +^ is16BitFormat.asUInt.resize(5 bits)).resize(6 bits)
+  val packedLodEnd = if (c.packedTexLayout) {
+    val lodSizeBytes =
+      (U(1, c.addressWidth.value bits) |<< lodSizeShift).resize(c.addressWidth.value bits)
+    (packedLodBase + lodSizeBytes).resized
+  } else {
+    U(0, c.addressWidth.value bits)
+  }
 
   // Texture memory addressing — packed or PCI-encoded depending on config
   def texelAddr(x: UInt, y: UInt): UInt = {
@@ -386,6 +408,7 @@ case class Tmu(c: voodoo.Config) extends Component {
   val pointTexelX = wrapOrClamp(finalSPoint, texWidthBits, texMode.clampS)
   val pointTexelY = wrapOrClamp(finalTPoint, texHeightBits, texMode.clampT)
   val pointAddr = texelAddr(pointTexelX, pointTexelY)
+  val pointBankSel = (pointTexelY(0) ## pointTexelX(0)).asUInt
 
   // Bilinear: 4 addresses from 2x2 neighborhood
   val biX0 = wrapOrClamp(finalSi, texWidthBits, texMode.clampS)
@@ -396,6 +419,10 @@ case class Tmu(c: voodoo.Config) extends Component {
   val biAddr1 = texelAddr(biX1, biY0) // top-right
   val biAddr2 = texelAddr(biX0, biY1) // bottom-left
   val biAddr3 = texelAddr(biX1, biY1) // bottom-right
+  val biBankSel0 = (biY0(0) ## biX0(0)).asUInt
+  val biBankSel1 = (biY0(0) ## biX1(0)).asUInt
+  val biBankSel2 = (biY1(0) ## biX0(0)).asUInt
+  val biBankSel3 = (biY1(0) ## biX1(0)).asUInt
 
   val inputPassthrough = Tmu.TmuPassthrough(c)
   inputPassthrough.format := texMode.format
@@ -404,12 +431,13 @@ case class Tmu(c: voodoo.Config) extends Component {
   inputPassthrough.ds := finalDs
   inputPassthrough.dt := finalDt
   inputPassthrough.readIdx := 0
+  inputPassthrough.requestId := 0
   inputPassthrough.ncc := io.input.payload.config.ncc
   if (c.trace.enabled) {
     inputPassthrough.trace := io.input.payload.trace
   }
 
-  val sampleRequest = io.input
+  val sampleRequestBase = io.input
     .translateWith {
       val req = Tmu.SampleRequest(c)
       req.pointAddr := pointAddr
@@ -417,15 +445,63 @@ case class Tmu(c: voodoo.Config) extends Component {
       req.biAddr1 := biAddr1
       req.biAddr2 := biAddr2
       req.biAddr3 := biAddr3
+      req.pointBankSel := pointBankSel
+      req.biBankSel0 := biBankSel0
+      req.biBankSel1 := biBankSel1
+      req.biBankSel2 := biBankSel2
+      req.biBankSel3 := biBankSel3
+      req.lodBase := packedLodBase
+      req.lodEnd := packedLodEnd
+      req.lodShift := packedLodShift
+      req.is16Bit := is16BitFormat
+      if (c.packedTexLayout) {
+        req.texTables := io.input.payload.config.texTables
+      }
       req.bilinear := bilinearEnable
       req.passthrough := inputPassthrough
       req
     }
     .queue(16)
 
+  val requestIdAlloc = Reg(UInt(requestIdWidth bits)) init 0
+  val canAllocate = inFlightCount =/= maxOutstanding
+  val sampleRequest = Stream(Tmu.SampleRequest(c))
+  sampleRequest.valid := sampleRequestBase.valid && canAllocate
+  sampleRequest.payload.pointAddr := sampleRequestBase.payload.pointAddr
+  sampleRequest.payload.biAddr0 := sampleRequestBase.payload.biAddr0
+  sampleRequest.payload.biAddr1 := sampleRequestBase.payload.biAddr1
+  sampleRequest.payload.biAddr2 := sampleRequestBase.payload.biAddr2
+  sampleRequest.payload.biAddr3 := sampleRequestBase.payload.biAddr3
+  sampleRequest.payload.pointBankSel := sampleRequestBase.payload.pointBankSel
+  sampleRequest.payload.biBankSel0 := sampleRequestBase.payload.biBankSel0
+  sampleRequest.payload.biBankSel1 := sampleRequestBase.payload.biBankSel1
+  sampleRequest.payload.biBankSel2 := sampleRequestBase.payload.biBankSel2
+  sampleRequest.payload.biBankSel3 := sampleRequestBase.payload.biBankSel3
+  sampleRequest.payload.lodBase := sampleRequestBase.payload.lodBase
+  sampleRequest.payload.lodEnd := sampleRequestBase.payload.lodEnd
+  sampleRequest.payload.lodShift := sampleRequestBase.payload.lodShift
+  sampleRequest.payload.is16Bit := sampleRequestBase.payload.is16Bit
+  if (c.packedTexLayout) {
+    sampleRequest.payload.texTables := sampleRequestBase.payload.texTables
+  }
+  sampleRequest.payload.bilinear := sampleRequestBase.payload.bilinear
+  sampleRequest.payload.passthrough.format := sampleRequestBase.payload.passthrough.format
+  sampleRequest.payload.passthrough.bilinear := sampleRequestBase.payload.passthrough.bilinear
+  sampleRequest.payload.passthrough.sendConfig := sampleRequestBase.payload.passthrough.sendConfig
+  sampleRequest.payload.passthrough.ds := sampleRequestBase.payload.passthrough.ds
+  sampleRequest.payload.passthrough.dt := sampleRequestBase.payload.passthrough.dt
+  sampleRequest.payload.passthrough.readIdx := sampleRequestBase.payload.passthrough.readIdx
+  sampleRequest.payload.passthrough.requestId := requestIdAlloc
+  sampleRequest.payload.passthrough.ncc := sampleRequestBase.payload.passthrough.ncc
+  if (c.trace.enabled) {
+    sampleRequest.payload.passthrough.trace := sampleRequestBase.payload.passthrough.trace
+  }
+  sampleRequestBase.ready := sampleRequest.ready && canAllocate
+
   val textureCache = TmuTextureCache(c)
   sampleRequest >/-> textureCache.io.sampleRequest
   io.texRead <> textureCache.io.texRead
+  textureCache.io.invalidate := io.invalidate
 
   val texelDecoder = TmuTexelDecoder(c)
   textureCache.io.fetched >/-> texelDecoder.io.fetched
@@ -437,21 +513,37 @@ case class Tmu(c: voodoo.Config) extends Component {
 
   val fastOutput = texelDecoder.io.fastOutput
   val normalOutput = collector.io.output
-  val outputRoute = textureCache.io.outputRoute.queue(16)
+  textureCache.io.outputRoute.ready := True
 
-  io.output.valid := outputRoute.valid && Mux(
-    outputRoute.payload,
-    fastOutput.valid,
-    normalOutput.valid
-  )
-  io.output.payload := outputRoute.payload ? fastOutput.payload | normalOutput.payload
-  fastOutput.ready := io.output.ready && outputRoute.valid && outputRoute.payload
-  normalOutput.ready := io.output.ready && outputRoute.valid && !outputRoute.payload
-  outputRoute.ready := io.output.fire
+  val retireValid = Vec(Reg(Bool()) init False, 1 << requestIdWidth)
+  val retireData = Vec.fill(1 << requestIdWidth)(Reg(Tmu.Output(c)))
+  val retireHead = Reg(UInt(requestIdWidth bits)) init 0
 
-  when(io.input.fire && !io.output.fire) {
+  fastOutput.ready := !retireValid(fastOutput.payload.requestId)
+  normalOutput.ready := !retireValid(normalOutput.payload.requestId)
+
+  when(fastOutput.fire) {
+    retireValid(fastOutput.payload.requestId) := True
+    retireData(fastOutput.payload.requestId) := fastOutput.payload
+  }
+  when(normalOutput.fire) {
+    retireValid(normalOutput.payload.requestId) := True
+    retireData(normalOutput.payload.requestId) := normalOutput.payload
+  }
+
+  io.output.valid := retireValid(retireHead)
+  io.output.payload := retireData(retireHead)
+  when(io.output.fire) {
+    retireValid(retireHead) := False
+    retireHead := retireHead + 1
+  }
+
+  when(sampleRequest.fire) {
+    requestIdAlloc := requestIdAlloc + 1
+  }
+  when(sampleRequest.fire && !io.output.fire) {
     inFlightCount := inFlightCount + 1
-  }.elsewhen(!io.input.fire && io.output.fire) {
+  }.elsewhen(!sampleRequest.fire && io.output.fire) {
     inFlightCount := inFlightCount - 1
   }
   io.busy := inFlightCount =/= 0
@@ -473,12 +565,19 @@ object Tmu {
     val ds = UInt(4 bits)
     val dt = UInt(4 bits)
     val readIdx = UInt(2 bits)
+    val requestId = UInt(5 bits)
     val ncc = Tmu.NccTableData()
     val trace = if (c.trace.enabled) Trace.PixelKey() else null
   }
 
   case class TmuExpanded(c: voodoo.Config) extends Bundle {
     val address = UInt(c.addressWidth.value bits)
+    val bankSel = UInt(2 bits)
+    val lodBase = UInt(c.addressWidth.value bits)
+    val lodEnd = UInt(c.addressWidth.value bits)
+    val lodShift = UInt(4 bits)
+    val is16Bit = Bool()
+    val texTables = if (c.packedTexLayout) TexLayoutTables.Tables() else null
     val passthrough = TmuPassthrough(c)
   }
 
@@ -488,18 +587,34 @@ object Tmu {
     val biAddr1 = UInt(c.addressWidth.value bits)
     val biAddr2 = UInt(c.addressWidth.value bits)
     val biAddr3 = UInt(c.addressWidth.value bits)
+    val pointBankSel = UInt(2 bits)
+    val biBankSel0 = UInt(2 bits)
+    val biBankSel1 = UInt(2 bits)
+    val biBankSel2 = UInt(2 bits)
+    val biBankSel3 = UInt(2 bits)
+    val lodBase = UInt(c.addressWidth.value bits)
+    val lodEnd = UInt(c.addressWidth.value bits)
+    val lodShift = UInt(4 bits)
+    val is16Bit = Bool()
+    val texTables = if (c.packedTexLayout) TexLayoutTables.Tables() else null
     val bilinear = Bool()
     val passthrough = TmuPassthrough(c)
   }
 
   case class QueuedData(c: voodoo.Config) extends Bundle {
     val passthrough = TmuPassthrough(c)
+    val fullAddress = UInt(c.addressWidth.value bits)
     val addrHalf = Bool()
     val addrByte = Bool()
   }
 
   case class CachedReq(c: voodoo.Config, bankEntryWidth: Int) extends Bundle {
     val lineBase = UInt(c.addressWidth.value bits)
+    val lodBase = UInt(c.addressWidth.value bits)
+    val lodEnd = UInt(c.addressWidth.value bits)
+    val lodShift = UInt(4 bits)
+    val is16Bit = Bool()
+    val texTables = if (c.packedTexLayout) TexLayoutTables.Tables() else null
     val bankSel = UInt(2 bits)
     val bankEntry = UInt(bankEntryWidth bits)
     val queued = QueuedData(c)
@@ -647,6 +762,7 @@ object Tmu {
   case class Output(c: voodoo.Config) extends Bundle {
     val texture = Color.u8()
     val textureAlpha = UInt(8 bits)
+    val requestId = UInt(5 bits)
     val trace = if (c.trace.enabled) Trace.PixelKey() else null
   }
 

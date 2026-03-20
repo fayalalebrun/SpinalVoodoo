@@ -16,6 +16,7 @@ class TmuTest extends AnyFunSuite {
     dut.clockDomain.forkStimulus(period = 10)
     dut.io.input.valid #= false
     dut.io.output.ready #= true
+    dut.io.invalidate #= false
     dut.clockDomain.waitSampling()
   }
 
@@ -41,6 +42,9 @@ class TmuTest extends AnyFunSuite {
       val wBits = scala.math.max(8 - lod, 0)
       val hBits = scala.math.max(8 - lod, 0) // 1:1 aspect ratio
       dut.io.input.payload.config.texTables.texBase(lod) #= BigInt(baseByteAddr + offset)
+      dut.io.input.payload.config.texTables.texEnd(lod) #= BigInt(
+        baseByteAddr + offset + (1L << (wBits + hBits + bppShift))
+      )
       dut.io.input.payload.config.texTables.texShift(lod) #= BigInt(wBits)
       offset += 1L << (wBits + hBits + bppShift)
     }

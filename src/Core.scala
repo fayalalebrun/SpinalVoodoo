@@ -203,6 +203,7 @@ case class Core(c: Config) extends Component {
     texWriteRspPending := True
     texWriteRspSource := cpuCmd.source
   }
+  tmu.io.invalidate := cpuCmd.valid && isTexWrite && pciFifo.io.texWrite.ready && cpuCmd.ready
   when(texWriteRspPending) {
     texWriteRspPending := False
   }

@@ -32,15 +32,18 @@ class TmuTextureCacheFormalDut(formalStrong: Boolean) extends Component {
   dut.io.sampleRequest.payload := sampleRequestPayload
   dut.io.fetched.ready := anyseq(Bool())
   dut.io.fastFetch.ready := anyseq(Bool())
+  dut.io.outputRoute.ready := anyseq(Bool())
   dut.io.texRead.cmd.ready := anyseq(Bool())
   dut.io.texRead.rsp.valid := anyseq(Bool())
   dut.io.texRead.rsp.fragment := texRspFragment
   dut.io.texRead.rsp.last := anyseq(Bool())
+  dut.io.invalidate := anyseq(Bool())
 
   assumeInitial(reset)
   when(reset) {
     assume(!dut.io.sampleRequest.valid)
     assume(!dut.io.texRead.rsp.valid)
+    assume(!dut.io.invalidate)
   }
   when(pastValid) {
     assume(!reset)
@@ -54,6 +57,9 @@ class TmuTextureCacheFormalDut(formalStrong: Boolean) extends Component {
 
   if (formalStrong) {
     val readOutstanding = Reg(UInt(log2Up(c.texFillLineWords + 1) bits)) init (0)
+    val prevFastAccept = Reg(Bool()) init (False)
+    val fastAccept =
+      dut.io.sampleRequest.fire && dut.io.outputRoute.fire && dut.io.outputRoute.payload
 
     when(dut.io.texRead.cmd.fire) {
       assert(readOutstanding === 0)
@@ -85,10 +91,20 @@ class TmuTextureCacheFormalDut(formalStrong: Boolean) extends Component {
       assert(dut.io.texRead.cmd.fragment.opcode === Bmb.Cmd.Opcode.READ)
       assert(dut.io.texRead.cmd.last)
     }
+
+    cover(
+      pastValid &&
+        prevFastAccept &&
+        fastAccept
+    )
+
+    prevFastAccept := fastAccept
   }
 }
 
 class TmuTextureCacheFormalBmcDut extends TmuTextureCacheFormalDut(formalStrong = true)
+
+class TmuTextureCacheFormalCoverDut extends TmuTextureCacheFormalDut(formalStrong = true)
 
 class TmuTextureCacheFormalProveDut extends TmuTextureCacheFormalDut(formalStrong = false)
 
@@ -98,6 +114,13 @@ class TmuTextureCacheFormalTest extends SpinalFormalFunSuite {
       .withBMC(14)
       .withAsync
       .doVerify(new TmuTextureCacheFormalBmcDut)
+  }
+
+  ignore("TMU-specific texture cache bilinear hit throughput cover") {
+    FormalConfig
+      .withCover(14)
+      .withAsync
+      .doVerify(new TmuTextureCacheFormalCoverDut)
   }
 
   test("TMU-specific texture cache invariants prove") {

@@ -53,6 +53,7 @@ case class TmuCollector(c: voodoo.Config) extends Component {
   if (c.trace.enabled) {
     io.output.payload.trace := io.decoded.payload.passthrough.trace
   }
+  io.output.payload.requestId := io.decoded.payload.passthrough.requestId
 
   Seq(
     io.output.payload.texture.r,

@@ -244,6 +244,7 @@ case class TmuTexelDecoder(c: voodoo.Config) extends Component {
     result.texture.g := blendChannel(pass.ds, pass.dt, g0, g1, g2, g3)
     result.texture.b := blendChannel(pass.ds, pass.dt, b0, b1, b2, b3)
     result.textureAlpha := blendChannel(pass.ds, pass.dt, a0, a1, a2, a3)
+    result.requestId := pass.requestId
     when(pass.sendConfig) {
       result.texture.r := 0
       result.texture.g := 0

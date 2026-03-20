@@ -292,7 +292,7 @@ case class TmuTextureCache(c: voodoo.Config, formalStrong: Boolean = true) exten
         ) { conflict := True }
       val canIssue =
         if (c.packedTexLayout)
-          io.sampleRequest.valid && io.sampleRequest.payload.bilinear && hitAll && !conflict && !expanded.running && !reqStream.valid && !issued && !fastHoldValid && !hitReadIssued && !hitRspValid && io.outputRoute.ready
+          io.sampleRequest.valid && io.sampleRequest.payload.bilinear && hitAll && !conflict && !expanded.running && !reqStream.valid && !hitReadIssued && !hitRspValid && !((issued || fastHoldValid) && !io.fastFetch.ready) && io.outputRoute.ready
         else False
       when(canIssue) {
         for (b <- 0 until bankCount) {
@@ -302,7 +302,7 @@ case class TmuTextureCache(c: voodoo.Config, formalStrong: Boolean = true) exten
         for (i <- 0 until 4) {
           bank(i) := tapBank(i); half(i) := tapAddr(i)(1); byte(i) := tapAddr(i)(0)
         }
-        pass := io.sampleRequest.payload.passthrough; issued := True
+        pass := io.sampleRequest.payload.passthrough
       }
       when(issued) {
         fastHoldValid := True; fastHoldPayload.passthrough := pass
@@ -311,9 +311,10 @@ case class TmuTextureCache(c: voodoo.Config, formalStrong: Boolean = true) exten
           fastHoldPayload.texels(i).addrHalf := half(i);
           fastHoldPayload.texels(i).addrByte := byte(i)
         }
-        issued := False; texFastBilinearHits := texFastBilinearHits + 1;
+        texFastBilinearHits := texFastBilinearHits + 1;
         texFillHits := texFillHits + U(4, 32 bits)
       }
+      issued := canIssue
     }
 
     val canIssueHit = reqStream.valid && hitAny && !hitReadIssued && !hitRspValid && !fill.activeReg
@@ -386,7 +387,7 @@ case class TmuTextureCache(c: voodoo.Config, formalStrong: Boolean = true) exten
   }
 
   val acceptSlow = !expanded.running && !useFastBilinear && expanded.stream.ready
-  val acceptFast = useFastBilinear && !fastHoldValid
+  val acceptFast = useFastBilinear && (!fastHoldValid || io.fastFetch.ready)
   val canAccept = acceptSlow || acceptFast
   io.outputRoute.valid := io.sampleRequest.valid && canAccept;
   io.outputRoute.payload := useFastBilinear;

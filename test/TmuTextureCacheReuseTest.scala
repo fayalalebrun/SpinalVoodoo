@@ -151,4 +151,73 @@ class TmuTextureCacheReuseTest extends AnyFunSuite {
       assert(cmdCount == 2, s"expected bilinear hit to avoid extra fill, saw $cmdCount fills")
     }
   }
+
+  test("packed cache accepts fast bilinear hits back to back") {
+    SimConfig.compile(TmuTextureCache(c)).doSim { dut =>
+      dut.clockDomain.forkStimulus(10)
+      dut.io.sampleRequest.valid #= false
+      dut.io.fetched.ready #= true
+      dut.io.fastFetch.ready #= true
+      dut.io.outputRoute.ready #= true
+      dut.io.texRead.cmd.ready #= true
+      dut.io.texRead.rsp.valid #= false
+      dut.io.texRead.rsp.last #= false
+      dut.io.texRead.rsp.fragment.data #= 0
+      dut.io.texRead.rsp.fragment.source #= 0
+      dut.io.texRead.rsp.fragment.context #= 0
+      dut.io.invalidate #= false
+      dut.clockDomain.waitSampling()
+
+      var cmdCount = 0
+      fork {
+        while (true) {
+          dut.clockDomain.waitSampling()
+          if (dut.io.texRead.cmd.valid.toBoolean && dut.io.texRead.cmd.ready.toBoolean) {
+            cmdCount += 1
+            for (beat <- 0 until c.texFillLineWords) {
+              dut.io.texRead.rsp.valid #= true
+              dut.io.texRead.rsp.fragment.data #= (0x3000 + beat)
+              dut.io.texRead.rsp.last #= (beat == c.texFillLineWords - 1)
+              dut.clockDomain.waitSampling()
+            }
+            dut.io.texRead.rsp.valid #= false
+            dut.io.texRead.rsp.last #= false
+          }
+        }
+      }
+
+      for ((addr, bank) <- Seq((0, 0), (2, 1), (512, 2), (514, 3))) {
+        setReq(dut, addr = addr, bank = bank)
+        dut.io.sampleRequest.valid #= true
+        dut.clockDomain.waitSamplingWhere(dut.io.sampleRequest.ready.toBoolean)
+        dut.io.sampleRequest.valid #= false
+        dut.clockDomain.waitSamplingWhere(dut.io.fetched.valid.toBoolean)
+      }
+      assert(cmdCount == 2)
+
+      setReq(dut, addr = 0, bank = 0, bilinear = true)
+      dut.io.sampleRequest.valid #= true
+      dut.clockDomain.waitSampling()
+      val firstReady = dut.io.sampleRequest.ready.toBoolean
+      val firstFast = dut.io.outputRoute.valid.toBoolean && dut.io.outputRoute.payload.toBoolean
+      dut.clockDomain.waitSampling()
+      val secondReady = dut.io.sampleRequest.ready.toBoolean
+      val secondFast = dut.io.outputRoute.valid.toBoolean && dut.io.outputRoute.payload.toBoolean
+      dut.io.sampleRequest.valid #= false
+      assert(
+        firstReady && firstFast,
+        s"expected first fast bilinear accept, got ready=$firstReady fast=$firstFast"
+      )
+      assert(
+        secondReady && secondFast,
+        s"expected second fast bilinear accept, got ready=$secondReady fast=$secondFast"
+      )
+      dut.clockDomain.waitSamplingWhere(dut.io.fastFetch.valid.toBoolean)
+      dut.clockDomain.waitSamplingWhere(dut.io.fastFetch.valid.toBoolean)
+      assert(
+        cmdCount == 2,
+        s"expected back-to-back fast hits without extra fill, saw $cmdCount fills"
+      )
+    }
+  }
 }

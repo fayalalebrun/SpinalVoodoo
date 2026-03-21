@@ -176,15 +176,31 @@ case class TmuTexelDecoder(c: voodoo.Config) extends Component {
     result
   }
 
-  def blendChannel(ds: UInt, dt: UInt, t0: UInt, t1: UInt, t2: UInt, t3: UInt): UInt = {
-    val w0 = (U(16, 5 bits) - ds.resize(5 bits)) * (U(16, 5 bits) - dt.resize(5 bits))
-    val w1 = ds.resize(5 bits) * (U(16, 5 bits) - dt.resize(5 bits))
-    val w2 = (U(16, 5 bits) - ds.resize(5 bits)) * dt.resize(5 bits)
-    val w3 = ds.resize(5 bits) * dt.resize(5 bits)
-    val sum = (t0.resize(18 bits) * w0.resize(10 bits)) +
-      (t1.resize(18 bits) * w1.resize(10 bits)) +
-      (t2.resize(18 bits) * w2.resize(10 bits)) +
-      (t3.resize(18 bits) * w3.resize(10 bits))
+  case class BilinearWeights() extends Bundle {
+    val w0 = UInt(10 bits)
+    val w1 = UInt(10 bits)
+    val w2 = UInt(10 bits)
+    val w3 = UInt(10 bits)
+  }
+
+  def bilinearWeights(ds: UInt, dt: UInt): BilinearWeights = {
+    val ds5 = ds.resize(5 bits)
+    val dt5 = dt.resize(5 bits)
+    val invDs = U(16, 5 bits) - ds5
+    val invDt = U(16, 5 bits) - dt5
+    val weights = BilinearWeights()
+    weights.w0 := (invDs * invDt).resize(10 bits)
+    weights.w1 := (ds5 * invDt).resize(10 bits)
+    weights.w2 := (invDs * dt5).resize(10 bits)
+    weights.w3 := (ds5 * dt5).resize(10 bits)
+    weights
+  }
+
+  def blendChannel(weights: BilinearWeights, t0: UInt, t1: UInt, t2: UInt, t3: UInt): UInt = {
+    val sum = (t0.resize(18 bits) * weights.w0.resize(10 bits)) +
+      (t1.resize(18 bits) * weights.w1.resize(10 bits)) +
+      (t2.resize(18 bits) * weights.w2.resize(10 bits)) +
+      (t3.resize(18 bits) * weights.w3.resize(10 bits))
     (sum >> 8).resize(8 bits)
   }
 
@@ -202,6 +218,7 @@ case class TmuTexelDecoder(c: voodoo.Config) extends Component {
 
   io.fastOutput << fastFetchPipe.translateWith {
     val pass = fastFetchPipe.payload.passthrough
+    val weights = bilinearWeights(pass.ds, pass.dt)
     val (r0, g0, b0, a0) =
       decodeTexelWord(
         fastFetchPipe.payload.texels(0).rspData32,
@@ -240,10 +257,10 @@ case class TmuTexelDecoder(c: voodoo.Config) extends Component {
       )
 
     val result = Tmu.Output(c)
-    result.texture.r := blendChannel(pass.ds, pass.dt, r0, r1, r2, r3)
-    result.texture.g := blendChannel(pass.ds, pass.dt, g0, g1, g2, g3)
-    result.texture.b := blendChannel(pass.ds, pass.dt, b0, b1, b2, b3)
-    result.textureAlpha := blendChannel(pass.ds, pass.dt, a0, a1, a2, a3)
+    result.texture.r := blendChannel(weights, r0, r1, r2, r3)
+    result.texture.g := blendChannel(weights, g0, g1, g2, g3)
+    result.texture.b := blendChannel(weights, b0, b1, b2, b3)
+    result.textureAlpha := blendChannel(weights, a0, a1, a2, a3)
     result.requestId := pass.requestId
     when(pass.sendConfig) {
       result.texture.r := 0

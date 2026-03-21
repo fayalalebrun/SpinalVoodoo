@@ -10,7 +10,7 @@ set_global_assignment -name SDC_FILE SpinalVoodoo_de10.sdc
 
 set_global_assignment -name RESERVE_ALL_UNUSED_PINS "AS INPUT TRI-STATED"
 set_global_assignment -name NUM_PARALLEL_PROCESSORS ALL
-set_global_assignment -name AUTO_DSP_RECOGNITION OFF
+set_global_assignment -name AUTO_DSP_RECOGNITION ON
 
 # Board clock/reset pin wiring.
 # NOTE: These are DE10-Nano oriented defaults and can be overridden if your

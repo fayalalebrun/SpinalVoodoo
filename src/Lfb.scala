@@ -61,6 +61,7 @@ case class Lfb(c: Config) extends Component {
   val capturedRead2 = Reg(Bits(32 bits))
   val capturedRead1LaneHi = Reg(Bool()) init (False)
   val capturedRead2LaneHi = Reg(Bool()) init (False)
+  val fbReadPlaneAddr = Reg(UInt(c.addressWidth.value bits)) init (0)
 
   // Is this a dual-pixel format?
   val isDualPixel =
@@ -359,11 +360,11 @@ case class Lfb(c: Config) extends Component {
     val cmdAddr = io.bus.cmd.address
     val rx = (cmdAddr >> 1).resize(10 bits)
     val ry = (cmdAddr >> 11).resize(10 bits)
-    val pixelFlat1 = (ry.resize(20 bits) * io.fbPixelStride + rx.resize(20 bits))
     val readBase =
       (io.lfbMode.readBufferSelect === 2) ? io.fbReadAuxBaseAddr | io.fbReadColorBaseAddr
-    val planeAddr1 = (readBase + (pixelFlat1 << 1).resize(c.addressWidth.value bits)).resized
+    val planeAddr1 = FramebufferAddressMath.planeAddress(readBase, rx, ry, io.fbPixelStride)
     capturedRead1LaneHi := planeAddr1(1)
+    fbReadPlaneAddr := planeAddr1
     fbReadAddr := (planeAddr1(c.addressWidth.value - 1 downto 2) ## U"2'b00").asUInt
   }
 
@@ -383,13 +384,9 @@ case class Lfb(c: Config) extends Component {
     when(io.fbReadBus.rsp.fire) {
       capturedRead1 := io.fbReadBus.rsp.data
       state := stateRfetch2
-      // Set up address for second read (x+1)
-      val pixelFlat2 =
-        (readPixelY.resize(20 bits) * io.fbPixelStride + (readPixelX + 1).resize(20 bits))
-      val readBase =
-        (io.lfbMode.readBufferSelect === 2) ? io.fbReadAuxBaseAddr | io.fbReadColorBaseAddr
-      val planeAddr2 = (readBase + (pixelFlat2 << 1).resize(c.addressWidth.value bits)).resized
+      val planeAddr2 = (fbReadPlaneAddr + 2).resize(c.addressWidth.value bits)
       capturedRead2LaneHi := planeAddr2(1)
+      fbReadPlaneAddr := planeAddr2
       fbReadAddr := (planeAddr2(c.addressWidth.value - 1 downto 2) ## U"2'b00").asUInt
       fbReadCmdPending := True
     }

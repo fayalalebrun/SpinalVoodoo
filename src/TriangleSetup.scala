@@ -98,8 +98,16 @@ case class TriangleSetup(c: Config, formalStrong: Boolean = false) extends Compo
     val dxSubRaw = (U(8, 5 bits) - fracAx.resize(5 bits))(3 downto 0) // (8 - frac) mod 16
     val fracAy = tri(0)(1).raw(3 downto 0).asUInt
     val dySubRaw = (U(8, 5 bits) - fracAy.resize(5 bits))(3 downto 0)
-    val dxSubS = (False ## dxSubRaw).asSInt // 5-bit signed (0-15)
-    val dySubS = (False ## dySubRaw).asSInt
+
+    def mulBySubpixel(value: SInt, coeff: UInt): SInt = {
+      val width = value.getWidth + coeff.getWidth
+      val zero = S(0, width bits)
+      val terms = (0 until coeff.getWidth).map { bit =>
+        val shifted = (value.resize(width bits) |<< bit).resize(width bits)
+        Mux(coeff(bit), shifted, zero)
+      }
+      terms.reduce(_ + _).resize(width bits)
+    }
 
     // 86Box applies subpixel correction first, then shifts gradients by integer pixel deltas
     // from rounded vertex A to the raster start point.
@@ -116,7 +124,7 @@ case class TriangleSetup(c: Config, formalStrong: Boolean = false) extends Compo
       // Subpixel correction: (dxSub * dX_raw + dySub * dY_raw) >> 4
       val dxGrad = inG.d(0).raw.asSInt
       val dyGrad = inG.d(1).raw.asSInt
-      val corrRaw = (dxSubS * dxGrad + dySubS * dyGrad) >> 4
+      val corrRaw = (mulBySubpixel(dxGrad, dxSubRaw) + mulBySubpixel(dyGrad, dySubRaw)) >> 4
 
       // Conditionally apply: wrapping add to match 86Box trunc32 behavior
       val startRaw = inG.start.raw.asSInt
@@ -154,7 +162,7 @@ case class TriangleSetup(c: Config, formalStrong: Boolean = false) extends Compo
         )
       )
     ) {
-      val corrRaw = (dxSubS * dxRaw + dySubS * dyRaw) >> 4
+      val corrRaw = (mulBySubpixel(dxRaw, dxSubRaw) + mulBySubpixel(dyRaw, dySubRaw)) >> 4
       val startRaw = inStart.raw.asSInt
       val N = startRaw.getWidth
       val correctedRaw = (startRaw + corrRaw.resize(N))(N - 1 downto 0)
@@ -169,7 +177,7 @@ case class TriangleSetup(c: Config, formalStrong: Boolean = false) extends Compo
     {
       val dxRaw = input.hiAlpha.dAdX.raw.asSInt
       val dyRaw = input.hiAlpha.dAdY.raw.asSInt
-      val corrRaw = (dxSubS * dxRaw + dySubS * dyRaw) >> 4
+      val corrRaw = (mulBySubpixel(dxRaw, dxSubRaw) + mulBySubpixel(dyRaw, dySubRaw)) >> 4
       val startRaw = input.hiAlpha.start.raw.asSInt
       val N = startRaw.getWidth
       val correctedRaw = (startRaw + corrRaw.resize(N))(N - 1 downto 0)

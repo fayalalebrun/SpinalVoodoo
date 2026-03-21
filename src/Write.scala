@@ -13,9 +13,13 @@ case class Write(c: Config) extends Component {
   }
 
   o.fbWrite.translateFrom(i.fromPipeline) { (out, in) =>
-    val strideSInt = (False ## in.fbPixelStride).asSInt
-    val pixelFlat = (in.coords(1) * strideSInt + in.coords(0)).asUInt
-    val planeAddress = (in.fbBaseAddr + (pixelFlat << 1)).resized
+    val planeAddress =
+      FramebufferAddressMath.planeAddress(
+        in.fbBaseAddr,
+        in.coords(0).asUInt,
+        in.coords(1).asUInt,
+        in.fbPixelStride
+      )
     val laneHi = planeAddress(1)
     val alignedAddress = (planeAddress(c.addressWidth.value - 1 downto 2) ## U"2'b00").asUInt
     val laneData = Bits(32 bits)

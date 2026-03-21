@@ -102,11 +102,22 @@ case class FramebufferAccess(c: Config) extends Component {
   }
 
   val request = Internal()
-  val strideSInt = (False ## payload.fbPixelStride).asSInt
-  val rowStartPixel = (payload.coords(1) * strideSInt).asUInt
-  val pixelFlat = (rowStartPixel + payload.coords(0).asUInt).resized
-  val colorPlaneAddress = (payload.drawColorBufferBase + (pixelFlat << 1)).resized
-  val auxPlaneAddress = (payload.drawAuxBufferBase + (pixelFlat << 1)).resized
+  val pixelX = payload.coords(0).asUInt
+  val pixelY = payload.coords(1).asUInt
+  val colorPlaneAddress =
+    FramebufferAddressMath.planeAddress(
+      payload.drawColorBufferBase,
+      pixelX,
+      pixelY,
+      payload.fbPixelStride
+    )
+  val auxPlaneAddress =
+    FramebufferAddressMath.planeAddress(
+      payload.drawAuxBufferBase,
+      pixelX,
+      pixelY,
+      payload.fbPixelStride
+    )
   request.colorAddress := (colorPlaneAddress(c.addressWidth.value - 1 downto 2) ## U"2'b00").asUInt
   request.auxAddress := (auxPlaneAddress(c.addressWidth.value - 1 downto 2) ## U"2'b00").asUInt
   request.passthrough.coords := payload.coords
@@ -234,68 +245,59 @@ case class FramebufferAccess(c: Config) extends Component {
   // 255 - x
   def oneMinusU8(x: UInt): UInt = (U(255, 8 bits) - x)
 
-  // Blend factor computation: computes factored color for one side of the blend equation
-  def computeBlendFactor(
+  def computeBlendScale(
       factorSel: UInt,
-      selfColor: Color[UInt],
       srcAlpha: UInt,
       destAlpha: UInt,
       colorFactor: Color[UInt],
       isSrc: Boolean,
       colBeforeFog: Color[UInt]
   ): Color[UInt] = {
-    val result = Color.u8()
+    val scale = Color.u8()
     switch(factorSel) {
-      is(0x0) { result.foreach(_ := U(0, 8 bits)) } // ZERO
-      is(0x1) { result.assignFromSeq(selfColor.map(blendMul(srcAlpha, _))) } // SRC_ALPHA
-      is(0x2) { // COLOR
-        result.assignFromSeq(selfColor.zipWith(colorFactor)((s, f) => blendMul(f, s)))
-      }
-      is(0x3) { result.assignFromSeq(selfColor.map(blendMul(destAlpha, _))) } // DST_ALPHA
-      is(0x4) { result := selfColor } // ONE
-      is(0x5) { // ONE_MINUS_SRC_ALPHA
-        result.assignFromSeq(selfColor.map(blendMul(oneMinusU8(srcAlpha), _)))
-      }
-      is(0x6) { // ONE_MINUS_COLOR
-        result.assignFromSeq(selfColor.zipWith(colorFactor)((s, f) => blendMul(oneMinusU8(f), s)))
-      }
-      is(0x7) { // ONE_MINUS_DST_ALPHA
-        result.assignFromSeq(selfColor.map(blendMul(oneMinusU8(destAlpha), _)))
-      }
+      is(0x0) { scale.foreach(_ := U(0, 8 bits)) } // ZERO
+      is(0x1) { scale.foreach(_ := srcAlpha) } // SRC_ALPHA
+      is(0x2) { scale := colorFactor } // COLOR
+      is(0x3) { scale.foreach(_ := destAlpha) } // DST_ALPHA
+      is(0x4) { scale.foreach(_ := U(255, 8 bits)) } // ONE
+      is(0x5) { scale.foreach(_ := oneMinusU8(srcAlpha)) } // ONE_MINUS_SRC_ALPHA
+      is(0x6) { scale.assignFromSeq(colorFactor.map(oneMinusU8)) } // ONE_MINUS_COLOR
+      is(0x7) { scale.foreach(_ := oneMinusU8(destAlpha)) } // ONE_MINUS_DST_ALPHA
       is(0xf) {
-        if (isSrc) { // SATURATE: min(srcA, 255-destA)
-          val satFactor = srcAlpha.min(oneMinusU8(destAlpha))
-          result.assignFromSeq(selfColor.map(blendMul(satFactor, _)))
-        } else { // ACOLORBEFOREFOG
-          result.assignFromSeq(selfColor.zipWith(colBeforeFog)((s, f) => blendMul(f, s)))
-        }
+        if (isSrc) scale.foreach(_ := srcAlpha.min(oneMinusU8(destAlpha))) // SATURATE
+        else scale := colBeforeFog // ACOLORBEFOREFOG
       }
       default {
-        if (isSrc) result := selfColor // ONE
-        else result.foreach(_ := U(0, 8 bits)) // ZERO
+        if (isSrc) scale.foreach(_ := U(255, 8 bits)) else scale.foreach(_ := U(0, 8 bits))
       }
     }
+    scale
+  }
+
+  def applyBlendScale(selfColor: Color[UInt], scale: Color[UInt]): Color[UInt] = {
+    val result = Color.u8()
+    result.assignFromSeq(selfColor.zipWith(scale)((c, s) => blendMul(s, c)))
     result
   }
 
-  val srcFactor = computeBlendFactor(
+  val srcScale = computeBlendScale(
     afterPdata.alphaMode.rgbSrcFact,
-    srcColor,
     srcA,
     destA,
     blendDestColor,
     isSrc = true,
     colorBeforeFog
   )
-  val dstFactor = computeBlendFactor(
+  val dstScale = computeBlendScale(
     afterPdata.alphaMode.rgbDstFact,
-    blendDestColor,
     srcA,
     destA,
     srcColor,
     isSrc = false,
     colorBeforeFog
   )
+  val srcFactor = applyBlendScale(srcColor, srcScale)
+  val dstFactor = applyBlendScale(blendDestColor, dstScale)
 
   // Sum and clamp to [0, 255]
   def clampAdd(a: UInt, b: UInt): UInt = {

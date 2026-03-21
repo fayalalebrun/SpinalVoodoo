@@ -183,6 +183,12 @@ case class TmuTexelDecoder(c: voodoo.Config) extends Component {
     val w3 = UInt(10 bits)
   }
 
+  case class FastBilinearPrep(c: voodoo.Config) extends Bundle {
+    val passthrough = Tmu.TmuPassthrough(c)
+    val weights = BilinearWeights()
+    val texels = Vec.fill(4)(Bits(32 bits))
+  }
+
   def bilinearWeights(ds: UInt, dt: UInt): BilinearWeights = {
     val ds5 = ds.resize(5 bits)
     val dt5 = dt.resize(5 bits)
@@ -216,61 +222,98 @@ case class TmuTexelDecoder(c: voodoo.Config) extends Component {
   }
   val fastFetchPipe = io.fastFetch.m2sPipe()
 
-  io.fastOutput << fastFetchPipe.translateWith {
-    val pass = fastFetchPipe.payload.passthrough
-    val weights = bilinearWeights(pass.ds, pass.dt)
-    val (r0, g0, b0, a0) =
-      decodeTexelWord(
-        fastFetchPipe.payload.texels(0).rspData32,
-        fastFetchPipe.payload.texels(0).addrHalf,
-        fastFetchPipe.payload.texels(0).addrByte,
-        pass.format,
-        pass.ncc,
-        fastPaletteColors(0)
+  val fastBlendPrep = fastFetchPipe
+    .translateWith {
+      val pass = fastFetchPipe.payload.passthrough
+      val out = FastBilinearPrep(c)
+      out.passthrough := pass
+      out.weights := bilinearWeights(pass.ds, pass.dt)
+      val decoded = Seq(
+        decodeTexelWord(
+          fastFetchPipe.payload.texels(0).rspData32,
+          fastFetchPipe.payload.texels(0).addrHalf,
+          fastFetchPipe.payload.texels(0).addrByte,
+          pass.format,
+          pass.ncc,
+          fastPaletteColors(0)
+        ),
+        decodeTexelWord(
+          fastFetchPipe.payload.texels(1).rspData32,
+          fastFetchPipe.payload.texels(1).addrHalf,
+          fastFetchPipe.payload.texels(1).addrByte,
+          pass.format,
+          pass.ncc,
+          fastPaletteColors(1)
+        ),
+        decodeTexelWord(
+          fastFetchPipe.payload.texels(2).rspData32,
+          fastFetchPipe.payload.texels(2).addrHalf,
+          fastFetchPipe.payload.texels(2).addrByte,
+          pass.format,
+          pass.ncc,
+          fastPaletteColors(2)
+        ),
+        decodeTexelWord(
+          fastFetchPipe.payload.texels(3).rspData32,
+          fastFetchPipe.payload.texels(3).addrHalf,
+          fastFetchPipe.payload.texels(3).addrByte,
+          pass.format,
+          pass.ncc,
+          fastPaletteColors(3)
+        )
       )
-    val (r1, g1, b1, a1) =
-      decodeTexelWord(
-        fastFetchPipe.payload.texels(1).rspData32,
-        fastFetchPipe.payload.texels(1).addrHalf,
-        fastFetchPipe.payload.texels(1).addrByte,
-        pass.format,
-        pass.ncc,
-        fastPaletteColors(1)
-      )
-    val (r2, g2, b2, a2) =
-      decodeTexelWord(
-        fastFetchPipe.payload.texels(2).rspData32,
-        fastFetchPipe.payload.texels(2).addrHalf,
-        fastFetchPipe.payload.texels(2).addrByte,
-        pass.format,
-        pass.ncc,
-        fastPaletteColors(2)
-      )
-    val (r3, g3, b3, a3) =
-      decodeTexelWord(
-        fastFetchPipe.payload.texels(3).rspData32,
-        fastFetchPipe.payload.texels(3).addrHalf,
-        fastFetchPipe.payload.texels(3).addrByte,
-        pass.format,
-        pass.ncc,
-        fastPaletteColors(3)
-      )
+      for ((texel, idx) <- decoded.zipWithIndex) {
+        out.texels(idx) := texel._1 ## texel._2 ## texel._3 ## texel._4
+      }
+      out
+    }
+    .m2sPipe()
 
-    val result = Tmu.Output(c)
-    result.texture.r := blendChannel(weights, r0, r1, r2, r3)
-    result.texture.g := blendChannel(weights, g0, g1, g2, g3)
-    result.texture.b := blendChannel(weights, b0, b1, b2, b3)
-    result.textureAlpha := blendChannel(weights, a0, a1, a2, a3)
-    result.requestId := pass.requestId
-    when(pass.sendConfig) {
-      result.texture.r := 0
-      result.texture.g := 0
-      result.texture.b := 1
-      result.textureAlpha := U(255, 8 bits)
+  io.fastOutput << fastBlendPrep
+    .translateWith {
+      val pass = fastBlendPrep.payload.passthrough
+      def channel(texel: Bits, hi: Int, lo: Int) = texel(hi downto lo).asUInt
+
+      val result = Tmu.Output(c)
+      result.texture.r := blendChannel(
+        fastBlendPrep.payload.weights,
+        channel(fastBlendPrep.payload.texels(0), 31, 24),
+        channel(fastBlendPrep.payload.texels(1), 31, 24),
+        channel(fastBlendPrep.payload.texels(2), 31, 24),
+        channel(fastBlendPrep.payload.texels(3), 31, 24)
+      )
+      result.texture.g := blendChannel(
+        fastBlendPrep.payload.weights,
+        channel(fastBlendPrep.payload.texels(0), 23, 16),
+        channel(fastBlendPrep.payload.texels(1), 23, 16),
+        channel(fastBlendPrep.payload.texels(2), 23, 16),
+        channel(fastBlendPrep.payload.texels(3), 23, 16)
+      )
+      result.texture.b := blendChannel(
+        fastBlendPrep.payload.weights,
+        channel(fastBlendPrep.payload.texels(0), 15, 8),
+        channel(fastBlendPrep.payload.texels(1), 15, 8),
+        channel(fastBlendPrep.payload.texels(2), 15, 8),
+        channel(fastBlendPrep.payload.texels(3), 15, 8)
+      )
+      result.textureAlpha := blendChannel(
+        fastBlendPrep.payload.weights,
+        channel(fastBlendPrep.payload.texels(0), 7, 0),
+        channel(fastBlendPrep.payload.texels(1), 7, 0),
+        channel(fastBlendPrep.payload.texels(2), 7, 0),
+        channel(fastBlendPrep.payload.texels(3), 7, 0)
+      )
+      result.requestId := pass.requestId
+      when(pass.sendConfig) {
+        result.texture.r := 0
+        result.texture.g := 0
+        result.texture.b := 1
+        result.textureAlpha := U(255, 8 bits)
+      }
+      if (c.trace.enabled) {
+        result.trace := pass.trace
+      }
+      result
     }
-    if (c.trace.enabled) {
-      result.trace := pass.trace
-    }
-    result
-  }
+    .m2sPipe()
 }

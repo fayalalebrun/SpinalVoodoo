@@ -9,6 +9,14 @@ case class TmuCollector(c: voodoo.Config) extends Component {
     val output = master Stream (Tmu.Output(c))
   }
 
+  case class PreBlend() extends Bundle {
+    val requestId = cloneOf(io.decoded.payload.passthrough.requestId)
+    val bilinear = Bool()
+    val texels = Vec(Vec(UInt(8 bits), 4), 4)
+    val weights = Vec(UInt(10 bits), 4)
+    val trace = if (c.trace.enabled) Trace.PixelKey() else null
+  }
+
   val collectCount = Reg(UInt(2 bits)) init 0
   val storedR = Vec(Reg(UInt(8 bits)), 3)
   val storedG = Vec(Reg(UInt(8 bits)), 3)
@@ -25,11 +33,11 @@ case class TmuCollector(c: voodoo.Config) extends Component {
   val w2 = (U(16, 5 bits) - blendDs.resize(5 bits)) * blendDt.resize(5 bits)
   val w3 = blendDs.resize(5 bits) * blendDt.resize(5 bits)
 
-  def blendChannel(t0: UInt, t1: UInt, t2: UInt, t3: UInt): UInt = {
-    val sum = (t0.resize(18 bits) * w0.resize(10 bits)) +
-      (t1.resize(18 bits) * w1.resize(10 bits)) +
-      (t2.resize(18 bits) * w2.resize(10 bits)) +
-      (t3.resize(18 bits) * w3.resize(10 bits))
+  def blendChannel(texels: Seq[UInt], weights: Seq[UInt]): UInt = {
+    val sum = (texels(0).resize(18 bits) * weights(0).resize(10 bits)) +
+      (texels(1).resize(18 bits) * weights(1).resize(10 bits)) +
+      (texels(2).resize(18 bits) * weights(2).resize(10 bits)) +
+      (texels(3).resize(18 bits) * weights(3).resize(10 bits))
     (sum >> 8).resize(8 bits)
   }
 
@@ -40,36 +48,53 @@ case class TmuCollector(c: voodoo.Config) extends Component {
     io.decoded.payload.b,
     io.decoded.payload.a
   )
-  val blendedChannels = storedChannels.zip(decodedChannels).map { case (stored, dec) =>
-    blendChannel(stored(0), stored(1), stored(2), dec)
-  }
-
   val isCollecting = collectCount =/= 0
   val isBilinear = Mux(isCollecting, True, io.decoded.payload.passthrough.bilinear)
   val bilinearAccumulating = isBilinear && (collectCount < 3)
 
-  io.output << io.decoded
+  val preBlend = io.decoded
     .throwWhen(bilinearAccumulating)
     .translateWith {
-      val result = Tmu.Output(c)
+      val result = PreBlend()
       result.requestId := io.decoded.payload.passthrough.requestId
-      Seq(
-        result.texture.r,
-        result.texture.g,
-        result.texture.b,
-        result.textureAlpha
-      )
-        .zip(blendedChannels)
-        .zip(decodedChannels)
-        .foreach { case ((out, blnd), dec) =>
-          out := Mux(isBilinear, blnd, dec)
-        }
+      result.bilinear := isBilinear
+      result.weights(0) := w0.resize(10 bits)
+      result.weights(1) := w1.resize(10 bits)
+      result.weights(2) := w2.resize(10 bits)
+      result.weights(3) := w3.resize(10 bits)
+      storedChannels.zip(decodedChannels).zipWithIndex.foreach { case ((stored, dec), idx) =>
+        result.texels(idx)(0) := stored(0)
+        result.texels(idx)(1) := stored(1)
+        result.texels(idx)(2) := stored(2)
+        result.texels(idx)(3) := dec
+      }
       if (c.trace.enabled) {
         result.trace := io.decoded.payload.passthrough.trace
       }
       result
     }
     .m2sPipe()
+
+  io.output << preBlend.translateWith {
+    val result = Tmu.Output(c)
+    result.requestId := preBlend.payload.requestId
+    Seq(
+      result.texture.r,
+      result.texture.g,
+      result.texture.b,
+      result.textureAlpha
+    ).zipWithIndex.foreach { case (out, idx) =>
+      out := Mux(
+        preBlend.payload.bilinear,
+        blendChannel(preBlend.payload.texels(idx), preBlend.payload.weights),
+        preBlend.payload.texels(idx)(3)
+      )
+    }
+    if (c.trace.enabled) {
+      result.trace := preBlend.payload.trace
+    }
+    result
+  }
 
   when(io.decoded.fire) {
     when(isBilinear && collectCount < 3) {

@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <EnsembleReport name="de10_core_pll" kind="de10_core_pll" version="1.0" fabric="QSYS">
  <!-- Format version 24.1 1077 (Future versions may contain additional information.) -->
- <!-- 2026.03.21.19:24:00 -->
+ <!-- 2026.03.21.19:47:10 -->
  <!-- A collection of modules and connections -->
  <parameter name="AUTO_GENERATION_ID">
   <type>java.lang.Integer</type>
-  <value>1774121040</value>
+  <value>1774122429</value>
   <derived>false</derived>
   <enabled>true</enabled>
   <visible>false</visible>

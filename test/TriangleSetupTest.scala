@@ -35,7 +35,7 @@ class TriangleSetupTest extends AnyFunSuite {
       setZeroGradients(dut)
       sleep(0) // Let signals settle
 
-      dut.clockDomain.waitSampling()
+      waitForOutput(dut)
 
       check(dut)
 
@@ -50,6 +50,23 @@ class TriangleSetupTest extends AnyFunSuite {
       dut.i.grads.all(i).d(0) #= 0.0
       dut.i.grads.all(i).d(1) #= 0.0
     }
+    dut.i.hiAlpha.start #= 0.0
+    dut.i.hiAlpha.dAdX #= 0.0
+    dut.i.hiAlpha.dAdY #= 0.0
+    dut.i.texHi.sStart #= 0.0
+    dut.i.texHi.tStart #= 0.0
+    dut.i.texHi.dSdX #= 0.0
+    dut.i.texHi.dTdX #= 0.0
+    dut.i.texHi.dSdY #= 0.0
+    dut.i.texHi.dTdY #= 0.0
+    dut.i.config.fbzColorPath.paramAdjust #= false
+    dut.i.config.fbzColorPath.textureEnable #= false
+  }
+
+  def waitForOutput(dut: TriangleSetup, timeout: Int = 64): Unit = {
+    dut.o.ready #= false
+    dut.clockDomain.waitSampling(16)
+    assert(dut.o.valid.toBoolean, "TriangleSetup output was not valid after setup latency")
   }
 
   // Helper to convert from fixed-point (SQ(12, 4) = 12 bits, 4 fractional)
@@ -147,7 +164,7 @@ class TriangleSetupTest extends AnyFunSuite {
       setZeroGradients(dut)
       sleep(0)
 
-      dut.clockDomain.waitSampling()
+      waitForOutput(dut)
 
       println("\nCCW Triangle (signBit=0) edge coefficients:")
       for (i <- 0 until 3) {
@@ -193,7 +210,7 @@ class TriangleSetupTest extends AnyFunSuite {
       setZeroGradients(dut)
       sleep(0)
 
-      dut.clockDomain.waitSampling()
+      waitForOutput(dut)
 
       println("\nCW Triangle (signBit=1) edge coefficients:")
       for (i <- 0 until 3) {
@@ -242,7 +259,7 @@ class TriangleSetupTest extends AnyFunSuite {
       setZeroGradients(dut)
       sleep(0)
 
-      dut.clockDomain.waitSampling()
+      waitForOutput(dut)
 
       println("\nLarge triangle edge coefficients:")
       for (i <- 0 until 3) {
@@ -400,15 +417,10 @@ class TriangleSetupTest extends AnyFunSuite {
         dut.i.triWithSign.tri(i)(0) #= xFixed
         dut.i.triWithSign.tri(i)(1) #= yFixed
       }
-      // Set zero gradients for large triangle tests
-      for (i <- 0 until 8) { // 8 gradients in GradientBundle
-        dut.i.grads.all(i).start #= 0.0
-        dut.i.grads.all(i).d(0) #= 0.0
-        dut.i.grads.all(i).d(1) #= 0.0
-      }
+      setZeroGradients(dut)
       sleep(0) // Let signals settle
 
-      dut.clockDomain.waitSampling()
+      waitForOutput(dut)
 
       check(dut)
 

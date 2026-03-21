@@ -48,24 +48,28 @@ case class TmuCollector(c: voodoo.Config) extends Component {
   val isBilinear = Mux(isCollecting, True, io.decoded.payload.passthrough.bilinear)
   val bilinearAccumulating = isBilinear && (collectCount < 3)
 
-  io.output.valid := io.decoded.valid && !bilinearAccumulating
-  io.decoded.ready := bilinearAccumulating || io.output.ready
-  if (c.trace.enabled) {
-    io.output.payload.trace := io.decoded.payload.passthrough.trace
-  }
-  io.output.payload.requestId := io.decoded.payload.passthrough.requestId
-
-  Seq(
-    io.output.payload.texture.r,
-    io.output.payload.texture.g,
-    io.output.payload.texture.b,
-    io.output.payload.textureAlpha
-  )
-    .zip(blendedChannels)
-    .zip(decodedChannels)
-    .foreach { case ((out, blnd), dec) =>
-      out := Mux(isBilinear, blnd, dec)
+  io.output << io.decoded
+    .throwWhen(bilinearAccumulating)
+    .translateWith {
+      val result = Tmu.Output(c)
+      result.requestId := io.decoded.payload.passthrough.requestId
+      Seq(
+        result.texture.r,
+        result.texture.g,
+        result.texture.b,
+        result.textureAlpha
+      )
+        .zip(blendedChannels)
+        .zip(decodedChannels)
+        .foreach { case ((out, blnd), dec) =>
+          out := Mux(isBilinear, blnd, dec)
+        }
+      if (c.trace.enabled) {
+        result.trace := io.decoded.payload.passthrough.trace
+      }
+      result
     }
+    .m2sPipe()
 
   when(io.decoded.fire) {
     when(isBilinear && collectCount < 3) {

@@ -88,6 +88,8 @@ case class RegisterBank(config: Config) extends Component {
     })
   }
 
+  var texTablesRegOpt: Option[TexLayoutTables.Tables] = None
+
   // Create BMB bus interface for RegIf - shared across all Areas
   // Address remapping (for bit 21 set) is handled by AddressRemapper before this
   implicit val moduleName: spinal.lib.bus.regif.ClassName =
@@ -466,12 +468,7 @@ case class RegisterBank(config: Config) extends Component {
     cfg.fbPixelStride := io.triangleCapture.fbPixelStride
 
     if (config.packedTexLayout) {
-      val triCfg = TexLayoutTables.TexConfig()
-      triCfg.texBaseAddr := tmuConfig.texBaseAddr(18 downto 0)
-      triCfg.tformat := tmuConfig.textureMode(11 downto 8).asUInt
-      triCfg.tLOD_aspect := tmuConfig.tLOD(22 downto 21).asUInt
-      triCfg.tLOD_sIsWider := tmuConfig.tLOD(20)
-      cfg.texTables := TexLayoutTables.compute(triCfg)
+      cfg.texTables := texTablesRegOpt.get
     }
 
     val nccSel = tmuConfig.textureMode(5)
@@ -1030,6 +1027,17 @@ case class RegisterBank(config: Config) extends Component {
     // trexInit1 (0x320) - TMU hardware init / config output control
     val trexInit1Reg = busif.newRegAtWithCategory(0x320, "trexInit1", RegisterCategory.fifoNoSync)
     val trexInit1 = trexInit1Reg.field(Bits(32 bits), AccessType.WO, 0, "TMU init 1").asOutput()
+  }
+
+  if (config.packedTexLayout) {
+    val texCfg = TexLayoutTables.TexConfig()
+    texCfg.texBaseAddr := tmuConfig.texBaseAddr(18 downto 0)
+    texCfg.tformat := tmuConfig.textureMode(11 downto 8).asUInt
+    texCfg.tLOD_aspect := tmuConfig.tLOD(22 downto 21).asUInt
+    texCfg.tLOD_sIsWider := tmuConfig.tLOD(20)
+    val texTablesReg = Reg(TexLayoutTables.Tables())
+    texTablesReg := TexLayoutTables.compute(texCfg)
+    texTablesRegOpt = Some(texTablesReg)
   }
 
   // ========================================================================

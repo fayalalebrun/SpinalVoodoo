@@ -1120,6 +1120,7 @@ case class Core(c: Config) extends Component {
   // ========================================================================
   // When PciFifo drains a texture entry, translate PCI address to packed SRAM address
   val cpuTexWriteBus = Bmb(Core.cpuTexBmbParams)
+  val cpuTexWriteCmd = Stream(Fragment(BmbCmd(Core.cpuTexBmbParams)))
 
   // Discard texture writes targeting TMUs that don't exist.
   // PCI texture address space: [21] = TMU1 select, [22] = TMU2 select.
@@ -1169,33 +1170,34 @@ case class Core(c: Config) extends Component {
     }
 
     // Build BMB write command
-    cpuTexWriteBus.cmd.valid := pciFifo.io.texDrain.valid && drainValid
-    cpuTexWriteBus.cmd.opcode := Bmb.Cmd.Opcode.WRITE
-    cpuTexWriteBus.cmd.address := sramAddr
-    cpuTexWriteBus.cmd.data := pciFifo.io.texDrain.data
-    cpuTexWriteBus.cmd.mask := pciFifo.io.texDrain.mask
-    cpuTexWriteBus.cmd.length := 3 // 4 bytes
-    cpuTexWriteBus.cmd.source := 0
-    cpuTexWriteBus.cmd.last := True
+    cpuTexWriteCmd.valid := pciFifo.io.texDrain.valid && drainValid
+    cpuTexWriteCmd.fragment.opcode := Bmb.Cmd.Opcode.WRITE
+    cpuTexWriteCmd.fragment.address := sramAddr
+    cpuTexWriteCmd.fragment.data := pciFifo.io.texDrain.data
+    cpuTexWriteCmd.fragment.mask := pciFifo.io.texDrain.mask
+    cpuTexWriteCmd.fragment.length := 3 // 4 bytes
+    cpuTexWriteCmd.fragment.source := 0
+    cpuTexWriteCmd.last := True
 
-    pciFifo.io.texDrain.ready := cpuTexWriteBus.cmd.ready || !drainValid
+    pciFifo.io.texDrain.ready := cpuTexWriteCmd.ready || !drainValid
   } else {
     // Fallback: linear texture write mapping (legacy mode)
     val texBaseAddr = regBank.tmuConfig.texBaseAddr(18 downto 0)
     val flatSramAddr = ((texBaseAddr << 3) +^ pciAddr).resize(26 bits)
 
-    cpuTexWriteBus.cmd.valid := pciFifo.io.texDrain.valid && tmuValid
-    cpuTexWriteBus.cmd.opcode := Bmb.Cmd.Opcode.WRITE
-    cpuTexWriteBus.cmd.address := flatSramAddr
-    cpuTexWriteBus.cmd.data := pciFifo.io.texDrain.data
-    cpuTexWriteBus.cmd.mask := pciFifo.io.texDrain.mask
-    cpuTexWriteBus.cmd.length := 3 // 4 bytes
-    cpuTexWriteBus.cmd.source := 0
-    cpuTexWriteBus.cmd.last := True
+    cpuTexWriteCmd.valid := pciFifo.io.texDrain.valid && tmuValid
+    cpuTexWriteCmd.fragment.opcode := Bmb.Cmd.Opcode.WRITE
+    cpuTexWriteCmd.fragment.address := flatSramAddr
+    cpuTexWriteCmd.fragment.data := pciFifo.io.texDrain.data
+    cpuTexWriteCmd.fragment.mask := pciFifo.io.texDrain.mask
+    cpuTexWriteCmd.fragment.length := 3 // 4 bytes
+    cpuTexWriteCmd.fragment.source := 0
+    cpuTexWriteCmd.last := True
 
-    pciFifo.io.texDrain.ready := cpuTexWriteBus.cmd.ready || !tmuValid
+    pciFifo.io.texDrain.ready := cpuTexWriteCmd.ready || !tmuValid
   }
 
+  cpuTexWriteBus.cmd << cpuTexWriteCmd.m2sPipe()
   cpuTexWriteBus.rsp.ready := True
 
   // ========================================================================

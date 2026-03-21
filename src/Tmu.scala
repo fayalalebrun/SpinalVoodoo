@@ -625,7 +625,7 @@ case class Tmu(c: voodoo.Config) extends Component {
   texelDecoder.io.decoded >/-> collector.io.decoded
 
   val fastOutput = texelDecoder.io.fastOutput
-  val normalOutput = collector.io.output
+  val normalOutput = collector.io.output.m2sPipe()
   textureCache.io.outputRoute.ready := True
 
   val retireValid = Vec(Reg(Bool()) init False, 1 << requestIdWidth)

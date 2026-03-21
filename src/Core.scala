@@ -1120,7 +1120,24 @@ case class Core(c: Config) extends Component {
   // ========================================================================
   // When PciFifo drains a texture entry, translate PCI address to packed SRAM address
   val cpuTexWriteBus = Bmb(Core.cpuTexBmbParams)
-  val cpuTexWriteCmd = Stream(Fragment(BmbCmd(Core.cpuTexBmbParams)))
+
+  case class PackedCpuTexWritePrep() extends Bundle {
+    val validWrite = Bool()
+    val lodBase = UInt(22 bits)
+    val lodShift = UInt(4 bits)
+    val s = UInt(8 bits)
+    val t = UInt(8 bits)
+    val is16bit = Bool()
+    val data = Bits(32 bits)
+    val mask = Bits(4 bits)
+  }
+
+  case class LinearCpuTexWritePrep() extends Bundle {
+    val validWrite = Bool()
+    val address = UInt(c.addressWidth.value bits)
+    val data = Bits(32 bits)
+    val mask = Bits(4 bits)
+  }
 
   // Discard texture writes targeting TMUs that don't exist.
   // PCI texture address space: [21] = TMU1 select, [22] = TMU2 select.
@@ -1128,7 +1145,7 @@ case class Core(c: Config) extends Component {
   val pciAddr = pciFifo.io.texDrain.pciAddr
   val tmuValid = pciAddr(22 downto 21) === 0 // Only TMU0 exists
 
-  if (c.packedTexLayout) {
+  val cpuTexWriteCmd = if (c.packedTexLayout) {
     // Compute tex layout tables from post-FIFO register bank values
     val texCfg = TexLayoutTables.TexConfig()
     texCfg.texBaseAddr := regBank.tmuConfig.texBaseAddr(18 downto 0)
@@ -1157,47 +1174,81 @@ case class Core(c: Config) extends Component {
     // Guard: discard writes with lod > 8 or targeting non-existent TMU
     val drainValid = lod <= 8 && tmuValid
 
-    // Compute SRAM address using tables
-    val lodBase = writeTables.texBase(lod.resize(4 bits))
-    val lodShift = writeTables.texShift(lod.resize(4 bits))
-    val sramAddr = UInt(c.addressWidth.value bits)
-    when(is16bit) {
-      sramAddr := (lodBase + (s << 1).resize(22 bits) + (t.resize(22 bits) << (lodShift +^ U(1))
-        .resize(5 bits)).resize(22 bits)).resize(c.addressWidth.value bits)
-    }.otherwise {
-      sramAddr := (lodBase + s.resize(22 bits) + (t.resize(22 bits) << lodShift).resize(22 bits))
-        .resize(c.addressWidth.value bits)
-    }
+    val texDrainPrep = pciFifo.io.texDrain
+      .translateWith {
+        val prep = PackedCpuTexWritePrep()
+        prep.validWrite := drainValid
+        prep.lodBase := writeTables.texBase(lod.resize(4 bits))
+        prep.lodShift := writeTables.texShift(lod.resize(4 bits))
+        prep.s := s
+        prep.t := t
+        prep.is16bit := is16bit
+        prep.data := pciFifo.io.texDrain.data
+        prep.mask := pciFifo.io.texDrain.mask
+        prep
+      }
+      .m2sPipe()
 
-    // Build BMB write command
-    cpuTexWriteCmd.valid := pciFifo.io.texDrain.valid && drainValid
-    cpuTexWriteCmd.fragment.opcode := Bmb.Cmd.Opcode.WRITE
-    cpuTexWriteCmd.fragment.address := sramAddr
-    cpuTexWriteCmd.fragment.data := pciFifo.io.texDrain.data
-    cpuTexWriteCmd.fragment.mask := pciFifo.io.texDrain.mask
-    cpuTexWriteCmd.fragment.length := 3 // 4 bytes
-    cpuTexWriteCmd.fragment.source := 0
-    cpuTexWriteCmd.last := True
+    texDrainPrep
+      .throwWhen(!texDrainPrep.payload.validWrite)
+      .translateWith {
+        val prep = texDrainPrep.payload
+        val sramAddr = UInt(c.addressWidth.value bits)
+        when(prep.is16bit) {
+          sramAddr := (prep.lodBase + (prep.s << 1).resize(22 bits) +
+            (prep.t.resize(22 bits) << (prep.lodShift +^ U(1)).resize(5 bits)).resize(22 bits))
+            .resize(c.addressWidth.value bits)
+        }.otherwise {
+          sramAddr :=
+            (prep.lodBase + prep.s.resize(22 bits) + (prep.t.resize(22 bits) << prep.lodShift)
+              .resize(22 bits)).resize(c.addressWidth.value bits)
+        }
 
-    pciFifo.io.texDrain.ready := cpuTexWriteCmd.ready || !drainValid
+        val cmd = Fragment(BmbCmd(Core.cpuTexBmbParams))
+        cmd.fragment.opcode := Bmb.Cmd.Opcode.WRITE
+        cmd.fragment.address := sramAddr
+        cmd.fragment.data := prep.data
+        cmd.fragment.mask := prep.mask
+        cmd.fragment.length := 3 // 4 bytes
+        cmd.fragment.source := 0
+        cmd.last := True
+        cmd
+      }
+      .m2sPipe()
   } else {
     // Fallback: linear texture write mapping (legacy mode)
     val texBaseAddr = regBank.tmuConfig.texBaseAddr(18 downto 0)
     val flatSramAddr = ((texBaseAddr << 3) +^ pciAddr).resize(26 bits)
 
-    cpuTexWriteCmd.valid := pciFifo.io.texDrain.valid && tmuValid
-    cpuTexWriteCmd.fragment.opcode := Bmb.Cmd.Opcode.WRITE
-    cpuTexWriteCmd.fragment.address := flatSramAddr
-    cpuTexWriteCmd.fragment.data := pciFifo.io.texDrain.data
-    cpuTexWriteCmd.fragment.mask := pciFifo.io.texDrain.mask
-    cpuTexWriteCmd.fragment.length := 3 // 4 bytes
-    cpuTexWriteCmd.fragment.source := 0
-    cpuTexWriteCmd.last := True
+    val texDrainPrep = pciFifo.io.texDrain
+      .translateWith {
+        val prep = LinearCpuTexWritePrep()
+        prep.validWrite := tmuValid
+        prep.address := flatSramAddr
+        prep.data := pciFifo.io.texDrain.data
+        prep.mask := pciFifo.io.texDrain.mask
+        prep
+      }
+      .m2sPipe()
 
-    pciFifo.io.texDrain.ready := cpuTexWriteCmd.ready || !tmuValid
+    texDrainPrep
+      .throwWhen(!texDrainPrep.payload.validWrite)
+      .translateWith {
+        val prep = texDrainPrep.payload
+        val cmd = Fragment(BmbCmd(Core.cpuTexBmbParams))
+        cmd.fragment.opcode := Bmb.Cmd.Opcode.WRITE
+        cmd.fragment.address := prep.address
+        cmd.fragment.data := prep.data
+        cmd.fragment.mask := prep.mask
+        cmd.fragment.length := 3 // 4 bytes
+        cmd.fragment.source := 0
+        cmd.last := True
+        cmd
+      }
+      .m2sPipe()
   }
 
-  cpuTexWriteBus.cmd << cpuTexWriteCmd.m2sPipe()
+  cpuTexWriteBus.cmd << cpuTexWriteCmd
   cpuTexWriteBus.rsp.ready := True
 
   // ========================================================================

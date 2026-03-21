@@ -21,7 +21,7 @@ add_instance pll_0 altera_pll
 set_instance_parameter_value pll_0 {gui_reference_clock_frequency} {50.0}
 set_instance_parameter_value pll_0 {gui_use_locked} {1}
 set_instance_parameter_value pll_0 {gui_number_of_clocks} {1}
-set_instance_parameter_value pll_0 {gui_output_clock_frequency0} {5.0}
+set_instance_parameter_value pll_0 {gui_output_clock_frequency0} {50.0}
 set_instance_parameter_value pll_0 {gui_operation_mode} {direct}
 set_instance_parameter_value pll_0 {gui_feedback_clock} {Global Clock}
 set_instance_property pll_0 AUTO_EXPORT {true}

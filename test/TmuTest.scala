@@ -91,7 +91,7 @@ class TmuTest extends AnyFunSuite {
   }
 
   // Pipeline has 5 nodes (n0-n4), so 4 stages of latency
-  val maxPipelineLatency = 20
+  val maxPipelineLatency = 80
 
   test("TMU converts RGB565 white to RGB888") {
     SimConfig.withIVerilog.withWave.compile(Tmu(config)).doSim { dut =>

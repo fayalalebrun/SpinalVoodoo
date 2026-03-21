@@ -1231,7 +1231,7 @@ case class Core(c: Config) extends Component {
   fbColorBusy.simPublic()
   fbAuxBusy.simPublic()
   colorCombine.io.input.valid.simPublic()
-  fog.io.input.valid.simPublic()
+  fog.io.busy.simPublic()
   fbAccess.io.input.valid.simPublic()
   writeColor.i.fromPipeline.valid.simPublic()
   writeAux.i.fromPipeline.valid.simPublic()
@@ -1254,7 +1254,7 @@ case class Core(c: Config) extends Component {
   val pipelineBusySignal =
     triangleSetup.o.valid || rasterizer.running || tmu.io.input.valid ||
       tmu.io.busy || fbAccess.io.busy || fbColorBusy || fbAuxBusy ||
-      colorCombine.io.input.valid || fog.io.input.valid || fbAccess.io.input.valid ||
+      colorCombine.io.input.valid || fog.io.busy || fbAccess.io.input.valid ||
       writeColor.i.fromPipeline.valid || writeAux.i.fromPipeline.valid ||
       writeColor.o.fbWrite.valid || writeAux.o.fbWrite.valid ||
       fastfill.running || fastfill.o.valid || fastfillWrite.io.output.valid ||
@@ -1273,7 +1273,7 @@ case class Core(c: Config) extends Component {
   busyDebugSignal(3) := tmu.io.busy
   busyDebugSignal(4) := fbAccess.io.busy
   busyDebugSignal(5) := colorCombine.io.input.valid
-  busyDebugSignal(6) := fog.io.input.valid
+  busyDebugSignal(6) := fog.io.busy
   busyDebugSignal(7) := fbAccess.io.input.valid
   busyDebugSignal(8) := writeColor.i.fromPipeline.valid
   busyDebugSignal(9) := writeAux.i.fromPipeline.valid

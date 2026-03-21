@@ -95,6 +95,11 @@ case class TmuTextureCache(c: voodoo.Config, formalStrong: Boolean = true) exten
     val lineShift = log2Up(lineWords); val lineByteShift = log2Up(lineBytes)
     val bankCount = 4; val bankEntries = lineWords; val bankEntryWidth = log2Up(bankEntries)
     val slotCount = c.texFillCacheSlots; val slotBits = scala.math.max(1, log2Up(slotCount));
+    val wayCount = if (slotCount > 1) 2 else 1
+    require((slotCount % wayCount) == 0)
+    val setCount = slotCount / wayCount
+    val setBits = scala.math.max(1, log2Up(setCount))
+    val wayBits = scala.math.max(1, log2Up(wayCount))
     val fillLength = U(lineWords * 4 - 1, c.memBurstLengthWidth bits)
 
     val reqStream = expanded.stream
@@ -120,35 +125,70 @@ case class TmuTextureCache(c: voodoo.Config, formalStrong: Boolean = true) exten
 
     val cache = new Area {
       val slotValid = Vec(Reg(Bool()) init False, slotCount)
+      val slotReady = Vec(Reg(Bool()) init False, slotCount)
       val slotBase = Vec(Reg(UInt(c.addressWidth.value bits)) init 0, slotCount)
-      val slotWordValid = Vec(
-        (0 until slotCount).map(_ =>
-          Vec(
-            (0 until bankCount).map(_ =>
-              Vec((0 until bankEntries).map(_ => Reg(Bool()) init False))
-            )
-          )
-        )
-      )
       val bankMem = Seq.fill(bankCount)(Mem(Bits(32 bits), slotCount * bankEntries))
       val bankRead = bankMem.map(_.readSyncPort(readUnderWrite = readFirst))
-      val nextVictim = Reg(UInt(slotBits bits)) init 0
-      def hitVec(base: UInt, bank: UInt, entry: UInt, enable: Bool): Bits = {
-        val hit = Bits(slotCount bits);
-        for (i <- 0 until slotCount)
-          hit(i) := enable && slotValid(i) && slotBase(i) === base && slotWordValid(i)(bank)(entry);
+      val nextVictim = Vec.fill(setCount)(Reg(UInt(wayBits bits)) init 0)
+
+      def setOf(base: UInt): UInt = {
+        if (setCount == 1) U(0, setBits bits)
+        else (base >> lineByteShift).resize(setBits bits)
+      }
+
+      def slotOf(set: UInt, way: UInt): UInt = {
+        if (wayCount == 1) set.resize(slotBits bits)
+        else
+          (((set.resize(slotBits bits) |<< wayBits) +^ way.resize(slotBits bits))
+            .resize(slotBits bits))
+      }
+
+      def hitVec(base: UInt, set: UInt, enable: Bool): Bits = {
+        val hit = Bits(wayCount bits)
+        for (way <- 0 until wayCount) {
+          val slot = slotOf(set, U(way, wayBits bits))
+          hit(way) := enable && slotValid(slot) && slotReady(slot) && slotBase(slot) === base
+        }
         hit
       }
-      def alloc(slot: UInt, base: UInt): Unit = {
-        slotValid(slot) := True; slotBase(slot) := base;
-        for (b <- 0 until bankCount; e <- 0 until bankEntries) slotWordValid(slot)(b)(e) := False
+
+      def alloc(set: UInt, way: UInt, base: UInt): Unit = {
+        val slot = slotOf(set, way)
+        slotValid(slot) := True
+        slotReady(slot) := False
+        slotBase(slot) := base
       }
+
+      def victim(set: UInt): UInt = {
+        if (setCount == 1) nextVictim(0) else nextVictim(set)
+      }
+
+      def bumpVictim(set: UInt): Unit = {
+        if (wayCount > 1) {
+          if (setCount == 1) nextVictim(0) := nextVictim(0) + 1
+          else nextVictim(set) := nextVictim(set) + 1
+        }
+      }
+
+      def fillWay(set: UInt): UInt = {
+        if (wayCount == 1) U(0, wayBits bits)
+        else {
+          val valid = Vec(
+            (0 until wayCount).map(way => slotValid(slotOf(set, U(way, wayBits bits))))
+          )
+          firstFree(valid, victim(set))
+        }
+      }
+
       def bankRsp(sel: UInt): Bits = Vec(bankRead.map(_.rsp))(sel)
     }
 
     val active = reqStream.payload;
-    val hitVec = cache.hitVec(active.lineBase, active.bankSel, active.bankEntry, reqStream.valid)
-    val hitAny = hitVec.orR; val hitSlot = OHToUInt(hitVec)
+    val activeSet = cache.setOf(active.lineBase)
+    val hitVec = cache.hitVec(active.lineBase, activeSet, reqStream.valid)
+    val hitAny = hitVec.orR
+    val hitWay = OHToUInt(hitVec)
+    val hitSlot = cache.slotOf(activeSet, hitWay)
     val hitReadIssued = RegInit(False); val hitReadBank = Reg(UInt(2 bits)) init 0;
     val hitReadQueued = Reg(Tmu.QueuedData(c))
     val hitRspValid = RegInit(False); val hitRspData = Reg(Bits(32 bits)) init 0;
@@ -177,9 +217,11 @@ case class TmuTextureCache(c: voodoo.Config, formalStrong: Boolean = true) exten
     )
     def lookup(addr: UInt, bankSel: UInt) = {
       val lineBase = ((addr >> lineByteShift) << lineByteShift).resize(c.addressWidth.value bits)
+      val set = cache.setOf(lineBase)
       val bankEntry = ((addr - lineBase) >> 2).resize(bankEntryWidth bits)
-      val hit = cache.hitVec(lineBase, bankSel, bankEntry, True)
-      Lookup(lineBase, bankSel, bankEntry, hit, OHToUInt(hit), hit.orR)
+      val hit = cache.hitVec(lineBase, set, True)
+      val way = OHToUInt(hit)
+      Lookup(lineBase, bankSel, bankEntry, hit, cache.slotOf(set, way), hit.orR)
     }
 
     reqStream.ready := False
@@ -190,29 +232,33 @@ case class TmuTextureCache(c: voodoo.Config, formalStrong: Boolean = true) exten
 
     val fill = new Area {
       val activeReg = RegInit(False); val slot = Reg(UInt(slotBits bits)) init 0;
+      val set = Reg(UInt(setBits bits)) init 0; val way = Reg(UInt(wayBits bits)) init 0
       val cmdIssued = RegInit(False); val rspCount = Reg(UInt(log2Up(lineWords + 1) bits)) init 0
       val req = Reg(Tmu.CachedReq(c, bankEntryWidth))
       val rspValid = RegInit(False); val rspData = Reg(Bits(32 bits)) init 0;
       val rspQueued = Reg(Tmu.QueuedData(c))
-      val startSlot = firstFree(cache.slotValid, cache.nextVictim)
+      val startSet = activeSet
+      val startWay = cache.fillWay(startSet)
+      val startSlot = cache.slotOf(startSet, startWay)
       val start = reqStream.valid && !hitAny && !activeReg
       when(start) {
-        reqStream.ready := True; activeReg := True; slot := startSlot; cmdIssued := False;
-        rspCount := 0; req := active; cache.alloc(startSlot, active.lineBase);
-        cache.nextVictim := cache.nextVictim + 1; texFillMisses := texFillMisses + 1;
+        reqStream.ready := True; activeReg := True; slot := startSlot; set := startSet;
+        way := startWay;
+        cmdIssued := False; rspCount := 0; req := active;
+        cache.alloc(startSet, startWay, active.lineBase)
+        cache.bumpVictim(startSet); texFillMisses := texFillMisses + 1;
         texFillBurstCount := texFillBurstCount + 1;
         texFillBurstBeats := texFillBurstBeats + U(lineWords, 32 bits)
       }
       when(reqStream.valid && !hitAny) { texFillStallCycles := texFillStallCycles + 1 }
       io.texRead.cmd.valid := activeReg && !cmdIssued;
-      io.texRead.cmd.fragment.address := cache.slotBase(slot);
+      io.texRead.cmd.fragment.address := req.lineBase;
       io.texRead.cmd.fragment.opcode := Bmb.Cmd.Opcode.READ;
       io.texRead.cmd.fragment.length := fillLength; io.texRead.cmd.fragment.source := 0;
       io.texRead.cmd.last := True
       when(io.texRead.cmd.fire) { cmdIssued := True }
       io.texRead.rsp.ready := activeReg
-      val wordAddr =
-        (cache.slotBase(slot) + (rspCount << 2).resized).resize(c.addressWidth.value bits);
+      val wordAddr = (req.lineBase + (rspCount << 2).resized).resize(c.addressWidth.value bits);
       val wordEntry = rspCount.resize(bankEntryWidth bits)
       def packedBank(addr: UInt): (Bool, UInt) = {
         val in = Bool(); val base = UInt(22 bits); val shift = UInt(4 bits); in := False; base := 0;
@@ -257,14 +303,14 @@ case class TmuTextureCache(c: voodoo.Config, formalStrong: Boolean = true) exten
             io.texRead.rsp.fire && mask(b)
           )
       when(io.texRead.rsp.fire) {
-        for (b <- 0 until bankCount) when(mask(b)) {
-          cache.slotWordValid(slot)(b)(wordEntry) := True
-        }
         when(wordEntry === req.bankEntry && !rspValid) {
           rspValid := True; rspData := io.texRead.rsp.fragment.data; rspQueued := req.queued
         }
         rspCount := rspCount + 1
-        when(io.texRead.rsp.last) { activeReg := False }
+        when(io.texRead.rsp.last) {
+          activeReg := False
+          cache.slotReady(slot) := True
+        }
       }
     }
 
@@ -292,7 +338,7 @@ case class TmuTextureCache(c: voodoo.Config, formalStrong: Boolean = true) exten
         ) { conflict := True }
       val canIssue =
         if (c.packedTexLayout)
-          io.sampleRequest.valid && io.sampleRequest.payload.bilinear && hitAll && !conflict && !expanded.running && !reqStream.valid && !hitReadIssued && !hitRspValid && !((issued || fastHoldValid) && !io.fastFetch.ready) && io.outputRoute.ready
+          io.sampleRequest.valid && io.sampleRequest.payload.bilinear && hitAll && !conflict && !fill.activeReg && !expanded.running && !reqStream.valid && !hitReadIssued && !hitRspValid && !((issued || fastHoldValid) && !io.fastFetch.ready) && io.outputRoute.ready
         else False
       when(canIssue) {
         for (b <- 0 until bankCount) {
@@ -345,8 +391,9 @@ case class TmuTextureCache(c: voodoo.Config, formalStrong: Boolean = true) exten
     }
 
     when(io.invalidate) {
-      for (i <- 0 until slotCount) when(!fill.activeReg || fill.slot =/= i) {
-        cache.slotValid(i) := False
+      for (slot <- 0 until slotCount) when(!fill.activeReg || fill.slot =/= slot) {
+        cache.slotValid(slot) := False
+        cache.slotReady(slot) := False
       }
     }
     if (c.packedTexLayout) useFastBilinear := fast.canIssue else useFastBilinear := False
@@ -355,15 +402,17 @@ case class TmuTextureCache(c: voodoo.Config, formalStrong: Boolean = true) exten
       assert(io.texRead.cmd.valid === (fill.activeReg && !fill.cmdIssued))
       when(io.texRead.cmd.valid) {
         assert(io.texRead.cmd.fragment.opcode === Bmb.Cmd.Opcode.READ);
-        assert(io.texRead.cmd.fragment.address === cache.slotBase(fill.slot));
+        assert(io.texRead.cmd.fragment.address === fill.req.lineBase);
         assert(io.texRead.cmd.fragment.length === fillLength); assert(io.texRead.cmd.last)
       }
       if (formalStrong) {
         val prevStart = RegNext(fill.start) init False;
-        val prevSlot = RegNext(fill.startSlot) init 0;
+        val prevSet = RegNext(fill.startSet) init 0;
+        val prevWay = RegNext(fill.startWay) init 0;
         val prevBase = RegNext(active.lineBase) init 0;
         val prevInv = RegNext(io.invalidate) init False
         when(prevStart && !prevInv) {
+          val prevSlot = cache.slotOf(prevSet, prevWay)
           assert(cache.slotValid(prevSlot)); assert(cache.slotBase(prevSlot) === prevBase)
         }
       }

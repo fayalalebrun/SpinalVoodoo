@@ -5,6 +5,16 @@ import spinal.lib._
 
 /** Fog output bundle — same as CC Output but without rawW/iteratedAlpha (consumed by fog) */
 object Fog {
+  case class Stage1(c: Config) extends Bundle {
+    val payload = Output(c)
+    val fogA = UInt(8 bits)
+    val fogRgb = Color(UInt(8 bits), UInt(8 bits), UInt(8 bits))
+    val fogEnable = Bool()
+    val fogAdd = Bool()
+    val fogMult = Bool()
+    val fogConstant = Bool()
+  }
+
   case class Output(c: Config) extends Bundle {
     val coords = Vec.fill(2)(SInt(c.vertexFormat.nonFraction bits))
     val color = Color(UInt(8 bits), UInt(8 bits), UInt(8 bits))
@@ -39,29 +49,10 @@ case class Fog(c: Config) extends Component {
     val input = slave Stream (ColorCombine.Output(c))
     val output = master Stream (Fog.Output(c))
     val fogTable = in Vec (Bits(16 bits), 64)
+    val busy = out Bool ()
   }
-
-  // Pass-through stream handshake
-  io.output.valid := io.input.valid
-  io.input.ready := io.output.ready
 
   val payload = io.input.payload
-
-  // Pass through non-fog fields
-  io.output.payload.coords := payload.coords
-  io.output.payload.alpha := payload.alpha
-  io.output.payload.depth := payload.depth
-  io.output.payload.colorBeforeFog := payload.color
-  io.output.payload.chromaKey := payload.chromaKey
-  io.output.payload.zaColor := payload.zaColor
-  io.output.payload.alphaMode := payload.alphaMode
-  io.output.payload.fbzMode := payload.fbzMode
-  io.output.payload.drawColorBufferBase := payload.drawColorBufferBase
-  io.output.payload.drawAuxBufferBase := payload.drawAuxBufferBase
-  io.output.payload.fbPixelStride := payload.fbPixelStride
-  if (c.trace.enabled) {
-    io.output.payload.trace := payload.trace
-  }
 
   // Fog mode bits (from per-triangle captured config, not live register)
   val fogEnable = payload.fogMode.fogEnable
@@ -149,9 +140,6 @@ case class Fog(c: Config) extends Component {
     wDepth := wDepthClamped.resize(16 bits)
   }
 
-  // Export wDepth for FramebufferAccess W-buffer depth mode
-  io.output.payload.wDepth := wDepth
-
   // --- W-table interpolation ---
   val tableIdx = wDepth(15 downto 10) // 6-bit index
   val tableEntry = io.fogTable(tableIdx)
@@ -180,55 +168,102 @@ case class Fog(c: Config) extends Component {
     is(3) { fogA := 0 } // FOG_W direct (rarely used)
   }
 
-  // --- Fog blending ---
-  // fogA + 1 for range 1-256 (allows exact 1.0 scaling)
-  val fogAPlus1 = (fogA.resize(9 bits) + 1).resize(9 bits)
-
-  // Compute fogged color
-  val outColor = Color.u8()
-
-  when(!fogEnable) {
-    outColor := payload.color
-  }.elsewhen(fogConstant) {
-    outColor.assignFromSeq(payload.color.zipWith(fogRgb) { (s, f) =>
-      (s.resize(9 bits) + f.resize(9 bits)).min(U(255, 9 bits)).resize(8 bits)
-    })
-  }.otherwise {
-    // Standard fog blending
-    val base = Color.s10()
-    when(fogAdd) {
-      base.foreach(_ := 0)
-    }.otherwise {
-      base.assignFromSeq(fogRgb.map(_.resize(10 bits).asSInt))
+  val stage1 = io.input
+    .translateWith {
+      val out = Fog.Stage1(c)
+      out.payload.coords := payload.coords
+      out.payload.color := payload.color
+      out.payload.alpha := payload.alpha
+      out.payload.depth := payload.depth
+      out.payload.wDepth := wDepth
+      out.payload.colorBeforeFog := payload.color
+      out.payload.chromaKey := payload.chromaKey
+      out.payload.zaColor := payload.zaColor
+      out.payload.alphaMode := payload.alphaMode
+      out.payload.fbzMode := payload.fbzMode
+      out.payload.drawColorBufferBase := payload.drawColorBufferBase
+      out.payload.drawAuxBufferBase := payload.drawAuxBufferBase
+      out.payload.fbPixelStride := payload.fbPixelStride
+      if (c.trace.enabled) {
+        out.payload.trace := payload.trace
+      }
+      out.fogA := fogA
+      out.fogRgb := fogRgb
+      out.fogEnable := fogEnable
+      out.fogAdd := fogAdd
+      out.fogMult := fogMult
+      out.fogConstant := fogConstant
+      out
     }
+    .m2sPipe()
 
-    val diff = Color.s10()
-    when(!fogMult) {
-      diff.assignFromSeq(base.zipWith(payload.color) { (b, s) =>
-        b - s.resize(10 bits).asSInt
-      })
-    }.otherwise {
-      diff := base
-    }
+  val stage2 = stage1
+    .translateWith {
+      val out = Fog.Output(c)
+      out.coords := stage1.payload.payload.coords
+      out.alpha := stage1.payload.payload.alpha
+      out.depth := stage1.payload.payload.depth
+      out.wDepth := stage1.payload.payload.wDepth
+      out.colorBeforeFog := stage1.payload.payload.colorBeforeFog
+      out.chromaKey := stage1.payload.payload.chromaKey
+      out.zaColor := stage1.payload.payload.zaColor
+      out.alphaMode := stage1.payload.payload.alphaMode
+      out.fbzMode := stage1.payload.payload.fbzMode
+      out.drawColorBufferBase := stage1.payload.payload.drawColorBufferBase
+      out.drawAuxBufferBase := stage1.payload.payload.drawAuxBufferBase
+      out.fbPixelStride := stage1.payload.payload.fbPixelStride
+      if (c.trace.enabled) {
+        out.trace := stage1.payload.payload.trace
+      }
 
-    // fogAPlus1 is UInt(9 bits) range 1-256. Must zero-extend to SInt(10 bits) to avoid sign issues.
-    val fogAPlus1Signed = (False ## fogAPlus1).asSInt // SInt(10 bits), always positive
-    val mulChannels = diff.map(d => ((d * fogAPlus1Signed) >> 8).resize(10 bits))
+      val fogAPlus1 = (stage1.payload.fogA.resize(9 bits) + 1).resize(9 bits)
+      val outColor = Color.u8()
 
-    val finalColor = Color.s10()
-    when(fogMult) {
-      finalColor.assignFromSeq(mulChannels)
-    }.otherwise {
-      finalColor.assignFromSeq(
-        payload.color.channels.zip(mulChannels).map { case (s, m) =>
-          s.resize(10 bits).asSInt + m
+      when(!stage1.payload.fogEnable) {
+        outColor := stage1.payload.payload.colorBeforeFog
+      }.elsewhen(stage1.payload.fogConstant) {
+        outColor.assignFromSeq(
+          stage1.payload.payload.colorBeforeFog.zipWith(stage1.payload.fogRgb) { (s, f) =>
+            (s.resize(9 bits) + f.resize(9 bits)).min(U(255, 9 bits)).resize(8 bits)
+          }
+        )
+      }.otherwise {
+        val base = Color.s10()
+        when(stage1.payload.fogAdd) {
+          base.foreach(_ := 0)
+        }.otherwise {
+          base.assignFromSeq(stage1.payload.fogRgb.map(_.resize(10 bits).asSInt))
         }
-      )
+
+        val diff = Color.s10()
+        when(!stage1.payload.fogMult) {
+          diff.assignFromSeq(base.zipWith(stage1.payload.payload.colorBeforeFog) { (b, s) =>
+            b - s.resize(10 bits).asSInt
+          })
+        }.otherwise {
+          diff := base
+        }
+
+        val fogAPlus1Signed = (False ## fogAPlus1).asSInt
+        val mulChannels = diff.map(d => ((d * fogAPlus1Signed) >> 8).resize(10 bits))
+        val finalColor = Color.s10()
+        when(stage1.payload.fogMult) {
+          finalColor.assignFromSeq(mulChannels)
+        }.otherwise {
+          finalColor.assignFromSeq(
+            stage1.payload.payload.colorBeforeFog.channels.zip(mulChannels).map { case (s, m) =>
+              s.resize(10 bits).asSInt + m
+            }
+          )
+        }
+        outColor.assignFromSeq(finalColor.map(clampToU8))
+      }
+
+      out.color := outColor
+      out
     }
+    .m2sPipe()
 
-    // Clamp to [0, 255]
-    outColor.assignFromSeq(finalColor.map(clampToU8))
-  }
-
-  io.output.payload.color := outColor
+  io.output << stage2
+  io.busy := stage1.valid || stage2.valid
 }

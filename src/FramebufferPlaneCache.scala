@@ -102,11 +102,14 @@ case class FramebufferPlaneCache(c: Config, formalStrong: Boolean = true) extend
   val readRspData = Reg(Bits(32 bits)) init (0)
   val lineReadRspValid = Reg(Bool()) init (False)
   val pendingReadWasHit = Reg(Bool()) init (False)
+  val writeReqPipe = io.writeReq.m2sPipe()
+  val fillStoreCmd = Stream(FillStore(c, lineShift, slotIndexWidth))
+  val fillStorePipe = fillStoreCmd.m2sPipe()
 
   val readReqLineBase = lineBaseOf(io.readReq.address)
   val readReqWordIndex = wordIndexOf(io.readReq.address)
-  val writeReqLineBase = lineBaseOf(io.writeReq.address)
-  val writeReqWordIndex = wordIndexOf(io.writeReq.address)
+  val writeReqLineBase = lineBaseOf(writeReqPipe.payload.address)
+  val writeReqWordIndex = wordIndexOf(writeReqPipe.payload.address)
 
   val readHitVec = Bits(slotCount bits)
   val readFullHitVec = Bits(slotCount bits)
@@ -117,7 +120,7 @@ case class FramebufferPlaneCache(c: Config, formalStrong: Boolean = true) extend
     readFullHitVec(i) := io.readReq.valid && readTagHit && slotKnownMask(i)(
       readReqWordIndex
     ) === B"1111"
-    writeHitVec(i) := io.writeReq.valid && slotValid(i) && slotBase(i) === writeReqLineBase
+    writeHitVec(i) := writeReqPipe.valid && slotValid(i) && slotBase(i) === writeReqLineBase
   }
   val readHit = readFullHitVec.orR
   val writeHit = writeHitVec.orR
@@ -187,7 +190,15 @@ case class FramebufferPlaneCache(c: Config, formalStrong: Boolean = true) extend
   io.mem.rsp.ready := False
 
   io.readReq.ready := False
-  io.writeReq.ready := False
+  writeReqPipe.ready := False
+
+  fillStoreCmd.valid := False
+  fillStoreCmd.payload.slot := pendingSlot
+  fillStoreCmd.payload.beat := 0
+  fillStoreCmd.payload.data := 0
+  fillStoreCmd.payload.mask := 0
+  fillStoreCmd.payload.last := False
+  fillStorePipe.ready := True
 
   def clearSlot(slot: UInt): Unit = {
     slotValid(slot) := False
@@ -221,27 +232,27 @@ case class FramebufferPlaneCache(c: Config, formalStrong: Boolean = true) extend
     }
 
     when(state === OpState.Idle) {
-      when(io.writeReq.valid) {
+      when(writeReqPipe.valid) {
         when(writeHit) {
-          io.writeReq.ready := True
+          writeReqPipe.ready := True
           pendingFlushOnly := False
           val slot = writeHitSlot
           lineWriteValid := True
           lineWriteAddress := memIndex(slot, writeReqWordIndex)
-          lineWriteData := io.writeReq.data
-          lineWriteMask := io.writeReq.mask
+          lineWriteData := writeReqPipe.payload.data
+          lineWriteMask := writeReqPipe.payload.mask
           slotKnownMask(slot)(writeReqWordIndex) := slotKnownMask(slot)(
             writeReqWordIndex
-          ) | io.writeReq.mask
+          ) | writeReqPipe.payload.mask
           slotDirtyMask(slot)(writeReqWordIndex) := slotDirtyMask(slot)(
             writeReqWordIndex
-          ) | io.writeReq.mask
+          ) | writeReqPipe.payload.mask
           slotDirty(slot) := True
         }.otherwise {
-          io.writeReq.ready := True
+          writeReqPipe.ready := True
           pendingIsRead := False
           pendingFlushOnly := False
-          pendingWriteReq := io.writeReq.payload
+          pendingWriteReq := writeReqPipe.payload
           pendingSlot := victimSlot
           when(slotValid(victimSlot) && slotDirty(victimSlot)) {
             evictBeat := 0
@@ -251,10 +262,10 @@ case class FramebufferPlaneCache(c: Config, formalStrong: Boolean = true) extend
             nextVictim := nextVictim + 1
             lineWriteValid := True
             lineWriteAddress := memIndex(victimSlot, writeReqWordIndex)
-            lineWriteData := io.writeReq.data
-            lineWriteMask := io.writeReq.mask
-            slotKnownMask(victimSlot)(writeReqWordIndex) := io.writeReq.mask
-            slotDirtyMask(victimSlot)(writeReqWordIndex) := io.writeReq.mask
+            lineWriteData := writeReqPipe.payload.data
+            lineWriteMask := writeReqPipe.payload.mask
+            slotKnownMask(victimSlot)(writeReqWordIndex) := writeReqPipe.payload.mask
+            slotDirtyMask(victimSlot)(writeReqWordIndex) := writeReqPipe.payload.mask
             slotDirty(victimSlot) := True
           }
         }
@@ -378,19 +389,28 @@ case class FramebufferPlaneCache(c: Config, formalStrong: Boolean = true) extend
     }
 
     when(state === OpState.FillWait) {
-      io.mem.rsp.ready := True
-      when(io.mem.rsp.fire) {
-        val beat = fillRspCount.resize(lineShift bits)
-        val fillMask = ~slotDirtyMask(pendingSlot)(beat)
-        lineWriteValid := fillMask.orR
-        lineWriteAddress := memIndex(pendingSlot, beat)
-        lineWriteData := io.mem.rsp.fragment.data
-        lineWriteMask := fillMask
-        slotKnownMask(pendingSlot)(beat) := B"1111"
+      val beat = fillRspCount.resize(lineShift bits)
+      val fillMask = ~slotDirtyMask(pendingSlot)(beat)
+      fillStoreCmd.valid := io.mem.rsp.valid
+      fillStoreCmd.payload.slot := pendingSlot
+      fillStoreCmd.payload.beat := beat
+      fillStoreCmd.payload.data := io.mem.rsp.fragment.data
+      fillStoreCmd.payload.mask := fillMask
+      fillStoreCmd.payload.last := io.mem.rsp.last
+      io.mem.rsp.ready := fillStoreCmd.ready
+      when(fillStoreCmd.fire) {
         fillRspCount := fillRspCount + 1
-        when(io.mem.rsp.last) {
-          state := OpState.FillRead
-        }
+      }
+    }
+
+    when(fillStorePipe.valid) {
+      lineWriteValid := fillStorePipe.payload.mask.orR
+      lineWriteAddress := memIndex(fillStorePipe.payload.slot, fillStorePipe.payload.beat)
+      lineWriteData := fillStorePipe.payload.data
+      lineWriteMask := fillStorePipe.payload.mask
+      slotKnownMask(fillStorePipe.payload.slot)(fillStorePipe.payload.beat) := B"1111"
+      when(fillStorePipe.payload.last) {
+        state := OpState.FillRead
       }
     }
 
@@ -401,9 +421,9 @@ case class FramebufferPlaneCache(c: Config, formalStrong: Boolean = true) extend
     }
   } else {
     when(state === OpState.Idle) {
-      when(io.writeReq.valid) {
-        io.writeReq.ready := True
-        pendingWriteReq := io.writeReq.payload
+      when(writeReqPipe.valid) {
+        writeReqPipe.ready := True
+        pendingWriteReq := writeReqPipe.payload
         state := OpState.DirectWriteCmd
       } elsewhen (!readRspValid && io.readReq.valid) {
         io.readReq.ready := True
@@ -487,12 +507,14 @@ case class FramebufferPlaneCache(c: Config, formalStrong: Boolean = true) extend
       }
 
       val fTrackedWriteNow =
-        io.writeReq.fire && writeReqLineBase === fLineBase && writeReqWordIndex === fWordIndex &&
+        writeReqPipe.fire && writeReqLineBase === fLineBase && writeReqWordIndex === fWordIndex &&
           (writeHit || !(slotValid(victimSlot) && slotDirty(victimSlot)))
       when(fTrackedWriteNow) {
         for (lane <- 0 until 4) {
-          when(io.writeReq.mask(lane)) {
-            fData(8 * lane + 7 downto 8 * lane) := io.writeReq.data(8 * lane + 7 downto 8 * lane)
+          when(writeReqPipe.payload.mask(lane)) {
+            fData(8 * lane + 7 downto 8 * lane) := writeReqPipe.payload.data(
+              8 * lane + 7 downto 8 * lane
+            )
           }
         }
       }
@@ -585,7 +607,7 @@ case class FramebufferPlaneCache(c: Config, formalStrong: Boolean = true) extend
       }
 
       when(writeHit) {
-        assert(io.writeReq.valid)
+        assert(writeReqPipe.valid)
         assert(slotValid(writeHitSlot))
         assert(slotBase(writeHitSlot) === writeReqLineBase)
       }
@@ -610,18 +632,19 @@ case class FramebufferPlaneCache(c: Config, formalStrong: Boolean = true) extend
       }
 
       if (formalStrong) {
-        val prevFillRspFire = RegNext(io.mem.rsp.fire && state === OpState.FillWait) init (False)
-        val prevFillSlot = RegNext(pendingSlot) init (0)
-        val prevFillBeat = RegNext(fillRspCount.resize(log2Up(lineWords) bits)) init (0)
+        val prevFillStoreFire = RegNext(fillStorePipe.fire) init (False)
+        val prevFillSlot = RegNext(fillStorePipe.payload.slot) init (0)
+        val prevFillBeat = RegNext(fillStorePipe.payload.beat) init (0)
 
-        when(prevFillRspFire) {
+        when(prevFillStoreFire) {
           assert(slotKnownMask(prevFillSlot)(prevFillBeat) === B"1111")
         }
       }
     }
   }
 
-  io.busy := state =/= OpState.Idle || readRspValid || (io.flush && dirtySlotAvailable)
+  io.busy := state =/= OpState.Idle || readRspValid || writeReqPipe.valid || fillStorePipe.valid ||
+    (io.flush && dirtySlotAvailable)
 }
 
 object FramebufferPlaneCache {
@@ -637,6 +660,14 @@ object FramebufferPlaneCache {
     val address = UInt(c.addressWidth)
     val data = Bits(32 bits)
     val mask = Bits(4 bits)
+  }
+
+  case class FillStore(c: Config, lineShift: Int, slotIndexWidth: Int) extends Bundle {
+    val slot = UInt(slotIndexWidth bits)
+    val beat = UInt(lineShift bits)
+    val data = Bits(32 bits)
+    val mask = Bits(4 bits)
+    val last = Bool()
   }
 
   def bmbParams(c: Config) = BmbParameter(

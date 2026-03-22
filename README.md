@@ -2,6 +2,19 @@
 
 SpinalHDL implementation of the 3dfx Voodoo Graphics GPU.
 
+## Simulation Gallery
+
+<table>
+  <tr>
+    <td align="center"><img src="docs/readme-assets/logo.png" alt="3dfx logo trace" width="320"><br><sub>Logo</sub></td>
+    <td align="center"><img src="docs/readme-assets/screamer2.png" alt="Screamer 2 trace" width="320"><br><sub>Screamer 2</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/readme-assets/quake.png" alt="Quake trace" width="320"><br><sub>Quake</sub></td>
+    <td align="center"><img src="docs/readme-assets/valley-of-ra.png" alt="Valley of Ra trace" width="320"><br><sub>Valley of Ra</sub></td>
+  </tr>
+</table>
+
 ## Implementation Status
 
 ### FBI (Frame Buffer Interface)
@@ -16,7 +29,7 @@ SpinalHDL implementation of the 3dfx Voodoo Graphics GPU.
   - [x] Color (R, G, B, A) - 12.12 fixed-point
   - [x] Depth (Z) - 20.12 fixed-point
   - [x] Texture coordinates (S, T, W) - 14.18 / 2.30 fixed-point
-  - [ ] Parameter adjustment for sub-pixel vertices (fbzMode bit 26)
+  - [x] Parameter adjustment for sub-pixel vertices (fbzColorPath bit 26)
 - Color Combine Unit (CCU)
   - [x] c_other source selection (iterated, texture, color1, LFB)
   - [x] c_local source selection (iterated, color0)
@@ -179,10 +192,18 @@ the RTL simulation and a software reference model:
 
 ```bash
 # Capture a trace (rebuilds Glide with trace harness)
-TRACE_CAPTURE=1 make run/test_alphabet
+make trace/test_alphabet
 
-# Run trace tests via ScalaTest
-scala-cli test . --test-only "voodoo.integration.GlideTraceTest"
+# Replay a trace through the reference model and RTL simulator
+make check/test_alphabet
+
+# Capture and replay in one step
+make test/test_alphabet
+
+# Replay all existing traces under traces/
+make check-all
 ```
+
+Replay outputs are written to `test-output/<trace>/` as `<trace>_ref.png`, `<trace>_sim.png`, and `<trace>_diff.png`.
 
 Trace files are stored in `traces/` and compared pixel-by-pixel against a reference model.

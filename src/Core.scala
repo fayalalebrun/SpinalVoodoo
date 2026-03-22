@@ -879,26 +879,28 @@ case class Core(c: Config) extends Component {
   // ========================================================================
   // Triangle → Write.PreDither (from FramebufferAccess output)
   // ========================================================================
-  val trianglePreDither = fbAccess.io.output.translateWith {
-    val fbIn = fbAccess.io.output.payload
-    val out = Write.PreDither(c)
-    out.r := fbIn.color.r
-    out.g := fbIn.color.g
-    out.b := fbIn.color.b
-    out.coords := fbIn.coords
-    out.enableDithering := fbIn.enableDithering
-    out.ditherAlgorithm := fbIn.ditherAlgorithm
-    out.depthAlpha := (fbIn.enableAlphaPlanes ? fbIn.alpha.resize(16 bits) | fbIn.newDepth).asBits
-    out.rgbWrite := fbIn.rgbWrite
-    out.auxWrite := fbIn.auxWrite
-    out.fbBaseAddr := fbIn.fbBaseAddr
-    out.auxBaseAddr := fbIn.auxBaseAddr
-    out.fbPixelStride := fbIn.fbPixelStride
-    if (c.trace.enabled) {
-      out.trace := fbIn.trace
+  val trianglePreDither = fbAccess.io.output
+    .translateWith {
+      val fbIn = fbAccess.io.output.payload
+      val out = Write.PreDither(c)
+      out.r := fbIn.color.r
+      out.g := fbIn.color.g
+      out.b := fbIn.color.b
+      out.coords := fbIn.coords
+      out.enableDithering := fbIn.enableDithering
+      out.ditherAlgorithm := fbIn.ditherAlgorithm
+      out.depthAlpha := (fbIn.enableAlphaPlanes ? fbIn.alpha.resize(16 bits) | fbIn.newDepth).asBits
+      out.rgbWrite := fbIn.rgbWrite
+      out.auxWrite := fbIn.auxWrite
+      out.fbBaseAddr := fbIn.fbBaseAddr
+      out.auxBaseAddr := fbIn.auxBaseAddr
+      out.fbPixelStride := fbIn.fbPixelStride
+      if (c.trace.enabled) {
+        out.trace := fbIn.trace
+      }
+      out
     }
-    out
-  }
+    .m2sPipe()
 
   // ========================================================================
   // Fastfill → Write.PreDither (direct color1/zaColor)

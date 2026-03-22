@@ -89,6 +89,7 @@ case class RegisterBank(config: Config) extends Component {
   }
 
   var texTablesRegOpt: Option[TexLayoutTables.Tables] = None
+  var triangleTexTablesRegOpt: Option[TexLayoutTables.Tables] = None
 
   // Create BMB bus interface for RegIf - shared across all Areas
   // Address remapping (for bit 21 set) is handled by AddressRemapper before this
@@ -468,7 +469,7 @@ case class RegisterBank(config: Config) extends Component {
     cfg.fbPixelStride := io.triangleCapture.fbPixelStride
 
     if (config.packedTexLayout) {
-      cfg.texTables := texTablesRegOpt.get
+      cfg.texTables := triangleTexTablesRegOpt.get
     }
 
     val nccSel = tmuConfig.textureMode(5)
@@ -504,7 +505,7 @@ case class RegisterBank(config: Config) extends Component {
     out.grads := captureTriangleGradients(useFloatShadow)
     out.hiAlpha := captureTriangleHiAlpha(useFloatShadow)
     out.texHi := captureTriangleHiTexCoords(useFloatShadow)
-    out.config := captureTriangleConfig()
+    out.config := triangleConfigReg
     if (config.trace.enabled) {
       out.trace.valid := True
       out.trace.origin := Trace.Origin.triangle
@@ -513,6 +514,10 @@ case class RegisterBank(config: Config) extends Component {
     }
     out
   }
+
+  val triangleCmdInputReg = Reg(TriangleSetup.Input(config))
+  val ftriangleCmdInputReg = Reg(TriangleSetup.Input(config))
+  val triangleConfigReg = Reg(TriangleSetup.PerTriangleConfig(config))
 
   // Float Triangle Geometry Area (0x088-0x0FC) is handled by float alias conversion
   // in BmbBusInterface. Writes to float addresses are automatically converted to fixed-point
@@ -531,7 +536,7 @@ case class RegisterBank(config: Config) extends Component {
         HardType(TriangleSetup.Input(config))
       ) { (reg, payload) =>
         Component.current.addPrePopTask { () =>
-          payload.assignFromBits(buildTriangleCommandInput(io.bus.cmd.data(31), False).asBits)
+          payload.assignFromBits(triangleCmdInputReg.asBits)
         }
       }
     val (ftriangleCmdReg, ftriangleCmdStream) =
@@ -542,7 +547,7 @@ case class RegisterBank(config: Config) extends Component {
         HardType(TriangleSetup.Input(config))
       ) { (reg, payload) =>
         Component.current.addPrePopTask { () =>
-          payload.assignFromBits(buildTriangleCommandInput(io.bus.cmd.data(31), True).asBits)
+          payload.assignFromBits(ftriangleCmdInputReg.asBits)
         }
       }
     val (nopCmdReg, nopCmdStream) =
@@ -1036,8 +1041,11 @@ case class RegisterBank(config: Config) extends Component {
     texCfg.tLOD_aspect := tmuConfig.tLOD(22 downto 21).asUInt
     texCfg.tLOD_sIsWider := tmuConfig.tLOD(20)
     val texTablesReg = Reg(TexLayoutTables.Tables())
+    val triangleTexTablesReg = Reg(TexLayoutTables.Tables())
     texTablesReg := TexLayoutTables.compute(texCfg)
+    triangleTexTablesReg := texTablesReg
     texTablesRegOpt = Some(texTablesReg)
+    triangleTexTablesRegOpt = Some(triangleTexTablesReg)
   }
 
   // ========================================================================
@@ -1121,6 +1129,10 @@ case class RegisterBank(config: Config) extends Component {
       case 0 => table1Q0; case 1 => table1Q1; case 2 => table1Q2; case 3 => table1Q3
     }
   }
+
+  triangleCmdInputReg := buildTriangleCommandInput(io.bus.cmd.data(31), False)
+  ftriangleCmdInputReg := buildTriangleCommandInput(io.bus.cmd.data(31), True)
+  triangleConfigReg := captureTriangleConfig()
 
   // ========================================================================
   // Simulation Support - Make all register fields accessible during simulation

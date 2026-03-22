@@ -196,13 +196,14 @@ case class FramebufferAccess(c: Config) extends Component {
   val depthKill = pdata.fbzMode.enableDepthBuffer && !depthPassed
   io.zFuncFail := fetched.fire && depthKill
   val afterDepthTest = fetched.throwWhen(depthKill)
+  val afterDepthTestPiped = afterDepthTest.m2sPipe()
 
   // ========================================================================
   // Step 4: Alpha blend
   // ========================================================================
 
-  val afterColorData = afterDepthTest.payload.colorData
-  val afterPdata = afterDepthTest.payload.passthrough
+  val afterColorData = afterDepthTestPiped.payload.colorData
+  val afterPdata = afterDepthTestPiped.payload.passthrough
 
   val oldColor565 =
     afterPdata.colorLaneHi ? afterColorData(31 downto 16).asUInt | afterColorData(
@@ -312,7 +313,7 @@ case class FramebufferAccess(c: Config) extends Component {
   // Step 5: Output
   // ========================================================================
 
-  io.output.translateFrom(afterDepthTest) { (out, in) =>
+  io.output.translateFrom(afterDepthTestPiped) { (out, in) =>
     val pd = in.passthrough
     out.coords := pd.coords
     when(pd.alphaMode.alphaBlendEnable) {

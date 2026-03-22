@@ -5,6 +5,18 @@ import spinal.lib._
 
 /** Fog output bundle — same as CC Output but without rawW/iteratedAlpha (consumed by fog) */
 object Fog {
+  case class WStage(c: Config) extends Bundle {
+    val payload = Output(c)
+    val fogRgb = Color(UInt(8 bits), UInt(8 bits), UInt(8 bits))
+    val fogEnable = Bool()
+    val fogAdd = Bool()
+    val fogMult = Bool()
+    val fogConstant = Bool()
+    val fogModeSelect = UInt(2 bits)
+    val zFogFactor = UInt(8 bits)
+    val alphaFogFactor = UInt(8 bits)
+  }
+
   case class Stage1(c: Config) extends Bundle {
     val payload = Output(c)
     val fogA = UInt(8 bits)
@@ -140,37 +152,9 @@ case class Fog(c: Config) extends Component {
     wDepth := wDepthClamped.resize(16 bits)
   }
 
-  // --- W-table interpolation ---
-  val tableIdx = wDepth(15 downto 10) // 6-bit index
-  val tableEntry = io.fogTable(tableIdx)
-  val fogBase = tableEntry(7 downto 0).asUInt // 8-bit unsigned value
-  val fogDelta = tableEntry(15 downto 8).asSInt // 8-bit signed delta
-  val wBlend = wDepth(9 downto 2).resize(8 bits) // 8-bit fraction
-
-  // fogA = clamp(fog_base + ((fog_delta * blend) >> 8), 0, 255)
-  val deltaProduct = (fogDelta * wBlend.asSInt.resize(16 bits)) >> 8
-  val wFogFactorRaw = (fogBase.resize(10 bits).asSInt + deltaProduct.resize(10 bits))
-  val wFogFactor = UInt(8 bits)
-  when(wFogFactorRaw < 0) {
-    wFogFactor := 0
-  }.elsewhen(wFogFactorRaw > 255) {
-    wFogFactor := 255
-  }.otherwise {
-    wFogFactor := wFogFactorRaw.asUInt.resize(8 bits)
-  }
-
-  // Select fog factor based on mode
-  val fogA = UInt(8 bits)
-  switch(fogModeSelect) {
-    is(0) { fogA := wFogFactor } // W-table lookup
-    is(1) { fogA := alphaFogFactor } // FOG_ALPHA
-    is(2) { fogA := zFogFactor } // FOG_Z
-    is(3) { fogA := 0 } // FOG_W direct (rarely used)
-  }
-
-  val stage1 = io.input
+  val wStage = io.input
     .translateWith {
-      val out = Fog.Stage1(c)
+      val out = Fog.WStage(c)
       out.payload.coords := payload.coords
       out.payload.color := payload.color
       out.payload.alpha := payload.alpha
@@ -187,12 +171,51 @@ case class Fog(c: Config) extends Component {
       if (c.trace.enabled) {
         out.payload.trace := payload.trace
       }
-      out.fogA := fogA
       out.fogRgb := fogRgb
       out.fogEnable := fogEnable
       out.fogAdd := fogAdd
       out.fogMult := fogMult
       out.fogConstant := fogConstant
+      out.fogModeSelect := fogModeSelect
+      out.zFogFactor := zFogFactor
+      out.alphaFogFactor := alphaFogFactor
+      out
+    }
+    .m2sPipe()
+
+  val stage1 = wStage
+    .translateWith {
+      val out = Fog.Stage1(c)
+      out.payload := wStage.payload.payload
+
+      val tableIdx = wStage.payload.payload.wDepth(15 downto 10)
+      val tableEntry = io.fogTable(tableIdx)
+      val fogBase = tableEntry(7 downto 0).asUInt
+      val fogDelta = tableEntry(15 downto 8).asSInt
+      val wBlend = wStage.payload.payload.wDepth(9 downto 2).resize(8 bits)
+      val deltaProduct = (fogDelta * wBlend.asSInt.resize(16 bits)) >> 8
+      val wFogFactorRaw = (fogBase.resize(10 bits).asSInt + deltaProduct.resize(10 bits))
+      val wFogFactor = UInt(8 bits)
+      when(wFogFactorRaw < 0) {
+        wFogFactor := 0
+      }.elsewhen(wFogFactorRaw > 255) {
+        wFogFactor := 255
+      }.otherwise {
+        wFogFactor := wFogFactorRaw.asUInt.resize(8 bits)
+      }
+
+      switch(wStage.payload.fogModeSelect) {
+        is(0) { out.fogA := wFogFactor }
+        is(1) { out.fogA := wStage.payload.alphaFogFactor }
+        is(2) { out.fogA := wStage.payload.zFogFactor }
+        default { out.fogA := 0 }
+      }
+
+      out.fogRgb := wStage.payload.fogRgb
+      out.fogEnable := wStage.payload.fogEnable
+      out.fogAdd := wStage.payload.fogAdd
+      out.fogMult := wStage.payload.fogMult
+      out.fogConstant := wStage.payload.fogConstant
       out
     }
     .m2sPipe()
@@ -265,5 +288,5 @@ case class Fog(c: Config) extends Component {
     .m2sPipe()
 
   io.output << stage2
-  io.busy := stage1.valid || stage2.valid
+  io.busy := wStage.valid || stage1.valid || stage2.valid
 }

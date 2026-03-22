@@ -40,6 +40,47 @@ case class BmbBusInterface(
 )(implicit moduleName: ClassName)
     extends BusIf {
 
+  case class VoodooRegInst(underlying: RegInst) {
+    def field[T <: BaseType](that: T, accessType: AccessType, section: BigInt, doc: String)(implicit
+        symbol: SymbolName
+    ): T = underlying.field(cloneOf(that), accessType, section, doc)
+
+    def field(that: AFix, accessType: AccessType, section: BigInt, doc: String)(implicit
+        symbol: SymbolName
+    ): AFix = {
+      val proto = cloneOf(that)
+      val base =
+        if (proto.signed) underlying.field(SInt(proto.bitWidth bits), accessType, section, doc)
+        else underlying.field(UInt(proto.bitWidth bits), accessType, section, doc)
+      val afix = cloneOf(proto)
+      afix.raw := base.asBits
+      afix
+    }
+
+    def fieldAt(bitOffset: Int, that: AFix, accessType: AccessType, section: BigInt, doc: String)(
+        implicit symbol: SymbolName
+    ): AFix = {
+      val proto = cloneOf(that)
+      val base =
+        if (proto.signed)
+          underlying.fieldAt(bitOffset, SInt(proto.bitWidth bits), accessType, section, doc)
+        else underlying.fieldAt(bitOffset, UInt(proto.bitWidth bits), accessType, section, doc)
+      val afix = cloneOf(proto)
+      afix.raw := base.asBits
+      afix
+    }
+
+    def fieldAt[T <: BaseType](
+        bitOffset: Int,
+        that: T,
+        accessType: AccessType,
+        section: BigInt,
+        doc: String
+    )(implicit
+        symbol: SymbolName
+    ): T = underlying.fieldAt(bitOffset, cloneOf(that), accessType, section, doc)
+  }
+
   // Register category tracking: maps address -> category
   private val registerCategories = mutable.Map[BigInt, RegisterCategory]()
 
@@ -114,10 +155,10 @@ case class BmbBusInterface(
       name: String,
       category: RegisterCategory,
       sec: Secure = null
-  ): RegInst = {
+  ): VoodooRegInst = {
     registerCategories(addr) = category
     lastCreatedRegAddr = addr
-    newRegAt(addr, name, sec)
+    VoodooRegInst(newRegAt(addr, name, sec))
   }
 
   /** Create a command register that produces a Stream
@@ -130,7 +171,7 @@ case class BmbBusInterface(
       name: String,
       category: RegisterCategory,
       sec: Secure = null
-  ): (RegInst, Stream[NoData]) = {
+  ): (VoodooRegInst, Stream[NoData]) = {
     registerCategories(addr) = category
     val reg = newRegAt(addr, name, sec)
 
@@ -146,7 +187,7 @@ case class BmbBusInterface(
     // For blocking: check pulseStream.ready (from s2mPipe, registered — no comb loop)
     commandStreamReady(addr) = pulseStream.ready
 
-    (reg, bufferedStream)
+    (VoodooRegInst(reg), bufferedStream)
   }
 
   /** Implicit enrichment for field-level .withFloatAlias()
@@ -161,6 +202,14 @@ case class BmbBusInterface(
       floatAliases(floatAddr) = PciFifo.FloatAliasConfig(lastCreatedRegAddr, intBits, fracBits)
       registerCategories(floatAddr) = RegisterCategory.fifoNoSync
       field
+    }
+
+    def withFloatAlias(): T = field match {
+      case afix: AFix => withFloatAlias(afix.intWidth, afix.fracWidth)
+      case _          =>
+        throw new IllegalArgumentException(
+          s"withFloatAlias() without arguments requires an AFix field, got ${field.getClass.getSimpleName}"
+        )
     }
   }
 

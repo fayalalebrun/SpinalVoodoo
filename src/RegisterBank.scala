@@ -124,159 +124,204 @@ case class RegisterBank(config: Config) extends Component {
     // Vertex Registers (0x008-0x01C) — float aliases at 0x088-0x09C
     val vertexAx = busif
       .newRegAtWithCategory(0x008, "vertexAx", RegisterCategory.fifoNoSync)
-      .field(SInt(16 bits), AccessType.WO, 0, "Vertex A X coordinate")
-      .withFloatAlias(12, 4)
+      .field(AFix(config.vertexFormat), AccessType.WO, 0, "Vertex A X coordinate")
+      .withFloatAlias()
       .asOutput()
     val vertexAy = busif
       .newRegAtWithCategory(0x00c, "vertexAy", RegisterCategory.fifoNoSync)
-      .field(SInt(16 bits), AccessType.WO, 0, "Vertex A Y coordinate")
-      .withFloatAlias(12, 4)
+      .field(AFix(config.vertexFormat), AccessType.WO, 0, "Vertex A Y coordinate")
+      .withFloatAlias()
       .asOutput()
     val vertexBx = busif
       .newRegAtWithCategory(0x010, "vertexBx", RegisterCategory.fifoNoSync)
-      .field(SInt(16 bits), AccessType.WO, 0, "Vertex B X coordinate")
-      .withFloatAlias(12, 4)
+      .field(AFix(config.vertexFormat), AccessType.WO, 0, "Vertex B X coordinate")
+      .withFloatAlias()
       .asOutput()
     val vertexBy = busif
       .newRegAtWithCategory(0x014, "vertexBy", RegisterCategory.fifoNoSync)
-      .field(SInt(16 bits), AccessType.WO, 0, "Vertex B Y coordinate")
-      .withFloatAlias(12, 4)
+      .field(AFix(config.vertexFormat), AccessType.WO, 0, "Vertex B Y coordinate")
+      .withFloatAlias()
       .asOutput()
     val vertexCx = busif
       .newRegAtWithCategory(0x018, "vertexCx", RegisterCategory.fifoNoSync)
-      .field(SInt(16 bits), AccessType.WO, 0, "Vertex C X coordinate")
-      .withFloatAlias(12, 4)
+      .field(AFix(config.vertexFormat), AccessType.WO, 0, "Vertex C X coordinate")
+      .withFloatAlias()
       .asOutput()
     val vertexCy = busif
       .newRegAtWithCategory(0x01c, "vertexCy", RegisterCategory.fifoNoSync)
-      .field(SInt(16 bits), AccessType.WO, 0, "Vertex C Y coordinate")
-      .withFloatAlias(12, 4)
+      .field(AFix(config.vertexFormat), AccessType.WO, 0, "Vertex C Y coordinate")
+      .withFloatAlias()
       .asOutput()
 
     // Start Value Registers (0x020-0x03C) — float aliases at 0x0A0-0x0BC
     val startR = busif
       .newRegAtWithCategory(0x020, "startR", RegisterCategory.fifoNoSync)
-      .field(SInt(24 bits), AccessType.WO, 255 << 12, "Starting red value (12.12 fixed)")
-      .withFloatAlias(12, 12)
+      .field(
+        AFix(config.vColorFormat),
+        AccessType.WO,
+        255 << 12,
+        "Starting red value (12.12 fixed)"
+      )
+      .withFloatAlias()
       .asOutput()
     val startG = busif
       .newRegAtWithCategory(0x024, "startG", RegisterCategory.fifoNoSync)
-      .field(SInt(24 bits), AccessType.WO, 255 << 12, "Starting green value (12.12 fixed)")
-      .withFloatAlias(12, 12)
+      .field(
+        AFix(config.vColorFormat),
+        AccessType.WO,
+        255 << 12,
+        "Starting green value (12.12 fixed)"
+      )
+      .withFloatAlias()
       .asOutput()
     val startB = busif
       .newRegAtWithCategory(0x028, "startB", RegisterCategory.fifoNoSync)
-      .field(SInt(24 bits), AccessType.WO, 255 << 12, "Starting blue value (12.12 fixed)")
-      .withFloatAlias(12, 12)
+      .field(
+        AFix(config.vColorFormat),
+        AccessType.WO,
+        255 << 12,
+        "Starting blue value (12.12 fixed)"
+      )
+      .withFloatAlias()
       .asOutput()
     val startZ = busif
       .newRegAtWithCategory(0x02c, "startZ", RegisterCategory.fifoNoSync)
-      .field(SInt(32 bits), AccessType.WO, 0, "Starting Z depth (20.12 fixed)")
-      .withFloatAlias(20, 12)
+      .field(AFix(config.vDepthFormat), AccessType.WO, 0, "Starting Z depth (20.12 fixed)")
+      .withFloatAlias()
       .asOutput()
     val startA = busif
       .newRegAtWithCategory(0x030, "startA", RegisterCategory.fifoNoSync)
-      .field(SInt(24 bits), AccessType.WO, 0, "Starting alpha value (12.12 fixed)")
-      .withFloatAlias(12, 12)
+      .field(AFix(config.vColorFormat), AccessType.WO, 0, "Starting alpha value (12.12 fixed)")
+      .withFloatAlias()
       .asOutput()
     val startS = busif
       .newRegAtWithCategory(0x034, "startS", RegisterCategory.fifoNoSync)
-      .field(SInt(32 bits), AccessType.WO, 0, "Starting S texture coord (14.18 fixed)")
-      .withFloatAlias(14, 18)
+      .field(
+        AFix(config.texCoordsFormat),
+        AccessType.WO,
+        0,
+        "Starting S texture coord (14.18 fixed)"
+      )
+      .withFloatAlias()
       .asOutput()
     val startT = busif
       .newRegAtWithCategory(0x038, "startT", RegisterCategory.fifoNoSync)
-      .field(SInt(32 bits), AccessType.WO, 0, "Starting T texture coord (14.18 fixed)")
-      .withFloatAlias(14, 18)
+      .field(
+        AFix(config.texCoordsFormat),
+        AccessType.WO,
+        0,
+        "Starting T texture coord (14.18 fixed)"
+      )
+      .withFloatAlias()
       .asOutput()
     val startW = busif
       .newRegAtWithCategory(0x03c, "startW", RegisterCategory.fifoNoSync)
-      .field(SInt(32 bits), AccessType.WO, 0, "Starting W value (2.30 fixed)")
-      .withFloatAlias(2, 30)
+      .field(AFix(config.wFormat), AccessType.WO, 0, "Starting W value (2.30 fixed)")
+      .withFloatAlias()
       .asOutput()
 
     // X Gradient Registers (0x040-0x05C) — float aliases at 0x0C0-0x0DC
     val dRdX = busif
       .newRegAtWithCategory(0x040, "dRdX", RegisterCategory.fifoNoSync)
-      .field(SInt(24 bits), AccessType.WO, 0, "Red gradient dR/dX (12.12 fixed)")
-      .withFloatAlias(12, 12)
+      .field(AFix(config.vColorFormat), AccessType.WO, 0, "Red gradient dR/dX (12.12 fixed)")
+      .withFloatAlias()
       .asOutput()
     val dGdX = busif
       .newRegAtWithCategory(0x044, "dGdX", RegisterCategory.fifoNoSync)
-      .field(SInt(24 bits), AccessType.WO, 0, "Green gradient dG/dX (12.12 fixed)")
-      .withFloatAlias(12, 12)
+      .field(AFix(config.vColorFormat), AccessType.WO, 0, "Green gradient dG/dX (12.12 fixed)")
+      .withFloatAlias()
       .asOutput()
     val dBdX = busif
       .newRegAtWithCategory(0x048, "dBdX", RegisterCategory.fifoNoSync)
-      .field(SInt(24 bits), AccessType.WO, 0, "Blue gradient dB/dX (12.12 fixed)")
-      .withFloatAlias(12, 12)
+      .field(AFix(config.vColorFormat), AccessType.WO, 0, "Blue gradient dB/dX (12.12 fixed)")
+      .withFloatAlias()
       .asOutput()
     val dZdX = busif
       .newRegAtWithCategory(0x04c, "dZdX", RegisterCategory.fifoNoSync)
-      .field(SInt(32 bits), AccessType.WO, 0, "Z gradient dZ/dX (20.12 fixed)")
-      .withFloatAlias(20, 12)
+      .field(AFix(config.vDepthFormat), AccessType.WO, 0, "Z gradient dZ/dX (20.12 fixed)")
+      .withFloatAlias()
       .asOutput()
     val dAdX = busif
       .newRegAtWithCategory(0x050, "dAdX", RegisterCategory.fifoNoSync)
-      .field(SInt(24 bits), AccessType.WO, 0, "Alpha gradient dA/dX (12.12 fixed)")
-      .withFloatAlias(12, 12)
+      .field(AFix(config.vColorFormat), AccessType.WO, 0, "Alpha gradient dA/dX (12.12 fixed)")
+      .withFloatAlias()
       .asOutput()
     val dSdX = busif
       .newRegAtWithCategory(0x054, "dSdX", RegisterCategory.fifoNoSync)
-      .field(SInt(32 bits), AccessType.WO, 0, "S texture gradient dS/dX (14.18 fixed)")
-      .withFloatAlias(14, 18)
+      .field(
+        AFix(config.texCoordsFormat),
+        AccessType.WO,
+        0,
+        "S texture gradient dS/dX (14.18 fixed)"
+      )
+      .withFloatAlias()
       .asOutput()
     val dTdX = busif
       .newRegAtWithCategory(0x058, "dTdX", RegisterCategory.fifoNoSync)
-      .field(SInt(32 bits), AccessType.WO, 0, "T texture gradient dT/dX (14.18 fixed)")
-      .withFloatAlias(14, 18)
+      .field(
+        AFix(config.texCoordsFormat),
+        AccessType.WO,
+        0,
+        "T texture gradient dT/dX (14.18 fixed)"
+      )
+      .withFloatAlias()
       .asOutput()
     val dWdX = busif
       .newRegAtWithCategory(0x05c, "dWdX", RegisterCategory.fifoNoSync)
-      .field(SInt(32 bits), AccessType.WO, 0, "W gradient dW/dX (2.30 fixed)")
-      .withFloatAlias(2, 30)
+      .field(AFix(config.wFormat), AccessType.WO, 0, "W gradient dW/dX (2.30 fixed)")
+      .withFloatAlias()
       .asOutput()
 
     // Y Gradient Registers (0x060-0x07C) — float aliases at 0x0E0-0x0FC
     val dRdY = busif
       .newRegAtWithCategory(0x060, "dRdY", RegisterCategory.fifoNoSync)
-      .field(SInt(24 bits), AccessType.WO, 0, "Red gradient dR/dY (12.12 fixed)")
-      .withFloatAlias(12, 12)
+      .field(AFix(config.vColorFormat), AccessType.WO, 0, "Red gradient dR/dY (12.12 fixed)")
+      .withFloatAlias()
       .asOutput()
     val dGdY = busif
       .newRegAtWithCategory(0x064, "dGdY", RegisterCategory.fifoNoSync)
-      .field(SInt(24 bits), AccessType.WO, 0, "Green gradient dG/dY (12.12 fixed)")
-      .withFloatAlias(12, 12)
+      .field(AFix(config.vColorFormat), AccessType.WO, 0, "Green gradient dG/dY (12.12 fixed)")
+      .withFloatAlias()
       .asOutput()
     val dBdY = busif
       .newRegAtWithCategory(0x068, "dBdY", RegisterCategory.fifoNoSync)
-      .field(SInt(24 bits), AccessType.WO, 0, "Blue gradient dB/dY (12.12 fixed)")
-      .withFloatAlias(12, 12)
+      .field(AFix(config.vColorFormat), AccessType.WO, 0, "Blue gradient dB/dY (12.12 fixed)")
+      .withFloatAlias()
       .asOutput()
     val dZdY = busif
       .newRegAtWithCategory(0x06c, "dZdY", RegisterCategory.fifoNoSync)
-      .field(SInt(32 bits), AccessType.WO, 0, "Z gradient dZ/dY (20.12 fixed)")
-      .withFloatAlias(20, 12)
+      .field(AFix(config.vDepthFormat), AccessType.WO, 0, "Z gradient dZ/dY (20.12 fixed)")
+      .withFloatAlias()
       .asOutput()
     val dAdY = busif
       .newRegAtWithCategory(0x070, "dAdY", RegisterCategory.fifoNoSync)
-      .field(SInt(24 bits), AccessType.WO, 0, "Alpha gradient dA/dY (12.12 fixed)")
-      .withFloatAlias(12, 12)
+      .field(AFix(config.vColorFormat), AccessType.WO, 0, "Alpha gradient dA/dY (12.12 fixed)")
+      .withFloatAlias()
       .asOutput()
     val dSdY = busif
       .newRegAtWithCategory(0x074, "dSdY", RegisterCategory.fifoNoSync)
-      .field(SInt(32 bits), AccessType.WO, 0, "S texture gradient dS/dY (14.18 fixed)")
-      .withFloatAlias(14, 18)
+      .field(
+        AFix(config.texCoordsFormat),
+        AccessType.WO,
+        0,
+        "S texture gradient dS/dY (14.18 fixed)"
+      )
+      .withFloatAlias()
       .asOutput()
     val dTdY = busif
       .newRegAtWithCategory(0x078, "dTdY", RegisterCategory.fifoNoSync)
-      .field(SInt(32 bits), AccessType.WO, 0, "T texture gradient dT/dY (14.18 fixed)")
-      .withFloatAlias(14, 18)
+      .field(
+        AFix(config.texCoordsFormat),
+        AccessType.WO,
+        0,
+        "T texture gradient dT/dY (14.18 fixed)"
+      )
+      .withFloatAlias()
       .asOutput()
     val dWdY = busif
       .newRegAtWithCategory(0x07c, "dWdY", RegisterCategory.fifoNoSync)
-      .field(SInt(32 bits), AccessType.WO, 0, "W gradient dW/dY (2.30 fixed)")
-      .withFloatAlias(2, 30)
+      .field(AFix(config.wFormat), AccessType.WO, 0, "W gradient dW/dY (2.30 fixed)")
+      .withFloatAlias()
       .asOutput()
   }
 

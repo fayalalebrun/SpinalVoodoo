@@ -119,8 +119,8 @@ class RegisterBankTest extends AnyFunSuite {
 
       dut.clockDomain.waitSampling()
 
-      assert(dut.triangleGeometry.vertexAx.toInt == 1608, "Vertex A X should be 1608")
-      assert(dut.triangleGeometry.vertexAy.toInt == 2004, "Vertex A Y should be 2004")
+      assert(dut.triangleGeometry.vertexAx.raw.toBigInt == 1608, "Vertex A X should be 1608")
+      assert(dut.triangleGeometry.vertexAy.raw.toBigInt == 2004, "Vertex A Y should be 2004")
     }
   }
 
@@ -500,12 +500,24 @@ class RegisterBankTest extends AnyFunSuite {
       dut.clockDomain.waitSampling()
 
       // Verify X gradients (sign-extended to 24 bits)
-      assert((dut.triangleGeometry.dRdX.toLong & 0xffffff) == 0x123456, "dRdX should be 0x123456")
-      assert((dut.triangleGeometry.dGdX.toLong & 0xffffff) == 0x789abc, "dGdX should be 0x789ABC")
+      assert(
+        (dut.triangleGeometry.dRdX.raw.toBigInt.longValue & 0xffffff) == 0x123456,
+        "dRdX should be 0x123456"
+      )
+      assert(
+        (dut.triangleGeometry.dGdX.raw.toBigInt.longValue & 0xffffff) == 0x789abc,
+        "dGdX should be 0x789ABC"
+      )
 
       // Verify Y gradients
-      assert((dut.triangleGeometry.dRdY.toLong & 0xffffff) == 0x111111, "dRdY should be 0x111111")
-      assert((dut.triangleGeometry.dGdY.toLong & 0xffffff) == 0x222222, "dGdY should be 0x222222")
+      assert(
+        (dut.triangleGeometry.dRdY.raw.toBigInt.longValue & 0xffffff) == 0x111111,
+        "dRdY should be 0x111111"
+      )
+      assert(
+        (dut.triangleGeometry.dGdY.raw.toBigInt.longValue & 0xffffff) == 0x222222,
+        "dGdY should be 0x222222"
+      )
     }
   }
 
@@ -523,7 +535,7 @@ class RegisterBankTest extends AnyFunSuite {
       // vertexAx at 0x008
       bmbWrite(dut, 0x008, 0x12345678)
       assert(
-        (dut.triangleGeometry.vertexAx.toLong & 0xffffL) == (0x12345678L & 0xffffL),
+        (dut.triangleGeometry.vertexAx.raw.toBigInt.longValue & 0xffffL) == (0x12345678L & 0xffffL),
         "Register should update immediately (no FIFO)"
       )
 

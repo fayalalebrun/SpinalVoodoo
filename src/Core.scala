@@ -390,12 +390,12 @@ case class Core(c: Config) extends Component {
 
   def captureHiTexCoords(useFloatShadow: Bool): TriangleSetup.HiTexCoords = {
     val hi = TriangleSetup.HiTexCoords(c)
-    val startSInt = regBank.triangleGeometry.startS.resize(60 bits) |<< 12
-    val startTInt = regBank.triangleGeometry.startT.resize(60 bits) |<< 12
-    val dSdXInt = regBank.triangleGeometry.dSdX.resize(60 bits) |<< 12
-    val dTdXInt = regBank.triangleGeometry.dTdX.resize(60 bits) |<< 12
-    val dSdYInt = regBank.triangleGeometry.dSdY.resize(60 bits) |<< 12
-    val dTdYInt = regBank.triangleGeometry.dTdY.resize(60 bits) |<< 12
+    val startSInt = regBank.triangleGeometry.startS.asSInt.resize(60 bits) |<< 12
+    val startTInt = regBank.triangleGeometry.startT.asSInt.resize(60 bits) |<< 12
+    val dSdXInt = regBank.triangleGeometry.dSdX.asSInt.resize(60 bits) |<< 12
+    val dTdXInt = regBank.triangleGeometry.dTdX.asSInt.resize(60 bits) |<< 12
+    val dSdYInt = regBank.triangleGeometry.dSdY.asSInt.resize(60 bits) |<< 12
+    val dTdYInt = regBank.triangleGeometry.dTdY.asSInt.resize(60 bits) |<< 12
 
     hi.sStart.raw := Mux(useFloatShadow, floatShadowStartS.asBits, startSInt.asBits)
     hi.tStart.raw := Mux(useFloatShadow, floatShadowStartT.asBits, startTInt.asBits)
@@ -408,9 +408,9 @@ case class Core(c: Config) extends Component {
 
   def captureHiAlpha(useFloatShadow: Bool): TriangleSetup.HiAlpha = {
     val hi = TriangleSetup.HiAlpha(c)
-    val startAInt = regBank.triangleGeometry.startA.resize(60 bits) |<< 18
-    val dAdXInt = regBank.triangleGeometry.dAdX.resize(60 bits) |<< 18
-    val dAdYInt = regBank.triangleGeometry.dAdY.resize(60 bits) |<< 18
+    val startAInt = regBank.triangleGeometry.startA.asSInt.resize(60 bits) |<< 18
+    val dAdXInt = regBank.triangleGeometry.dAdX.asSInt.resize(60 bits) |<< 18
+    val dAdYInt = regBank.triangleGeometry.dAdY.asSInt.resize(60 bits) |<< 18
 
     hi.start.raw := Mux(useFloatShadow, floatShadowStartA.asBits, startAInt.asBits)
     hi.dAdX.raw := Mux(useFloatShadow, floatShadowDAdX.asBits, dAdXInt.asBits)
@@ -431,9 +431,9 @@ case class Core(c: Config) extends Component {
         (g.startZ.asBits, g.dZdX.asBits, g.dZdY.asBits), // depth (20.12)
         (g.startA.asBits, g.dAdX.asBits, g.dAdY.asBits), // alpha (12.12)
         (
-          Mux(useFloatShadow, floatShadowStartW.asBits, g.startW.resize(60 bits).asBits),
-          Mux(useFloatShadow, floatShadowDWdX.asBits, g.dWdX.resize(60 bits).asBits),
-          Mux(useFloatShadow, floatShadowDWdY.asBits, g.dWdY.resize(60 bits).asBits)
+          Mux(useFloatShadow, floatShadowStartW.asBits, g.startW.asSInt.resize(60 bits).asBits),
+          Mux(useFloatShadow, floatShadowDWdX.asBits, g.dWdX.asSInt.resize(60 bits).asBits),
+          Mux(useFloatShadow, floatShadowDWdY.asBits, g.dWdY.asSInt.resize(60 bits).asBits)
         ), // W     (2.30 / float shadow)
         (g.startS.asBits, g.dSdX.asBits, g.dSdY.asBits), // S     (14.18)
         (g.startT.asBits, g.dTdX.asBits, g.dTdY.asBits) // T     (14.18)

@@ -515,8 +515,6 @@ case class RegisterBank(config: Config) extends Component {
     out
   }
 
-  val triangleCmdInputReg = Reg(TriangleSetup.Input(config))
-  val ftriangleCmdInputReg = Reg(TriangleSetup.Input(config))
   val triangleConfigReg = Reg(TriangleSetup.PerTriangleConfig(config))
 
   // Float Triangle Geometry Area (0x088-0x0FC) is handled by float alias conversion
@@ -536,7 +534,7 @@ case class RegisterBank(config: Config) extends Component {
         HardType(TriangleSetup.Input(config))
       ) { (reg, payload) =>
         Component.current.addPrePopTask { () =>
-          payload.assignFromBits(triangleCmdInputReg.asBits)
+          payload.assignFromBits(buildTriangleCommandInput(io.bus.cmd.data(31), False).asBits)
         }
       }
     val (ftriangleCmdReg, ftriangleCmdStream) =
@@ -547,7 +545,7 @@ case class RegisterBank(config: Config) extends Component {
         HardType(TriangleSetup.Input(config))
       ) { (reg, payload) =>
         Component.current.addPrePopTask { () =>
-          payload.assignFromBits(ftriangleCmdInputReg.asBits)
+          payload.assignFromBits(buildTriangleCommandInput(io.bus.cmd.data(31), True).asBits)
         }
       }
     val (nopCmdReg, nopCmdStream) =
@@ -1130,8 +1128,6 @@ case class RegisterBank(config: Config) extends Component {
     }
   }
 
-  triangleCmdInputReg := buildTriangleCommandInput(io.bus.cmd.data(31), False)
-  ftriangleCmdInputReg := buildTriangleCommandInput(io.bus.cmd.data(31), True)
   triangleConfigReg := captureTriangleConfig()
 
   // ========================================================================

@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+
+HOST="${DE10_HOST:-debian-fpga.local}"
+USER_NAME="${DE10_USER:-fpga}"
+RBF_FILE="${DE10_RBF:-$ROOT_DIR/output/de10/bitstream/SpinalVoodoo_de10.rbf}"
+STATE_MARKER="${DE10_STATE_FILE:-/home/fpga/spinalvoodoo/current/.fpga-programmed.sha256}"
+REMOTE_DIR="${DE10_TRACE_REMOTE_DIR:-/home/fpga/trace-replay}"
+INPUT_PATH="${DE10_TRACE_INPUT:-$ROOT_DIR/traces/tomb}"
+OUTPUT_DIR="${DE10_TRACE_OUTPUT_DIR:-$ROOT_DIR/output/de10-board-trace/tomb}"
+VERIFY_ONLY=0
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/run-de10-trace-replay [options]
+
+Options:
+  --host <host>         DE10 host
+  --user <user>         SSH user (default: fpga)
+  --input <path>        Trace directory or trace.bin path (default: traces/tomb)
+  --output-dir <path>   Local output dir (default: output/de10-board-trace/tomb)
+  --remote-dir <path>   Remote staging dir (default: /home/fpga/trace-replay)
+  --verify-programmed   Skip reprogramming; require the programmed marker to match
+  -h, --help            Show this help
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --host)
+      HOST="$2"
+      shift 2
+      ;;
+    --user)
+      USER_NAME="$2"
+      shift 2
+      ;;
+    --input)
+      INPUT_PATH="$2"
+      shift 2
+      ;;
+    --output-dir)
+      OUTPUT_DIR="$2"
+      shift 2
+      ;;
+    --remote-dir)
+      REMOTE_DIR="$2"
+      shift 2
+      ;;
+    --verify-programmed)
+      VERIFY_ONLY=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
+
+if [[ -d "$INPUT_PATH" ]]; then
+  TRACE_FILE="$INPUT_PATH/trace.bin"
+  STATE_FILE="$INPUT_PATH/state.bin"
+else
+  TRACE_FILE="$INPUT_PATH"
+  STATE_FILE="$(dirname "$INPUT_PATH")/state.bin"
+fi
+
+if [[ ! -f "$TRACE_FILE" ]]; then
+  echo "Missing trace file: $TRACE_FILE" >&2
+  exit 1
+fi
+if [[ ! -f "$STATE_FILE" ]]; then
+  echo "Missing state file: $STATE_FILE" >&2
+  exit 1
+fi
+
+REMOTE_TARGET="${USER_NAME}@${HOST}"
+mkdir -p "$OUTPUT_DIR"
+
+if [[ "$VERIFY_ONLY" -eq 0 ]]; then
+  "$ROOT_DIR/scripts/program-de10" --host "$HOST" --user "$USER_NAME" --rbf "$RBF_FILE" --state-file "$STATE_MARKER"
+else
+  local_hash="$(sha256sum "$RBF_FILE" | cut -d ' ' -f 1)"
+  remote_hash="$(ssh "$REMOTE_TARGET" "test -f '$STATE_MARKER' && head -n 1 '$STATE_MARKER' | cut -d ' ' -f 1 || true")"
+  if [[ "$remote_hash" != "$local_hash" ]]; then
+    echo "Remote programmed bitstream marker does not match $RBF_FILE" >&2
+    exit 1
+  fi
+fi
+
+ssh "$REMOTE_TARGET" "mkdir -p '$REMOTE_DIR'"
+scp "$ROOT_DIR/tools/de10-trace-replay.cpp" \
+    "$ROOT_DIR/emu/trace/voodoo_trace_format.h" \
+    "$TRACE_FILE" "$STATE_FILE" \
+    "$REMOTE_TARGET:$REMOTE_DIR/"
+ssh "$REMOTE_TARGET" "g++ -O2 -std=c++17 -I'$REMOTE_DIR' -o '$REMOTE_DIR/de10-trace-replay' '$REMOTE_DIR/de10-trace-replay.cpp'"
+
+LOG_FILE="$OUTPUT_DIR/replay.log"
+ssh "$REMOTE_TARGET" "sudo -n '$REMOTE_DIR/de10-trace-replay' '$REMOTE_DIR' 2>&1" | tee "$LOG_FILE"
+
+readarray -t FB_META < <(python3 - <<'PY' "$STATE_FILE"
+import struct, sys
+data = open(sys.argv[1], 'rb').read(64)
+fields = struct.unpack('<16I', data)
+row_width = fields[9]
+h_disp = fields[12]
+v_disp = fields[13]
+print(row_width)
+print(h_disp)
+print(v_disp)
+PY
+)
+ROW_BYTES="${FB_META[0]}"
+WIDTH="${FB_META[1]}"
+HEIGHT="${FB_META[2]}"
+
+FBIINIT2_HEX="$(ssh "$REMOTE_TARGET" "sudo -n python3 - <<'PY'
+import mmap, os, struct
+fd = os.open('/dev/mem', os.O_RDWR | os.O_SYNC)
+mm = mmap.mmap(fd, 0x00400000, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE, offset=0xC0000000)
+val = struct.unpack_from('<I', mm, 0x218)[0]
+print(f'{val:08x}')
+mm.close()
+os.close(fd)
+PY")"
+FB_OFFSET="$(( ((16#$FBIINIT2_HEX >> 11) & 0x1ff) * 4096 ))"
+RAW_FILE="$OUTPUT_DIR/trace_board_fb.raw"
+PNG_FILE="$OUTPUT_DIR/trace_board_fb.png"
+
+ssh "$REMOTE_TARGET" "sudo -n python3 - <<'PY' '$REMOTE_DIR/trace_board_fb.raw' '$FB_OFFSET' '$ROW_BYTES' '$HEIGHT'
+import mmap, os, sys
+out_path = sys.argv[1]
+fb_offset = int(sys.argv[2])
+row_bytes = int(sys.argv[3])
+height = int(sys.argv[4])
+length = row_bytes * height
+phys = 0x3F000000 + fb_offset
+page = phys & ~0xfff
+page_off = phys - page
+map_len = page_off + length
+fd = os.open('/dev/mem', os.O_RDWR | os.O_SYNC)
+mm = mmap.mmap(fd, map_len, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE, offset=page)
+with open(out_path, 'wb') as f:
+    f.write(mm[page_off:page_off + length])
+mm.close()
+os.close(fd)
+PY"
+scp "$REMOTE_TARGET:$REMOTE_DIR/trace_board_fb.raw" "$RAW_FILE"
+python3 "$ROOT_DIR/scripts/rgb565_to_png.py" "$RAW_FILE" "$PNG_FILE" "$WIDTH" "$HEIGHT" "$ROW_BYTES"
+
+echo "[de10-trace] Screenshot: $PNG_FILE"
+echo "[de10-trace] Replay log: $LOG_FILE"
+echo "[de10-trace] Final fbiInit2: 0x$FBIINIT2_HEX (front offset 0x$(printf '%x' "$FB_OFFSET"))"

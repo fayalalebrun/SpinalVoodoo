@@ -6,7 +6,7 @@
 #   tomb/<runtime>/<action>
 #   de10/<action>
 
-.PHONY: all clean clean-sim clean-glide clean-tests native/help native/sim/build native/trace/build native/sim/run-all native/sim/check-all dos/help dos/sim/build dos/trace/build dos/dosbox tomb/help tomb/prepare tomb/sim/run tomb/sim/headless tomb/sim/capture tomb/sim/trace tomb/sim/trace/check tomb/trace/run tomb/trace/headless tomb/trace/check de10/help de10/setup/program de10/setup/deploy de10/check/mmio de10/run/tomb de10/plan de10/rtl de10/qsys de10/bitstream de10/sync-sysroot de10/glide de10/glide-tests de10/glide-cross de10/glide-tests-cross FORCE
+.PHONY: all clean clean-sim clean-glide clean-tests native/help native/sim/build native/trace/build native/sim/run-all native/sim/check-all dos/help dos/sim/build dos/trace/build dos/dosbox tomb/help tomb/prepare tomb/sim/run tomb/sim/headless tomb/sim/capture tomb/sim/trace tomb/sim/trace/check tomb/trace/run tomb/trace/headless tomb/trace/check de10/help de10/setup/program de10/setup/deploy de10/check/mmio de10/run/tomb de10/trace/run de10/trace/tomb de10/plan de10/rtl de10/qsys de10/bitstream de10/sync-sysroot de10/glide de10/glide-tests de10/glide-cross de10/glide-tests-cross FORCE
 .PRECIOUS: dos/sim/build/% dos/trace/build/%
 
 # Derive CXX32 from CC32 for sub-makefiles that need it
@@ -145,6 +145,7 @@ de10/help:
 	@echo "  make de10/check/mmio       # run the board MMIO smoke utility"
 	@echo "  make de10/run/dos/df00sdk  # run one DOS workload from the board runtime dir"
 	@echo "  make de10/run/tomb         # run Tomb from a prepared remote Tomb tree"
+	@echo "  make de10/trace/tomb       # replay traces/tomb on the board and dump a screenshot"
 	@echo ""
 	@echo "Advanced DE10 targets:"
 	@echo "  make de10/plan         # open goals and bring-up docs"
@@ -170,6 +171,12 @@ de10/run/dos/%:
 
 de10/run/tomb:
 	bash ./scripts/run-de10-tomb-workload $(ARGS)
+
+de10/trace/run:
+	bash ./scripts/run-de10-trace-replay $(ARGS)
+
+de10/trace/tomb:
+	bash ./scripts/run-de10-trace-replay --input traces/tomb --output-dir output/de10-board-trace/tomb $(ARGS)
 
 de10/plan:
 	@echo "See docs/DE10_MILESTONES.md"

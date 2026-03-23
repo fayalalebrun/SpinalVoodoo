@@ -25,19 +25,19 @@
          type = "int";
       }
    }
+   element h2f_bridge
+   {
+      datum _sortIndex
+      {
+         value = "2";
+         type = "int";
+      }
+   }
    element hps_0
    {
       datum _sortIndex
       {
          value = "1";
-         type = "int";
-      }
-   }
-   element lw_bridge
-   {
-      datum _sortIndex
-      {
-         value = "2";
          type = "int";
       }
    }
@@ -72,11 +72,7 @@
  <instanceScript></instanceScript>
  <interface name="clk" internal="clk_0.clk_in" type="clock" dir="end" />
  <interface name="fb_mem" internal="fb_bridge.s0" type="avalon" dir="end" />
- <interface
-   name="h2f_lw_avalon"
-   internal="lw_bridge.m0"
-   type="avalon"
-   dir="start" />
+ <interface name="h2f_avalon" internal="h2f_bridge.m0" type="avalon" dir="start" />
  <interface
    name="h2f_mpu_events"
    internal="hps_0.h2f_mpu_events"
@@ -87,7 +83,7 @@
  <interface name="reset" internal="clk_0.clk_in_reset" type="reset" dir="end" />
  <interface name="tex_mem" internal="tex_bridge.s0" type="avalon" dir="end" />
  <module name="clk_0" kind="clock_source" version="24.1" enabled="1">
-  <parameter name="clockFrequency" value="5000000" />
+  <parameter name="clockFrequency" value="50000000" />
   <parameter name="clockFrequencyKnown" value="true" />
   <parameter name="inputClockFrequency" value="0" />
   <parameter name="resetSynchronousEdges" value="NONE" />
@@ -107,6 +103,24 @@
   <parameter name="PIPELINE_RESPONSE" value="1" />
   <parameter name="SYMBOL_WIDTH" value="8" />
   <parameter name="SYSINFO_ADDR_WIDTH" value="32" />
+  <parameter name="USE_AUTO_ADDRESS_WIDTH" value="0" />
+  <parameter name="USE_RESPONSE" value="0" />
+ </module>
+ <module
+   name="h2f_bridge"
+   kind="altera_avalon_mm_bridge"
+   version="24.1"
+   enabled="1">
+  <parameter name="ADDRESS_UNITS" value="SYMBOLS" />
+  <parameter name="ADDRESS_WIDTH" value="24" />
+  <parameter name="DATA_WIDTH" value="32" />
+  <parameter name="LINEWRAPBURSTS" value="0" />
+  <parameter name="MAX_BURST_SIZE" value="1" />
+  <parameter name="MAX_PENDING_RESPONSES" value="4" />
+  <parameter name="PIPELINE_COMMAND" value="1" />
+  <parameter name="PIPELINE_RESPONSE" value="1" />
+  <parameter name="SYMBOL_WIDTH" value="8" />
+  <parameter name="SYSINFO_ADDR_WIDTH" value="10" />
   <parameter name="USE_AUTO_ADDRESS_WIDTH" value="0" />
   <parameter name="USE_RESPONSE" value="0" />
  </module>
@@ -206,8 +220,8 @@
   <parameter name="ENABLE_USER_ECC" value="false" />
   <parameter name="EXPORT_AFI_HALF_CLK" value="false" />
   <parameter name="EXTRA_SETTINGS" value="" />
-  <parameter name="F2H_AXI_CLOCK_FREQ" value="5000000" />
-  <parameter name="F2H_SDRAM0_CLOCK_FREQ" value="5000000" />
+  <parameter name="F2H_AXI_CLOCK_FREQ" value="50000000" />
+  <parameter name="F2H_SDRAM0_CLOCK_FREQ" value="50000000" />
   <parameter name="F2H_SDRAM1_CLOCK_FREQ" value="100" />
   <parameter name="F2H_SDRAM2_CLOCK_FREQ" value="100" />
   <parameter name="F2H_SDRAM3_CLOCK_FREQ" value="100" />
@@ -261,10 +275,10 @@
   <parameter name="FPGA_PERIPHERAL_OUTPUT_CLOCK_FREQ_SPIM1_SCLK_OUT" value="100" />
   <parameter name="GPIO_Enable">No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No</parameter>
   <parameter name="GP_Enable" value="false" />
-  <parameter name="H2F_AXI_CLOCK_FREQ" value="5000000" />
+  <parameter name="H2F_AXI_CLOCK_FREQ" value="50000000" />
   <parameter name="H2F_CTI_CLOCK_FREQ" value="100" />
   <parameter name="H2F_DEBUG_APB_CLOCK_FREQ" value="100" />
-  <parameter name="H2F_LW_AXI_CLOCK_FREQ" value="5000000" />
+  <parameter name="H2F_LW_AXI_CLOCK_FREQ" value="50000000" />
   <parameter name="H2F_TPIU_CLOCK_IN_FREQ" value="100" />
   <parameter name="HARD_EMIF" value="true" />
   <parameter name="HCX_COMPAT_MODE" value="false" />
@@ -641,24 +655,6 @@
   <parameter name="use_default_mpu_clk" value="true" />
  </module>
  <module
-   name="lw_bridge"
-   kind="altera_avalon_mm_bridge"
-   version="24.1"
-   enabled="1">
-  <parameter name="ADDRESS_UNITS" value="SYMBOLS" />
-  <parameter name="ADDRESS_WIDTH" value="24" />
-  <parameter name="DATA_WIDTH" value="32" />
-  <parameter name="LINEWRAPBURSTS" value="0" />
-  <parameter name="MAX_BURST_SIZE" value="1" />
-  <parameter name="MAX_PENDING_RESPONSES" value="4" />
-  <parameter name="PIPELINE_COMMAND" value="1" />
-  <parameter name="PIPELINE_RESPONSE" value="1" />
-  <parameter name="SYMBOL_WIDTH" value="8" />
-  <parameter name="SYSINFO_ADDR_WIDTH" value="10" />
-  <parameter name="USE_AUTO_ADDRESS_WIDTH" value="0" />
-  <parameter name="USE_RESPONSE" value="0" />
- </module>
- <module
    name="tex_bridge"
    kind="altera_avalon_mm_bridge"
    version="24.1"
@@ -680,7 +676,7 @@
    kind="avalon"
    version="24.1"
    start="hps_0.h2f_axi_master"
-   end="lw_bridge.s0">
+   end="h2f_bridge.s0">
   <parameter name="arbitrationPriority" value="1" />
   <parameter name="baseAddress" value="0x0000" />
   <parameter name="defaultConnection" value="false" />
@@ -703,7 +699,7 @@
   <parameter name="baseAddress" value="0x0000" />
   <parameter name="defaultConnection" value="false" />
  </connection>
- <connection kind="clock" version="24.1" start="clk_0.clk" end="lw_bridge.clk" />
+ <connection kind="clock" version="24.1" start="clk_0.clk" end="h2f_bridge.clk" />
  <connection kind="clock" version="24.1" start="clk_0.clk" end="fb_bridge.clk" />
  <connection kind="clock" version="24.1" start="clk_0.clk" end="tex_bridge.clk" />
  <connection
@@ -730,7 +726,7 @@
    kind="reset"
    version="24.1"
    start="clk_0.clk_reset"
-   end="lw_bridge.reset" />
+   end="h2f_bridge.reset" />
  <connection
    kind="reset"
    version="24.1"

@@ -7,12 +7,11 @@ import spinal.lib.bus.avalon._
 import spinal.lib.bus.bmb._
 import voodoo.{Config, Core}
 
-/** Initial DE10-oriented wrapper around Core.
+/** DE10-oriented wrapper around Core.
   *
-  * This is a bring-up scaffold, not the final board integration. It keeps the HPS
-  * lightweight-facing MMIO interface and exports Avalon-MM style memory ports for framebuffer and
-  * texture traffic so we can generate standalone RTL for the Quartus flow while full Platform
-  * Designer integration is being built.
+  * The MMIO bundle name is kept for compatibility with the host-sim harness, but the board path
+  * uses the full HPS-to-FPGA aperture while framebuffer and texture traffic still exit through the
+  * FPGA-to-SDRAM Avalon-MM ports.
   */
 case class H2fLwMmio(addressWidth: Int) extends Bundle with IMasterSlave {
   val address = UInt(addressWidth bits)

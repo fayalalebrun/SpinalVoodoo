@@ -20,15 +20,17 @@ module De10PlatformTop (
   input  wire        hps_memory_oct_rzqin
 );
 
-  wire        h2f_lw_waitrequest;
-  wire [31:0] h2f_lw_readdata;
-  wire        h2f_lw_readdatavalid;
-  wire [0:0]  h2f_lw_burstcount;
-  wire [31:0] h2f_lw_writedata;
-  wire [23:0] h2f_lw_address;
-  wire        h2f_lw_write;
-  wire        h2f_lw_read;
-  wire [3:0]  h2f_lw_byteenable;
+  wire        h2f_waitrequest;
+  wire [31:0] h2f_readdata;
+  wire        h2f_readdatavalid;
+  wire [0:0]  h2f_burstcount;
+  wire [31:0] h2f_writedata;
+  wire [23:0] h2f_address;
+  wire        h2f_write;
+  wire        h2f_read;
+  wire [3:0]  h2f_byteenable;
+  wire        h2f_reset_n;
+  wire        core_reset;
 
   wire        fb_waitrequest;
   wire [31:0] fb_readdata;
@@ -72,21 +74,21 @@ module De10PlatformTop (
     .fb_mem_read                 (fb_read),
     .fb_mem_byteenable           (fb_byteenable),
     .fb_mem_debugaccess          (1'b0),
-    .h2f_lw_avalon_waitrequest   (h2f_lw_waitrequest),
-    .h2f_lw_avalon_readdata      (h2f_lw_readdata),
-    .h2f_lw_avalon_readdatavalid (h2f_lw_readdatavalid),
-    .h2f_lw_avalon_burstcount    (h2f_lw_burstcount),
-    .h2f_lw_avalon_writedata     (h2f_lw_writedata),
-    .h2f_lw_avalon_address       (h2f_lw_address),
-    .h2f_lw_avalon_write         (h2f_lw_write),
-    .h2f_lw_avalon_read          (h2f_lw_read),
-    .h2f_lw_avalon_byteenable    (h2f_lw_byteenable),
-    .h2f_lw_avalon_debugaccess   (),
+    .h2f_avalon_waitrequest      (h2f_waitrequest),
+    .h2f_avalon_readdata         (h2f_readdata),
+    .h2f_avalon_readdatavalid    (h2f_readdatavalid),
+    .h2f_avalon_burstcount       (h2f_burstcount),
+    .h2f_avalon_writedata        (h2f_writedata),
+    .h2f_avalon_address          (h2f_address),
+    .h2f_avalon_write            (h2f_write),
+    .h2f_avalon_read             (h2f_read),
+    .h2f_avalon_byteenable       (h2f_byteenable),
+    .h2f_avalon_debugaccess      (),
     .h2f_mpu_events_eventi       (1'b0),
     .h2f_mpu_events_evento       (),
     .h2f_mpu_events_standbywfe   (),
     .h2f_mpu_events_standbywfi   (),
-    .h2f_reset_reset_n           (),
+    .h2f_reset_reset_n           (h2f_reset_n),
     .memory_mem_a                (hps_memory_mem_a),
     .memory_mem_ba               (hps_memory_mem_ba),
     .memory_mem_ck               (hps_memory_mem_ck),
@@ -116,15 +118,17 @@ module De10PlatformTop (
     .tex_mem_debugaccess         (1'b0)
   );
 
+  assign core_reset = ~pll_locked | ~h2f_reset_n;
+
   De10Top core_0 (
-    .io_h2fLw_address        (h2f_lw_address[23:2]),
-    .io_h2fLw_read           (h2f_lw_read),
-    .io_h2fLw_write          (h2f_lw_write),
-    .io_h2fLw_byteenable     (h2f_lw_byteenable),
-    .io_h2fLw_writedata      (h2f_lw_writedata),
-    .io_h2fLw_waitrequest    (h2f_lw_waitrequest),
-    .io_h2fLw_readdata       (h2f_lw_readdata),
-    .io_h2fLw_readdatavalid  (h2f_lw_readdatavalid),
+    .io_h2fLw_address        (h2f_address[23:2]),
+    .io_h2fLw_read           (h2f_read),
+    .io_h2fLw_write          (h2f_write),
+    .io_h2fLw_byteenable     (h2f_byteenable),
+    .io_h2fLw_writedata      (h2f_writedata),
+    .io_h2fLw_waitrequest    (h2f_waitrequest),
+    .io_h2fLw_readdata       (h2f_readdata),
+    .io_h2fLw_readdatavalid  (h2f_readdatavalid),
     .io_memFb_read           (fb_read),
     .io_memFb_write          (fb_write),
     .io_memFb_waitRequestn   (~fb_waitrequest),
@@ -141,10 +145,11 @@ module De10PlatformTop (
     .io_memTex_writeData     (tex_writedata),
     .io_memTex_readDataValid (tex_readdatavalid),
     .io_memTex_readData      (tex_readdata),
+    .reset                   (core_reset),
     .clk                     (core_clk)
   );
 
-  assign h2f_lw_burstcount = 1'b1;
+  assign h2f_burstcount = 1'b1;
   assign fb_burstcount = 1'b1;
   assign tex_burstcount = 1'b1;
 

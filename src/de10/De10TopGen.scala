@@ -8,7 +8,8 @@ object De10TopGen extends App {
     mode = Verilog,
     targetDirectory = "hw/de10/rtl",
     defaultConfigForClockDomains = ClockDomainConfig(
-      resetKind = BOOT
+      resetKind = ASYNC,
+      resetActiveLevel = HIGH
     )
   ).generate(De10Top(Config.voodoo1()))
 }

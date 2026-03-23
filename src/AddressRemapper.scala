@@ -90,7 +90,7 @@ case class AddressRemapper(inputParams: BmbParameter, outputParams: BmbParameter
       }
     } otherwise {
       // Clear bit 21 to access regular registers (just use lower bits)
-      translatedAddr := inputAddr.resized
+      translatedAddr := (inputAddr & ~(U(1, inputAddr.getWidth bits) |<< 21)).resized
     }
   } otherwise {
     // No translation needed

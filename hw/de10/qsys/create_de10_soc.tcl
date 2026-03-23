@@ -18,7 +18,7 @@ set_project_property DEVICE_FAMILY $devicefamily
 set_project_property DEVICE $device
 
 add_instance clk_0 clock_source
-set_instance_parameter_value clk_0 clockFrequency {5000000.0}
+set_instance_parameter_value clk_0 clockFrequency {50000000.0}
 set_instance_parameter_value clk_0 clockFrequencyKnown {1}
 set_instance_parameter_value clk_0 resetSynchronousEdges {NONE}
 
@@ -61,14 +61,14 @@ set_instance_parameter_value hps_0 MEM_TWTR {4}
 set_instance_parameter_value hps_0 MEM_WTCL {6}
 set_instance_parameter_value hps_0 MEM_VOLTAGE {1.5V DDR3}
 
-add_instance lw_bridge altera_avalon_mm_bridge
+add_instance h2f_bridge altera_avalon_mm_bridge
 add_instance fb_bridge altera_avalon_mm_bridge
 add_instance tex_bridge altera_avalon_mm_bridge
 
-set_instance_parameter_value lw_bridge DATA_WIDTH {32}
-set_instance_parameter_value lw_bridge SYMBOL_WIDTH {8}
-set_instance_parameter_value lw_bridge HDL_ADDR_WIDTH {24}
-set_instance_parameter_value lw_bridge ADDRESS_WIDTH {24}
+set_instance_parameter_value h2f_bridge DATA_WIDTH {32}
+set_instance_parameter_value h2f_bridge SYMBOL_WIDTH {8}
+set_instance_parameter_value h2f_bridge HDL_ADDR_WIDTH {24}
+set_instance_parameter_value h2f_bridge ADDRESS_WIDTH {24}
 
 set_instance_parameter_value fb_bridge DATA_WIDTH {32}
 set_instance_parameter_value fb_bridge SYMBOL_WIDTH {8}
@@ -84,17 +84,17 @@ add_connection clk_0.clk hps_0.h2f_lw_axi_clock
 add_connection clk_0.clk hps_0.h2f_axi_clock
 add_connection clk_0.clk hps_0.f2h_axi_clock
 add_connection clk_0.clk hps_0.f2h_sdram0_clock
-add_connection clk_0.clk lw_bridge.clk
+add_connection clk_0.clk h2f_bridge.clk
 add_connection clk_0.clk fb_bridge.clk
 add_connection clk_0.clk tex_bridge.clk
 
-add_connection clk_0.clk_reset lw_bridge.reset
+add_connection clk_0.clk_reset h2f_bridge.reset
 add_connection clk_0.clk_reset fb_bridge.reset
 add_connection clk_0.clk_reset tex_bridge.reset
 
-add_connection hps_0.h2f_axi_master lw_bridge.s0
-set_connection_parameter_value hps_0.h2f_axi_master/lw_bridge.s0 baseAddress {0x00000000}
-set_connection_parameter_value hps_0.h2f_axi_master/lw_bridge.s0 defaultConnection {0}
+add_connection hps_0.h2f_axi_master h2f_bridge.s0
+set_connection_parameter_value hps_0.h2f_axi_master/h2f_bridge.s0 baseAddress {0x00000000}
+set_connection_parameter_value hps_0.h2f_axi_master/h2f_bridge.s0 defaultConnection {0}
 
 add_connection fb_bridge.m0 hps_0.f2h_sdram0_data
 set_connection_parameter_value fb_bridge.m0/hps_0.f2h_sdram0_data baseAddress {0x00000000}
@@ -119,8 +119,8 @@ set_interface_property h2f_reset EXPORT_OF hps_0.h2f_reset
 add_interface h2f_mpu_events conduit end
 set_interface_property h2f_mpu_events EXPORT_OF hps_0.h2f_mpu_events
 
-add_interface h2f_lw_avalon avalon start
-set_interface_property h2f_lw_avalon EXPORT_OF lw_bridge.m0
+add_interface h2f_avalon avalon start
+set_interface_property h2f_avalon EXPORT_OF h2f_bridge.m0
 
 add_interface fb_mem avalon end
 set_interface_property fb_mem EXPORT_OF fb_bridge.s0

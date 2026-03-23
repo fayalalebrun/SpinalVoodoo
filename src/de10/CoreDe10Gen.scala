@@ -8,7 +8,8 @@ object CoreDe10Gen extends App {
     mode = Verilog,
     targetDirectory = "hw/de10/rtl",
     defaultConfigForClockDomains = ClockDomainConfig(
-      resetKind = BOOT
+      resetKind = ASYNC,
+      resetActiveLevel = HIGH
     )
   ).generate(CoreDe10(Config.voodoo1()))
 }

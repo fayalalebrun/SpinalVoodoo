@@ -14,6 +14,8 @@
 #include <cstring>
 #include <cstdint>
 #include <cmath>
+#include <cerrno>
+#include <algorithm>
 #include <string>
 #include <vector>
 #include <sys/stat.h>
@@ -39,6 +41,24 @@ extern "C" {
 static bool is_directory(const char *path) {
     struct stat st;
     return (stat(path, &st) == 0 && S_ISDIR(st.st_mode));
+}
+
+static bool ensure_directory(const char *path) {
+    if (!path || !path[0]) return false;
+    std::string cur;
+    if (path[0] == '/') cur = "/";
+    for (const char *p = path; *p; ++p) {
+        if (*p == '/') {
+            if (!cur.empty() && !is_directory(cur.c_str()) && mkdir(cur.c_str(), 0755) != 0 && errno != EEXIST) {
+                return false;
+            }
+        }
+        cur.push_back(*p);
+    }
+    if (!is_directory(cur.c_str()) && mkdir(cur.c_str(), 0755) != 0 && errno != EEXIST) {
+        return false;
+    }
+    return true;
 }
 
 static uint8_t *read_file(const char *path, uint32_t *out_size) {
@@ -97,6 +117,89 @@ static std::string basename_no_ext(const char *path) {
     return s;
 }
 
+static void json_write_string(FILE *f, const std::string &s) {
+    fputc('"', f);
+    for (char c : s) {
+        switch (c) {
+            case '\\': fputs("\\\\", f); break;
+            case '"': fputs("\\\"", f); break;
+            case '\n': fputs("\\n", f); break;
+            case '\r': fputs("\\r", f); break;
+            case '\t': fputs("\\t", f); break;
+            default:
+                if ((unsigned char)c < 0x20) fprintf(f, "\\u%04x", (unsigned char)c);
+                else fputc(c, f);
+                break;
+        }
+    }
+    fputc('"', f);
+}
+
+struct ProgressSnapshot {
+    uint32_t entry = 0;
+    uint64_t logical = 0;
+    uint32_t cmd_type = 0;
+    uint32_t addr = 0;
+    uint32_t data = 0;
+    uint32_t count = 0;
+    uint64_t sim_cycle = 0;
+    uint64_t sim_reads = 0;
+    uint64_t sim_writes = 0;
+    uint32_t sim_pixels_in = 0;
+    uint32_t sim_pixels_out = 0;
+};
+
+struct RegHotspot {
+    uint32_t reg = 0;
+    uint64_t cycles = 0;
+    uint32_t count = 0;
+};
+
+static uint32_t remap_backend_reg_addr(uint32_t addr) {
+#ifdef SIM_INTERFACE_DE10
+    const uint32_t base = addr & 0x3FFFFFu;
+    if ((base & 0x200000u) != 0) {
+        const uint32_t reg = base & 0xfffu;
+        switch (reg) {
+            case 0x088: return 0x088;
+            case 0x08c: return 0x08c;
+            case 0x090: return 0x090;
+            case 0x094: return 0x094;
+            case 0x098: return 0x098;
+            case 0x09c: return 0x09c;
+            case 0x0a0: return 0x0a0;
+            case 0x0a4: return 0x0c0;
+            case 0x0a8: return 0x0e0;
+            case 0x0ac: return 0x0a4;
+            case 0x0b0: return 0x0c4;
+            case 0x0b4: return 0x0e4;
+            case 0x0b8: return 0x0a8;
+            case 0x0bc: return 0x0c8;
+            case 0x0c0: return 0x0e8;
+            case 0x0c4: return 0x0ac;
+            case 0x0c8: return 0x0cc;
+            case 0x0cc: return 0x0ec;
+            case 0x0d0: return 0x0b0;
+            case 0x0d4: return 0x0d0;
+            case 0x0d8: return 0x0f0;
+            case 0x0dc: return 0x0b4;
+            case 0x0e0: return 0x0d4;
+            case 0x0e4: return 0x0f4;
+            case 0x0e8: return 0x0b8;
+            case 0x0ec: return 0x0d8;
+            case 0x0f0: return 0x0f8;
+            case 0x0f4: return 0x0bc;
+            case 0x0f8: return 0x0dc;
+            case 0x0fc: return 0x0fc;
+            default: return base & ~0x200000u;
+        }
+    }
+    return base;
+#else
+    return addr & 0x3FFFFFu;
+#endif
+}
+
 /* -------------------------------------------------------------------
  * Main
  * ------------------------------------------------------------------- */
@@ -108,12 +211,33 @@ int main(int argc, char **argv) {
     int watch_y = -1;
     if (const char *wx = getenv("SIM_WATCH_X")) watch_x = atoi(wx);
     if (const char *wy = getenv("SIM_WATCH_Y")) watch_y = atoi(wy);
+#ifdef SIM_INTERFACE_DE10
+    const uint64_t sim_profile_writes = getenv("SIM_PROFILE_WRITES") ? strtoull(getenv("SIM_PROFILE_WRITES"), nullptr, 0) : 0ull;
+    uint64_t worst_write_cycles = 0;
+    uint32_t worst_write_entry = 0;
+    uint32_t worst_write_addr = 0;
+    uint32_t worst_write_data = 0;
+    uint32_t slow_write_logs = 0;
+    std::vector<uint64_t> sim_write_cycles_by_reg(0x400 / 4, 0);
+    std::vector<uint32_t> sim_write_count_by_reg(0x400 / 4, 0);
+    std::vector<ProgressSnapshot> progress_snapshots;
+    std::vector<RegHotspot> sim_write_hotspots;
+    uint32_t sim_pixels_in_final = 0;
+    uint32_t sim_pixels_out_final = 0;
+    uint64_t sim_cycles_final = 0;
+    uint64_t sim_read_ticks_final = 0;
+    uint64_t sim_read_count_final = 0;
+    uint64_t sim_write_ticks_final = 0;
+    uint64_t sim_write_count_final = 0;
+#endif
 
     /* Parse arguments */
     const char *trace_path = nullptr;
     const char *output_dir = nullptr;
+    const char *profile_json = nullptr;
     const char *ref_trace_jsonl = nullptr;
     bool ref_only = false;
+    bool sim_replay_only = false;
     int max_mismatches = 0;
     int color_tolerance = 0;
     int disp_width  = 640;
@@ -122,8 +246,12 @@ int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--ref-only") == 0) {
             ref_only = true;
+        } else if (strcmp(argv[i], "--sim-replay-only") == 0) {
+            sim_replay_only = true;
         } else if (strcmp(argv[i], "--output-dir") == 0 && i + 1 < argc) {
             output_dir = argv[++i];
+        } else if (strcmp(argv[i], "--profile-json") == 0 && i + 1 < argc) {
+            profile_json = argv[++i];
         } else if (strcmp(argv[i], "--ref-trace-jsonl") == 0 && i + 1 < argc) {
             ref_trace_jsonl = argv[++i];
         } else if (strcmp(argv[i], "--max-mismatches") == 0 && i + 1 < argc) {
@@ -143,7 +271,7 @@ int main(int argc, char **argv) {
     }
 
     if (!trace_path) {
-        fprintf(stderr, "Usage: trace_test <path> [--ref-only] [--output-dir DIR] [--ref-trace-jsonl PATH] "
+        fprintf(stderr, "Usage: trace_test <path> [--ref-only] [--sim-replay-only] [--output-dir DIR] [--profile-json PATH] [--ref-trace-jsonl PATH] "
                 "[--max-mismatches N] [--color-tolerance N] [--width W] [--height H]\n");
         return 1;
     }
@@ -161,9 +289,24 @@ int main(int argc, char **argv) {
             state_file.clear();
     } else {
         trace_file = trace_path;
+        std::string candidate = trace_file;
+        size_t slash = candidate.find_last_of('/');
+        if (slash == std::string::npos)
+            candidate = "state.bin";
+        else
+            candidate = candidate.substr(0, slash + 1) + "state.bin";
+        struct stat st;
+        if (stat(candidate.c_str(), &st) == 0)
+            state_file = candidate;
     }
 
     std::string name = basename_no_ext(trace_path);
+    std::string profile_json_path;
+    if (profile_json) {
+        profile_json_path = profile_json;
+    } else if (output_dir) {
+        profile_json_path = std::string(output_dir) + "/" + name + "_profile.json";
+    }
 
     /* Read trace file */
     uint32_t trace_size = 0;
@@ -202,6 +345,9 @@ int main(int argc, char **argv) {
     /* Read state file if present */
     uint8_t *state_data = nullptr;
     uint32_t state_size = 0;
+    uint32_t state_row_width = 0;
+    uint32_t state_draw_offset = 0;
+    uint32_t state_aux_offset = 0;
     std::vector<uint16_t> ref_fb_initial;
     if (!state_file.empty()) {
         state_data = read_file(state_file.c_str(), &state_size);
@@ -228,6 +374,9 @@ int main(int argc, char **argv) {
                 free(trace_data);
                 return 1;
             }
+            state_row_width = shdr->row_width;
+            state_draw_offset = shdr->draw_offset;
+            state_aux_offset = shdr->aux_offset;
             if (shdr->h_disp > 0) disp_width  = shdr->h_disp;
             if (shdr->v_disp > 0) disp_height = shdr->v_disp;
             fprintf(stderr, "[trace_test] State: %s (display %dx%d)\n",
@@ -282,7 +431,7 @@ int main(int argc, char **argv) {
                     reg_addr == 0x080 || reg_addr == 0x100 ||  /* triangleCMD, ftriangleCMD */
                     reg_addr == 0x120)                         /* nopCMD */
                     continue;
-                sim_write(regs[i].addr, regs[i].value);
+                sim_write(remap_backend_reg_addr(regs[i].addr), regs[i].value);
             }
             ptr += shdr->reg_count * sizeof(voodoo_state_reg_t);
 
@@ -329,6 +478,7 @@ int main(int argc, char **argv) {
 
             /* Ensure all state registers are drained from PciFifo before
              * reading back or proceeding to trace replay. */
+            sim_invalidate_fb_cache();
             sim_idle_wait();
 
             fprintf(stderr, "[trace_test] State loaded into sim\n");
@@ -354,6 +504,46 @@ int main(int argc, char **argv) {
         const voodoo_trace_entry_t *e = &entries[i];
         uint32_t repeat = e->count ? e->count : 1;
         logical_cmds += repeat;
+        if ((i % 5000) == 0) {
+#ifdef SIM_INTERFACE_DE10
+            uint64_t sim_cycle = ref_only ? 0 : sim_get_cycle();
+            uint64_t sim_reads = ref_only ? 0 : sim_get_total_read_count();
+            uint64_t sim_writes = ref_only ? 0 : sim_get_total_write_count();
+            uint32_t sim_px_in = ref_only ? 0 : sim_read(0x14c);
+            uint32_t sim_px_out = ref_only ? 0 : sim_read(0x15c);
+            if (!ref_only) {
+                ProgressSnapshot snap;
+                snap.entry = i;
+                snap.logical = logical_cmds;
+                snap.cmd_type = e->cmd_type;
+                snap.addr = e->addr;
+                snap.data = e->data;
+                snap.count = repeat;
+                snap.sim_cycle = sim_cycle;
+                snap.sim_reads = sim_reads;
+                snap.sim_writes = sim_writes;
+                snap.sim_pixels_in = sim_px_in;
+                snap.sim_pixels_out = sim_px_out;
+                progress_snapshots.push_back(snap);
+            }
+            fprintf(stderr,
+                    "[trace_test] Progress: entry=%u/%u logical=%llu type=%u addr=0x%08x data=0x%08x count=%u simCycle=%llu simReads=%llu simWrites=%llu simPixelsIn=%u simPixelsOut=%u\n",
+                    i, num_entries, (unsigned long long)logical_cmds,
+                    (unsigned)e->cmd_type, (unsigned)e->addr,
+                    (unsigned)e->data, (unsigned)repeat,
+                    (unsigned long long)sim_cycle,
+                    (unsigned long long)sim_reads,
+                    (unsigned long long)sim_writes,
+                    sim_px_in,
+                    sim_px_out);
+#else
+            fprintf(stderr,
+                    "[trace_test] Progress: entry=%u/%u logical=%llu type=%u addr=0x%08x data=0x%08x count=%u\n",
+                    i, num_entries, (unsigned long long)logical_cmds,
+                    (unsigned)e->cmd_type, (unsigned)e->addr,
+                    (unsigned)e->data, (unsigned)repeat);
+#endif
+        }
         if (e->cmd_type < 32)
             cmd_type_counts[e->cmd_type] += repeat;
 
@@ -391,7 +581,33 @@ int main(int argc, char **argv) {
                         if (reg == 0x128)
                             sim_idle_wait();
 
-                        sim_write(addr, e->data);
+                        const uint32_t sim_addr = remap_backend_reg_addr(addr);
+#ifdef SIM_INTERFACE_DE10
+                        uint64_t write_start = sim_get_cycle();
+#endif
+                        sim_write(sim_addr, e->data);
+#ifdef SIM_INTERFACE_DE10
+                        uint64_t write_cycles = sim_get_cycle() - write_start;
+                        if (write_cycles > worst_write_cycles) {
+                            worst_write_cycles = write_cycles;
+                            worst_write_entry = i;
+                            worst_write_addr = addr;
+                            worst_write_data = e->data;
+                        }
+                        sim_write_cycles_by_reg[(sim_addr & 0x3fc) >> 2] += write_cycles;
+                        sim_write_count_by_reg[(sim_addr & 0x3fc) >> 2] += 1;
+                        if (sim_profile_writes > 0 && write_cycles >= sim_profile_writes && slow_write_logs < 64) {
+                            fprintf(stderr,
+                                    "[trace_test] Slow sim_write: entry=%u logical=%llu addr=0x%08x remap=0x%08x data=0x%08x cycles=%llu\n",
+                                    i,
+                                    (unsigned long long)logical_cmds,
+                                    (unsigned)addr,
+                                    (unsigned)sim_addr,
+                                    (unsigned)e->data,
+                                    (unsigned long long)write_cycles);
+                            slow_write_logs++;
+                        }
+#endif
 
                         if (reg == 0x128)
                             sim_idle_wait();
@@ -443,7 +659,7 @@ int main(int argc, char **argv) {
                 case VOODOO_TRACE_WRITE_REG_W: {
                     /* 16-bit register writes — sim only (ref model doesn't need them) */
                     if (!ref_only)
-                        sim_write16(e->addr & 0x3FFFFF, (uint16_t)e->data);
+                        sim_write16(remap_backend_reg_addr(e->addr), (uint16_t)e->data);
                     break;
                 }
 
@@ -552,6 +768,225 @@ int main(int argc, char **argv) {
 
     if (!ref_only) {
         fprintf(stderr, "[trace_test] Sim swap count after replay: %u\n", sim_get_swap_count());
+#ifdef SIM_INTERFACE_DE10
+        sim_cycles_final = sim_get_cycle();
+        sim_read_ticks_final = sim_get_total_read_ticks();
+        sim_read_count_final = sim_get_total_read_count();
+        sim_write_ticks_final = sim_get_total_write_ticks();
+        sim_write_count_final = sim_get_total_write_count();
+        fprintf(stderr,
+                "[trace_test] Worst sim_write: entry=%u addr=0x%08x data=0x%08x cycles=%llu\n",
+                worst_write_entry,
+                worst_write_addr,
+                worst_write_data,
+                (unsigned long long)worst_write_cycles);
+        auto hotspot_cycles = sim_write_cycles_by_reg;
+        auto hotspot_counts = sim_write_count_by_reg;
+        for (int rank = 0; rank < 8; ++rank) {
+            int best_idx = -1;
+            for (int idx = 0; idx < (int)hotspot_cycles.size(); ++idx) {
+                if (hotspot_counts[idx] == 0) continue;
+                if (best_idx < 0 || hotspot_cycles[idx] > hotspot_cycles[best_idx]) {
+                    best_idx = idx;
+                }
+            }
+            if (best_idx < 0) break;
+            RegHotspot hotspot;
+            hotspot.reg = (uint32_t)(best_idx << 2);
+            hotspot.cycles = hotspot_cycles[best_idx];
+            hotspot.count = hotspot_counts[best_idx];
+            sim_write_hotspots.push_back(hotspot);
+            fprintf(stderr,
+                    "[trace_test] Sim write hotspot[%d]: reg=0x%03x cycles=%llu count=%u avg=%.2f\n",
+                    rank,
+                    hotspot.reg,
+                    (unsigned long long)hotspot.cycles,
+                    hotspot.count,
+                    (double)hotspot.cycles / (double)hotspot.count);
+            hotspot_cycles[best_idx] = 0;
+            hotspot_counts[best_idx] = 0;
+        }
+        sim_pixels_in_final = sim_read(0x14c);
+        sim_pixels_out_final = sim_read(0x15c);
+        fprintf(stderr,
+                "[trace_test] Sim pixel stats: pixelsIn=%u pixelsOut=%u\n",
+                sim_pixels_in_final, sim_pixels_out_final);
+        fprintf(stderr,
+                "[trace_test] Sim bus stats: cycles=%llu readTicks=%llu readCount=%llu writeTicks=%llu writeCount=%llu avgRead=%.2f avgWrite=%.2f\n",
+                (unsigned long long)sim_cycles_final,
+                (unsigned long long)sim_read_ticks_final,
+                (unsigned long long)sim_read_count_final,
+                (unsigned long long)sim_write_ticks_final,
+                (unsigned long long)sim_write_count_final,
+                sim_read_count_final ? ((double)sim_read_ticks_final / (double)sim_read_count_final) : 0.0,
+                sim_write_count_final ? ((double)sim_write_ticks_final / (double)sim_write_count_final) : 0.0);
+        if (progress_snapshots.empty() || progress_snapshots.back().entry != num_entries) {
+            ProgressSnapshot snap;
+            snap.entry = num_entries;
+            snap.logical = logical_cmds;
+            snap.cmd_type = 0xffffffffu;
+            snap.addr = 0;
+            snap.data = 0;
+            snap.count = 0;
+            snap.sim_cycle = sim_cycles_final;
+            snap.sim_reads = sim_read_count_final;
+            snap.sim_writes = sim_write_count_final;
+            snap.sim_pixels_in = sim_pixels_in_final;
+            snap.sim_pixels_out = sim_pixels_out_final;
+            progress_snapshots.push_back(snap);
+        }
+#endif
+    }
+
+    if (!profile_json_path.empty()) {
+        size_t slash = profile_json_path.find_last_of('/');
+        if (slash != std::string::npos) {
+            std::string parent = profile_json_path.substr(0, slash);
+            if (!parent.empty() && !ensure_directory(parent.c_str())) {
+                fprintf(stderr, "[trace_test] ERROR: Failed to create profile directory %s\n", parent.c_str());
+                return 1;
+            }
+        }
+
+        FILE *profile_fp = fopen(profile_json_path.c_str(), "w");
+        if (!profile_fp) {
+            fprintf(stderr, "[trace_test] ERROR: Failed to open profile JSON %s\n", profile_json_path.c_str());
+            return 1;
+        }
+
+        const uint32_t ref_pixels_in = ref_get_fbi_pixels_in();
+        const uint32_t ref_pixels_out = ref_get_fbi_pixels_out();
+        const uint32_t ref_z_fail = ref_get_fbi_zfunc_fail();
+        const uint32_t ref_a_fail = ref_get_fbi_afunc_fail();
+        const uint32_t ref_chroma_fail = ref_get_fbi_chroma_fail();
+        const uint32_t ref_cov = ref_get_triangle_coverage_pixels();
+        const uint32_t ref_cov_total = ref_get_triangle_coverage_total();
+        const uint32_t ref_rgb_writes = ref_get_triangle_color_writes();
+        const uint32_t ref_black_writes = ref_get_triangle_black_writes();
+        const uint32_t ref_depth_only = ref_get_triangle_depth_only_updates();
+        const uint32_t ref_tri_tex = ref_get_triangles_textured();
+        const uint32_t ref_tri_flat = ref_get_triangles_untextured();
+        const uint32_t ref_tri_all_black = ref_get_triangles_all_black_writes();
+        const uint32_t ref_pal0_nz = ref_get_palette_nonzero_count(0);
+        const uint32_t ref_pal1_nz = ref_get_palette_nonzero_count(1);
+        const double fpga_time_seconds = (!ref_only && sim_cycles_final) ? ((double)sim_cycles_final / 50000000.0) : 0.0;
+        const double sim_pixels_out_mpps = (fpga_time_seconds > 0.0) ? ((double)sim_pixels_out_final / fpga_time_seconds / 1000000.0) : 0.0;
+        const double sim_pixels_in_mpps = (fpga_time_seconds > 0.0) ? ((double)sim_pixels_in_final / fpga_time_seconds / 1000000.0) : 0.0;
+
+        fprintf(profile_fp, "{\n");
+        fprintf(profile_fp, "  \"trace\": ");
+        json_write_string(profile_fp, trace_file);
+        fprintf(profile_fp, ",\n  \"state\": ");
+        if (!state_file.empty()) json_write_string(profile_fp, state_file); else fprintf(profile_fp, "null");
+        fprintf(profile_fp, ",\n  \"name\": ");
+        json_write_string(profile_fp, name);
+        fprintf(profile_fp, ",\n  \"sim_interface\": ");
+#ifdef SIM_INTERFACE_DE10
+        json_write_string(profile_fp, "de10");
+#else
+        json_write_string(profile_fp, "default");
+#endif
+        fprintf(profile_fp, ",\n  \"num_entries\": %u,\n", num_entries);
+        fprintf(profile_fp, "  \"logical_commands\": %llu,\n", (unsigned long long)logical_cmds);
+        fprintf(profile_fp, "  \"triangles\": %d,\n", tri_count);
+        fprintf(profile_fp, "  \"tex_writes\": %d,\n", tex_write_count);
+        fprintf(profile_fp, "  \"fb_writes\": %d,\n", fb_write_count);
+        fprintf(profile_fp, "  \"swap_commands\": %d,\n", swap_cmd_count);
+        fprintf(profile_fp, "  \"cmd_histogram\": {\n");
+        fprintf(profile_fp, "    \"write_reg\": %llu,\n", (unsigned long long)cmd_type_counts[VOODOO_TRACE_WRITE_REG_L]);
+        fprintf(profile_fp, "    \"write_fb_l\": %llu,\n", (unsigned long long)cmd_type_counts[VOODOO_TRACE_WRITE_FB_L]);
+        fprintf(profile_fp, "    \"write_fb_w\": %llu,\n", (unsigned long long)cmd_type_counts[VOODOO_TRACE_WRITE_FB_W]);
+        fprintf(profile_fp, "    \"write_tex\": %llu,\n", (unsigned long long)cmd_type_counts[VOODOO_TRACE_WRITE_TEX_L]);
+        fprintf(profile_fp, "    \"write_cmdfifo\": %llu,\n", (unsigned long long)cmd_type_counts[VOODOO_TRACE_WRITE_CMDFIFO]);
+        fprintf(profile_fp, "    \"read_reg\": %llu,\n", (unsigned long long)cmd_type_counts[VOODOO_TRACE_READ_REG_L]);
+        fprintf(profile_fp, "    \"read_fb_l\": %llu,\n", (unsigned long long)cmd_type_counts[VOODOO_TRACE_READ_FB_L]);
+        fprintf(profile_fp, "    \"read_fb_w\": %llu,\n", (unsigned long long)cmd_type_counts[VOODOO_TRACE_READ_FB_W]);
+        fprintf(profile_fp, "    \"swap\": %llu\n", (unsigned long long)cmd_type_counts[VOODOO_TRACE_SWAP]);
+        fprintf(profile_fp, "  },\n");
+        fprintf(profile_fp, "  \"ref_stats\": {\n");
+        fprintf(profile_fp, "    \"pixels_in\": %u,\n", ref_pixels_in);
+        fprintf(profile_fp, "    \"pixels_out\": %u,\n", ref_pixels_out);
+        fprintf(profile_fp, "    \"z_fail\": %u,\n", ref_z_fail);
+        fprintf(profile_fp, "    \"a_fail\": %u,\n", ref_a_fail);
+        fprintf(profile_fp, "    \"chroma_fail\": %u,\n", ref_chroma_fail);
+        fprintf(profile_fp, "    \"triangle_coverage_pixels\": %u,\n", ref_cov);
+        fprintf(profile_fp, "    \"triangle_coverage_total\": %u,\n", ref_cov_total);
+        fprintf(profile_fp, "    \"rgb_writes\": %u,\n", ref_rgb_writes);
+        fprintf(profile_fp, "    \"black_writes\": %u,\n", ref_black_writes);
+        fprintf(profile_fp, "    \"depth_only_updates\": %u,\n", ref_depth_only);
+        fprintf(profile_fp, "    \"triangles_textured\": %u,\n", ref_tri_tex);
+        fprintf(profile_fp, "    \"triangles_untextured\": %u,\n", ref_tri_flat);
+        fprintf(profile_fp, "    \"triangles_all_black\": %u,\n", ref_tri_all_black);
+        fprintf(profile_fp, "    \"palette_nonzero_tmu0\": %u,\n", ref_pal0_nz);
+        fprintf(profile_fp, "    \"palette_nonzero_tmu1\": %u\n", ref_pal1_nz);
+        fprintf(profile_fp, "  }");
+
+        if (!ref_only) {
+            fprintf(profile_fp, ",\n  \"sim_stats\": {\n");
+            fprintf(profile_fp, "    \"cycles\": %llu,\n", (unsigned long long)sim_cycles_final);
+            fprintf(profile_fp, "    \"fpga_clock_hz\": 50000000,\n");
+            fprintf(profile_fp, "    \"fpga_time_seconds\": %.9f,\n", fpga_time_seconds);
+            fprintf(profile_fp, "    \"pixels_in\": %u,\n", sim_pixels_in_final);
+            fprintf(profile_fp, "    \"pixels_out\": %u,\n", sim_pixels_out_final);
+            fprintf(profile_fp, "    \"pixels_in_mpps\": %.6f,\n", sim_pixels_in_mpps);
+            fprintf(profile_fp, "    \"pixels_out_mpps\": %.6f,\n", sim_pixels_out_mpps);
+            fprintf(profile_fp, "    \"read_ticks\": %llu,\n", (unsigned long long)sim_read_ticks_final);
+            fprintf(profile_fp, "    \"read_count\": %llu,\n", (unsigned long long)sim_read_count_final);
+            fprintf(profile_fp, "    \"write_ticks\": %llu,\n", (unsigned long long)sim_write_ticks_final);
+            fprintf(profile_fp, "    \"write_count\": %llu,\n", (unsigned long long)sim_write_count_final);
+            fprintf(profile_fp, "    \"avg_read_cycles\": %.6f,\n", sim_read_count_final ? ((double)sim_read_ticks_final / (double)sim_read_count_final) : 0.0);
+            fprintf(profile_fp, "    \"avg_write_cycles\": %.6f,\n", sim_write_count_final ? ((double)sim_write_ticks_final / (double)sim_write_count_final) : 0.0);
+            fprintf(profile_fp, "    \"worst_write\": {\n");
+            fprintf(profile_fp, "      \"entry\": %u,\n", worst_write_entry);
+            fprintf(profile_fp, "      \"addr\": %u,\n", worst_write_addr);
+            fprintf(profile_fp, "      \"data\": %u,\n", worst_write_data);
+            fprintf(profile_fp, "      \"cycles\": %llu\n", (unsigned long long)worst_write_cycles);
+            fprintf(profile_fp, "    },\n");
+            fprintf(profile_fp, "    \"write_hotspots\": [\n");
+            for (size_t idx = 0; idx < sim_write_hotspots.size(); ++idx) {
+                const RegHotspot &hotspot = sim_write_hotspots[idx];
+                fprintf(profile_fp,
+                        "      {\"reg\": %u, \"cycles\": %llu, \"count\": %u, \"avg_cycles\": %.6f}%s\n",
+                        hotspot.reg,
+                        (unsigned long long)hotspot.cycles,
+                        hotspot.count,
+                        hotspot.count ? ((double)hotspot.cycles / (double)hotspot.count) : 0.0,
+                        (idx + 1 == sim_write_hotspots.size()) ? "" : ",");
+            }
+            fprintf(profile_fp, "    ],\n");
+            fprintf(profile_fp, "    \"progress\": [\n");
+            for (size_t idx = 0; idx < progress_snapshots.size(); ++idx) {
+                const ProgressSnapshot &snap = progress_snapshots[idx];
+                fprintf(profile_fp,
+                        "      {\"entry\": %u, \"logical\": %llu, \"cmd_type\": %u, \"addr\": %u, \"data\": %u, \"count\": %u, \"sim_cycle\": %llu, \"sim_reads\": %llu, \"sim_writes\": %llu, \"sim_pixels_in\": %u, \"sim_pixels_out\": %u}%s\n",
+                        snap.entry,
+                        (unsigned long long)snap.logical,
+                        snap.cmd_type,
+                        snap.addr,
+                        snap.data,
+                        snap.count,
+                        (unsigned long long)snap.sim_cycle,
+                        (unsigned long long)snap.sim_reads,
+                        (unsigned long long)snap.sim_writes,
+                        snap.sim_pixels_in,
+                        snap.sim_pixels_out,
+                        (idx + 1 == progress_snapshots.size()) ? "" : ",");
+            }
+            fprintf(profile_fp, "    ]\n");
+            fprintf(profile_fp, "  }\n");
+        } else {
+            fprintf(profile_fp, "\n");
+        }
+
+        fprintf(profile_fp, "}\n");
+        fclose(profile_fp);
+        fprintf(stderr, "[trace_test] Wrote %s\n", profile_json_path.c_str());
+    }
+
+    if (sim_replay_only) {
+        if (!ref_only) sim_shutdown();
+        ref_shutdown();
+        return 0;
     }
 
     /* ---------------------------------------------------------------
@@ -597,14 +1032,15 @@ int main(int argc, char **argv) {
     uint32_t front_offset = ref_get_front_offset();
     uint32_t row_width   = ref_get_row_width();  /* bytes */
     int row_stride = row_width / 2;              /* pixels (16-bit) */
+    ref_dump_layout_debug();
+    fprintf(stderr,
+            "[trace_test] State header layout: row_width=%u draw=0x%x aux=0x%x presented=0x%x\n",
+            state_row_width, state_draw_offset, state_aux_offset, presented_offset);
     /* Strict frame selection: use the last buffer explicitly presented by
      * swapbufferCMD (sampled pre-swap), no heuristic fallbacks. */
     uint32_t fb_offset = presented_offset;
     /* Sim color plane now matches the 16-bit RGB565 layout: one pixel = 2 bytes. */
     uint32_t sim_fb_offset = presented_offset;
-
-    fprintf(stderr, "[trace_test] FB layout: front=0x%x draw=0x%x presented=0x%x row_width=%u (%d pixels)\n",
-            front_offset, draw_offset, fb_offset, row_width, row_stride);
 
     int mismatches = 0;
     int total_pixels = disp_width * disp_height;
@@ -668,6 +1104,18 @@ int main(int argc, char **argv) {
         fprintf(stderr, "[trace_test] Sim pixel stride: %d (fbiInit1=0x%08x)\n",
                 sim_pixel_stride, fbiInit1_val);
     }
+
+    if (row_width == 0) {
+        row_width = state_row_width ? state_row_width : (uint32_t)sim_pixel_stride * 2;
+        fprintf(stderr,
+                "[trace_test] WARNING: Reference row_width is zero; falling back to %u bytes\n",
+                row_width);
+    }
+    row_stride = row_width / 2;              /* pixels (16-bit) */
+
+    fprintf(stderr, "[trace_test] FB layout: front=0x%x draw=0x%x presented=0x%x row_width=%u (%d pixels)\n",
+            front_offset, draw_offset, fb_offset, row_width, row_stride);
+
     std::vector<uint16_t> sim_fb_extracted;
     uint16_t *sim_fb = nullptr;
 
@@ -693,6 +1141,14 @@ int main(int argc, char **argv) {
             }
         }
         sim_fb = sim_fb_extracted.data();
+
+        uint32_t sim_black = 0;
+        for (int y = 0; y < disp_height; y++)
+            for (int x = 0; x < disp_width; x++)
+                if (sim_fb[y * row_stride + x] == 0)
+                    sim_black++;
+        fprintf(stderr, "[trace_test] Sim selected buffer blackness: %u/%d at offset 0x%x\n",
+                sim_black, disp_width * disp_height, sim_fb_offset);
     }
 
     /* RGB24 buffers for PNG output */
@@ -777,10 +1233,13 @@ int main(int argc, char **argv) {
         }
 
         int alt_mismatches = 0;
+        uint32_t alt_black = 0;
         for (int y = 0; y < disp_height; y++) {
             for (int x = 0; x < disp_width; x++) {
                 uint16_t rp = ref_fb[y * row_stride + x];
                 uint16_t sp = alt_extracted[y * row_stride + x];
+                if (sp == 0)
+                    alt_black++;
                 if (rp == sp)
                     continue;
                 int rr = (rp >> 11) & 0x1f, rg = (rp >> 5) & 0x3f, rb = rp & 0x1f;
@@ -791,8 +1250,8 @@ int main(int argc, char **argv) {
             }
         }
 
-        fprintf(stderr, "[trace_test] Alt buffer check: reading=0x%x mismatches=%d\n",
-                alt_sim_fb_offset, alt_mismatches);
+        fprintf(stderr, "[trace_test] Alt buffer check: reading=0x%x mismatches=%d black=%u/%d\n",
+                alt_sim_fb_offset, alt_mismatches, alt_black, disp_width * disp_height);
         if (alt_mismatches + 64 < mismatches && (mismatches - alt_mismatches) > 256) {
             stale_frame_risk = true;
             fprintf(stderr, "[trace_test] ERROR: alternate framebuffer matches better (stale-frame risk)\n");
@@ -803,17 +1262,31 @@ int main(int argc, char **argv) {
     if (output_dir) {
         char path[512];
 
+        if (!ensure_directory(output_dir)) {
+            fprintf(stderr, "[trace_test] ERROR: Failed to create output directory %s\n", output_dir);
+            return 1;
+        }
+
         snprintf(path, sizeof(path), "%s/%s_ref.png", output_dir, name.c_str());
-        stbi_write_png(path, disp_width, disp_height, 3, ref_rgb.data(), disp_width * 3);
+        if (!stbi_write_png(path, disp_width, disp_height, 3, ref_rgb.data(), disp_width * 3)) {
+            fprintf(stderr, "[trace_test] ERROR: Failed to write %s\n", path);
+            return 1;
+        }
         fprintf(stderr, "[trace_test] Wrote %s\n", path);
 
         if (!ref_only) {
             snprintf(path, sizeof(path), "%s/%s_sim.png", output_dir, name.c_str());
-            stbi_write_png(path, disp_width, disp_height, 3, sim_rgb.data(), disp_width * 3);
+            if (!stbi_write_png(path, disp_width, disp_height, 3, sim_rgb.data(), disp_width * 3)) {
+                fprintf(stderr, "[trace_test] ERROR: Failed to write %s\n", path);
+                return 1;
+            }
             fprintf(stderr, "[trace_test] Wrote %s\n", path);
 
             snprintf(path, sizeof(path), "%s/%s_diff.png", output_dir, name.c_str());
-            stbi_write_png(path, disp_width, disp_height, 3, diff_rgb.data(), disp_width * 3);
+            if (!stbi_write_png(path, disp_width, disp_height, 3, diff_rgb.data(), disp_width * 3)) {
+                fprintf(stderr, "[trace_test] ERROR: Failed to write %s\n", path);
+                return 1;
+            }
             fprintf(stderr, "[trace_test] Wrote %s\n", path);
         }
     }

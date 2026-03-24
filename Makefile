@@ -6,7 +6,7 @@
 #   tomb/<runtime>/<action>
 #   de10/<action>
 
-.PHONY: all clean clean-sim clean-glide clean-tests native/help native/sim/build native/trace/build native/sim/run-all native/sim/check-all dos/help dos/sim/build dos/trace/build dos/dosbox tomb/help tomb/prepare tomb/sim/run tomb/sim/headless tomb/sim/capture tomb/sim/trace tomb/sim/trace/check tomb/trace/run tomb/trace/headless tomb/trace/check de10/help de10/setup/program de10/setup/deploy de10/check/mmio de10/run/tomb de10/trace/run de10/trace/tomb de10/plan de10/rtl de10/qsys de10/bitstream de10/sync-sysroot de10/glide de10/glide-tests de10/glide-cross de10/glide-tests-cross FORCE
+.PHONY: all clean clean-sim clean-glide clean-tests native/help native/sim/build native/trace/build native/sim/run-all native/sim/check-all dos/help dos/sim/build dos/trace/build dos/dosbox tomb/help tomb/prepare tomb/sim/run tomb/sim/headless tomb/sim/capture tomb/sim/trace tomb/sim/trace/check tomb/trace/run tomb/trace/headless tomb/trace/check tomb/trace/profile de10/help de10/setup/program de10/setup/deploy de10/check/mmio de10/run/tomb de10/run/tomb/vnc de10/trace/run de10/trace/tomb de10/plan de10/rtl de10/qsys de10/bitstream de10/sync-sysroot de10/glide de10/glide-tests de10/glide-cross de10/glide-tests-cross FORCE
 .PRECIOUS: dos/sim/build/% dos/trace/build/%
 
 # Derive CXX32 from CC32 for sub-makefiles that need it
@@ -96,7 +96,7 @@ tomb/help:
 	@echo "  5) Override paths with DOSBOX_TOMB_SRC, DOSBOX_TOMB_STAGE_ROOT, DOSBOX_TOMB_GAME_DIR, DOSBOX_TOMB_ISO, DOSBOX_TOMB_EXE"
 	@echo "  6) Pass --output PATH or --force through make tomb/prepare ARGS='...' when needed"
 	@echo "  7) Canonical runs are make tomb/sim/run, make tomb/sim/headless, make tomb/sim/capture, make tomb/sim/trace, make tomb/trace/run"
-	@echo "  8) Use make tomb/sim/trace/check to replay traces/tomb_live/trace.bin and tomb/trace/check for traces/tomb/trace.bin"
+	@echo "  8) Use make tomb/sim/trace/check to replay traces/tomb_live/trace.bin, tomb/trace/check for traces/tomb/trace.bin, and tomb/trace/profile for CoreDe10 perf profiling"
 
 tomb/prepare:
 	bash ./scripts/prepare-tomb-glide-tree $(ARGS)
@@ -137,6 +137,9 @@ tomb/trace/check: $(TRACE_TEST_BIN)
 	@mkdir -p output/tomb/trace_replay
 	$(TRACE_TEST_BIN) traces/tomb --output-dir output/tomb/trace_replay
 
+tomb/trace/profile:
+	bash ./scripts/profile-trace-corede10 traces/tomb $(ARGS)
+
 de10/help:
 	@echo "DE10 workflow targets:"
 	@echo "  runtime: de10"
@@ -145,6 +148,7 @@ de10/help:
 	@echo "  make de10/check/mmio       # run the board MMIO smoke utility"
 	@echo "  make de10/run/dos/df00sdk  # run one DOS workload from the board runtime dir"
 	@echo "  make de10/run/tomb         # run Tomb from a prepared remote Tomb tree"
+	@echo "  make de10/run/tomb/vnc     # run Tomb on the board under a VNC X server"
 	@echo "  make de10/trace/tomb       # replay traces/tomb on the board and dump a screenshot"
 	@echo ""
 	@echo "Advanced DE10 targets:"
@@ -171,6 +175,9 @@ de10/run/dos/%:
 
 de10/run/tomb:
 	bash ./scripts/run-de10-tomb-workload $(ARGS)
+
+de10/run/tomb/vnc:
+	bash ./scripts/run-de10-tomb-vnc $(ARGS)
 
 de10/trace/run:
 	bash ./scripts/run-de10-trace-replay $(ARGS)

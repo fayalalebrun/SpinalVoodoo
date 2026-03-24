@@ -51,6 +51,10 @@ void sim_tick(int n);
 /* Drain dirty framebuffer cache lines into fbRam. */
 void sim_flush_fb_cache(void);
 
+/* Force framebuffer plane caches back to a clean idle state.
+ * Useful after bulk-loading fbRam directly, which bypasses normal cache traffic. */
+void sim_invalidate_fb_cache(void);
+
 /* Bulk read from CoreSim's fbRam (bypasses bus protocol).
  * Reads word_count 32-bit words starting at byte_offset into dst. */
 void sim_read_fb(uint32_t byte_offset, uint32_t *dst, uint32_t word_count);
@@ -71,6 +75,15 @@ void sim_set_swap_count(uint32_t count);
 
 /* Read the current swap buffer count register. */
 uint32_t sim_get_swap_count(void);
+
+/* Return current simulation cycle count. */
+uint64_t sim_get_cycle(void);
+
+/* Return aggregate bus timing stats collected by the harness. */
+uint64_t sim_get_total_read_ticks(void);
+uint64_t sim_get_total_read_count(void);
+uint64_t sim_get_total_write_ticks(void);
+uint64_t sim_get_total_write_count(void);
 
 #ifdef __cplusplus
 }

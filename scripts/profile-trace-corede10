@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+
+TRACE_PATH="traces/tomb"
+OUTPUT_DIR=""
+MEM_READ_DELAY="0"
+PROFILE_WRITES="500"
+DO_BUILD=1
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/profile-trace-corede10 [trace-path] [options]
+
+Options:
+  --output-dir <dir>      Output directory for logs/profile JSON
+  --mem-read-delay <n>    Host memory read delay cycles (default: 0)
+  --profile-writes <n>    Log individual writes slower than N cycles (default: 500)
+  --no-build              Skip rebuilding `emu/test/trace_test`
+  -h, --help              Show this help
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --output-dir)
+      OUTPUT_DIR="$2"
+      shift 2
+      ;;
+    --mem-read-delay)
+      MEM_READ_DELAY="$2"
+      shift 2
+      ;;
+    --profile-writes)
+      PROFILE_WRITES="$2"
+      shift 2
+      ;;
+    --no-build)
+      DO_BUILD=0
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --*)
+      printf 'Unknown option: %s\n' "$1" >&2
+      usage >&2
+      exit 1
+      ;;
+    *)
+      TRACE_PATH="$1"
+      shift
+      ;;
+  esac
+done
+
+TRACE_NAME="$(basename "$TRACE_PATH")"
+if [[ -z "$OUTPUT_DIR" ]]; then
+  OUTPUT_DIR="$ROOT_DIR/output/corede10-profile/$TRACE_NAME"
+fi
+
+mkdir -p "$OUTPUT_DIR"
+
+LOG_PATH="$OUTPUT_DIR/profile.log"
+JSON_PATH="$OUTPUT_DIR/profile.json"
+
+if [[ "$DO_BUILD" == "1" ]]; then
+  rtk make -C "$ROOT_DIR/emu/test" SIM_INTERFACE=de10
+fi
+
+env \
+  SIM_INTERFACE=de10 \
+  SIM_DE10_MEM_READ_DELAY="$MEM_READ_DELAY" \
+  SIM_PROFILE_WRITES="$PROFILE_WRITES" \
+  "$ROOT_DIR/emu/test/obj_dir/trace_test" \
+  "$TRACE_PATH" \
+  --sim-replay-only \
+  --profile-json "$JSON_PATH" \
+  >"$LOG_PATH" 2>&1
+
+python3 - <<'PY' "$JSON_PATH"
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+data = json.loads(path.read_text())
+sim = data.get('sim_stats', {})
+hotspots = sim.get('write_hotspots', [])
+progress = sim.get('progress', [])
+print(f"profile={path}")
+print(f"cycles={sim.get('cycles', 0)}")
+print(f"pixels_out_mpps={sim.get('pixels_out_mpps', 0.0):.3f}")
+print(f"pixels_in_mpps={sim.get('pixels_in_mpps', 0.0):.3f}")
+print(f"avg_write_cycles={sim.get('avg_write_cycles', 0.0):.2f}")
+if hotspots:
+    top = hotspots[0]
+    print(f"top_hotspot_reg=0x{top['reg']:03x}")
+    print(f"top_hotspot_avg_cycles={top['avg_cycles']:.2f}")
+    print(f"top_hotspot_count={top['count']}")
+    for idx, hotspot in enumerate(hotspots[:4]):
+        print(f"hotspot[{idx}]=0x{hotspot['reg']:03x}:{hotspot['avg_cycles']:.2f}cyc x{hotspot['count']}")
+if len(progress) >= 2:
+    worst = None
+    for a, b in zip(progress, progress[1:]):
+        dc = b['sim_cycle'] - a['sim_cycle']
+        dpo = b['sim_pixels_out'] - a['sim_pixels_out']
+        if dc <= 0:
+            continue
+        mpps = dpo * 50_000_000.0 / dc / 1_000_000.0
+        item = (mpps, a['entry'], b['entry'], dc, dpo)
+        if worst is None or item[0] < worst[0]:
+            worst = item
+    if worst is not None:
+        print(f"worst_phase={worst[1]}->{worst[2]}")
+        print(f"worst_phase_pixels_out={worst[4]}")
+        print(f"worst_phase_cycles={worst[3]}")
+        print(f"worst_phase_mpps={worst[0]:.3f}")
+PY
+
+printf 'log=%s\n' "$LOG_PATH"

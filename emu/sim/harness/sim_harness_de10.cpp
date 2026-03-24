@@ -7,6 +7,7 @@
 
 #include "sim_harness.h"
 #include "VCoreDe10.h"
+#include "VCoreDe10_FramebufferPlaneCache.h"
 #include "VCoreDe10___024root.h"
 #include <array>
 #include <csignal>
@@ -19,6 +20,20 @@
 #include "verilated.h"
 #ifdef VM_TRACE_FST
 #include "verilated_fst_c.h"
+#endif
+
+#ifdef VL_USER_WARN
+void vl_warn(const char* filename, int linenum, const char* hier,
+             const char* msg) {
+    if (strstr(msg, "$readmem")) {
+        vl_fatal(filename, linenum, hier, msg);
+    } else {
+        if (filename && filename[0])
+            VL_PRINTF("%%Warning: %s:%d: %s\n", filename, linenum, msg);
+        else
+            VL_PRINTF("%%Warning: %s\n", msg);
+    }
+}
 #endif
 
 static VCoreDe10* top = nullptr;
@@ -37,12 +52,13 @@ static std::vector<uint32_t> fb_mem;
 static std::vector<uint32_t> tex_mem;
 
 struct AvalonMemState {
-    uint8_t read_valid_cycles;
+    uint8_t read_delay;
+    uint8_t read_valid;
     uint32_t read_data;
 };
 
-static AvalonMemState fb_state = {0, 0};
-static AvalonMemState tex_state = {0, 0};
+static AvalonMemState fb_state = {0, 0, 0};
+static AvalonMemState tex_state = {0, 0, 0};
 
 static uint64_t total_read_ticks = 0;
 static uint64_t total_read_count = 0;
@@ -53,8 +69,14 @@ static uint32_t last_tex_read_addr = 0;
 static uint64_t last_tex_rvalid_cycle = 0;
 static uint32_t last_tex_rvalid_data = 0;
 static int mmio_debug = 0;
+static int stall_debug = 0;
 static int tex_trace = 0;
+static uint32_t mem_read_delay = 64;
 static uint32_t tex_trace_count = 0;
+
+static inline uint32_t effective_mem_read_delay(void) {
+    return mem_read_delay + 1;
+}
 static uint64_t tex_trace_after_cycle = 0;
 static uint32_t tex_trace_min_addr = 0;
 
@@ -88,16 +110,31 @@ static inline uint32_t tex_index_from_addr(uint32_t addr) {
 
 static void drive_memory_inputs(void) {
     top->io_memFb_waitRequestn = 1;
-    top->io_memFb_readDataValid = fb_state.read_valid_cycles ? 1 : 0;
+    top->io_memFb_readDataValid = fb_state.read_valid;
     top->io_memFb_readData = fb_state.read_data;
 
     top->io_memTex_waitRequestn = 1;
-    top->io_memTex_readDataValid = tex_state.read_valid_cycles ? 1 : 0;
+    top->io_memTex_readDataValid = tex_state.read_valid;
     top->io_memTex_readData = tex_state.read_data;
+    if (tex_trace && tex_state.read_valid && tex_trace_count < 512) {
+        fprintf(stderr,
+                "[sim_harness_de10] TEX rvalid data=0x%08x cycle=%lu bridge(outstanding=%u beats=%u rspPending=%u)\n",
+                (unsigned)tex_state.read_data,
+                (unsigned long)(sim_time / 2),
+                (unsigned)top->rootp->CoreDe10__DOT__memBackend__DOT__texBridge__DOT__readOutstanding,
+                (unsigned)top->rootp->CoreDe10__DOT__memBackend__DOT__texBridge__DOT__readBeatsLeft,
+                (unsigned)top->rootp->CoreDe10__DOT__memBackend__DOT__texBridge__DOT__rspPending);
+        tex_trace_count++;
+    }
 }
 
 static void capture_memory_outputs(void) {
-    if (fb_state.read_valid_cycles) fb_state.read_valid_cycles--;
+    if (fb_state.read_valid) {
+        fb_state.read_valid = 0;
+    } else if (fb_state.read_delay) {
+        fb_state.read_delay--;
+        if (fb_state.read_delay == 0) fb_state.read_valid = 1;
+    }
     if (top->io_memFb_write) {
         const uint32_t idx = fb_index_from_addr(top->io_memFb_address);
         fb_mem[idx] = apply_byteenable(fb_mem[idx], top->io_memFb_writeData,
@@ -106,10 +143,16 @@ static void capture_memory_outputs(void) {
     if (top->io_memFb_read) {
         const uint32_t idx = fb_index_from_addr(top->io_memFb_address);
         fb_state.read_data = fb_mem[idx];
-        fb_state.read_valid_cycles = 64;
+        fb_state.read_delay = effective_mem_read_delay();
+        fb_state.read_valid = 0;
     }
 
-    if (tex_state.read_valid_cycles) tex_state.read_valid_cycles--;
+    if (tex_state.read_valid) {
+        tex_state.read_valid = 0;
+    } else if (tex_state.read_delay) {
+        tex_state.read_delay--;
+        if (tex_state.read_delay == 0) tex_state.read_valid = 1;
+    }
     if (top->io_memTex_write) {
         const uint32_t addr = top->io_memTex_address;
         if (tex_trace_enabled_now(addr) && tex_trace_count < 256) {
@@ -149,7 +192,8 @@ static void capture_memory_outputs(void) {
                     (unsigned long)(sim_time / 2));
             tex_trace_count++;
         }
-        tex_state.read_valid_cycles = 64;
+        tex_state.read_delay = effective_mem_read_delay();
+        tex_state.read_valid = 0;
         last_tex_rvalid_cycle = (sim_time / 2) + 1;
         last_tex_rvalid_data = tex_state.read_data;
     }
@@ -195,9 +239,9 @@ static void tick_one(void) {
     }
 }
 
-static void mmio_begin(uint32_t addr, bool is_write, uint32_t data) {
+static void mmio_begin(uint32_t addr, bool is_write, uint32_t data, uint8_t byteenable = 0xFu) {
     top->io_h2fLw_address = (addr >> 2) & 0x3FFFFFu;
-    top->io_h2fLw_byteenable = 0xFu;
+    top->io_h2fLw_byteenable = byteenable;
     top->io_h2fLw_writedata = data;
     top->io_h2fLw_write = is_write ? 1 : 0;
     top->io_h2fLw_read = is_write ? 0 : 1;
@@ -223,34 +267,71 @@ static void maybe_log_mmio(const char* kind, const char* phase, uint32_t addr,
 static void log_stalled_bus_state(const char* kind, const char* phase,
                                   uint32_t addr, uint64_t iter) {
     auto* root = top->rootp;
+    auto* fb_color = root->__PVT__CoreDe10__DOT__core_1__DOT__framebufferPlaneCache_2;
+    auto* fb_aux = root->__PVT__CoreDe10__DOT__core_1__DOT__framebufferPlaneCache_3;
     fprintf(stderr,
-            "[sim_harness_de10] %s %s stall addr=0x%06x cycle=%lu iter=%lu h2f(wait=%u rvalid=%u rdata=0x%08x cmdInFlight=%u readRspPending=%u readDataPending=%u readDataValid=%u cpuCmdReady=%u fifoFree=%u queuedWriteReady=%u pipeBusy=%u swapWait=%u busyDebug=0x%08x) fb(r=%u w=%u addr=0x%08x rv=%u rdata=0x%08x bridge(readOutstanding=%u rspPending=%u rspValid=%u rspData=0x%08x) arbRsp=%u/%u) lfb(state=%u rspPending=%u read=%u fbCmdPending=%u fbCmd=%u/%u fbRsp=%u/%u cap1=0x%08x cap2=0x%08x) tex(r=%u w=%u addr=0x%08x rv=%u rdata=0x%08x bridge(readOutstanding=%u rspPending=%u rspData=0x%08x lastRead=0x%08x@%lu lastRvalid=0x%08x@%lu) cpuTex(cmd=%u/%u rsp=%u/%u) arbIn2(rsp=%u cmdReady=%u))\n",
+            "[sim_harness_de10] %s %s stall addr=0x%06x cycle=%lu iter=%lu h2f(wait=%u rvalid=%u rdata=0x%08x cmdInFlight=%u readRspPending=%u readDataPending=%u readDataValid=%u cpuCmdReady=%u fifoFree=%u queuedWriteReady=%u pipeBusy=%u swapWait=%u busyDebug=0x%08x) pci(issueV=%u issueR=%u issueAddr=0x%03x issueSync=%u canDrain=%u cmdBlocked=%u triV=%u triR=%u ftriV=%u ftriR=%u) fb(r=%u w=%u addr=0x%08x rv=%u rdata=0x%08x delay=%u bridge(readOutstanding=%u readBeatsLeft=%u readAddress=0x%08x rspPending=%u rspValid=%u rspData=0x%08x) access(busy=%u inFlight=%u cRsp=%u/%u aRsp=%u/%u cBusy=%u aBusy=%u cMem(cmd=%u/%u rsp=%u/%u st=%u fill=%u rdv=%u paddr=0x%08x) aMem(cmd=%u/%u rsp=%u/%u st=%u fill=%u rdv=%u paddr=0x%08x) arbRsp=%u/%u) lfb(state=%u rspPending=%u read=%u fbCmdPending=%u fbCmd=%u/%u fbRsp=%u/%u cap1=0x%08x cap2=0x%08x) tex(r=%u w=%u addr=0x%08x rv=%u rdata=0x%08x bridge(readOutstanding=%u rspPending=%u rspSource=0x%x rspData=0x%08x lastRead=0x%08x@%lu lastRvalid=0x%08x@%lu) cpuTex(cmd=%u/%u rsp=%u/%u src=0x%x rspTarget=%u) arbIn(rsp=%u,%u,%u outSrc=0x%x cmdReady=%u))\n",
             kind, phase, addr, (unsigned long)(sim_time / 2),
             (unsigned long)iter,
             (unsigned)top->io_h2fLw_waitrequest,
             (unsigned)top->io_h2fLw_readdatavalid,
             (unsigned)top->io_h2fLw_readdata,
-            (unsigned)root->CoreDe10__DOT__cmdInFlight,
-            (unsigned)root->CoreDe10__DOT__readRspPending,
-            (unsigned)root->CoreDe10__DOT__readDataPending,
-            (unsigned)root->CoreDe10__DOT__readDataValid,
+            (unsigned)root->CoreDe10__DOT__h2fBridge__DOT__cmdInFlight,
+            (unsigned)root->CoreDe10__DOT__h2fBridge__DOT__readRspPending,
+            (unsigned)root->CoreDe10__DOT__h2fBridge__DOT__readDataPending,
+            (unsigned)root->CoreDe10__DOT__h2fBridge__DOT__readDataValid,
             (unsigned)root->CoreDe10__DOT__core_1_io_cpuBus_cmd_ready,
             (unsigned)root->CoreDe10__DOT__core_1__DOT__pciFifo_1_io_pciFifoFree,
             (unsigned)root->CoreDe10__DOT__core_1__DOT__pciFifo_1__DOT__queuedWriteTx_ready,
             (unsigned)root->CoreDe10__DOT__core_1__DOT__pipelineBusySignal,
             (unsigned)root->CoreDe10__DOT__core_1__DOT__swapBuffer_1_io_waiting,
             (unsigned)root->CoreDe10__DOT__core_1__DOT__busyDebugSignal,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__pciFifo_1__DOT__issuedWrite_valid,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__pciFifo_1__DOT__issuedWrite_ready,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__pciFifo_1__DOT__issuedWrite_payload_address,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__pciFifo_1__DOT__issuedWrite_payload_syncRequired,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__pciFifo_1__DOT__canDrain,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__pciFifo_1__DOT__commandStreamBlocked,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__regBank__DOT__commands_triangleCmdStream_valid,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__regBank__DOT__commands_triangleCmdStream_ready,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__regBank__DOT__commands_ftriangleCmdStream_valid,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__regBank__DOT__commands_ftriangleCmdStream_ready,
             (unsigned)top->io_memFb_read,
             (unsigned)top->io_memFb_write,
             (unsigned)top->io_memFb_address,
             (unsigned)top->io_memFb_readDataValid,
             (unsigned)top->io_memFb_readData,
+            (unsigned)fb_state.read_delay,
             (unsigned)root->CoreDe10__DOT__memBackend__DOT__fbBridge__DOT__readOutstanding,
+            (unsigned)root->CoreDe10__DOT__memBackend__DOT__fbBridge__DOT__readBeatsLeft,
+            (unsigned)root->CoreDe10__DOT__memBackend__DOT__fbBridge__DOT__readAddress,
             (unsigned)root->CoreDe10__DOT__memBackend__DOT__fbBridge__DOT__rspPending,
             (unsigned)root->CoreDe10__DOT__memBackend__DOT__fbBridge_io_bmb_rsp_valid,
             (unsigned)root->CoreDe10__DOT__memBackend__DOT__fbBridge__DOT__rspData,
-            (unsigned)root->CoreDe10__DOT__core_1__DOT__fbArbiter_io_inputs_4_rsp_s2mPipe_valid,
-            (unsigned)root->CoreDe10__DOT__core_1__DOT__fbArbiter_io_inputs_4_rsp_s2mPipe_ready,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__fbAccess_io_busy,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__fbAccess__DOT__inFlightCount,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__framebufferPlaneCache_2_io_readRsp_valid,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__fbAccess_io_fbReadColorRsp_ready,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__framebufferPlaneCache_3_io_readRsp_valid,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__fbAccess_io_fbReadAuxRsp_ready,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__framebufferPlaneCache_2_io_busy,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__framebufferPlaneCache_3_io_busy,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__framebufferPlaneCache_2_io_mem_cmd_valid,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__bmbArbiter_2_io_inputs_0_cmd_ready,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__framebufferPlaneCache_2_io_mem_rsp_valid,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__framebufferPlaneCache_2_io_mem_rsp_ready,
+            (unsigned)fb_color->state,
+            (unsigned)fb_color->fillRspCount,
+            (unsigned)fb_color->readRspValid,
+            (unsigned)fb_color->pendingReadReq_address,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__framebufferPlaneCache_3_io_mem_cmd_valid,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__bmbArbiter_2_io_inputs_1_cmd_ready,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__framebufferPlaneCache_3_io_mem_rsp_valid,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__framebufferPlaneCache_3_io_mem_rsp_ready,
+            (unsigned)fb_aux->state,
+            (unsigned)fb_aux->fillRspCount,
+            (unsigned)fb_aux->readRspValid,
+            (unsigned)fb_aux->pendingReadReq_address,
             (unsigned)root->CoreDe10__DOT__core_1__DOT__lfb_1__DOT__state,
             (unsigned)root->CoreDe10__DOT__core_1__DOT__lfb_1__DOT__rspPending,
             (unsigned)root->CoreDe10__DOT__core_1__DOT__lfb_1__DOT__capturedIsRead,
@@ -268,6 +349,7 @@ static void log_stalled_bus_state(const char* kind, const char* phase,
             (unsigned)top->io_memTex_readData,
             (unsigned)root->CoreDe10__DOT__memBackend__DOT__texBridge__DOT__readOutstanding,
             (unsigned)root->CoreDe10__DOT__memBackend__DOT__texBridge__DOT__rspPending,
+            (unsigned)root->CoreDe10__DOT__memBackend__DOT__texBridge__DOT__rspSource,
             (unsigned)root->CoreDe10__DOT__memBackend__DOT__texBridge__DOT__rspData,
             (unsigned)last_tex_read_addr,
             (unsigned long)last_tex_read_cycle,
@@ -277,8 +359,40 @@ static void log_stalled_bus_state(const char* kind, const char* phase,
             (unsigned)root->CoreDe10__DOT__core_1__DOT__cpuTexBus_cmd_ready,
             (unsigned)root->CoreDe10__DOT__core_1__DOT__cpuTexBus_rsp_valid,
             (unsigned)root->CoreDe10__DOT__core_1__DOT__cpuTexBus_rsp_ready,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__cpuTexBus_rsp_payload_fragment_source,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__rspTarget,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__texArbiter_io_inputs_0_rsp_valid,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__texArbiter_io_inputs_1_rsp_valid,
             (unsigned)root->CoreDe10__DOT__core_1__DOT__texArbiter_io_inputs_2_rsp_valid,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__io_texMem_rsp_payload_fragment_source,
             (unsigned)root->CoreDe10__DOT__core_1__DOT__texArbiter_io_inputs_2_cmd_ready);
+    fprintf(stderr,
+            "[sim_harness_de10] texdbg mem(read=%u rvalid=%u rdata=0x%08x delay=%u lastRead=0x%08x@%lu lastRvalid=0x%08x@%lu) bridge(rspPending=%u rspValid=%u rspSource=0x%x readOutstanding=%u readBeatsLeft=%u readAddress=0x%08x) core(cpuTexCmd=%u/%u cpuTexRsp=%u/%u src=0x%x rspTarget=%u texRspValid=%u outSrc=0x%x inRsp=%u,%u,%u)\n",
+            (unsigned)top->io_memTex_read,
+            (unsigned)top->io_memTex_readDataValid,
+            (unsigned)top->io_memTex_readData,
+            (unsigned)tex_state.read_delay,
+            (unsigned)last_tex_read_addr,
+            (unsigned long)last_tex_read_cycle,
+            (unsigned)last_tex_rvalid_data,
+            (unsigned long)last_tex_rvalid_cycle,
+            (unsigned)root->CoreDe10__DOT__memBackend__DOT__texBridge__DOT__rspPending,
+            (unsigned)root->CoreDe10__DOT__memBackend__DOT__texBridge_io_bmb_rsp_valid,
+            (unsigned)root->CoreDe10__DOT__memBackend__DOT__texBridge__DOT__rspSource,
+            (unsigned)root->CoreDe10__DOT__memBackend__DOT__texBridge__DOT__readOutstanding,
+            (unsigned)root->CoreDe10__DOT__memBackend__DOT__texBridge__DOT__readBeatsLeft,
+            (unsigned)root->CoreDe10__DOT__memBackend__DOT__texBridge__DOT__readAddress,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__cpuTexBus_cmd_valid,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__cpuTexBus_cmd_ready,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__cpuTexBus_rsp_valid,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__cpuTexBus_rsp_ready,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__cpuTexBus_rsp_payload_fragment_source,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__rspTarget,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__io_texMem_rsp_valid,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__io_texMem_rsp_payload_fragment_source,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__texArbiter_io_inputs_0_rsp_valid,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__texArbiter_io_inputs_1_rsp_valid,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__texArbiter_io_inputs_2_rsp_valid);
     fflush(stderr);
 }
 
@@ -300,7 +414,7 @@ static void bus_write(uint32_t addr, uint32_t data) {
         if (mmio_debug && (iter < 8 || (iter % 1000000) == 0)) {
             maybe_log_mmio("WRITE", "wait", addr, data, iter);
         }
-        if (iter > 0 && (iter % stall_log_period) == 0) {
+        if (stall_debug && iter > 0 && (iter % stall_log_period) == 0) {
             log_stalled_bus_state("WRITE", "cmd", addr, iter);
         }
         tick_one();
@@ -309,6 +423,43 @@ static void bus_write(uint32_t addr, uint32_t data) {
     }
     if (timeout == 0) {
         fprintf(stderr, "[sim_harness_de10] ERROR: bus_write(0x%06x) cmd timeout after 5M cycles @ cycle %lu\n",
+                addr, (unsigned long)(sim_time / 2));
+    }
+
+    mmio_end();
+    tick_one();
+    maybe_log_mmio("WRITE", "done", addr, data, iter);
+    total_write_ticks += (sim_time - t0) / 2;
+    total_write_count++;
+}
+
+static void bus_write_masked(uint32_t addr, uint32_t data, uint8_t byteenable) {
+    const uint64_t t0 = sim_time;
+    mmio_begin(addr, true, data, byteenable);
+    maybe_log_mmio("WRITE", "begin", addr, data, 0);
+
+    int timeout = 5000000;
+    uint64_t iter = 0;
+    const uint64_t stall_log_period = (addr == 0x000000) ? 10000 : 100000;
+    while (timeout > 0) {
+        eval_inputs();
+        if (!top->io_h2fLw_waitrequest) {
+            maybe_log_mmio("WRITE", "accept", addr, data, iter);
+            tick_one();
+            break;
+        }
+        if (mmio_debug && (iter < 8 || (iter % 1000000) == 0)) {
+            maybe_log_mmio("WRITE", "wait", addr, data, iter);
+        }
+        if (stall_debug && iter > 0 && (iter % stall_log_period) == 0) {
+            log_stalled_bus_state("WRITE", "cmd", addr, iter);
+        }
+        tick_one();
+        timeout--;
+        iter++;
+    }
+    if (timeout == 0) {
+        fprintf(stderr, "[sim_harness_de10] ERROR: bus_write_masked(0x%06x) cmd timeout after 5M cycles @ cycle %lu\n",
                 addr, (unsigned long)(sim_time / 2));
     }
 
@@ -337,7 +488,7 @@ static uint32_t bus_read(uint32_t addr) {
         if (mmio_debug && (iter < 8 || (iter % 1000000) == 0)) {
             maybe_log_mmio("READ", "wait", addr, 0, iter);
         }
-        if (iter > 0 && (iter % stall_log_period) == 0) {
+        if (stall_debug && iter > 0 && (iter % stall_log_period) == 0) {
             log_stalled_bus_state("READ", "cmd", addr, iter);
         }
         tick_one();
@@ -368,7 +519,7 @@ static uint32_t bus_read(uint32_t addr) {
         if (mmio_debug && (iter < 8 || (iter % 1000000) == 0)) {
             maybe_log_mmio("READ", "rspwait", addr, 0, iter);
         }
-        if (iter > 0 && (iter % stall_log_period) == 0) {
+        if (stall_debug && iter > 0 && (iter % stall_log_period) == 0) {
             log_stalled_bus_state("READ", "rsp", addr, iter);
         }
         tick_one();
@@ -452,6 +603,11 @@ int sim_init(void) {
         mmio_debug = atoi(mmio_debug_str);
     }
 
+    const char* stall_debug_str = getenv("SIM_DE10_STALL_DEBUG");
+    if (stall_debug_str) {
+        stall_debug = atoi(stall_debug_str);
+    }
+
     const char* tex_trace_str = getenv("SIM_DE10_TEX_TRACE");
     if (tex_trace_str) {
         tex_trace = atoi(tex_trace_str);
@@ -465,6 +621,11 @@ int sim_init(void) {
     const char* tex_trace_min_addr_str = getenv("SIM_DE10_TEX_TRACE_MIN_ADDR");
     if (tex_trace_min_addr_str) {
         tex_trace_min_addr = strtoul(tex_trace_min_addr_str, nullptr, 0);
+    }
+
+    const char* mem_read_delay_str = getenv("SIM_DE10_MEM_READ_DELAY");
+    if (mem_read_delay_str) {
+        mem_read_delay = strtoul(mem_read_delay_str, nullptr, 0);
     }
 
     fprintf(stderr, "[sim_harness_de10] Initialized CoreDe10 Verilator model\n");
@@ -493,6 +654,13 @@ void sim_shutdown(void) {
 
 void sim_write(uint32_t addr, uint32_t data) {
     bus_write(addr, data);
+}
+
+void sim_write16(uint32_t addr, uint16_t data) {
+    const int lane_hi = (addr & 0x2) != 0;
+    const uint32_t packed_data = lane_hi ? ((uint32_t)data << 16) : (uint32_t)data;
+    const uint8_t mask = lane_hi ? 0xC : 0x3;
+    bus_write_masked(addr, packed_data, mask);
 }
 
 uint32_t sim_read(uint32_t addr) {
@@ -528,6 +696,60 @@ void sim_tick(int n) {
     for (int i = 0; i < n; i++) tick_one();
 }
 
+void sim_flush_fb_cache(void) {
+    if (!top) return;
+    top->rootp->CoreDe10__DOT__core_1__DOT__io_flushFbCaches = 1;
+    sim_idle_wait();
+    top->rootp->CoreDe10__DOT__core_1__DOT__io_flushFbCaches = 0;
+    tick_one();
+}
+
+void sim_invalidate_fb_cache(void) {
+    if (!top) return;
+
+    auto clear_cache = [](VCoreDe10_FramebufferPlaneCache* cache) {
+        if (!cache) return;
+        cache->slotValid_0 = 0;
+        cache->slotValid_1 = 0;
+        cache->slotDirty_0 = 0;
+        cache->slotDirty_1 = 0;
+        cache->state = 0;
+        cache->pendingSlot = 0;
+        cache->pendingIsRead = 0;
+        cache->pendingFlushOnly = 0;
+        cache->evictBeat = 0;
+        cache->evictDataValid = 0;
+        cache->fillRspCount = 0;
+        cache->readRspValid = 0;
+        cache->lineReadRspValid = 0;
+        cache->pendingReadWasHit = 0;
+        cache->nextVictim = 0;
+
+        for (int i = 0; i < 16; ++i) {
+            (&cache->slotKnownMask_0_0)[i] = 0;
+            (&cache->slotKnownMask_1_0)[i] = 0;
+            (&cache->slotDirtyMask_0_0)[i] = 0;
+            (&cache->slotDirtyMask_1_0)[i] = 0;
+        }
+    };
+
+    clear_cache(top->rootp->__PVT__CoreDe10__DOT__core_1__DOT__framebufferPlaneCache_2);
+    clear_cache(top->rootp->__PVT__CoreDe10__DOT__core_1__DOT__framebufferPlaneCache_3);
+    fprintf(stderr,
+            "[sim_harness_de10] Invalidated fb caches: color(valid=%u dirty=%u state=%u) aux(valid=%u dirty=%u state=%u)\n",
+            (unsigned)(top->rootp->__PVT__CoreDe10__DOT__core_1__DOT__framebufferPlaneCache_2->slotValid_0 |
+                       top->rootp->__PVT__CoreDe10__DOT__core_1__DOT__framebufferPlaneCache_2->slotValid_1),
+            (unsigned)(top->rootp->__PVT__CoreDe10__DOT__core_1__DOT__framebufferPlaneCache_2->slotDirty_0 |
+                       top->rootp->__PVT__CoreDe10__DOT__core_1__DOT__framebufferPlaneCache_2->slotDirty_1),
+            (unsigned)top->rootp->__PVT__CoreDe10__DOT__core_1__DOT__framebufferPlaneCache_2->state,
+            (unsigned)(top->rootp->__PVT__CoreDe10__DOT__core_1__DOT__framebufferPlaneCache_3->slotValid_0 |
+                       top->rootp->__PVT__CoreDe10__DOT__core_1__DOT__framebufferPlaneCache_3->slotValid_1),
+            (unsigned)(top->rootp->__PVT__CoreDe10__DOT__core_1__DOT__framebufferPlaneCache_3->slotDirty_0 |
+                       top->rootp->__PVT__CoreDe10__DOT__core_1__DOT__framebufferPlaneCache_3->slotDirty_1),
+            (unsigned)top->rootp->__PVT__CoreDe10__DOT__core_1__DOT__framebufferPlaneCache_3->state);
+    tick_one();
+}
+
 void sim_read_fb(uint32_t byte_offset, uint32_t* dst, uint32_t word_count) {
     uint32_t idx = byte_offset / 4;
     for (uint32_t i = 0; i < word_count && (idx + i) < FB_WORD_COUNT; i++) {
@@ -557,5 +779,31 @@ void sim_read_tex(uint32_t byte_offset, uint32_t* dst, uint32_t word_count) {
 }
 
 void sim_set_swap_count(uint32_t count) {
-    (void)count;
+    if (!top) return;
+    top->rootp->CoreDe10__DOT__core_1__DOT__swapBuffer_1__DOT__swapCountReg = count & 0x3u;
+}
+
+uint32_t sim_get_swap_count(void) {
+    if (!top) return 0;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__swapBuffer_1__DOT__swapCountReg & 0x3u;
+}
+
+uint64_t sim_get_cycle(void) {
+    return sim_time / 2;
+}
+
+uint64_t sim_get_total_read_ticks(void) {
+    return total_read_ticks;
+}
+
+uint64_t sim_get_total_read_count(void) {
+    return total_read_count;
+}
+
+uint64_t sim_get_total_write_ticks(void) {
+    return total_write_ticks;
+}
+
+uint64_t sim_get_total_write_count(void) {
+    return total_write_count;
 }

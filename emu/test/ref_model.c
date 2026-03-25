@@ -640,6 +640,7 @@ void ref_write_reg(uint32_t addr, uint32_t val)
             return;
         case SST_fbiInit1:
             voodoo->fbiInit1 = (val & ~5) | (voodoo->fbiInit1 & 5);
+            voodoo_recalc(voodoo);
             return;
         case SST_fbiInit2:
             voodoo->fbiInit2 = val;
@@ -884,6 +885,42 @@ uint32_t ref_get_palette_nonzero_count(int tmu)
             nz++;
     }
     return nz;
+}
+
+void ref_dump_triangle_debug(void)
+{
+    if (!voodoo)
+        return;
+    fprintf(stderr,
+            "[ref_model] tri dbg: vA=(%d,%d) vB=(%d,%d) vC=(%d,%d) draw=0x%x aux=0x%x row=%d auxRow=%d clip=(%d..%d,%d..%d) sign=%d fbzMode=0x%08x colorPath=0x%08x tex0=0x%08x tex1=0x%08x tLOD0=0x%08x tLOD1=0x%08x base0=0x%08x base1=0x%08x front=0x%x back=0x%x fbMask=0x%x h=%d v=%d\n",
+            voodoo->params.vertexAx, voodoo->params.vertexAy,
+            voodoo->params.vertexBx, voodoo->params.vertexBy,
+            voodoo->params.vertexCx, voodoo->params.vertexCy,
+            voodoo->params.draw_offset, voodoo->params.aux_offset,
+            voodoo->params.row_width, voodoo->params.aux_row_width,
+            voodoo->params.clipLeft, voodoo->params.clipRight,
+            voodoo->params.clipLowY, voodoo->params.clipHighY,
+            voodoo->params.sign, voodoo->params.fbzMode,
+            voodoo->params.fbzColorPath,
+            voodoo->params.textureMode[0], voodoo->params.textureMode[1],
+            voodoo->params.tLOD[0], voodoo->params.tLOD[1],
+            voodoo->params.texBaseAddr[0], voodoo->params.texBaseAddr[1],
+            voodoo->params.front_offset, voodoo->back_offset,
+            voodoo->fb_mask, voodoo->h_disp, voodoo->v_disp);
+}
+
+void ref_dump_layout_debug(void)
+{
+    if (!voodoo)
+        return;
+    fprintf(stderr,
+            "[ref_model] layout dbg: fbiInit1=0x%08x fbiInit2=0x%08x videoDimensions=0x%08x row=%d auxRow=%d draw=0x%x front=0x%x back=0x%x fbWrite=0x%x fbRead=0x%x h=%d v=%d disp=%d drawbuf=%d\n",
+            voodoo->fbiInit1, voodoo->fbiInit2, voodoo->videoDimensions,
+            voodoo->row_width, voodoo->aux_row_width,
+            voodoo->params.draw_offset, voodoo->params.front_offset,
+            voodoo->back_offset, voodoo->fb_write_offset,
+            voodoo->fb_read_offset, voodoo->h_disp, voodoo->v_disp,
+            voodoo->disp_buffer, voodoo->draw_buffer);
 }
 
 int ref_dump_state_to_dir(const char *dir, uint32_t frame_num)

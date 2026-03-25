@@ -253,6 +253,14 @@ In practice:
 
 - `native/...` and `dos/...` currently expose `sim` and `trace` directly in the command path.
 - `de10/...` keeps the runtime implicit in the namespace because every `de10` command already targets the board runtime.
+- `SIM_INTERFACE=de10` is the closest host-side reproduction of the board interface: it still uses the `sim` runtime, but swaps the Verilated top-level from `CoreSim` to `CoreDe10` and drives the DE10-style MMIO plus Avalon memory ports from the host harness.
+
+Examples:
+
+```bash
+make native/sim/run/test00 SIM_INTERFACE=de10
+make dos/sim/run/df00sdk SIM_INTERFACE=de10
+```
 
 ### Tomb Raider Setup
 
@@ -333,62 +341,41 @@ Replay outputs are written to `test-output/<trace>/` as `<trace>_ref.png`, `<tra
 
 Trace files are stored in `traces/` and compared pixel-by-pixel against a reference model.
 
-## DE10-Nano Bring-Up Flow (Scaffold)
+## DE10-Nano
 
-Goal-oriented planning docs:
+The DE10-Nano flow is meant for three practical tasks:
 
-- `docs/DE10_MILESTONES.md`
-- `docs/DE10_BRINGUP_PLAN.md`
-- `docs/DE10_DEPLOYMENT.md`
+- generate FPGA-ready RTL and bitstreams
+- program or deploy a board
+- run workloads on real hardware
 
-Entry points:
+Common commands:
 
 ```bash
 make de10/help
-make de10/plan
 
-# Generate DE10-targeted RTL
+# Generate RTL / FPGA build inputs
 make de10/rtl
-
-# Generate DE10 Platform Designer system collateral
 make de10/qsys
-
-# Build bitstream (requires Quartus in PATH)
 make de10/bitstream
 
-# Program/deploy to the default board (fpga@debian-fpga.local)
+# Program or deploy to the default board (fpga@debian-fpga.local)
 make de10/setup/program
 make de10/setup/deploy
 
-# Board validation
+# Basic board validation
 make de10/check/mmio
 
-# Run workloads on the board
+# Run workloads on hardware
 make de10/run/dos/df00sdk
 make de10/run/tomb
 ```
 
-Recommended DE10 organization:
-
-- `de10/setup/*` is for infrequent board preparation such as FPGA programming and runtime deployment.
-- `de10/check/*` is for board validation and smoke checks.
-- `de10/run/*` is for actual workload execution on programmed hardware.
-- The older low-level `de10/rtl`, `de10/qsys`, `de10/bitstream`, and `de10/glide*` commands remain available as advanced build plumbing.
-
-Board workload assumptions:
+Useful defaults and assumptions:
 
 - Default board target is `fpga@debian-fpga.local` unless `DE10_HOST` or `DE10_USER` override it.
 - Default deployed runtime prefix is `/home/fpga/spinalvoodoo` unless `DE10_REMOTE_PREFIX` overrides it.
 - `make de10/run/dos/<name>` uses the deployed launcher on the board and mounts `DE10_RUNTIME_DIR` (default `/home/fpga/de10-cross`) as `C:`.
 - `make de10/run/tomb` expects a prepared remote Tomb tree at `DE10_TOMB_SRC` (default `/home/fpga/tr1-3dfx`) containing the game directory and ISO.
 
-Current scope of this scaffold:
-
-- Establishes scripted DE10 build/program/deploy interfaces.
-- Adds DE10 top-level RTL generator entry point (`voodoo.de10.De10TopGen`).
-- Adds Platform Designer generation for HPS bridge integration (`scripts/gen-qsys-de10`).
-- Adds a board MMIO smoke utility (`tools/de10-mmio-smoke.c`).
-
-The FPGA wrapper and memory integration are initial bring-up placeholders and
-are expected to evolve as full HPS hard-IP/Platform Designer integration is
-finalized.
+Extra DE10 helpers live in `scripts/` and `tools/` for board capture, replay, and bring-up.

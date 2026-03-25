@@ -15,6 +15,10 @@ PROJ_ROOT  = ../..
 SIM_DIR    = ../sim
 OBJ_DIR    = obj_dir
 STUBS_DIR  = 86box_stubs
+SIM_INTERFACE ?= core
+SIM_MODEL = $(if $(filter de10,$(SIM_INTERFACE)),CoreDe10,CoreSim)
+SIM_GEN_CLASS = $(if $(filter de10,$(SIM_INTERFACE)),voodoo.de10.CoreDe10SimGen,voodoo.CoreSimGen)
+SIM_HARNESS_SRC = $(if $(filter de10,$(SIM_INTERFACE)),$(SIM_DIR)/harness/sim_harness_de10.cpp,$(SIM_DIR)/harness/sim_harness.cpp)
 
 # 86Box paths
 EBOX_SRC   = ../86Box/src/video
@@ -45,13 +49,16 @@ endif
 CFLAGS   = -O2 -fwrapv -w -I$(STUBS_DIR) -I$(EBOX_INC) -I$(TRACE_DIR)
 CXXFLAGS = -O2 -std=c++17 -I$(OBJ_DIR) -I$(VERILATOR_ROOT)/include -I$(VERILATOR_ROOT)/include/vltstd \
            -I$(SIM_DIR)/harness -I$(TRACE_DIR) -I. -DVL_TIME_CONTEXT
+ifeq ($(SIM_INTERFACE),de10)
+CXXFLAGS += -DSIM_INTERFACE_DE10
+endif
 DEPFLAGS = -MMD -MP
 ifeq ($(TRACE),1)
 CXXFLAGS += -DVM_TRACE_FST
 endif
 
 # SpinalHDL Verilog source
-VERILOG = $(SIM_DIR)/rtl/CoreSim.v
+VERILOG = $(SIM_DIR)/rtl/$(SIM_MODEL).v
 SCALA_SRCS := $(shell find $(PROJ_ROOT)/src -name '*.scala') $(PROJ_ROOT)/project.scala
 
 # Stamps
@@ -75,7 +82,7 @@ state-roundtrip: $(OBJ_DIR)/state_roundtrip_test
 # Step 1: Generate Verilog (reuse existing or rebuild)
 $(VERILOG): $(SCALA_SRCS) $(CORE_SIM_GEN_ARGS_FILE)
 	@rm -f $(dir $(VERILOG))*.bin
-	cd $(PROJ_ROOT) && java -Xmx2g -cp "$$( $(SCALA_CLI) compile project.scala src --print-class-path $(SCALA_CLI_FLAGS) )" voodoo.CoreSimGen $(if $(filter 1,$(TRACE)),--trace-pipeline) $(CORE_SIM_GEN_ARGS)
+	cd $(PROJ_ROOT) && java -Xmx2g -cp "$$( $(SCALA_CLI) compile project.scala src --print-class-path $(SCALA_CLI_FLAGS) )" $(SIM_GEN_CLASS) $(if $(filter 1,$(TRACE)),--trace-pipeline) $(CORE_SIM_GEN_ARGS)
 	@sed -i 's|\$$readmemb("\([^/"]*\.bin\)"|\$$readmemb("$(abspath $(dir $(VERILOG)))/\1"|g' $@
 
 # Step 2: Verilate (64-bit obj_dir, separate from 32-bit Glide build)
@@ -87,17 +94,17 @@ $(VERILATE_STAMP): $(VERILOG) $(TRACE_MODE_FILE)
 # Step 3: Build Verilator model + runtime libraries (64-bit)
 # OPT_GLOBAL passes -DVL_USER_WARN to the verilated runtime compilation,
 # suppressing its default vl_warn so our override in sim_harness.cpp wins.
-# Use a stamp file so parallel make doesn't invoke VCoreSim.mk twice.
+# Use a stamp file so parallel make doesn't invoke the Verilator model twice.
 VERILATOR_LIBS_STAMP = $(OBJ_DIR)/.verilator_libs.stamp
 $(VERILATOR_LIBS_STAMP): $(VERILATE_STAMP)
-	$(MAKE) -j$(shell nproc) -C $(OBJ_DIR) -f VCoreSim.mk \
+	$(MAKE) -j$(shell nproc) -C $(OBJ_DIR) -f V$(SIM_MODEL).mk \
 		CXX="$(CXX)" \
 		OBJCACHE="$(OBJCACHE)" \
 		OPT_FAST="-O3" \
 		OPT_SLOW="" \
 		OPT_GLOBAL="-DVL_USER_WARN"
 	@touch $@
-$(OBJ_DIR)/VCoreSim__ALL.a: $(VERILATOR_LIBS_STAMP)
+$(OBJ_DIR)/V$(SIM_MODEL)__ALL.a: $(VERILATOR_LIBS_STAMP)
 $(OBJ_DIR)/libverilated.a: $(VERILATOR_LIBS_STAMP)
 
 # Step 4: 86Box reference objects (compiled as C)
@@ -127,7 +134,7 @@ $(OBJ_DIR)/ref_model.o: ref_model.c
 	$(OBJCACHE) $(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ $<
 
 # Step 5: C++ objects
-$(OBJ_DIR)/sim_harness.o: $(SIM_DIR)/harness/sim_harness.cpp Makefile $(TRACE_MODE_FILE) | $(VERILATE_STAMP)
+$(OBJ_DIR)/sim_harness.o: $(SIM_HARNESS_SRC) Makefile $(TRACE_MODE_FILE) | $(VERILATE_STAMP)
 	$(OBJCACHE) $(CXX) $(CXXFLAGS) $(DEPFLAGS) -DVL_USER_WARN -c -o $@ $<
 
 $(OBJ_DIR)/trace_test.o: trace_test.cpp Makefile $(TRACE_MODE_FILE) | $(VERILATE_STAMP)
@@ -151,8 +158,8 @@ OBJS = $(OBJ_DIR)/trace_test.o \
        $(OBJ_DIR)/voodoo_trace_writer.o \
        $(OBJ_DIR)/sim_harness.o
 
-$(OBJ_DIR)/trace_test: $(OBJS) $(OBJ_DIR)/VCoreSim__ALL.a $(OBJ_DIR)/libverilated.a
-	$(CXX) -o $@ $(OBJS) $(OBJ_DIR)/VCoreSim__ALL.a $(OBJ_DIR)/libverilated.a -lm -lz -lpthread
+$(OBJ_DIR)/trace_test: $(OBJS) $(OBJ_DIR)/V$(SIM_MODEL)__ALL.a $(OBJ_DIR)/libverilated.a
+	$(CXX) -o $@ $(OBJS) $(OBJ_DIR)/V$(SIM_MODEL)__ALL.a $(OBJ_DIR)/libverilated.a -lm -lz -lpthread
 
 ROUNDTRIP_OBJS = $(OBJ_DIR)/state_roundtrip_test.o \
                  $(OBJ_DIR)/ref_model.o \

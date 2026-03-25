@@ -3,6 +3,7 @@
 #define _LARGEFILE64_SOURCE 1
 
 #include <cerrno>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -34,6 +35,8 @@ struct MapRegion {
 struct PageCache {
   MapRegion region;
   uint32_t pageBase = 0xffffffffu;
+  uint64_t mapCount = 0;
+  uint64_t bytesCopied = 0;
 };
 
 struct Options {
@@ -51,6 +54,12 @@ inline void mmioWrite32(volatile uint8_t *mmio, uint32_t addr, uint32_t value);
 bool physWriteAll(int fd, PageCache *cache, uint32_t physBase, const void *src, size_t size);
 uint32_t remapBackendRegAddr(uint32_t addr);
 uint32_t idleWait(volatile uint8_t *mmio);
+
+using Clock = std::chrono::steady_clock;
+
+double elapsedMs(Clock::time_point start) {
+  return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+}
 
 bool isDirectory(const char *path) {
   struct stat st;
@@ -166,6 +175,7 @@ bool loadStateFromFile(
     PageCache *texCache,
     uint32_t fbBase
 ) {
+  auto stateStart = Clock::now();
   fprintf(stderr, "[de10-trace] loadStateFromFile begin %s\n", stateFile.c_str());
   int stateFd = open(stateFile.c_str(), O_RDONLY);
   if (stateFd < 0) {
@@ -219,6 +229,7 @@ bool loadStateFromFile(
     }
     mmioWrite32(mmio, remapBackendRegAddr(regs[i].addr), regs[i].value);
   }
+  fprintf(stderr, "[de10-trace] State register restore took %.3f ms\n", elapsedMs(stateStart));
   free(regs);
 
   if (shdr.fb_size > kFramebufferBytes || shdr.tex_size > kTextureBytes) {
@@ -235,6 +246,7 @@ bool loadStateFromFile(
 
   uint32_t remaining = shdr.fb_size;
   uint32_t offset = 0;
+  auto fbStart = Clock::now();
   while (remaining) {
     size_t chunk = remaining > chunkSize ? chunkSize : remaining;
     if (!readExact(buffer, chunk)) {
@@ -250,9 +262,15 @@ bool loadStateFromFile(
     remaining -= chunk;
     offset += static_cast<uint32_t>(chunk);
   }
+  fprintf(stderr,
+          "[de10-trace] Framebuffer bulk copy took %.3f ms (%llu maps, %llu bytes)\n",
+          elapsedMs(fbStart),
+          static_cast<unsigned long long>(fbCache->mapCount),
+          static_cast<unsigned long long>(fbCache->bytesCopied));
 
   remaining = shdr.tex_size;
   offset = 0;
+  auto texStart = Clock::now();
   while (remaining) {
     size_t chunk = remaining > chunkSize ? chunkSize : remaining;
     if (!readExact(buffer, chunk)) {
@@ -268,12 +286,20 @@ bool loadStateFromFile(
     remaining -= chunk;
     offset += static_cast<uint32_t>(chunk);
   }
+  fprintf(stderr,
+          "[de10-trace] Texture bulk copy took %.3f ms (%llu maps, %llu bytes)\n",
+          elapsedMs(texStart),
+          static_cast<unsigned long long>(texCache->mapCount),
+          static_cast<unsigned long long>(texCache->bytesCopied));
 
   free(buffer);
   close(stateFd);
   fprintf(stderr, "[de10-trace] State bulk memory copied\n");
+  auto idleStart = Clock::now();
   idleWait(mmio);
+  fprintf(stderr, "[de10-trace] State load idle wait took %.3f ms\n", elapsedMs(idleStart));
   fprintf(stderr, "[de10-trace] State load idle wait complete\n");
+  fprintf(stderr, "[de10-trace] Total state load took %.3f ms\n", elapsedMs(stateStart));
   return true;
 }
 
@@ -302,6 +328,7 @@ bool ensurePageMapped(int fd, uint32_t physAddr, PageCache *cache) {
   cache->region.base = static_cast<volatile uint8_t *>(raw);
   cache->region.size = 0x1000;
   cache->pageBase = pageBase;
+  cache->mapCount++;
   return true;
 }
 
@@ -315,6 +342,7 @@ bool physWriteAll(int fd, PageCache *cache, uint32_t physBase, const void *src, 
     size_t chunk = size - done;
     if (chunk > (0x1000u - pageOff)) chunk = 0x1000u - pageOff;
     memcpy((void *)(cache->region.base + pageOff), ptr + done, chunk);
+    cache->bytesCopied += chunk;
     done += chunk;
   }
   return true;
@@ -476,6 +504,11 @@ int main(int argc, char **argv) {
   uint32_t texWrites = 0;
   uint32_t fbWrites = 0;
   uint32_t swapWrites = 0;
+  fbCache.mapCount = 0;
+  fbCache.bytesCopied = 0;
+  texCache.mapCount = 0;
+  texCache.bytesCopied = 0;
+  auto replayStart = Clock::now();
   for (uint32_t i = 0; i < replayEntries; ++i) {
     const auto *e = &entries[i];
     uint32_t repeat = e->count ? e->count : 1u;
@@ -522,8 +555,17 @@ int main(int argc, char **argv) {
     }
   }
 
+  fprintf(stderr,
+          "[de10-trace] Replay loop body took %.3f ms (reg=%u tex=%u fb=%u swaps=%u fbMaps=%llu texMaps=%llu fbBytes=%llu texBytes=%llu)\n",
+          elapsedMs(replayStart), regWrites, texWrites, fbWrites, swapWrites,
+          static_cast<unsigned long long>(fbCache.mapCount),
+          static_cast<unsigned long long>(texCache.mapCount),
+          static_cast<unsigned long long>(fbCache.bytesCopied),
+          static_cast<unsigned long long>(texCache.bytesCopied));
   fprintf(stderr, "[de10-trace] Replay loop complete, entering final idle wait\n");
+  auto finalIdleStart = Clock::now();
   uint32_t finalStatus = idleWait(mmio.base);
+  fprintf(stderr, "[de10-trace] Final idle wait took %.3f ms\n", elapsedMs(finalIdleStart));
   uint32_t pixelsIn = mmioRead32(mmio.base, 0x14c);
   uint32_t pixelsOut = mmioRead32(mmio.base, 0x15c);
   fprintf(stderr,

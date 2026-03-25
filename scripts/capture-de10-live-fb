@@ -1,0 +1,187 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+
+HOST="${DE10_HOST:-debian-fpga.local}"
+USER_NAME="${DE10_USER:-fpga}"
+OUTPUT_DIR="${DE10_CAPTURE_OUTPUT_DIR:-$ROOT_DIR/output/de10-live-fb}"
+PREFIX="${DE10_CAPTURE_PREFIX:-capture}"
+WIDTH="${DE10_CAPTURE_WIDTH:-640}"
+HEIGHT="${DE10_CAPTURE_HEIGHT:-480}"
+MMIO_BASE="${DE10_CAPTURE_MMIO_BASE:-0xc0000000}"
+MMIO_SPAN="${DE10_CAPTURE_MMIO_SPAN:-0x00400000}"
+FB_BASE="${DE10_CAPTURE_FB_BASE:-0x3f000000}"
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/capture-de10-live-fb [options]
+
+Options:
+  --host <host>         DE10 host
+  --user <user>         SSH user (default: fpga)
+  --output-dir <dir>    Local output directory
+  --prefix <name>       Output filename prefix
+  --width <n>           Frame width for PNG conversion (default: 640)
+  --height <n>          Frame height for PNG conversion (default: 480)
+  --mmio-base <hex>     MMIO base physical address
+  --mmio-span <hex>     MMIO span physical address
+  --fb-base <hex>       DDR framebuffer base physical address
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --host)
+      HOST="$2"
+      shift 2
+      ;;
+    --user)
+      USER_NAME="$2"
+      shift 2
+      ;;
+    --output-dir)
+      OUTPUT_DIR="$2"
+      shift 2
+      ;;
+    --prefix)
+      PREFIX="$2"
+      shift 2
+      ;;
+    --width)
+      WIDTH="$2"
+      shift 2
+      ;;
+    --height)
+      HEIGHT="$2"
+      shift 2
+      ;;
+    --mmio-base)
+      MMIO_BASE="$2"
+      shift 2
+      ;;
+    --mmio-span)
+      MMIO_SPAN="$2"
+      shift 2
+      ;;
+    --fb-base)
+      FB_BASE="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
+
+REMOTE_TARGET="${USER_NAME}@${HOST}"
+mkdir -p "$OUTPUT_DIR"
+
+REMOTE_BASE="/var/tmp/de10-live-fb-${PREFIX}"
+
+ssh "$REMOTE_TARGET" "sudo -n python3 - <<'PY' '$REMOTE_BASE' '$WIDTH' '$HEIGHT' '$MMIO_BASE' '$MMIO_SPAN' '$FB_BASE'
+import json
+import mmap
+import os
+import struct
+import sys
+
+remote_base = sys.argv[1]
+width = int(sys.argv[2], 0)
+height = int(sys.argv[3], 0)
+mmio_base = int(sys.argv[4], 0)
+mmio_span = int(sys.argv[5], 0)
+fb_base = int(sys.argv[6], 0)
+
+status_offset = 0x000
+fbi_init1_offset = 0x214
+fbi_init2_offset = 0x218
+pixels_in_offset = 0x14c
+pixels_out_offset = 0x15c
+displayed_buffer_shift = 10
+
+fd = os.open('/dev/mem', os.O_RDWR | os.O_SYNC)
+try:
+    mmio = mmap.mmap(fd, mmio_span, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE, offset=mmio_base)
+    def read32(off):
+        return struct.unpack_from('<I', mmio, off)[0]
+    status = read32(status_offset)
+    fbi_init1 = read32(fbi_init1_offset)
+    fbi_init2 = read32(fbi_init2_offset)
+    pixels_in = read32(pixels_in_offset)
+    pixels_out = read32(pixels_out_offset)
+    tiles = (fbi_init1 >> 4) & 0xf
+    stride_pixels = (tiles << 6) if tiles else width
+    buffer_offset = ((fbi_init2 >> 11) & 0x1ff) * 4096
+    if buffer_offset == 0:
+        buffer_offset = stride_pixels * height * 2
+    displayed_buffer = (status >> displayed_buffer_shift) & 0x3
+    row_bytes = stride_pixels * 2
+    length = row_bytes * height
+    meta = {
+        'status': status,
+        'fbiInit1': fbi_init1,
+        'fbiInit2': fbi_init2,
+        'tiles': tiles,
+        'stridePixels': stride_pixels,
+        'rowBytes': row_bytes,
+        'bufferOffset': buffer_offset,
+        'displayedBuffer': displayed_buffer,
+        'pixelsIn': pixels_in,
+        'pixelsOut': pixels_out,
+        'width': width,
+        'height': height,
+    }
+    with open(remote_base + '.meta.json', 'w', encoding='ascii') as fp:
+        json.dump(meta, fp, indent=2, sort_keys=True)
+        fp.write('\n')
+
+    for label, index in [('displayed', displayed_buffer & 1), ('other', (displayed_buffer ^ 1) & 1)]:
+        phys = fb_base + index * buffer_offset
+        page = phys & ~0xfff
+        page_off = phys - page
+        map_len = page_off + length
+        fb_map = mmap.mmap(fd, map_len, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE, offset=page)
+        try:
+            with open(f'{remote_base}.{label}.raw', 'wb') as fp:
+                fp.write(fb_map[page_off:page_off + length])
+        finally:
+            fb_map.close()
+finally:
+    try:
+        mmio.close()
+    except Exception:
+        pass
+    os.close(fd)
+PY"
+
+scp "$REMOTE_TARGET:${REMOTE_BASE}.meta.json" "$OUTPUT_DIR/${PREFIX}.meta.json"
+scp "$REMOTE_TARGET:${REMOTE_BASE}.displayed.raw" "$OUTPUT_DIR/${PREFIX}.displayed.raw"
+scp "$REMOTE_TARGET:${REMOTE_BASE}.other.raw" "$OUTPUT_DIR/${PREFIX}.other.raw"
+
+ROW_BYTES="$(python3 - <<'PY' "$OUTPUT_DIR/${PREFIX}.meta.json"
+import json, sys
+with open(sys.argv[1], 'r', encoding='ascii') as fp:
+    print(json.load(fp)['rowBytes'])
+PY
+)"
+
+python3 "$ROOT_DIR/scripts/rgb565_to_png.py" \
+  "$OUTPUT_DIR/${PREFIX}.displayed.raw" \
+  "$OUTPUT_DIR/${PREFIX}.displayed.png" \
+  "$WIDTH" "$HEIGHT" "$ROW_BYTES"
+
+python3 "$ROOT_DIR/scripts/rgb565_to_png.py" \
+  "$OUTPUT_DIR/${PREFIX}.other.raw" \
+  "$OUTPUT_DIR/${PREFIX}.other.png" \
+  "$WIDTH" "$HEIGHT" "$ROW_BYTES"
+
+echo "[de10-live-fb] Metadata: $OUTPUT_DIR/${PREFIX}.meta.json"
+echo "[de10-live-fb] Displayed: $OUTPUT_DIR/${PREFIX}.displayed.png"
+echo "[de10-live-fb] Other: $OUTPUT_DIR/${PREFIX}.other.png"

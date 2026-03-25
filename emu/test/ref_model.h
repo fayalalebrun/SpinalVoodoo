@@ -82,6 +82,8 @@ uint32_t ref_get_triangles_textured(void);
 uint32_t ref_get_triangles_untextured(void);
 uint32_t ref_get_triangles_all_black_writes(void);
 uint32_t ref_get_palette_nonzero_count(int tmu);
+void ref_dump_triangle_debug(void);
+void ref_dump_layout_debug(void);
 
 /* Load a state snapshot into the reference model.
  * data points to the raw state.bin file contents, size is the file length.

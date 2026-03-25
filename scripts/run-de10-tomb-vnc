@@ -1,0 +1,331 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+
+HOST="${DE10_HOST:-debian-fpga.local}"
+USER_NAME="${DE10_USER:-fpga}"
+RBF_FILE="${DE10_RBF:-$ROOT_DIR/output/de10/bitstream/SpinalVoodoo_de10.rbf}"
+STATE_FILE="${DE10_FPGA_STATE_FILE:-/home/fpga/spinalvoodoo/current/.fpga-programmed.sha256}"
+REMOTE_PREFIX="${DE10_REMOTE_PREFIX:-/home/fpga/spinalvoodoo}"
+REMOTE_LAUNCHER="${DE10_REMOTE_LAUNCHER:-$REMOTE_PREFIX/current/bin/run-dosboxx-de10-glide}"
+REMOTE_DOSBOX_CONF="${DE10_REMOTE_DOSBOX_CONF:-$REMOTE_PREFIX/current/etc/dosboxx-de10-glide.conf}"
+REMOTE_TOMB_SRC="${DE10_TOMB_SRC:-/home/fpga/tr1-3dfx}"
+REMOTE_TOMB_GAME_DIR="${DE10_TOMB_GAME_DIR:-TOMBRAID}"
+REMOTE_TOMB_ISO="${DE10_TOMB_ISO:-tr1disc01.iso}"
+REMOTE_TOMB_EXE="${DE10_TOMB_EXE:-TOMB.EXE}"
+DISPLAY_NUM="${DE10_VNC_DISPLAY:-:1}"
+SCREEN_SPEC="${DE10_VNC_SCREEN:-800x600x16}"
+VERIFY_ONLY=0
+OPEN_TUNNEL=1
+LOCAL_PORT="${DE10_VNC_LOCAL_PORT:-5901}"
+AUTO_KEYS="${DE10_TOMB_AUTO_KEYS:-Return Return}"
+AUTO_DELAY="${DE10_TOMB_AUTO_DELAY:-25}"
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/run-de10-tomb-vnc --host <host> [options]
+
+Options:
+  --host <host>           DE10 host
+  --user <user>           SSH user (default: fpga)
+  --verify-programmed     Skip programming and require the remote programmed marker to match
+  --src <dir>             Remote prepared Tomb tree (default: /home/fpga/tr1-3dfx)
+  --game-dir <name>       Game directory inside the source tree (default: TOMBRAID)
+  --iso <name>            ISO filename inside the source tree (default: tr1disc01.iso)
+  --exe <name>            Tomb executable name (default: TOMB.EXE)
+  --display <display>     Remote VNC X display (default: :1)
+  --screen <WxHxD>        VNC screen geometry/depth (default: 800x600x16)
+  --local-port <port>     Local forwarded VNC port (default: 5901)
+  --auto-keys <keys>      Space-separated X11 key names to send after launch
+  --auto-delay <sec>      Seconds to wait before sending auto-keys (default: 25)
+  --no-auto-keys          Disable automatic key injection
+  --no-tunnel             Do not open a local SSH tunnel automatically
+  -h, --help              Show this help
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --host)
+      HOST="$2"
+      shift 2
+      ;;
+    --user)
+      USER_NAME="$2"
+      shift 2
+      ;;
+    --verify-programmed)
+      VERIFY_ONLY=1
+      shift
+      ;;
+    --src)
+      REMOTE_TOMB_SRC="$2"
+      shift 2
+      ;;
+    --game-dir)
+      REMOTE_TOMB_GAME_DIR="$2"
+      shift 2
+      ;;
+    --iso)
+      REMOTE_TOMB_ISO="$2"
+      shift 2
+      ;;
+    --exe)
+      REMOTE_TOMB_EXE="$2"
+      shift 2
+      ;;
+    --display)
+      DISPLAY_NUM="$2"
+      shift 2
+      ;;
+    --screen)
+      SCREEN_SPEC="$2"
+      shift 2
+      ;;
+    --local-port)
+      LOCAL_PORT="$2"
+      shift 2
+      ;;
+    --auto-keys)
+      AUTO_KEYS="$2"
+      shift 2
+      ;;
+    --auto-delay)
+      AUTO_DELAY="$2"
+      shift 2
+      ;;
+    --no-auto-keys)
+      AUTO_KEYS=""
+      shift
+      ;;
+    --no-tunnel)
+      OPEN_TUNNEL=0
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
+
+if [[ -z "$HOST" ]]; then
+  usage >&2
+  exit 1
+fi
+
+REMOTE_TARGET="${USER_NAME}@${HOST}"
+REMOTE_VNC_PORT="$((5900 + ${DISPLAY_NUM#:}))"
+
+if [[ "$VERIFY_ONLY" -eq 0 ]]; then
+  "$ROOT_DIR/scripts/program-de10" --host "$HOST" --user "$USER_NAME" --rbf "$RBF_FILE" --state-file "$STATE_FILE"
+else
+  local_hash="$(sha256sum "$RBF_FILE" | cut -d ' ' -f 1)"
+  remote_hash="$(ssh "$REMOTE_TARGET" "test -f '$STATE_FILE' && head -n 1 '$STATE_FILE' | cut -d ' ' -f 1 || true")"
+  if [[ "$remote_hash" != "$local_hash" ]]; then
+    echo "Remote programmed bitstream marker does not match $RBF_FILE" >&2
+    exit 1
+  fi
+fi
+
+ssh "$REMOTE_TARGET" "sudo -n true >/dev/null && command -v Xvnc >/dev/null && test -x '$REMOTE_LAUNCHER' && test -f '$REMOTE_DOSBOX_CONF' && test -d '$REMOTE_TOMB_SRC/$REMOTE_TOMB_GAME_DIR' && test -f '$REMOTE_TOMB_SRC/$REMOTE_TOMB_ISO'"
+
+ssh "$REMOTE_TARGET" "sudo -n bash -s -- '$DISPLAY_NUM' '$SCREEN_SPEC' '$REMOTE_LAUNCHER' '$REMOTE_DOSBOX_CONF' '$REMOTE_TOMB_SRC' '$REMOTE_TOMB_GAME_DIR' '$REMOTE_TOMB_ISO' '$REMOTE_TOMB_EXE' '$REMOTE_VNC_PORT' '$AUTO_DELAY' '$AUTO_KEYS'" <<'EOF'
+set -euo pipefail
+display_num="$1"
+screen_spec="$2"
+launcher="$3"
+dosbox_conf="$4"
+tomb_src="$5"
+game_dir="$6"
+iso_name="$7"
+exe_name="$8"
+vnc_port="$9"
+auto_delay="${10}"
+auto_keys="${11}"
+remote_base="/var/tmp/de10-tomb-vnc"
+remote_frame_dir="${remote_base}.frames"
+
+pkill -f "Xvnc ${display_num}" >/dev/null 2>&1 || true
+pkill -f dosbox-x >/dev/null 2>&1 || true
+rm -rf "${remote_base}."*
+rm -rf "$remote_frame_dir"
+mkdir -p "$remote_frame_dir"
+
+geometry="${screen_spec%x*}"
+depth="${screen_spec##*x}"
+Xvnc "$display_num" -geometry "$geometry" -depth "$depth" -localhost yes -SecurityTypes None -AlwaysShared -AcceptSetDesktopSize=0 >"${remote_base}.xvnc.log" 2>&1 &
+echo $! >"${remote_base}.xvnc.pid"
+sleep 1
+
+cp "$dosbox_conf" "${remote_base}.conf"
+cat >>"${remote_base}.conf" <<'CONFEOF'
+
+[sdl]
+output=surface
+windowresolution=320x200
+autolock=true
+
+[render]
+frameskip=10
+aspect=false
+CONFEOF
+
+export DISPLAY="$display_num"
+export HOME=/root
+export SDL_AUDIODRIVER=dummy
+export DE10_GLIDE_X11=1
+export GLIDE_X11_ENABLE=1
+export GLIDE_X11_DEBUG=1
+export GLIDE_X11_TOPLEVEL=1
+export GLIDE_X11_STAGE_FILE="${remote_base}.stage"
+export GLIDE_X11_DUMP_DIR="$remote_frame_dir"
+export DE10_INIT_STAGE_FILE="${remote_base}.init.stage"
+export DE10_DEBUG_STAGE_FILE="${remote_base}.debug.stage"
+export DE10_DOSBOX_CONF="${remote_base}.conf"
+
+nohup "$launcher" \
+  -c "mount c $tomb_src" \
+  -c "imgmount d $tomb_src/$iso_name -t iso" \
+  -c "c:" \
+  -c "cd $game_dir" \
+  -c "$exe_name" \
+  >"${remote_base}.dosbox.log" 2>&1 &
+echo $! >"${remote_base}.dosbox.pid"
+
+nohup python3 - "$display_num" "$(cat "${remote_base}.dosbox.pid")" >"${remote_base}.focus.log" 2>&1 <<'PY' &
+import ctypes
+import ctypes.util
+import os
+import re
+import subprocess
+import sys
+import time
+
+display = sys.argv[1]
+dosbox_pid = int(sys.argv[2])
+
+libX11 = ctypes.cdll.LoadLibrary(ctypes.util.find_library('X11'))
+libX11.XOpenDisplay.restype = ctypes.c_void_p
+libX11.XRaiseWindow.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+libX11.XSetInputFocus.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+libX11.XFlush.argtypes = [ctypes.c_void_p]
+libX11.XGetInputFocus.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong), ctypes.POINTER(ctypes.c_int)]
+
+dpy = libX11.XOpenDisplay(display.encode())
+if not dpy:
+    raise SystemExit('XOpenDisplay failed')
+
+last_window = None
+while True:
+    try:
+        os.kill(dosbox_pid, 0)
+    except OSError:
+        break
+    try:
+        tree = subprocess.check_output(['xwininfo', '-display', display, '-root', '-tree'], text=True, stderr=subprocess.DEVNULL)
+    except Exception:
+        time.sleep(1)
+        continue
+    match = None
+    for line in tree.splitlines():
+        candidate = re.search(r'\s+(0x[0-9a-f]+) "DOSBox-X', line)
+        if candidate:
+            match = int(candidate.group(1), 16)
+            break
+    if match is None:
+        time.sleep(1)
+        continue
+    focus_window = ctypes.c_ulong()
+    revert_to = ctypes.c_int()
+    libX11.XGetInputFocus(dpy, ctypes.byref(focus_window), ctypes.byref(revert_to))
+    if focus_window.value != match or last_window != match:
+        libX11.XRaiseWindow(dpy, match)
+        libX11.XSetInputFocus(dpy, match, 1, 0)
+        libX11.XFlush(dpy)
+        print(f'focused window=0x{match:x}')
+        sys.stdout.flush()
+        last_window = match
+    time.sleep(1)
+PY
+
+if [[ -n "$auto_keys" ]]; then
+  nohup python3 - "$display_num" "$auto_delay" "$auto_keys" >"${remote_base}.keys.log" 2>&1 <<'PY'
+import ctypes
+import ctypes.util
+import re
+import subprocess
+import sys
+import time
+
+display, delay_s, keys_text = sys.argv[1], float(sys.argv[2]), sys.argv[3]
+keys = [key for key in keys_text.split() if key]
+time.sleep(delay_s)
+tree = subprocess.check_output(['xwininfo', '-display', display, '-root', '-tree'], text=True, stderr=subprocess.STDOUT)
+match = None
+for line in tree.splitlines():
+    candidate = re.search(r'\s+(0x[0-9a-f]+) "DOSBox-X', line)
+    if candidate:
+        match = candidate.group(1)
+        break
+if match is None:
+    raise SystemExit('DOSBox-X window not found')
+window = int(match, 16)
+
+libX11 = ctypes.cdll.LoadLibrary(ctypes.util.find_library('X11'))
+libXtst = ctypes.cdll.LoadLibrary(ctypes.util.find_library('Xtst'))
+libX11.XOpenDisplay.restype = ctypes.c_void_p
+libX11.XRaiseWindow.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+libX11.XSetInputFocus.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+libX11.XFlush.argtypes = [ctypes.c_void_p]
+libX11.XStringToKeysym.argtypes = [ctypes.c_char_p]
+libX11.XStringToKeysym.restype = ctypes.c_ulong
+libX11.XKeysymToKeycode.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+libX11.XKeysymToKeycode.restype = ctypes.c_uint
+libXtst.XTestFakeKeyEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
+
+dpy = libX11.XOpenDisplay(display.encode())
+if not dpy:
+    raise SystemExit('XOpenDisplay failed')
+libX11.XRaiseWindow(dpy, window)
+libX11.XSetInputFocus(dpy, window, 1, 0)
+libX11.XFlush(dpy)
+time.sleep(0.5)
+print(f'window={match}')
+for key in keys:
+    keysym = libX11.XStringToKeysym(key.encode())
+    keycode = libX11.XKeysymToKeycode(dpy, keysym)
+    if not keycode:
+        raise SystemExit(f'No keycode for {key}')
+    libXtst.XTestFakeKeyEvent(dpy, keycode, 1, 0)
+    libXtst.XTestFakeKeyEvent(dpy, keycode, 0, 0)
+    libX11.XFlush(dpy)
+    print(f'sent {key} code={keycode}')
+    time.sleep(0.5)
+PY
+fi
+
+echo "display=$display_num"
+echo "port=$vnc_port"
+echo "xvnc_pid=$(cat "${remote_base}.xvnc.pid")"
+echo "dosbox_pid=$(cat "${remote_base}.dosbox.pid")"
+echo "logs=${remote_base}.{xvnc.log,dosbox.log,stage,init.stage,debug.stage}"
+echo "focus=${remote_base}.focus.log"
+echo "keys=${remote_base}.keys.log"
+echo "frames=$remote_frame_dir"
+EOF
+
+if [[ "$OPEN_TUNNEL" -eq 1 ]]; then
+  ssh -f -N -L "$LOCAL_PORT:127.0.0.1:$REMOTE_VNC_PORT" "$REMOTE_TARGET"
+  echo "[de10-vnc] SSH tunnel ready: localhost:$LOCAL_PORT -> $HOST:$REMOTE_VNC_PORT"
+  echo "[de10-vnc] Open your VNC viewer to localhost:$LOCAL_PORT"
+else
+  echo "[de10-vnc] Remote VNC listens on localhost:$REMOTE_VNC_PORT only"
+  echo "[de10-vnc] Tunnel it with: ssh -L $LOCAL_PORT:127.0.0.1:$REMOTE_VNC_PORT $REMOTE_TARGET"
+fi

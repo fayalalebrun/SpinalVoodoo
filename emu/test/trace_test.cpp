@@ -211,6 +211,8 @@ int main(int argc, char **argv) {
     int watch_y = -1;
     if (const char *wx = getenv("SIM_WATCH_X")) watch_x = atoi(wx);
     if (const char *wy = getenv("SIM_WATCH_Y")) watch_y = atoi(wy);
+    const bool sim_skip_final_idle = getenv("SIM_SKIP_FINAL_IDLE") != nullptr;
+    const uint64_t sim_cycle_limit = getenv("SIM_CYCLE_LIMIT") ? strtoull(getenv("SIM_CYCLE_LIMIT"), nullptr, 0) : 0ull;
 #ifdef SIM_INTERFACE_DE10
     const uint64_t sim_profile_writes = getenv("SIM_PROFILE_WRITES") ? strtoull(getenv("SIM_PROFILE_WRITES"), nullptr, 0) : 0ull;
     uint64_t worst_write_cycles = 0;
@@ -229,6 +231,36 @@ int main(int argc, char **argv) {
     uint64_t sim_read_count_final = 0;
     uint64_t sim_write_ticks_final = 0;
     uint64_t sim_write_count_final = 0;
+    uint32_t sim_fb_fill_hits_final = 0;
+    uint32_t sim_fb_fill_misses_final = 0;
+    uint32_t sim_fb_fill_burst_count_final = 0;
+    uint32_t sim_fb_fill_burst_beats_final = 0;
+    uint32_t sim_fb_fill_stall_cycles_final = 0;
+    uint32_t sim_fb_write_stall_cycles_final = 0;
+    uint32_t sim_fb_write_drain_count_final = 0;
+    uint32_t sim_fb_write_full_drain_count_final = 0;
+    uint32_t sim_fb_write_partial_drain_count_final = 0;
+    uint32_t sim_fb_write_drain_reason_full_count_final = 0;
+    uint32_t sim_fb_write_drain_reason_rotate_count_final = 0;
+    uint32_t sim_fb_write_drain_reason_flush_count_final = 0;
+    uint32_t sim_fb_write_drain_dirty_word_total_final = 0;
+    uint32_t sim_fb_write_rotate_blocked_cycles_final = 0;
+    uint32_t sim_fb_write_single_word_drain_count_final = 0;
+    uint32_t sim_fb_write_single_word_drain_start_at_zero_count_final = 0;
+    uint32_t sim_fb_write_single_word_drain_start_at_last_count_final = 0;
+    uint32_t sim_fb_write_rotate_adjacent_line_count_final = 0;
+    uint32_t sim_fb_write_rotate_same_line_gap_count_final = 0;
+    uint32_t sim_fb_write_rotate_other_line_count_final = 0;
+    uint32_t sim_fb_mem_color_write_cmd_count_final = 0;
+    uint32_t sim_fb_mem_aux_write_cmd_count_final = 0;
+    uint32_t sim_fb_mem_color_read_cmd_count_final = 0;
+    uint32_t sim_fb_mem_aux_read_cmd_count_final = 0;
+    uint32_t sim_fb_mem_lfb_read_cmd_count_final = 0;
+    uint32_t sim_fb_mem_color_write_blocked_cycles_final = 0;
+    uint32_t sim_fb_mem_aux_write_blocked_cycles_final = 0;
+    uint32_t sim_fb_mem_color_read_blocked_cycles_final = 0;
+    uint32_t sim_fb_mem_aux_read_blocked_cycles_final = 0;
+    uint32_t sim_fb_mem_lfb_read_blocked_cycles_final = 0;
 #endif
 
     /* Parse arguments */
@@ -500,7 +532,10 @@ int main(int argc, char **argv) {
     bool have_presented_offset = false;
     uint32_t presented_offset = 0;
     uint64_t logical_cmds = 0;
+    bool replay_truncated = false;
+    uint32_t last_entry_replayed = 0;
     for (uint32_t i = 0; i < num_entries; i++) {
+        last_entry_replayed = i;
         const voodoo_trace_entry_t *e = &entries[i];
         uint32_t repeat = e->count ? e->count : 1;
         logical_cmds += repeat;
@@ -683,11 +718,28 @@ int main(int argc, char **argv) {
                     /* Read operations etc. — skip */
                     break;
             }
+
+            if (!ref_only && sim_cycle_limit > 0 && sim_get_cycle() >= sim_cycle_limit) {
+                replay_truncated = true;
+                break;
+            }
         }
+
+        if (replay_truncated)
+            break;
     }
 
-    fprintf(stderr, "[trace_test] Replay complete: %u packed entries (%llu logical commands), %d triangles, %d tex writes, %d fb writes, %d swaps\n",
-            num_entries, (unsigned long long)logical_cmds, tri_count, tex_write_count, fb_write_count, swap_cmd_count);
+    fprintf(stderr, "[trace_test] Replay %s: %u/%u packed entries (%llu logical commands), %d triangles, %d tex writes, %d fb writes, %d swaps\n",
+            replay_truncated ? "truncated" : "complete",
+            replay_truncated ? (last_entry_replayed + 1) : num_entries,
+            num_entries,
+            (unsigned long long)logical_cmds, tri_count, tex_write_count, fb_write_count, swap_cmd_count);
+    if (replay_truncated) {
+        fprintf(stderr, "[trace_test] Replay stopped at cycle limit %llu (entry=%u simCycle=%llu)\n",
+                (unsigned long long)sim_cycle_limit,
+                last_entry_replayed,
+                (unsigned long long)(ref_only ? 0 : sim_get_cycle()));
+    }
     fprintf(stderr,
             "[trace_test] Cmd histogram(logical): WR_REG=%llu WR_FB_L=%llu WR_FB_W=%llu WR_TEX=%llu WR_CMDFIFO=%llu RD_REG=%llu RD_FB_L=%llu RD_FB_W=%llu SWAP=%llu\n",
             (unsigned long long)cmd_type_counts[VOODOO_TRACE_WRITE_REG_L],
@@ -760,10 +812,10 @@ int main(int argc, char **argv) {
     }
 
     /* Wait for pipeline to drain before reading back */
-    if (!ref_only)
+    if (!ref_only && !sim_skip_final_idle)
         sim_idle_wait();
 
-    if (!ref_only)
+    if (!ref_only && !sim_skip_final_idle)
         sim_flush_fb_cache();
 
     if (!ref_only) {
@@ -774,6 +826,36 @@ int main(int argc, char **argv) {
         sim_read_count_final = sim_get_total_read_count();
         sim_write_ticks_final = sim_get_total_write_ticks();
         sim_write_count_final = sim_get_total_write_count();
+        sim_fb_fill_hits_final = sim_get_fb_fill_hits();
+        sim_fb_fill_misses_final = sim_get_fb_fill_misses();
+        sim_fb_fill_burst_count_final = sim_get_fb_fill_burst_count();
+        sim_fb_fill_burst_beats_final = sim_get_fb_fill_burst_beats();
+        sim_fb_fill_stall_cycles_final = sim_get_fb_fill_stall_cycles();
+        sim_fb_write_stall_cycles_final = sim_get_fb_write_stall_cycles();
+        sim_fb_write_drain_count_final = sim_get_fb_write_drain_count();
+        sim_fb_write_full_drain_count_final = sim_get_fb_write_full_drain_count();
+        sim_fb_write_partial_drain_count_final = sim_get_fb_write_partial_drain_count();
+        sim_fb_write_drain_reason_full_count_final = sim_get_fb_write_drain_reason_full_count();
+        sim_fb_write_drain_reason_rotate_count_final = sim_get_fb_write_drain_reason_rotate_count();
+        sim_fb_write_drain_reason_flush_count_final = sim_get_fb_write_drain_reason_flush_count();
+        sim_fb_write_drain_dirty_word_total_final = sim_get_fb_write_drain_dirty_word_total();
+        sim_fb_write_rotate_blocked_cycles_final = sim_get_fb_write_rotate_blocked_cycles();
+        sim_fb_write_single_word_drain_count_final = sim_get_fb_write_single_word_drain_count();
+        sim_fb_write_single_word_drain_start_at_zero_count_final = sim_get_fb_write_single_word_drain_start_at_zero_count();
+        sim_fb_write_single_word_drain_start_at_last_count_final = sim_get_fb_write_single_word_drain_start_at_last_count();
+        sim_fb_write_rotate_adjacent_line_count_final = sim_get_fb_write_rotate_adjacent_line_count();
+        sim_fb_write_rotate_same_line_gap_count_final = sim_get_fb_write_rotate_same_line_gap_count();
+        sim_fb_write_rotate_other_line_count_final = sim_get_fb_write_rotate_other_line_count();
+        sim_fb_mem_color_write_cmd_count_final = sim_get_fb_mem_color_write_cmd_count();
+        sim_fb_mem_aux_write_cmd_count_final = sim_get_fb_mem_aux_write_cmd_count();
+        sim_fb_mem_color_read_cmd_count_final = sim_get_fb_mem_color_read_cmd_count();
+        sim_fb_mem_aux_read_cmd_count_final = sim_get_fb_mem_aux_read_cmd_count();
+        sim_fb_mem_lfb_read_cmd_count_final = sim_get_fb_mem_lfb_read_cmd_count();
+        sim_fb_mem_color_write_blocked_cycles_final = sim_get_fb_mem_color_write_blocked_cycles();
+        sim_fb_mem_aux_write_blocked_cycles_final = sim_get_fb_mem_aux_write_blocked_cycles();
+        sim_fb_mem_color_read_blocked_cycles_final = sim_get_fb_mem_color_read_blocked_cycles();
+        sim_fb_mem_aux_read_blocked_cycles_final = sim_get_fb_mem_aux_read_blocked_cycles();
+        sim_fb_mem_lfb_read_blocked_cycles_final = sim_get_fb_mem_lfb_read_blocked_cycles();
         fprintf(stderr,
                 "[trace_test] Worst sim_write: entry=%u addr=0x%08x data=0x%08x cycles=%llu\n",
                 worst_write_entry,
@@ -806,8 +888,8 @@ int main(int argc, char **argv) {
             hotspot_cycles[best_idx] = 0;
             hotspot_counts[best_idx] = 0;
         }
-        sim_pixels_in_final = sim_read(0x14c);
-        sim_pixels_out_final = sim_read(0x15c);
+        sim_pixels_in_final = sim_get_pixels_in();
+        sim_pixels_out_final = sim_get_pixels_out();
         fprintf(stderr,
                 "[trace_test] Sim pixel stats: pixelsIn=%u pixelsOut=%u\n",
                 sim_pixels_in_final, sim_pixels_out_final);
@@ -820,6 +902,45 @@ int main(int argc, char **argv) {
                 (unsigned long long)sim_write_count_final,
                 sim_read_count_final ? ((double)sim_read_ticks_final / (double)sim_read_count_final) : 0.0,
                 sim_write_count_final ? ((double)sim_write_ticks_final / (double)sim_write_count_final) : 0.0);
+        fprintf(stderr,
+                "[trace_test] Sim fill stats: hits=%u misses=%u hitRate=%.4f burstCount=%u burstBeats=%u fillStall=%u writeStall=%u\n",
+                sim_fb_fill_hits_final,
+                sim_fb_fill_misses_final,
+                (sim_fb_fill_hits_final + sim_fb_fill_misses_final)
+                    ? ((double)sim_fb_fill_hits_final / (double)(sim_fb_fill_hits_final + sim_fb_fill_misses_final))
+                    : 0.0,
+                sim_fb_fill_burst_count_final,
+                sim_fb_fill_burst_beats_final,
+                sim_fb_fill_stall_cycles_final,
+                sim_fb_write_stall_cycles_final);
+        fprintf(stderr,
+                "[trace_test] Sim write-buffer stats: drains=%u full=%u partial=%u reason(full=%u rotate=%u flush=%u) avgDirtyWords=%.2f rotateBlocked=%u singleWord=%u singleWord(start0=%u startLast=%u) rotateKinds(adj=%u sameLineGap=%u other=%u)\n",
+                sim_fb_write_drain_count_final,
+                sim_fb_write_full_drain_count_final,
+                sim_fb_write_partial_drain_count_final,
+                sim_fb_write_drain_reason_full_count_final,
+                sim_fb_write_drain_reason_rotate_count_final,
+                sim_fb_write_drain_reason_flush_count_final,
+                sim_fb_write_drain_count_final ? ((double)sim_fb_write_drain_dirty_word_total_final / (double)sim_fb_write_drain_count_final) : 0.0,
+                sim_fb_write_rotate_blocked_cycles_final,
+                sim_fb_write_single_word_drain_count_final,
+                sim_fb_write_single_word_drain_start_at_zero_count_final,
+                sim_fb_write_single_word_drain_start_at_last_count_final,
+                sim_fb_write_rotate_adjacent_line_count_final,
+                sim_fb_write_rotate_same_line_gap_count_final,
+                sim_fb_write_rotate_other_line_count_final);
+        fprintf(stderr,
+                "[trace_test] Sim fb-mem contention: cmdCount(cw=%u aw=%u cr=%u ar=%u lfb=%u) blocked(cw=%u aw=%u cr=%u ar=%u lfb=%u)\n",
+                sim_fb_mem_color_write_cmd_count_final,
+                sim_fb_mem_aux_write_cmd_count_final,
+                sim_fb_mem_color_read_cmd_count_final,
+                sim_fb_mem_aux_read_cmd_count_final,
+                sim_fb_mem_lfb_read_cmd_count_final,
+                sim_fb_mem_color_write_blocked_cycles_final,
+                sim_fb_mem_aux_write_blocked_cycles_final,
+                sim_fb_mem_color_read_blocked_cycles_final,
+                sim_fb_mem_aux_read_blocked_cycles_final,
+                sim_fb_mem_lfb_read_blocked_cycles_final);
         if (progress_snapshots.empty() || progress_snapshots.back().entry != num_entries) {
             ProgressSnapshot snap;
             snap.entry = num_entries;
@@ -936,6 +1057,42 @@ int main(int argc, char **argv) {
             fprintf(profile_fp, "    \"write_count\": %llu,\n", (unsigned long long)sim_write_count_final);
             fprintf(profile_fp, "    \"avg_read_cycles\": %.6f,\n", sim_read_count_final ? ((double)sim_read_ticks_final / (double)sim_read_count_final) : 0.0);
             fprintf(profile_fp, "    \"avg_write_cycles\": %.6f,\n", sim_write_count_final ? ((double)sim_write_ticks_final / (double)sim_write_count_final) : 0.0);
+            fprintf(profile_fp, "    \"fb_fill_hits\": %u,\n", sim_fb_fill_hits_final);
+            fprintf(profile_fp, "    \"fb_fill_misses\": %u,\n", sim_fb_fill_misses_final);
+            fprintf(profile_fp, "    \"fb_fill_hit_rate\": %.6f,\n",
+                    (sim_fb_fill_hits_final + sim_fb_fill_misses_final)
+                        ? ((double)sim_fb_fill_hits_final / (double)(sim_fb_fill_hits_final + sim_fb_fill_misses_final))
+                        : 0.0);
+            fprintf(profile_fp, "    \"fb_fill_burst_count\": %u,\n", sim_fb_fill_burst_count_final);
+            fprintf(profile_fp, "    \"fb_fill_burst_beats\": %u,\n", sim_fb_fill_burst_beats_final);
+            fprintf(profile_fp, "    \"fb_fill_stall_cycles\": %u,\n", sim_fb_fill_stall_cycles_final);
+            fprintf(profile_fp, "    \"fb_write_stall_cycles\": %u,\n", sim_fb_write_stall_cycles_final);
+            fprintf(profile_fp, "    \"fb_write_drain_count\": %u,\n", sim_fb_write_drain_count_final);
+            fprintf(profile_fp, "    \"fb_write_full_drain_count\": %u,\n", sim_fb_write_full_drain_count_final);
+            fprintf(profile_fp, "    \"fb_write_partial_drain_count\": %u,\n", sim_fb_write_partial_drain_count_final);
+            fprintf(profile_fp, "    \"fb_write_drain_reason_full_count\": %u,\n", sim_fb_write_drain_reason_full_count_final);
+            fprintf(profile_fp, "    \"fb_write_drain_reason_rotate_count\": %u,\n", sim_fb_write_drain_reason_rotate_count_final);
+            fprintf(profile_fp, "    \"fb_write_drain_reason_flush_count\": %u,\n", sim_fb_write_drain_reason_flush_count_final);
+            fprintf(profile_fp, "    \"fb_write_drain_dirty_word_total\": %u,\n", sim_fb_write_drain_dirty_word_total_final);
+            fprintf(profile_fp, "    \"fb_write_avg_drain_dirty_words\": %.6f,\n",
+                    sim_fb_write_drain_count_final ? ((double)sim_fb_write_drain_dirty_word_total_final / (double)sim_fb_write_drain_count_final) : 0.0);
+            fprintf(profile_fp, "    \"fb_write_rotate_blocked_cycles\": %u,\n", sim_fb_write_rotate_blocked_cycles_final);
+            fprintf(profile_fp, "    \"fb_write_single_word_drain_count\": %u,\n", sim_fb_write_single_word_drain_count_final);
+            fprintf(profile_fp, "    \"fb_write_single_word_drain_start_at_zero_count\": %u,\n", sim_fb_write_single_word_drain_start_at_zero_count_final);
+            fprintf(profile_fp, "    \"fb_write_single_word_drain_start_at_last_count\": %u,\n", sim_fb_write_single_word_drain_start_at_last_count_final);
+            fprintf(profile_fp, "    \"fb_write_rotate_adjacent_line_count\": %u,\n", sim_fb_write_rotate_adjacent_line_count_final);
+            fprintf(profile_fp, "    \"fb_write_rotate_same_line_gap_count\": %u,\n", sim_fb_write_rotate_same_line_gap_count_final);
+            fprintf(profile_fp, "    \"fb_write_rotate_other_line_count\": %u,\n", sim_fb_write_rotate_other_line_count_final);
+            fprintf(profile_fp, "    \"fb_mem_color_write_cmd_count\": %u,\n", sim_fb_mem_color_write_cmd_count_final);
+            fprintf(profile_fp, "    \"fb_mem_aux_write_cmd_count\": %u,\n", sim_fb_mem_aux_write_cmd_count_final);
+            fprintf(profile_fp, "    \"fb_mem_color_read_cmd_count\": %u,\n", sim_fb_mem_color_read_cmd_count_final);
+            fprintf(profile_fp, "    \"fb_mem_aux_read_cmd_count\": %u,\n", sim_fb_mem_aux_read_cmd_count_final);
+            fprintf(profile_fp, "    \"fb_mem_lfb_read_cmd_count\": %u,\n", sim_fb_mem_lfb_read_cmd_count_final);
+            fprintf(profile_fp, "    \"fb_mem_color_write_blocked_cycles\": %u,\n", sim_fb_mem_color_write_blocked_cycles_final);
+            fprintf(profile_fp, "    \"fb_mem_aux_write_blocked_cycles\": %u,\n", sim_fb_mem_aux_write_blocked_cycles_final);
+            fprintf(profile_fp, "    \"fb_mem_color_read_blocked_cycles\": %u,\n", sim_fb_mem_color_read_blocked_cycles_final);
+            fprintf(profile_fp, "    \"fb_mem_aux_read_blocked_cycles\": %u,\n", sim_fb_mem_aux_read_blocked_cycles_final);
+            fprintf(profile_fp, "    \"fb_mem_lfb_read_blocked_cycles\": %u,\n", sim_fb_mem_lfb_read_blocked_cycles_final);
             fprintf(profile_fp, "    \"worst_write\": {\n");
             fprintf(profile_fp, "      \"entry\": %u,\n", worst_write_entry);
             fprintf(profile_fp, "      \"addr\": %u,\n", worst_write_addr);

@@ -20,10 +20,10 @@ case class FramebufferAccess(c: Config) extends Component {
   val io = new Bundle {
     val input = slave Stream (Fog.Output(c))
     val output = master Stream (FramebufferAccess.Output(c))
-    val fbReadColorReq = master Stream (FramebufferPlaneCache.ReadReq(c))
-    val fbReadColorRsp = slave Stream (FramebufferPlaneCache.ReadRsp())
-    val fbReadAuxReq = master Stream (FramebufferPlaneCache.ReadReq(c))
-    val fbReadAuxRsp = slave Stream (FramebufferPlaneCache.ReadRsp())
+    val fbReadColorReq = master Stream (FramebufferPlaneBuffer.ReadReq(c))
+    val fbReadColorRsp = slave Stream (FramebufferPlaneBuffer.ReadRsp())
+    val fbReadAuxReq = master Stream (FramebufferPlaneBuffer.ReadReq(c))
+    val fbReadAuxRsp = slave Stream (FramebufferPlaneBuffer.ReadRsp())
 
     // Pipeline busy: pixels in flight inside fork-queue-join
     val busy = out Bool ()

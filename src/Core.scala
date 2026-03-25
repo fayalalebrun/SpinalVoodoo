@@ -1003,72 +1003,169 @@ case class Core(c: Config) extends Component {
   val fbFillBurstCount = UInt(32 bits)
   val fbFillBurstBeats = UInt(32 bits)
   val fbFillStallCycles = UInt(32 bits)
+  val fbWriteStallCycles = UInt(32 bits)
+  val fbWriteDrainCount = UInt(32 bits)
+  val fbWriteFullDrainCount = UInt(32 bits)
+  val fbWritePartialDrainCount = UInt(32 bits)
+  val fbWriteDrainReasonFullCount = UInt(32 bits)
+  val fbWriteDrainReasonRotateCount = UInt(32 bits)
+  val fbWriteDrainReasonFlushCount = UInt(32 bits)
+  val fbWriteDrainDirtyWordTotal = UInt(32 bits)
+  val fbWriteRotateBlockedCycles = UInt(32 bits)
+  val fbWriteSingleWordDrainCount = UInt(32 bits)
+  val fbWriteSingleWordDrainStartAtZeroCount = UInt(32 bits)
+  val fbWriteSingleWordDrainStartAtLastCount = UInt(32 bits)
+  val fbWriteRotateAdjacentLineCount = UInt(32 bits)
+  val fbWriteRotateSameLineGapCount = UInt(32 bits)
+  val fbWriteRotateOtherLineCount = UInt(32 bits)
+  val fbMemColorWriteCmdCount = UInt(32 bits)
+  val fbMemAuxWriteCmdCount = UInt(32 bits)
+  val fbMemColorReadCmdCount = UInt(32 bits)
+  val fbMemAuxReadCmdCount = UInt(32 bits)
+  val fbMemLfbReadCmdCount = UInt(32 bits)
+  val fbMemColorWriteBlockedCycles = UInt(32 bits)
+  val fbMemAuxWriteBlockedCycles = UInt(32 bits)
+  val fbMemColorReadBlockedCycles = UInt(32 bits)
+  val fbMemAuxReadBlockedCycles = UInt(32 bits)
+  val fbMemLfbReadBlockedCycles = UInt(32 bits)
 
-  if (c.useFbFillCache) {
-    val fbColorCache = FramebufferPlaneCache(c)
-    val fbAuxCache = FramebufferPlaneCache(c)
-    fbColorCache.io.flush := io.flushFbCaches
-    fbAuxCache.io.flush := io.flushFbCaches
+  if (c.useFbWriteBuffer) {
+    val fbColorReader = FramebufferPlaneReader(c).setName("fbColorReader")
+    val fbAuxReader = FramebufferPlaneReader(c).setName("fbAuxReader")
+    val fbColorBuffer = FramebufferPlaneBuffer(c).setName("fbColorBuffer")
+    val fbAuxBuffer = FramebufferPlaneBuffer(c).setName("fbAuxBuffer")
+    val fbMemColorWriteCmdCountReg = Reg(UInt(32 bits)) init (0)
+    val fbMemAuxWriteCmdCountReg = Reg(UInt(32 bits)) init (0)
+    val fbMemColorReadCmdCountReg = Reg(UInt(32 bits)) init (0)
+    val fbMemAuxReadCmdCountReg = Reg(UInt(32 bits)) init (0)
+    val fbMemLfbReadCmdCountReg = Reg(UInt(32 bits)) init (0)
+    val fbMemColorWriteBlockedCyclesReg = Reg(UInt(32 bits)) init (0)
+    val fbMemAuxWriteBlockedCyclesReg = Reg(UInt(32 bits)) init (0)
+    val fbMemColorReadBlockedCyclesReg = Reg(UInt(32 bits)) init (0)
+    val fbMemAuxReadBlockedCyclesReg = Reg(UInt(32 bits)) init (0)
+    val fbMemLfbReadBlockedCyclesReg = Reg(UInt(32 bits)) init (0)
+    fbColorBuffer.io.flush := io.flushFbCaches
+    fbAuxBuffer.io.flush := io.flushFbCaches
 
-    fbAccess.io.fbReadColorReq.s2mPipe() >> fbColorCache.io.readReq
-    fbAccess.io.fbReadColorRsp << fbColorCache.io.readRsp
-    fbAccess.io.fbReadAuxReq.s2mPipe() >> fbAuxCache.io.readReq
-    fbAccess.io.fbReadAuxRsp << fbAuxCache.io.readRsp
+    fbAccess.io.fbReadColorReq.s2mPipe() >> fbColorReader.io.readReq
+    fbAccess.io.fbReadColorRsp << fbColorReader.io.readRsp
+    fbAccess.io.fbReadAuxReq.s2mPipe() >> fbAuxReader.io.readReq
+    fbAccess.io.fbReadAuxRsp << fbAuxReader.io.readRsp
 
-    fbColorCache.io.writeReq << writeColor.o.fbWrite.s2mPipe()
-    fbAuxCache.io.writeReq << writeAux.o.fbWrite.s2mPipe()
+    fbColorBuffer.io.readReq.valid := False
+    fbColorBuffer.io.readReq.address := 0
+    fbColorBuffer.io.readRsp.ready := True
+    fbAuxBuffer.io.readReq.valid := False
+    fbAuxBuffer.io.readReq.address := 0
+    fbAuxBuffer.io.readRsp.ready := True
+
+    fbColorBuffer.io.writeReq << writeColor.o.fbWrite.s2mPipe()
+    fbAuxBuffer.io.writeReq << writeAux.o.fbWrite.s2mPipe()
 
     val fbArbiter = BmbArbiter(
       inputsParameter = Seq(
-        FramebufferPlaneCache.bmbParams(c),
-        FramebufferPlaneCache.bmbParams(c),
+        FramebufferPlaneBuffer.bmbParams(c),
+        FramebufferPlaneBuffer.bmbParams(c),
+        FramebufferPlaneReader.bmbParams(c),
+        FramebufferPlaneReader.bmbParams(c),
         Lfb.fbReadBmbParams(c)
       ),
       outputParameter = Core.fbMemBmbParams(c),
       lowerFirstPriority = true
     )
 
-    fbArbiter.io.inputs(0).cmd << fbColorCache.io.mem.cmd.s2mPipe()
-    fbColorCache.io.mem.rsp << fbArbiter.io.inputs(0).rsp.s2mPipe()
+    fbArbiter.io.inputs(0).cmd << fbColorBuffer.io.mem.cmd.s2mPipe()
+    fbColorBuffer.io.mem.rsp << fbArbiter.io.inputs(0).rsp.s2mPipe()
 
-    fbArbiter.io.inputs(1).cmd << fbAuxCache.io.mem.cmd.s2mPipe()
-    fbAuxCache.io.mem.rsp << fbArbiter.io.inputs(1).rsp.s2mPipe()
+    fbArbiter.io.inputs(1).cmd << fbAuxBuffer.io.mem.cmd.s2mPipe()
+    fbAuxBuffer.io.mem.rsp << fbArbiter.io.inputs(1).rsp.s2mPipe()
 
-    fbArbiter.io.inputs(2).cmd << lfb.io.fbReadBus.cmd
-    lfb.io.fbReadBus.rsp << fbArbiter.io.inputs(2).rsp.s2mPipe()
+    fbArbiter.io.inputs(2).cmd << fbColorReader.io.mem.cmd.s2mPipe()
+    fbColorReader.io.mem.rsp << fbArbiter.io.inputs(2).rsp.s2mPipe()
+
+    fbArbiter.io.inputs(3).cmd << fbAuxReader.io.mem.cmd.s2mPipe()
+    fbAuxReader.io.mem.rsp << fbArbiter.io.inputs(3).rsp.s2mPipe()
+
+    fbArbiter.io.inputs(4).cmd << lfb.io.fbReadBus.cmd
+    lfb.io.fbReadBus.rsp << fbArbiter.io.inputs(4).rsp.s2mPipe()
     fbArbiter.io.output <> io.fbMem
 
-    fbColorBusy := fbColorCache.io.busy
-    fbAuxBusy := fbAuxCache.io.busy
-    fbFillHits := (fbColorCache.io.fillHits + fbAuxCache.io.fillHits).resized
-    fbFillMisses := (fbColorCache.io.fillMisses + fbAuxCache.io.fillMisses).resized
-    fbFillBurstCount := (fbColorCache.io.fillBurstCount + fbAuxCache.io.fillBurstCount).resized
-    fbFillBurstBeats := (fbColorCache.io.fillBurstBeats + fbAuxCache.io.fillBurstBeats).resized
-    fbFillStallCycles := (fbColorCache.io.fillStallCycles + fbAuxCache.io.fillStallCycles).resized
-  } else {
-    val fbColorReadPort = FramebufferPlaneCache(c)
-    val fbColorWritePort = FramebufferPlaneCache(c)
-    val fbAuxReadPort = FramebufferPlaneCache(c)
-    val fbAuxWritePort = FramebufferPlaneCache(c)
+    when(fbColorBuffer.io.mem.cmd.valid && !fbArbiter.io.inputs(0).cmd.ready) {
+      fbMemColorWriteBlockedCyclesReg := fbMemColorWriteBlockedCyclesReg + 1
+    }
+    when(fbAuxBuffer.io.mem.cmd.valid && !fbArbiter.io.inputs(1).cmd.ready) {
+      fbMemAuxWriteBlockedCyclesReg := fbMemAuxWriteBlockedCyclesReg + 1
+    }
+    when(fbColorReader.io.mem.cmd.valid && !fbArbiter.io.inputs(2).cmd.ready) {
+      fbMemColorReadBlockedCyclesReg := fbMemColorReadBlockedCyclesReg + 1
+    }
+    when(fbAuxReader.io.mem.cmd.valid && !fbArbiter.io.inputs(3).cmd.ready) {
+      fbMemAuxReadBlockedCyclesReg := fbMemAuxReadBlockedCyclesReg + 1
+    }
+    when(lfb.io.fbReadBus.cmd.valid && !fbArbiter.io.inputs(4).cmd.ready) {
+      fbMemLfbReadBlockedCyclesReg := fbMemLfbReadBlockedCyclesReg + 1
+    }
+    when(fbColorBuffer.io.mem.cmd.fire) {
+      fbMemColorWriteCmdCountReg := fbMemColorWriteCmdCountReg + 1
+    }
+    when(fbAuxBuffer.io.mem.cmd.fire) {
+      fbMemAuxWriteCmdCountReg := fbMemAuxWriteCmdCountReg + 1
+    }
+    when(fbColorReader.io.mem.cmd.fire) {
+      fbMemColorReadCmdCountReg := fbMemColorReadCmdCountReg + 1
+    }
+    when(fbAuxReader.io.mem.cmd.fire) {
+      fbMemAuxReadCmdCountReg := fbMemAuxReadCmdCountReg + 1
+    }
+    when(lfb.io.fbReadBus.cmd.fire) {
+      fbMemLfbReadCmdCountReg := fbMemLfbReadCmdCountReg + 1
+    }
 
-    fbColorReadPort.io.flush := False
+    fbColorBusy := fbColorBuffer.io.busy || fbColorReader.io.busy
+    fbAuxBusy := fbAuxBuffer.io.busy || fbAuxReader.io.busy
+    fbFillHits := (fbColorReader.io.fillHits + fbAuxReader.io.fillHits).resized
+    fbFillMisses := (fbColorReader.io.fillMisses + fbAuxReader.io.fillMisses).resized
+    fbFillBurstCount := (fbColorReader.io.fillBurstCount + fbAuxReader.io.fillBurstCount).resized
+    fbFillBurstBeats := (fbColorReader.io.fillBurstBeats + fbAuxReader.io.fillBurstBeats).resized
+    fbFillStallCycles := (fbColorReader.io.fillStallCycles + fbAuxReader.io.fillStallCycles).resized
+    fbWriteStallCycles := (fbColorBuffer.io.writeStallCycles + fbAuxBuffer.io.writeStallCycles).resized
+    fbWriteDrainCount := (fbColorBuffer.io.writeDrainCount + fbAuxBuffer.io.writeDrainCount).resized
+    fbWriteFullDrainCount := (fbColorBuffer.io.writeFullDrainCount + fbAuxBuffer.io.writeFullDrainCount).resized
+    fbWritePartialDrainCount := (fbColorBuffer.io.writePartialDrainCount + fbAuxBuffer.io.writePartialDrainCount).resized
+    fbWriteDrainReasonFullCount := (fbColorBuffer.io.writeDrainReasonFullCount + fbAuxBuffer.io.writeDrainReasonFullCount).resized
+    fbWriteDrainReasonRotateCount := (fbColorBuffer.io.writeDrainReasonRotateCount + fbAuxBuffer.io.writeDrainReasonRotateCount).resized
+    fbWriteDrainReasonFlushCount := (fbColorBuffer.io.writeDrainReasonFlushCount + fbAuxBuffer.io.writeDrainReasonFlushCount).resized
+    fbWriteDrainDirtyWordTotal := (fbColorBuffer.io.writeDrainDirtyWordTotal + fbAuxBuffer.io.writeDrainDirtyWordTotal).resized
+    fbWriteRotateBlockedCycles := (fbColorBuffer.io.writeRotateBlockedCycles + fbAuxBuffer.io.writeRotateBlockedCycles).resized
+    fbWriteSingleWordDrainCount := (fbColorBuffer.io.writeSingleWordDrainCount + fbAuxBuffer.io.writeSingleWordDrainCount).resized
+    fbWriteSingleWordDrainStartAtZeroCount := (fbColorBuffer.io.writeSingleWordDrainStartAtZeroCount + fbAuxBuffer.io.writeSingleWordDrainStartAtZeroCount).resized
+    fbWriteSingleWordDrainStartAtLastCount := (fbColorBuffer.io.writeSingleWordDrainStartAtLastCount + fbAuxBuffer.io.writeSingleWordDrainStartAtLastCount).resized
+    fbWriteRotateAdjacentLineCount := (fbColorBuffer.io.writeRotateAdjacentLineCount + fbAuxBuffer.io.writeRotateAdjacentLineCount).resized
+    fbWriteRotateSameLineGapCount := (fbColorBuffer.io.writeRotateSameLineGapCount + fbAuxBuffer.io.writeRotateSameLineGapCount).resized
+    fbWriteRotateOtherLineCount := (fbColorBuffer.io.writeRotateOtherLineCount + fbAuxBuffer.io.writeRotateOtherLineCount).resized
+    fbMemColorWriteCmdCount := fbMemColorWriteCmdCountReg
+    fbMemAuxWriteCmdCount := fbMemAuxWriteCmdCountReg
+    fbMemColorReadCmdCount := fbMemColorReadCmdCountReg
+    fbMemAuxReadCmdCount := fbMemAuxReadCmdCountReg
+    fbMemLfbReadCmdCount := fbMemLfbReadCmdCountReg
+    fbMemColorWriteBlockedCycles := fbMemColorWriteBlockedCyclesReg
+    fbMemAuxWriteBlockedCycles := fbMemAuxWriteBlockedCyclesReg
+    fbMemColorReadBlockedCycles := fbMemColorReadBlockedCyclesReg
+    fbMemAuxReadBlockedCycles := fbMemAuxReadBlockedCyclesReg
+    fbMemLfbReadBlockedCycles := fbMemLfbReadBlockedCyclesReg
+  } else {
+    val fbColorReadPort = FramebufferPlaneReader(c)
+    val fbColorWritePort = FramebufferPlaneBuffer(c)
+    val fbAuxReadPort = FramebufferPlaneReader(c)
+    val fbAuxWritePort = FramebufferPlaneBuffer(c)
+
     fbColorWritePort.io.flush := False
-    fbAuxReadPort.io.flush := False
     fbAuxWritePort.io.flush := False
 
     fbAccess.io.fbReadColorReq.s2mPipe() >> fbColorReadPort.io.readReq
     fbAccess.io.fbReadColorRsp << fbColorReadPort.io.readRsp
     fbAccess.io.fbReadAuxReq.s2mPipe() >> fbAuxReadPort.io.readReq
     fbAccess.io.fbReadAuxRsp << fbAuxReadPort.io.readRsp
-
-    fbColorReadPort.io.writeReq.valid := False
-    fbColorReadPort.io.writeReq.address := 0
-    fbColorReadPort.io.writeReq.data := 0
-    fbColorReadPort.io.writeReq.mask := 0
-    fbAuxReadPort.io.writeReq.valid := False
-    fbAuxReadPort.io.writeReq.address := 0
-    fbAuxReadPort.io.writeReq.data := 0
-    fbAuxReadPort.io.writeReq.mask := 0
 
     fbColorWritePort.io.readReq.valid := False
     fbColorWritePort.io.readReq.address := 0
@@ -1082,10 +1179,10 @@ case class Core(c: Config) extends Component {
 
     val fbArbiter = BmbArbiter(
       inputsParameter = Seq(
-        FramebufferPlaneCache.bmbParams(c),
-        FramebufferPlaneCache.bmbParams(c),
-        FramebufferPlaneCache.bmbParams(c),
-        FramebufferPlaneCache.bmbParams(c),
+        FramebufferPlaneBuffer.bmbParams(c),
+        FramebufferPlaneBuffer.bmbParams(c),
+        FramebufferPlaneReader.bmbParams(c),
+        FramebufferPlaneReader.bmbParams(c),
         Lfb.fbReadBmbParams(c)
       ),
       outputParameter = Core.fbMemBmbParams(c),
@@ -1110,11 +1207,36 @@ case class Core(c: Config) extends Component {
 
     fbColorBusy := fbColorReadPort.io.busy || fbColorWritePort.io.busy
     fbAuxBusy := fbAuxReadPort.io.busy || fbAuxWritePort.io.busy
-    fbFillHits := 0
-    fbFillMisses := 0
-    fbFillBurstCount := 0
-    fbFillBurstBeats := 0
-    fbFillStallCycles := 0
+    fbFillHits := (fbColorReadPort.io.fillHits + fbAuxReadPort.io.fillHits).resized
+    fbFillMisses := (fbColorReadPort.io.fillMisses + fbAuxReadPort.io.fillMisses).resized
+    fbFillBurstCount := (fbColorReadPort.io.fillBurstCount + fbAuxReadPort.io.fillBurstCount).resized
+    fbFillBurstBeats := (fbColorReadPort.io.fillBurstBeats + fbAuxReadPort.io.fillBurstBeats).resized
+    fbFillStallCycles := (fbColorReadPort.io.fillStallCycles + fbAuxReadPort.io.fillStallCycles).resized
+    fbWriteStallCycles := 0
+    fbWriteDrainCount := 0
+    fbWriteFullDrainCount := 0
+    fbWritePartialDrainCount := 0
+    fbWriteDrainReasonFullCount := 0
+    fbWriteDrainReasonRotateCount := 0
+    fbWriteDrainReasonFlushCount := 0
+    fbWriteDrainDirtyWordTotal := 0
+    fbWriteRotateBlockedCycles := 0
+    fbWriteSingleWordDrainCount := 0
+    fbWriteSingleWordDrainStartAtZeroCount := 0
+    fbWriteSingleWordDrainStartAtLastCount := 0
+    fbWriteRotateAdjacentLineCount := 0
+    fbWriteRotateSameLineGapCount := 0
+    fbWriteRotateOtherLineCount := 0
+    fbMemColorWriteCmdCount := 0
+    fbMemAuxWriteCmdCount := 0
+    fbMemColorReadCmdCount := 0
+    fbMemAuxReadCmdCount := 0
+    fbMemLfbReadCmdCount := 0
+    fbMemColorWriteBlockedCycles := 0
+    fbMemAuxWriteBlockedCycles := 0
+    fbMemColorReadBlockedCycles := 0
+    fbMemAuxReadBlockedCycles := 0
+    fbMemLfbReadBlockedCycles := 0
   }
 
   // ========================================================================
@@ -1306,6 +1428,31 @@ case class Core(c: Config) extends Component {
   fbFillBurstCount.simPublic()
   fbFillBurstBeats.simPublic()
   fbFillStallCycles.simPublic()
+  fbWriteStallCycles.simPublic()
+  fbWriteDrainCount.simPublic()
+  fbWriteFullDrainCount.simPublic()
+  fbWritePartialDrainCount.simPublic()
+  fbWriteDrainReasonFullCount.simPublic()
+  fbWriteDrainReasonRotateCount.simPublic()
+  fbWriteDrainReasonFlushCount.simPublic()
+  fbWriteDrainDirtyWordTotal.simPublic()
+  fbWriteRotateBlockedCycles.simPublic()
+  fbWriteSingleWordDrainCount.simPublic()
+  fbWriteSingleWordDrainStartAtZeroCount.simPublic()
+  fbWriteSingleWordDrainStartAtLastCount.simPublic()
+  fbWriteRotateAdjacentLineCount.simPublic()
+  fbWriteRotateSameLineGapCount.simPublic()
+  fbWriteRotateOtherLineCount.simPublic()
+  fbMemColorWriteCmdCount.simPublic()
+  fbMemAuxWriteCmdCount.simPublic()
+  fbMemColorReadCmdCount.simPublic()
+  fbMemAuxReadCmdCount.simPublic()
+  fbMemLfbReadCmdCount.simPublic()
+  fbMemColorWriteBlockedCycles.simPublic()
+  fbMemAuxWriteBlockedCycles.simPublic()
+  fbMemColorReadBlockedCycles.simPublic()
+  fbMemAuxReadBlockedCycles.simPublic()
+  fbMemLfbReadBlockedCycles.simPublic()
   val pipelineBusySignal =
     triangleSetup.o.valid || rasterizer.running || tmu.io.input.valid ||
       tmu.io.busy || fbAccess.io.busy || fbColorBusy || fbAuxBusy ||

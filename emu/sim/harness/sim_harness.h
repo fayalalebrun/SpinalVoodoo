@@ -48,11 +48,11 @@ uint32_t sim_idle_wait(void);
 /* Advance simulation by n clock cycles. */
 void sim_tick(int n);
 
-/* Drain dirty framebuffer cache lines into fbRam. */
+/* Drain dirty framebuffer write-buffer lines into fbRam. */
 void sim_flush_fb_cache(void);
 
-/* Force framebuffer plane caches back to a clean idle state.
- * Useful after bulk-loading fbRam directly, which bypasses normal cache traffic. */
+/* Force framebuffer plane write buffers back to a clean idle state.
+ * Useful after bulk-loading fbRam directly, which bypasses normal buffered traffic. */
 void sim_invalidate_fb_cache(void);
 
 /* Bulk read from CoreSim's fbRam (bypasses bus protocol).
@@ -84,6 +84,38 @@ uint64_t sim_get_total_read_ticks(void);
 uint64_t sim_get_total_read_count(void);
 uint64_t sim_get_total_write_ticks(void);
 uint64_t sim_get_total_write_count(void);
+uint32_t sim_get_pixels_in(void);
+uint32_t sim_get_pixels_out(void);
+uint32_t sim_get_fb_fill_hits(void);
+uint32_t sim_get_fb_fill_misses(void);
+uint32_t sim_get_fb_fill_burst_count(void);
+uint32_t sim_get_fb_fill_burst_beats(void);
+uint32_t sim_get_fb_fill_stall_cycles(void);
+uint32_t sim_get_fb_write_stall_cycles(void);
+uint32_t sim_get_fb_write_drain_count(void);
+uint32_t sim_get_fb_write_full_drain_count(void);
+uint32_t sim_get_fb_write_partial_drain_count(void);
+uint32_t sim_get_fb_write_drain_reason_full_count(void);
+uint32_t sim_get_fb_write_drain_reason_rotate_count(void);
+uint32_t sim_get_fb_write_drain_reason_flush_count(void);
+uint32_t sim_get_fb_write_drain_dirty_word_total(void);
+uint32_t sim_get_fb_write_rotate_blocked_cycles(void);
+uint32_t sim_get_fb_write_single_word_drain_count(void);
+uint32_t sim_get_fb_write_single_word_drain_start_at_zero_count(void);
+uint32_t sim_get_fb_write_single_word_drain_start_at_last_count(void);
+uint32_t sim_get_fb_write_rotate_adjacent_line_count(void);
+uint32_t sim_get_fb_write_rotate_same_line_gap_count(void);
+uint32_t sim_get_fb_write_rotate_other_line_count(void);
+uint32_t sim_get_fb_mem_color_write_cmd_count(void);
+uint32_t sim_get_fb_mem_aux_write_cmd_count(void);
+uint32_t sim_get_fb_mem_color_read_cmd_count(void);
+uint32_t sim_get_fb_mem_aux_read_cmd_count(void);
+uint32_t sim_get_fb_mem_lfb_read_cmd_count(void);
+uint32_t sim_get_fb_mem_color_write_blocked_cycles(void);
+uint32_t sim_get_fb_mem_aux_write_blocked_cycles(void);
+uint32_t sim_get_fb_mem_color_read_blocked_cycles(void);
+uint32_t sim_get_fb_mem_aux_read_blocked_cycles(void);
+uint32_t sim_get_fb_mem_lfb_read_blocked_cycles(void);
 
 #ifdef __cplusplus
 }

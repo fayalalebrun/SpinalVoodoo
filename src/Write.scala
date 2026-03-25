@@ -9,7 +9,7 @@ case class Write(c: Config) extends Component {
   }
 
   val o = new Bundle {
-    val fbWrite = master Stream (FramebufferPlaneCache.WriteReq(c))
+    val fbWrite = master Stream (FramebufferPlaneBuffer.WriteReq(c))
   }
 
   o.fbWrite.translateFrom(i.fromPipeline) { (out, in) =>

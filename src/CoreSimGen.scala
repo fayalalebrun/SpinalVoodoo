@@ -15,7 +15,8 @@ object CoreSimGen extends App {
     .copy(
       texFillLineWords =
         argIntValue("--tex-fill-line-words").getOrElse(Config.voodoo1().texFillLineWords),
-      useFbFillCache = !args.contains("--no-fb-fill-cache"),
+      useFbWriteBuffer =
+        !args.contains("--no-fb-write-buffer") && !args.contains("--no-fb-fill-cache"),
       useTexFillCache = !args.contains("--no-tex-fill-cache"),
       texFillCacheSlots =
         argIntValue("--tex-fill-cache-slots").getOrElse(Config.voodoo1().texFillCacheSlots),

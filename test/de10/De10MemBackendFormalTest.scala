@@ -205,7 +205,7 @@ class De10MemBackendFormalDut(formalStrong: Boolean) extends Component {
     .copy(
       addressWidth = 8 bits,
       memBurstLengthWidth = 5,
-      useFbFillCache = false,
+      useFbWriteBuffer = false,
       useTexFillCache = false
     )
 

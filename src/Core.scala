@@ -797,6 +797,33 @@ case class Core(c: Config) extends Component {
   }
   colorCombineInput >/-> colorCombine.io.input
 
+  val fbPrefetchTap = Flow(cloneOf(rasterYPipe.payload))
+  fbPrefetchTap.valid := rasterYPipe.fire
+  fbPrefetchTap.payload := rasterYPipe.payload
+
+  val fbPrefetchColorReq = Flow(FramebufferPlaneBuffer.ReadReq(c))
+  val fbPrefetchAuxReq = Flow(FramebufferPlaneBuffer.ReadReq(c))
+  val prefetchColorPlaneAddress = FramebufferAddressMath.planeAddress(
+    fbPrefetchTap.payload.config.drawColorBufferBase,
+    fbPrefetchTap.payload.coords(0).asUInt,
+    fbPrefetchTap.payload.coords(1).asUInt,
+    fbPrefetchTap.payload.config.fbPixelStride
+  )
+  val prefetchAuxPlaneAddress = FramebufferAddressMath.planeAddress(
+    fbPrefetchTap.payload.config.drawAuxBufferBase,
+    fbPrefetchTap.payload.coords(0).asUInt,
+    fbPrefetchTap.payload.coords(1).asUInt,
+    fbPrefetchTap.payload.config.fbPixelStride
+  )
+  fbPrefetchColorReq.valid := fbPrefetchTap.valid
+  fbPrefetchColorReq.address := (prefetchColorPlaneAddress(
+    c.addressWidth.value - 1 downto 1
+  ) ## U"1'b0").asUInt
+  fbPrefetchAuxReq.valid := fbPrefetchTap.valid
+  fbPrefetchAuxReq.address := (prefetchAuxPlaneAddress(
+    c.addressWidth.value - 1 downto 1
+  ) ## U"1'b0").asUInt
+
   // ========================================================================
   // Fog Stage
   // ========================================================================
@@ -1028,6 +1055,15 @@ case class Core(c: Config) extends Component {
   val fbMemColorReadBlockedCycles = UInt(32 bits)
   val fbMemAuxReadBlockedCycles = UInt(32 bits)
   val fbMemLfbReadBlockedCycles = UInt(32 bits)
+  val fbReadReqCount = UInt(32 bits)
+  val fbReadReqForwardStepCount = UInt(32 bits)
+  val fbReadReqBackwardStepCount = UInt(32 bits)
+  val fbReadReqSameWordCount = UInt(32 bits)
+  val fbReadReqSameLineCount = UInt(32 bits)
+  val fbReadReqOtherCount = UInt(32 bits)
+  val fbReadSingleBeatBurstCount = UInt(32 bits)
+  val fbReadMultiBeatBurstCount = UInt(32 bits)
+  val fbReadMaxQueueOccupancy = UInt(8 bits)
 
   if (c.useFbWriteBuffer) {
     val fbColorReader = FramebufferPlaneReader(c).setName("fbColorReader")
@@ -1051,6 +1087,10 @@ case class Core(c: Config) extends Component {
     fbAccess.io.fbReadColorRsp << fbColorReader.io.readRsp
     fbAccess.io.fbReadAuxReq.s2mPipe() >> fbAuxReader.io.readReq
     fbAccess.io.fbReadAuxRsp << fbAuxReader.io.readRsp
+    fbColorReader.io.prefetchReq.valid := fbPrefetchColorReq.valid
+    fbColorReader.io.prefetchReq.address := fbPrefetchColorReq.address
+    fbAuxReader.io.prefetchReq.valid := fbPrefetchAuxReq.valid
+    fbAuxReader.io.prefetchReq.address := fbPrefetchAuxReq.address
 
     fbColorBuffer.io.readReq.valid := False
     fbColorBuffer.io.readReq.address := 0
@@ -1153,6 +1193,19 @@ case class Core(c: Config) extends Component {
     fbMemColorReadBlockedCycles := fbMemColorReadBlockedCyclesReg
     fbMemAuxReadBlockedCycles := fbMemAuxReadBlockedCyclesReg
     fbMemLfbReadBlockedCycles := fbMemLfbReadBlockedCyclesReg
+    fbReadReqCount := (fbColorReader.io.reqCount + fbAuxReader.io.reqCount).resized
+    fbReadReqForwardStepCount := (fbColorReader.io.reqForwardStepCount + fbAuxReader.io.reqForwardStepCount).resized
+    fbReadReqBackwardStepCount := (fbColorReader.io.reqBackwardStepCount + fbAuxReader.io.reqBackwardStepCount).resized
+    fbReadReqSameWordCount := (fbColorReader.io.reqSameWordCount + fbAuxReader.io.reqSameWordCount).resized
+    fbReadReqSameLineCount := (fbColorReader.io.reqSameLineCount + fbAuxReader.io.reqSameLineCount).resized
+    fbReadReqOtherCount := (fbColorReader.io.reqOtherCount + fbAuxReader.io.reqOtherCount).resized
+    fbReadSingleBeatBurstCount := (fbColorReader.io.singleBeatBurstCount + fbAuxReader.io.singleBeatBurstCount).resized
+    fbReadMultiBeatBurstCount := (fbColorReader.io.multiBeatBurstCount + fbAuxReader.io.multiBeatBurstCount).resized
+    fbReadMaxQueueOccupancy := Mux(
+      fbColorReader.io.maxOccupancy > fbAuxReader.io.maxOccupancy,
+      fbColorReader.io.maxOccupancy,
+      fbAuxReader.io.maxOccupancy
+    )
   } else {
     val fbColorReadPort = FramebufferPlaneReader(c)
     val fbColorWritePort = FramebufferPlaneBuffer(c)
@@ -1166,6 +1219,10 @@ case class Core(c: Config) extends Component {
     fbAccess.io.fbReadColorRsp << fbColorReadPort.io.readRsp
     fbAccess.io.fbReadAuxReq.s2mPipe() >> fbAuxReadPort.io.readReq
     fbAccess.io.fbReadAuxRsp << fbAuxReadPort.io.readRsp
+    fbColorReadPort.io.prefetchReq.valid := fbPrefetchColorReq.valid
+    fbColorReadPort.io.prefetchReq.address := fbPrefetchColorReq.address
+    fbAuxReadPort.io.prefetchReq.valid := fbPrefetchAuxReq.valid
+    fbAuxReadPort.io.prefetchReq.address := fbPrefetchAuxReq.address
 
     fbColorWritePort.io.readReq.valid := False
     fbColorWritePort.io.readReq.address := 0
@@ -1237,6 +1294,15 @@ case class Core(c: Config) extends Component {
     fbMemColorReadBlockedCycles := 0
     fbMemAuxReadBlockedCycles := 0
     fbMemLfbReadBlockedCycles := 0
+    fbReadReqCount := 0
+    fbReadReqForwardStepCount := 0
+    fbReadReqBackwardStepCount := 0
+    fbReadReqSameWordCount := 0
+    fbReadReqSameLineCount := 0
+    fbReadReqOtherCount := 0
+    fbReadSingleBeatBurstCount := 0
+    fbReadMultiBeatBurstCount := 0
+    fbReadMaxQueueOccupancy := 0
   }
 
   // ========================================================================
@@ -1453,6 +1519,15 @@ case class Core(c: Config) extends Component {
   fbMemColorReadBlockedCycles.simPublic()
   fbMemAuxReadBlockedCycles.simPublic()
   fbMemLfbReadBlockedCycles.simPublic()
+  fbReadReqCount.simPublic()
+  fbReadReqForwardStepCount.simPublic()
+  fbReadReqBackwardStepCount.simPublic()
+  fbReadReqSameWordCount.simPublic()
+  fbReadReqSameLineCount.simPublic()
+  fbReadReqOtherCount.simPublic()
+  fbReadSingleBeatBurstCount.simPublic()
+  fbReadMultiBeatBurstCount.simPublic()
+  fbReadMaxQueueOccupancy.simPublic()
   val pipelineBusySignal =
     triangleSetup.o.valid || rasterizer.running || tmu.io.input.valid ||
       tmu.io.busy || fbAccess.io.busy || fbColorBusy || fbAuxBusy ||

@@ -732,10 +732,6 @@ void sim_invalidate_fb_cache(void) {
         buffer->drainLength = 3;
         buffer->activeNextAddr = 0;
 
-        for (int i = 0; i < 16; ++i) {
-            (&buffer->slotMask_0_0)[i] = 0;
-            (&buffer->slotMask_1_0)[i] = 0;
-        }
     };
 
     clear_buffer(top->rootp->__PVT__CoreDe10__DOT__core_1__DOT__fbColorBuffer);
@@ -971,4 +967,49 @@ uint32_t sim_get_fb_mem_aux_read_blocked_cycles(void) {
 uint32_t sim_get_fb_mem_lfb_read_blocked_cycles(void) {
     if (!top) return 0;
     return top->rootp->CoreDe10__DOT__core_1__DOT__fbMemLfbReadBlockedCycles;
+}
+
+uint32_t sim_get_fb_read_req_count(void) {
+    if (!top) return 0;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__fbReadReqCount;
+}
+
+uint32_t sim_get_fb_read_req_forward_step_count(void) {
+    if (!top) return 0;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__fbReadReqForwardStepCount;
+}
+
+uint32_t sim_get_fb_read_req_backward_step_count(void) {
+    if (!top) return 0;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__fbReadReqBackwardStepCount;
+}
+
+uint32_t sim_get_fb_read_req_same_word_count(void) {
+    if (!top) return 0;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__fbReadReqSameWordCount;
+}
+
+uint32_t sim_get_fb_read_req_same_line_count(void) {
+    if (!top) return 0;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__fbReadReqSameLineCount;
+}
+
+uint32_t sim_get_fb_read_req_other_count(void) {
+    if (!top) return 0;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__fbReadReqOtherCount;
+}
+
+uint32_t sim_get_fb_read_single_beat_burst_count(void) {
+    if (!top) return 0;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__fbReadSingleBeatBurstCount;
+}
+
+uint32_t sim_get_fb_read_multi_beat_burst_count(void) {
+    if (!top) return 0;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__fbReadMultiBeatBurstCount;
+}
+
+uint32_t sim_get_fb_read_max_queue_occupancy(void) {
+    if (!top) return 0;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__fbReadMaxQueueOccupancy;
 }

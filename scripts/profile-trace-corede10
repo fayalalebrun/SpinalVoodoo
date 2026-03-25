@@ -121,6 +121,15 @@ print(f"fb_mem_blocked_aux_write={sim.get('fb_mem_aux_write_blocked_cycles', 0)}
 print(f"fb_mem_blocked_color_read={sim.get('fb_mem_color_read_blocked_cycles', 0)}")
 print(f"fb_mem_blocked_aux_read={sim.get('fb_mem_aux_read_blocked_cycles', 0)}")
 print(f"fb_mem_blocked_lfb_read={sim.get('fb_mem_lfb_read_blocked_cycles', 0)}")
+print(f"fb_read_req_count={sim.get('fb_read_req_count', 0)}")
+print(f"fb_read_req_forward_step_count={sim.get('fb_read_req_forward_step_count', 0)}")
+print(f"fb_read_req_backward_step_count={sim.get('fb_read_req_backward_step_count', 0)}")
+print(f"fb_read_req_same_word_count={sim.get('fb_read_req_same_word_count', 0)}")
+print(f"fb_read_req_same_line_count={sim.get('fb_read_req_same_line_count', 0)}")
+print(f"fb_read_req_other_count={sim.get('fb_read_req_other_count', 0)}")
+print(f"fb_read_single_beat_burst_count={sim.get('fb_read_single_beat_burst_count', 0)}")
+print(f"fb_read_multi_beat_burst_count={sim.get('fb_read_multi_beat_burst_count', 0)}")
+print(f"fb_read_max_queue_occupancy={sim.get('fb_read_max_queue_occupancy', 0)}")
 if hotspots:
     top = hotspots[0]
     print(f"top_hotspot_reg=0x{top['reg']:03x}")

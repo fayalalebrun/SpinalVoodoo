@@ -118,8 +118,8 @@ case class FramebufferAccess(c: Config) extends Component {
       pixelY,
       payload.fbPixelStride
     )
-  request.colorAddress := (colorPlaneAddress(c.addressWidth.value - 1 downto 2) ## U"2'b00").asUInt
-  request.auxAddress := (auxPlaneAddress(c.addressWidth.value - 1 downto 2) ## U"2'b00").asUInt
+  request.colorAddress := (colorPlaneAddress(c.addressWidth.value - 1 downto 1) ## U"1'b0").asUInt
+  request.auxAddress := (auxPlaneAddress(c.addressWidth.value - 1 downto 1) ## U"1'b0").asUInt
   request.passthrough.coords := payload.coords
   request.passthrough.color := payload.color
   request.passthrough.alpha := payload.alpha

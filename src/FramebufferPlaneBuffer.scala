@@ -73,6 +73,10 @@ case class FramebufferPlaneBuffer(c: Config, formalStrong: Boolean = true) exten
   val slot1Fifo = StreamFifo(WriteReq(c), fifoDepth)
   slot0Fifo.setName("slot0Fifo")
   slot1Fifo.setName("slot1Fifo")
+  val slotFlush = Vec(Bool(), slotCount)
+  slotFlush.foreach(_ := False)
+  slot0Fifo.io.flush := slotFlush(0)
+  slot1Fifo.io.flush := slotFlush(1)
 
   val slotValid = Vec(Reg(Bool()) init (False), slotCount)
   val slotDraining = Vec(Reg(Bool()) init (False), slotCount)
@@ -159,6 +163,7 @@ case class FramebufferPlaneBuffer(c: Config, formalStrong: Boolean = true) exten
   val writeReqPipe = io.writeReq.m2sPipe()
 
   def clearSlotMeta(slot: UInt): Unit = {
+    slotFlush(slot) := True
     slotValid(slot) := False
     slotDraining(slot) := False
     slotStartAddr(slot) := U(0, addrWidth bits)
@@ -473,6 +478,11 @@ case class FramebufferPlaneBuffer(c: Config, formalStrong: Boolean = true) exten
           when(!slotValid(slot)) {
             assert(!slotDraining(slot))
             assert(slotWordCount(slot) === U(0, countWidth bits))
+            if (slot == 0) {
+              assert(slot0Fifo.io.occupancy === 0)
+            } else {
+              assert(slot1Fifo.io.occupancy === 0)
+            }
           }
           when(slotValid(slot)) {
             assert(slotWordCount(slot) =/= U(0, countWidth bits))

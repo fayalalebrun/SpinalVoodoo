@@ -116,6 +116,15 @@ uint32_t sim_get_fb_mem_aux_write_blocked_cycles(void);
 uint32_t sim_get_fb_mem_color_read_blocked_cycles(void);
 uint32_t sim_get_fb_mem_aux_read_blocked_cycles(void);
 uint32_t sim_get_fb_mem_lfb_read_blocked_cycles(void);
+uint32_t sim_get_fb_read_req_count(void);
+uint32_t sim_get_fb_read_req_forward_step_count(void);
+uint32_t sim_get_fb_read_req_backward_step_count(void);
+uint32_t sim_get_fb_read_req_same_word_count(void);
+uint32_t sim_get_fb_read_req_same_line_count(void);
+uint32_t sim_get_fb_read_req_other_count(void);
+uint32_t sim_get_fb_read_single_beat_burst_count(void);
+uint32_t sim_get_fb_read_multi_beat_burst_count(void);
+uint32_t sim_get_fb_read_max_queue_occupancy(void);
 
 #ifdef __cplusplus
 }

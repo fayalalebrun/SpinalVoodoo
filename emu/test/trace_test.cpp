@@ -261,6 +261,15 @@ int main(int argc, char **argv) {
     uint32_t sim_fb_mem_color_read_blocked_cycles_final = 0;
     uint32_t sim_fb_mem_aux_read_blocked_cycles_final = 0;
     uint32_t sim_fb_mem_lfb_read_blocked_cycles_final = 0;
+    uint32_t sim_fb_read_req_count_final = 0;
+    uint32_t sim_fb_read_req_forward_step_count_final = 0;
+    uint32_t sim_fb_read_req_backward_step_count_final = 0;
+    uint32_t sim_fb_read_req_same_word_count_final = 0;
+    uint32_t sim_fb_read_req_same_line_count_final = 0;
+    uint32_t sim_fb_read_req_other_count_final = 0;
+    uint32_t sim_fb_read_single_beat_burst_count_final = 0;
+    uint32_t sim_fb_read_multi_beat_burst_count_final = 0;
+    uint32_t sim_fb_read_max_queue_occupancy_final = 0;
 #endif
 
     /* Parse arguments */
@@ -856,6 +865,15 @@ int main(int argc, char **argv) {
         sim_fb_mem_color_read_blocked_cycles_final = sim_get_fb_mem_color_read_blocked_cycles();
         sim_fb_mem_aux_read_blocked_cycles_final = sim_get_fb_mem_aux_read_blocked_cycles();
         sim_fb_mem_lfb_read_blocked_cycles_final = sim_get_fb_mem_lfb_read_blocked_cycles();
+        sim_fb_read_req_count_final = sim_get_fb_read_req_count();
+        sim_fb_read_req_forward_step_count_final = sim_get_fb_read_req_forward_step_count();
+        sim_fb_read_req_backward_step_count_final = sim_get_fb_read_req_backward_step_count();
+        sim_fb_read_req_same_word_count_final = sim_get_fb_read_req_same_word_count();
+        sim_fb_read_req_same_line_count_final = sim_get_fb_read_req_same_line_count();
+        sim_fb_read_req_other_count_final = sim_get_fb_read_req_other_count();
+        sim_fb_read_single_beat_burst_count_final = sim_get_fb_read_single_beat_burst_count();
+        sim_fb_read_multi_beat_burst_count_final = sim_get_fb_read_multi_beat_burst_count();
+        sim_fb_read_max_queue_occupancy_final = sim_get_fb_read_max_queue_occupancy();
         fprintf(stderr,
                 "[trace_test] Worst sim_write: entry=%u addr=0x%08x data=0x%08x cycles=%llu\n",
                 worst_write_entry,
@@ -941,6 +959,17 @@ int main(int argc, char **argv) {
                 sim_fb_mem_color_read_blocked_cycles_final,
                 sim_fb_mem_aux_read_blocked_cycles_final,
                 sim_fb_mem_lfb_read_blocked_cycles_final);
+        fprintf(stderr,
+                "[trace_test] Sim fb-read pattern: req=%u fwd=%u back=%u sameWord=%u sameLine=%u other=%u bursts(single=%u multi=%u) maxQ=%u\n",
+                sim_fb_read_req_count_final,
+                sim_fb_read_req_forward_step_count_final,
+                sim_fb_read_req_backward_step_count_final,
+                sim_fb_read_req_same_word_count_final,
+                sim_fb_read_req_same_line_count_final,
+                sim_fb_read_req_other_count_final,
+                sim_fb_read_single_beat_burst_count_final,
+                sim_fb_read_multi_beat_burst_count_final,
+                sim_fb_read_max_queue_occupancy_final);
         if (progress_snapshots.empty() || progress_snapshots.back().entry != num_entries) {
             ProgressSnapshot snap;
             snap.entry = num_entries;
@@ -1093,6 +1122,15 @@ int main(int argc, char **argv) {
             fprintf(profile_fp, "    \"fb_mem_color_read_blocked_cycles\": %u,\n", sim_fb_mem_color_read_blocked_cycles_final);
             fprintf(profile_fp, "    \"fb_mem_aux_read_blocked_cycles\": %u,\n", sim_fb_mem_aux_read_blocked_cycles_final);
             fprintf(profile_fp, "    \"fb_mem_lfb_read_blocked_cycles\": %u,\n", sim_fb_mem_lfb_read_blocked_cycles_final);
+            fprintf(profile_fp, "    \"fb_read_req_count\": %u,\n", sim_fb_read_req_count_final);
+            fprintf(profile_fp, "    \"fb_read_req_forward_step_count\": %u,\n", sim_fb_read_req_forward_step_count_final);
+            fprintf(profile_fp, "    \"fb_read_req_backward_step_count\": %u,\n", sim_fb_read_req_backward_step_count_final);
+            fprintf(profile_fp, "    \"fb_read_req_same_word_count\": %u,\n", sim_fb_read_req_same_word_count_final);
+            fprintf(profile_fp, "    \"fb_read_req_same_line_count\": %u,\n", sim_fb_read_req_same_line_count_final);
+            fprintf(profile_fp, "    \"fb_read_req_other_count\": %u,\n", sim_fb_read_req_other_count_final);
+            fprintf(profile_fp, "    \"fb_read_single_beat_burst_count\": %u,\n", sim_fb_read_single_beat_burst_count_final);
+            fprintf(profile_fp, "    \"fb_read_multi_beat_burst_count\": %u,\n", sim_fb_read_multi_beat_burst_count_final);
+            fprintf(profile_fp, "    \"fb_read_max_queue_occupancy\": %u,\n", sim_fb_read_max_queue_occupancy_final);
             fprintf(profile_fp, "    \"worst_write\": {\n");
             fprintf(profile_fp, "      \"entry\": %u,\n", worst_write_entry);
             fprintf(profile_fp, "      \"addr\": %u,\n", worst_write_addr);

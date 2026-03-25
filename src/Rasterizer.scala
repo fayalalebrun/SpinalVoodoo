@@ -31,20 +31,25 @@ case class Rasterizer(c: Config, formalStrong: Boolean = false) extends Componen
       state.coords(0) := input.xrange(0)
       state.coords(1) := input.yrange(0)
 
-      // Start going right
-      state.goingRight := True
-
       // Initialize edge function values
       state.edge := input.edgeStart
+      state.rowStartEdge := input.edgeStart
 
       // Initialize gradient values
       state.grads.all.take(6).zip(input.grads.all.take(6)).foreach { case (out, in) =>
         out := in.start
       }
+      state.rowStartGrads.all.take(6).zip(input.grads.all.take(6)).foreach { case (out, in) =>
+        out := in.start
+      }
       state.texHi := input.texHi
+      state.rowStartTexHi := input.texHi
       state.alphaHi := input.hiAlpha
+      state.rowStartAlphaHi := input.hiAlpha
       state.grads.sGrad := input.texHi.sStart.fixTo(c.texCoordsAccumFormat)
       state.grads.tGrad := input.texHi.tStart.fixTo(c.texCoordsAccumFormat)
+      state.rowStartGrads.sGrad := input.texHi.sStart.fixTo(c.texCoordsAccumFormat)
+      state.rowStartGrads.tGrad := input.texHi.tStart.fixTo(c.texCoordsAccumFormat)
 
       state
     },
@@ -90,12 +95,12 @@ case class Rasterizer(c: Config, formalStrong: Boolean = false) extends Componen
 
       // Compute next state
       val next = cloneOf(state)
+      next := state
 
       val xmin = state.input.xrange(0)
       val xmax = state.input.xrange(1)
-      // At edge when current position is at the boundary for our direction
-      val atEdge = (state.goingRight && (state.coords(0) >= xmax)) ||
-        (!state.goingRight && (state.coords(0) <= xmin))
+      // At edge when current position reaches the right side of the scanline bbox
+      val atEdge = state.coords(0) >= xmax
 
       // Create step size of 1.0 in the coordinate format
       // For SQ(12,4): need raw value of 16 (1.0 * 2^4)
@@ -133,47 +138,51 @@ case class Rasterizer(c: Config, formalStrong: Boolean = false) extends Componen
       }
 
       when(atEdge) {
-        // At edge: move down, flip direction
-        next.coords(0) := state.coords(0)
+        // At edge: advance to the next scanline and restart from xmin
+        next.coords(0) := xmin
         next.coords(1) := (state.coords(1) + one).fixTo(c.vertexFormat)
-        next.goingRight := !state.goingRight
-        updateEdgesAndGrads(_.b, _.d(1))
-        next.texHi.sStart := (state.texHi.sStart + state.input.texHi.dSdY)
+        next.rowStartEdge.zip(state.rowStartEdge).zip(state.input.coeffs).foreach {
+          case ((nxt, cur), coeff) =>
+            nxt := (cur + coeff.b).fixTo(c.coefficientFormat)
+        }
+        next.edge := next.rowStartEdge
+        next.rowStartGrads.all
+          .take(6)
+          .zip(state.rowStartGrads.all.take(6))
+          .zip(state.input.grads.all.take(6))
+          .zipWithIndex
+          .foreach { case (((nxt, cur), grad), idx) =>
+            nxt := (cur + grad.d(1)).fixTo(gradFormats(idx))
+          }
+        next.rowStartTexHi.sStart := (state.rowStartTexHi.sStart + state.input.texHi.dSdY)
           .fixTo(c.texCoordsHiFormat)
-        next.texHi.tStart := (state.texHi.tStart + state.input.texHi.dTdY)
+        next.rowStartTexHi.tStart := (state.rowStartTexHi.tStart + state.input.texHi.dTdY)
           .fixTo(c.texCoordsHiFormat)
-        next.alphaHi.start := (state.alphaHi.start + state.input.hiAlpha.dAdY)
+        next.texHi := next.rowStartTexHi
+        next.rowStartAlphaHi.start := (state.rowStartAlphaHi.start + state.input.hiAlpha.dAdY)
           .fixTo(c.texCoordsHiFormat)
+        next.alphaHi := next.rowStartAlphaHi
+        next.rowStartGrads.sGrad := next.rowStartTexHi.sStart.fixTo(c.texCoordsAccumFormat)
+        next.rowStartGrads.tGrad := next.rowStartTexHi.tStart.fixTo(c.texCoordsAccumFormat)
+        next.grads := next.rowStartGrads
       }.otherwise {
-        // Move horizontally
-        val dx = state.goingRight ? one | negOne
-        next.coords(0) := (state.coords(0) + dx).fixTo(c.vertexFormat)
+        // Move horizontally left-to-right
+        next.coords(0) := (state.coords(0) + one).fixTo(c.vertexFormat)
         next.coords(1) := state.coords(1)
-        next.goingRight := state.goingRight
-        updateEdgesAndGrads(
-          co => state.goingRight ? co.a | (-co.a),
-          g => state.goingRight ? g.d(0) | (-g.d(0))
-        )
-        next.texHi.sStart := (state.texHi.sStart +
-          (state.goingRight ? state.input.texHi.dSdX | (-state.input.texHi.dSdX)))
+        next.rowStartEdge := state.rowStartEdge
+        next.rowStartGrads := state.rowStartGrads
+        next.rowStartTexHi := state.rowStartTexHi
+        next.rowStartAlphaHi := state.rowStartAlphaHi
+        updateEdgesAndGrads(_.a, _.d(0))
+        next.texHi.sStart := (state.texHi.sStart + state.input.texHi.dSdX)
           .fixTo(c.texCoordsHiFormat)
-        next.texHi.tStart := (state.texHi.tStart +
-          (state.goingRight ? state.input.texHi.dTdX | (-state.input.texHi.dTdX)))
+        next.texHi.tStart := (state.texHi.tStart + state.input.texHi.dTdX)
           .fixTo(c.texCoordsHiFormat)
-        next.alphaHi.start := (state.alphaHi.start +
-          (state.goingRight ? state.input.hiAlpha.dAdX | (-state.input.hiAlpha.dAdX)))
+        next.alphaHi.start := (state.alphaHi.start + state.input.hiAlpha.dAdX)
           .fixTo(c.texCoordsHiFormat)
+        next.grads.sGrad := next.texHi.sStart.fixTo(c.texCoordsAccumFormat)
+        next.grads.tGrad := next.texHi.tStart.fixTo(c.texCoordsAccumFormat)
       }
-
-      next.input := state.input
-      next.texHi.dSdX := state.input.texHi.dSdX
-      next.texHi.dTdX := state.input.texHi.dTdX
-      next.texHi.dSdY := state.input.texHi.dSdY
-      next.texHi.dTdY := state.input.texHi.dTdY
-      next.alphaHi.dAdX := state.input.hiAlpha.dAdX
-      next.alphaHi.dAdY := state.input.hiAlpha.dAdY
-      next.grads.sGrad := next.texHi.sStart.fixTo(c.texCoordsAccumFormat)
-      next.grads.tGrad := next.texHi.tStart.fixTo(c.texCoordsAccumFormat)
 
       // Check if this is the last pixel: either next Y is out of bounds, or at max iterations
       // yrange(1) is the exclusive upper bound, so >= means next scanline is past the end
@@ -200,10 +209,9 @@ case class Rasterizer(c: Config, formalStrong: Boolean = false) extends Componen
       val ymin = withInsideFlag.payload.yrange(0).floor(0).asSInt
       val ymax = withInsideFlag.payload.yrange(1).floor(0).asSInt
 
-      // The rasterizer evaluates one cycle beyond the bounding box on the left/right
-      // to detect the edge.
+      // Forward scanline traversal stays within the bbox up to the usual fixed-point edge probe.
       val N = c.vertexFormat.nonFraction + 1
-      assert(intX >= xmin.resize(N) - 1)
+      assert(intX >= xmin.resize(N))
       assert(intX <= xmax.resize(N) + 1)
 
       // Top/bottom are strict bounds + 1 iteration
@@ -279,10 +287,13 @@ object Rasterizer {
   case class State(c: Config) extends Bundle {
     val coords = vertex2d(c.vertexFormat) // Internal fixed-point coordinates
     val grads = GradientBundle(AFix(_), c)
+    val rowStartGrads = GradientBundle(AFix(_), c)
     val alphaHi = TriangleSetup.HiAlpha(c)
+    val rowStartAlphaHi = TriangleSetup.HiAlpha(c)
     val texHi = TriangleSetup.HiTexCoords(c)
+    val rowStartTexHi = TriangleSetup.HiTexCoords(c)
     val edge = Vec.fill(3)(AFix(c.coefficientFormat))
-    val goingRight = Bool() // Direction flag for serpentine scanning
+    val rowStartEdge = Vec.fill(3)(AFix(c.coefficientFormat))
     val input = TriangleSetup.Output(c) // Keep input for iteration
   }
 }

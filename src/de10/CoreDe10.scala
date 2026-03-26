@@ -139,7 +139,15 @@ case class CoreDe10(c: Config) extends Component {
 
   val io = new Bundle {
     val h2fLw = slave(H2fLwMmio(cpuAddressWidth - 2))
-    val memFb = master(AvalonMM(De10MemBackend.avalonConfig(De10MemBackend.physicalAddressWidth)))
+    val memFbWrite = master(
+      AvalonMM(De10MemBackend.avalonConfig(De10MemBackend.physicalAddressWidth))
+    )
+    val memFbColorRead = master(
+      AvalonMM(De10MemBackend.avalonConfig(De10MemBackend.physicalAddressWidth))
+    )
+    val memFbAuxRead = master(
+      AvalonMM(De10MemBackend.avalonConfig(De10MemBackend.physicalAddressWidth))
+    )
     val memTex = master(AvalonMM(De10MemBackend.avalonConfig(De10MemBackend.physicalAddressWidth)))
   }
 
@@ -150,9 +158,13 @@ case class CoreDe10(c: Config) extends Component {
   io.h2fLw <> h2fBridge.io.h2fLw
   core.io.cpuBus <> h2fBridge.io.cpuBus
 
-  core.io.fbMem <> memBackend.io.fbMem
+  core.io.fbMemWrite <> memBackend.io.fbMemWrite
+  core.io.fbColorReadMem <> memBackend.io.fbColorReadMem
+  core.io.fbAuxReadMem <> memBackend.io.fbAuxReadMem
   core.io.texMem <> memBackend.io.texMem
-  io.memFb <> memBackend.io.memFb
+  io.memFbWrite <> memBackend.io.memFbWrite
+  io.memFbColorRead <> memBackend.io.memFbColorRead
+  io.memFbAuxRead <> memBackend.io.memFbAuxRead
   io.memTex <> memBackend.io.memTex
 
   // The DE10 wrapper does not yet model display timing, but swapbufferCMD and

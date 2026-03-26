@@ -367,12 +367,12 @@ case class RegisterBank(config: Config) extends Component {
 
   private def captureTriangleHiTexCoords(useFloatShadow: Bool): TriangleSetup.HiTexCoords = {
     val hi = TriangleSetup.HiTexCoords(config)
-    val startSInt = triangleGeometry.startS.resize(60 bits) |<< 12
-    val startTInt = triangleGeometry.startT.resize(60 bits) |<< 12
-    val dSdXInt = triangleGeometry.dSdX.resize(60 bits) |<< 12
-    val dTdXInt = triangleGeometry.dTdX.resize(60 bits) |<< 12
-    val dSdYInt = triangleGeometry.dSdY.resize(60 bits) |<< 12
-    val dTdYInt = triangleGeometry.dTdY.resize(60 bits) |<< 12
+    val startSInt = triangleGeometry.startS.asSInt.resize(60 bits) |<< 12
+    val startTInt = triangleGeometry.startT.asSInt.resize(60 bits) |<< 12
+    val dSdXInt = triangleGeometry.dSdX.asSInt.resize(60 bits) |<< 12
+    val dTdXInt = triangleGeometry.dTdX.asSInt.resize(60 bits) |<< 12
+    val dSdYInt = triangleGeometry.dSdY.asSInt.resize(60 bits) |<< 12
+    val dTdYInt = triangleGeometry.dTdY.asSInt.resize(60 bits) |<< 12
 
     hi.sStart.raw := Mux(
       useFloatShadow,
@@ -393,9 +393,9 @@ case class RegisterBank(config: Config) extends Component {
 
   private def captureTriangleHiAlpha(useFloatShadow: Bool): TriangleSetup.HiAlpha = {
     val hi = TriangleSetup.HiAlpha(config)
-    val startAInt = triangleGeometry.startA.resize(60 bits) |<< 18
-    val dAdXInt = triangleGeometry.dAdX.resize(60 bits) |<< 18
-    val dAdYInt = triangleGeometry.dAdY.resize(60 bits) |<< 18
+    val startAInt = triangleGeometry.startA.asSInt.resize(60 bits) |<< 18
+    val dAdXInt = triangleGeometry.dAdX.asSInt.resize(60 bits) |<< 18
+    val dAdYInt = triangleGeometry.dAdY.asSInt.resize(60 bits) |<< 18
 
     hi.start.raw := Mux(
       useFloatShadow,
@@ -422,17 +422,17 @@ case class RegisterBank(config: Config) extends Component {
           Mux(
             useFloatShadow,
             io.triangleCapture.floatShadowStartW.asBits,
-            g.startW.resize(60 bits).asBits
+            g.startW.asSInt.resize(60 bits).asBits
           ),
           Mux(
             useFloatShadow,
             io.triangleCapture.floatShadowDWdX.asBits,
-            g.dWdX.resize(60 bits).asBits
+            g.dWdX.asSInt.resize(60 bits).asBits
           ),
           Mux(
             useFloatShadow,
             io.triangleCapture.floatShadowDWdY.asBits,
-            g.dWdY.resize(60 bits).asBits
+            g.dWdY.asSInt.resize(60 bits).asBits
           )
         ),
         (g.startS.asBits, g.dSdX.asBits, g.dSdY.asBits),
@@ -556,7 +556,7 @@ case class RegisterBank(config: Config) extends Component {
       busif.newCommandReg(0x128, "swapbufferCMD", RegisterCategory.fifoWithSync)
 
     if (config.trace.enabled) {
-      when(swapbufferCmdReg.hitDoWrite) {
+      when(swapbufferCmdStream.fire) {
         triangleDrawTraceId := triangleDrawTraceId + 1
       }
       when(triangleCmdReg.hitDoWrite || ftriangleCmdReg.hitDoWrite) {

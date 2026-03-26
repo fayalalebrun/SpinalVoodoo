@@ -185,13 +185,35 @@ case class De10BmbToAvalonMm(
 
 case class De10MemBackend(c: Config) extends Component {
   val io = new Bundle {
-    val fbMem = slave(Bmb(Core.fbMemBmbParams(c)))
+    val fbMemWrite = slave(Bmb(Core.fbMemBmbParams(c)))
+    val fbColorReadMem = slave(Bmb(Core.fbMemBmbParams(c)))
+    val fbAuxReadMem = slave(Bmb(Core.fbMemBmbParams(c)))
     val texMem = slave(Bmb(Core.texMemBmbParams(c)))
-    val memFb = master(AvalonMM(De10MemBackend.avalonConfig(De10MemBackend.physicalAddressWidth)))
+    val memFbWrite = master(
+      AvalonMM(De10MemBackend.avalonConfig(De10MemBackend.physicalAddressWidth))
+    )
+    val memFbColorRead = master(
+      AvalonMM(De10MemBackend.avalonConfig(De10MemBackend.physicalAddressWidth))
+    )
+    val memFbAuxRead = master(
+      AvalonMM(De10MemBackend.avalonConfig(De10MemBackend.physicalAddressWidth))
+    )
     val memTex = master(AvalonMM(De10MemBackend.avalonConfig(De10MemBackend.physicalAddressWidth)))
   }
 
-  val fbBridge = De10BmbToAvalonMm(
+  val fbWriteBridge = De10BmbToAvalonMm(
+    bmbParams = Core.fbMemBmbParams(c),
+    avalonAddressWidth = De10MemBackend.physicalAddressWidth,
+    addressBase = De10AddressMap.fbMemBase,
+    addressMask = De10AddressMap.fbMemMask
+  )
+  val fbColorReadBridge = De10BmbToAvalonMm(
+    bmbParams = Core.fbMemBmbParams(c),
+    avalonAddressWidth = De10MemBackend.physicalAddressWidth,
+    addressBase = De10AddressMap.fbMemBase,
+    addressMask = De10AddressMap.fbMemMask
+  )
+  val fbAuxReadBridge = De10BmbToAvalonMm(
     bmbParams = Core.fbMemBmbParams(c),
     avalonAddressWidth = De10MemBackend.physicalAddressWidth,
     addressBase = De10AddressMap.fbMemBase,
@@ -204,31 +226,53 @@ case class De10MemBackend(c: Config) extends Component {
     addressMask = De10AddressMap.texMemMask
   )
 
-  io.fbMem <> fbBridge.io.bmb
+  io.fbMemWrite <> fbWriteBridge.io.bmb
+  io.fbColorReadMem <> fbColorReadBridge.io.bmb
+  io.fbAuxReadMem <> fbAuxReadBridge.io.bmb
   io.texMem <> texBridge.io.bmb
 
-  io.memFb <> fbBridge.io.mem
+  io.memFbWrite <> fbWriteBridge.io.mem
+  io.memFbColorRead <> fbColorReadBridge.io.mem
+  io.memFbAuxRead <> fbAuxReadBridge.io.mem
   io.memTex <> texBridge.io.mem
 
   assert(De10AddressMap.fbMemBase + De10AddressMap.fbMemBytes <= De10AddressMap.texMemBase)
   assert(De10AddressMap.texMemBase + De10AddressMap.texMemBytes <= De10AddressMap.ddrCarveoutEnd)
 
   GenerationFlags.formal {
-    when(io.memFb.read || io.memFb.write) {
-      assert(io.memFb.address >= U(De10AddressMap.fbMemBase, 32 bits))
-      assert(io.memFb.address < U(De10AddressMap.fbMemBase + De10AddressMap.fbMemBytes, 32 bits))
+    when(io.memFbWrite.read || io.memFbWrite.write) {
+      assert(io.memFbWrite.address >= U(De10AddressMap.fbMemBase, 32 bits))
+      assert(
+        io.memFbWrite.address < U(De10AddressMap.fbMemBase + De10AddressMap.fbMemBytes, 32 bits)
+      )
+    }
+    when(io.memFbColorRead.read || io.memFbColorRead.write) {
+      assert(io.memFbColorRead.address >= U(De10AddressMap.fbMemBase, 32 bits))
+      assert(
+        io.memFbColorRead.address < U(De10AddressMap.fbMemBase + De10AddressMap.fbMemBytes, 32 bits)
+      )
+    }
+    when(io.memFbAuxRead.read || io.memFbAuxRead.write) {
+      assert(io.memFbAuxRead.address >= U(De10AddressMap.fbMemBase, 32 bits))
+      assert(
+        io.memFbAuxRead.address < U(De10AddressMap.fbMemBase + De10AddressMap.fbMemBytes, 32 bits)
+      )
     }
     when(io.memTex.read || io.memTex.write) {
       assert(io.memTex.address >= U(De10AddressMap.texMemBase, 32 bits))
       assert(io.memTex.address < U(De10AddressMap.texMemBase + De10AddressMap.texMemBytes, 32 bits))
     }
 
-    assert(!(io.memFb.read && io.memFb.write))
+    assert(!(io.memFbWrite.read && io.memFbWrite.write))
+    assert(!(io.memFbColorRead.read && io.memFbColorRead.write))
+    assert(!(io.memFbAuxRead.read && io.memFbAuxRead.write))
     assert(!(io.memTex.read && io.memTex.write))
 
-    cover(io.memFb.write)
+    cover(io.memFbWrite.write)
+    cover(io.memFbColorRead.read)
+    cover(io.memFbAuxRead.read)
     cover(io.memTex.read)
-    cover(io.memFb.write && io.memTex.read)
-    cover(io.fbMem.rsp.valid && io.texMem.rsp.valid)
+    cover(io.memFbWrite.write && io.memFbColorRead.read && io.memFbAuxRead.read && io.memTex.read)
+    cover(io.fbMemWrite.rsp.valid && io.texMem.rsp.valid)
   }
 }

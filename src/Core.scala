@@ -58,8 +58,10 @@ case class Core(c: Config) extends Component {
     // Unified CPU bus (24-bit address covers 16MB PCI BAR)
     val cpuBus = slave(Bmb(Core.cpuBmbParams))
 
-    // Framebuffer memory bus (R/W, internal 5-port arbitration)
-    val fbMem = master(Bmb(Core.fbMemBmbParams(c)))
+    // Framebuffer memory buses
+    val fbMemWrite = master(Bmb(Core.fbMemBmbParams(c)))
+    val fbColorReadMem = master(Bmb(Core.fbMemBmbParams(c)))
+    val fbAuxReadMem = master(Bmb(Core.fbMemBmbParams(c)))
 
     // Texture memory bus (R/W, internal 2-port arbitration with texBaseAddr relocation)
     val texMem = master(Bmb(Core.texMemBmbParams(c)))
@@ -1102,11 +1104,17 @@ case class Core(c: Config) extends Component {
     fbColorBuffer.io.writeReq << writeColor.o.fbWrite.s2mPipe()
     fbAuxBuffer.io.writeReq << writeAux.o.fbWrite.s2mPipe()
 
-    val fbArbiter = BmbArbiter(
+    val fbWriteArbiter = BmbArbiter(
       inputsParameter = Seq(
         FramebufferPlaneBuffer.bmbParams(c),
-        FramebufferPlaneBuffer.bmbParams(c),
-        FramebufferPlaneReader.bmbParams(c),
+        FramebufferPlaneBuffer.bmbParams(c)
+      ),
+      outputParameter = Core.fbMemBmbParams(c),
+      lowerFirstPriority = true
+    )
+
+    val fbColorReadArbiter = BmbArbiter(
+      inputsParameter = Seq(
         FramebufferPlaneReader.bmbParams(c),
         Lfb.fbReadBmbParams(c)
       ),
@@ -1114,35 +1122,43 @@ case class Core(c: Config) extends Component {
       lowerFirstPriority = true
     )
 
-    fbArbiter.io.inputs(0).cmd << fbColorBuffer.io.mem.cmd.s2mPipe()
-    fbColorBuffer.io.mem.rsp << fbArbiter.io.inputs(0).rsp.s2mPipe()
+    val fbAuxReadArbiter = BmbArbiter(
+      inputsParameter = Seq(FramebufferPlaneReader.bmbParams(c)),
+      outputParameter = Core.fbMemBmbParams(c),
+      lowerFirstPriority = true
+    )
 
-    fbArbiter.io.inputs(1).cmd << fbAuxBuffer.io.mem.cmd.s2mPipe()
-    fbAuxBuffer.io.mem.rsp << fbArbiter.io.inputs(1).rsp.s2mPipe()
+    fbWriteArbiter.io.inputs(0).cmd << fbColorBuffer.io.mem.cmd.s2mPipe()
+    fbColorBuffer.io.mem.rsp << fbWriteArbiter.io.inputs(0).rsp.s2mPipe()
 
-    fbArbiter.io.inputs(2).cmd << fbColorReader.io.mem.cmd.s2mPipe()
-    fbColorReader.io.mem.rsp << fbArbiter.io.inputs(2).rsp.s2mPipe()
+    fbWriteArbiter.io.inputs(1).cmd << fbAuxBuffer.io.mem.cmd.s2mPipe()
+    fbAuxBuffer.io.mem.rsp << fbWriteArbiter.io.inputs(1).rsp.s2mPipe()
 
-    fbArbiter.io.inputs(3).cmd << fbAuxReader.io.mem.cmd.s2mPipe()
-    fbAuxReader.io.mem.rsp << fbArbiter.io.inputs(3).rsp.s2mPipe()
+    fbColorReadArbiter.io.inputs(0).cmd << fbColorReader.io.mem.cmd.s2mPipe()
+    fbColorReader.io.mem.rsp << fbColorReadArbiter.io.inputs(0).rsp.s2mPipe()
 
-    fbArbiter.io.inputs(4).cmd << lfb.io.fbReadBus.cmd
-    lfb.io.fbReadBus.rsp << fbArbiter.io.inputs(4).rsp.s2mPipe()
-    fbArbiter.io.output <> io.fbMem
+    fbAuxReadArbiter.io.inputs(0).cmd << fbAuxReader.io.mem.cmd.s2mPipe()
+    fbAuxReader.io.mem.rsp << fbAuxReadArbiter.io.inputs(0).rsp.s2mPipe()
 
-    when(fbColorBuffer.io.mem.cmd.valid && !fbArbiter.io.inputs(0).cmd.ready) {
+    fbColorReadArbiter.io.inputs(1).cmd << lfb.io.fbReadBus.cmd
+    lfb.io.fbReadBus.rsp << fbColorReadArbiter.io.inputs(1).rsp.s2mPipe()
+    fbWriteArbiter.io.output <> io.fbMemWrite
+    fbColorReadArbiter.io.output <> io.fbColorReadMem
+    fbAuxReadArbiter.io.output <> io.fbAuxReadMem
+
+    when(fbColorBuffer.io.mem.cmd.valid && !fbWriteArbiter.io.inputs(0).cmd.ready) {
       fbMemColorWriteBlockedCyclesReg := fbMemColorWriteBlockedCyclesReg + 1
     }
-    when(fbAuxBuffer.io.mem.cmd.valid && !fbArbiter.io.inputs(1).cmd.ready) {
+    when(fbAuxBuffer.io.mem.cmd.valid && !fbWriteArbiter.io.inputs(1).cmd.ready) {
       fbMemAuxWriteBlockedCyclesReg := fbMemAuxWriteBlockedCyclesReg + 1
     }
-    when(fbColorReader.io.mem.cmd.valid && !fbArbiter.io.inputs(2).cmd.ready) {
+    when(fbColorReader.io.mem.cmd.valid && !fbColorReadArbiter.io.inputs(0).cmd.ready) {
       fbMemColorReadBlockedCyclesReg := fbMemColorReadBlockedCyclesReg + 1
     }
-    when(fbAuxReader.io.mem.cmd.valid && !fbArbiter.io.inputs(3).cmd.ready) {
+    when(fbAuxReader.io.mem.cmd.valid && !fbAuxReadArbiter.io.inputs(0).cmd.ready) {
       fbMemAuxReadBlockedCyclesReg := fbMemAuxReadBlockedCyclesReg + 1
     }
-    when(lfb.io.fbReadBus.cmd.valid && !fbArbiter.io.inputs(4).cmd.ready) {
+    when(lfb.io.fbReadBus.cmd.valid && !fbColorReadArbiter.io.inputs(1).cmd.ready) {
       fbMemLfbReadBlockedCyclesReg := fbMemLfbReadBlockedCyclesReg + 1
     }
     when(fbColorBuffer.io.mem.cmd.fire) {
@@ -1234,11 +1250,17 @@ case class Core(c: Config) extends Component {
     fbColorWritePort.io.writeReq << writeColor.o.fbWrite.s2mPipe()
     fbAuxWritePort.io.writeReq << writeAux.o.fbWrite.s2mPipe()
 
-    val fbArbiter = BmbArbiter(
+    val fbWriteArbiter = BmbArbiter(
       inputsParameter = Seq(
         FramebufferPlaneBuffer.bmbParams(c),
-        FramebufferPlaneBuffer.bmbParams(c),
-        FramebufferPlaneReader.bmbParams(c),
+        FramebufferPlaneBuffer.bmbParams(c)
+      ),
+      outputParameter = Core.fbMemBmbParams(c),
+      lowerFirstPriority = true
+    )
+
+    val fbColorReadArbiter = BmbArbiter(
+      inputsParameter = Seq(
         FramebufferPlaneReader.bmbParams(c),
         Lfb.fbReadBmbParams(c)
       ),
@@ -1246,21 +1268,29 @@ case class Core(c: Config) extends Component {
       lowerFirstPriority = true
     )
 
-    fbArbiter.io.inputs(0).cmd << fbColorWritePort.io.mem.cmd.s2mPipe()
-    fbColorWritePort.io.mem.rsp << fbArbiter.io.inputs(0).rsp.s2mPipe()
+    val fbAuxReadArbiter = BmbArbiter(
+      inputsParameter = Seq(FramebufferPlaneReader.bmbParams(c)),
+      outputParameter = Core.fbMemBmbParams(c),
+      lowerFirstPriority = true
+    )
 
-    fbArbiter.io.inputs(1).cmd << fbAuxWritePort.io.mem.cmd.s2mPipe()
-    fbAuxWritePort.io.mem.rsp << fbArbiter.io.inputs(1).rsp.s2mPipe()
+    fbWriteArbiter.io.inputs(0).cmd << fbColorWritePort.io.mem.cmd.s2mPipe()
+    fbColorWritePort.io.mem.rsp << fbWriteArbiter.io.inputs(0).rsp.s2mPipe()
 
-    fbArbiter.io.inputs(2).cmd << fbColorReadPort.io.mem.cmd.s2mPipe()
-    fbColorReadPort.io.mem.rsp << fbArbiter.io.inputs(2).rsp.s2mPipe()
+    fbWriteArbiter.io.inputs(1).cmd << fbAuxWritePort.io.mem.cmd.s2mPipe()
+    fbAuxWritePort.io.mem.rsp << fbWriteArbiter.io.inputs(1).rsp.s2mPipe()
 
-    fbArbiter.io.inputs(3).cmd << fbAuxReadPort.io.mem.cmd.s2mPipe()
-    fbAuxReadPort.io.mem.rsp << fbArbiter.io.inputs(3).rsp.s2mPipe()
+    fbColorReadArbiter.io.inputs(0).cmd << fbColorReadPort.io.mem.cmd.s2mPipe()
+    fbColorReadPort.io.mem.rsp << fbColorReadArbiter.io.inputs(0).rsp.s2mPipe()
 
-    fbArbiter.io.inputs(4).cmd << lfb.io.fbReadBus.cmd
-    lfb.io.fbReadBus.rsp << fbArbiter.io.inputs(4).rsp.s2mPipe()
-    fbArbiter.io.output <> io.fbMem
+    fbAuxReadArbiter.io.inputs(0).cmd << fbAuxReadPort.io.mem.cmd.s2mPipe()
+    fbAuxReadPort.io.mem.rsp << fbAuxReadArbiter.io.inputs(0).rsp.s2mPipe()
+
+    fbColorReadArbiter.io.inputs(1).cmd << lfb.io.fbReadBus.cmd
+    lfb.io.fbReadBus.rsp << fbColorReadArbiter.io.inputs(1).rsp.s2mPipe()
+    fbWriteArbiter.io.output <> io.fbMemWrite
+    fbColorReadArbiter.io.output <> io.fbColorReadMem
+    fbAuxReadArbiter.io.output <> io.fbAuxReadMem
 
     fbColorBusy := fbColorReadPort.io.busy || fbColorWritePort.io.busy
     fbAuxBusy := fbAuxReadPort.io.busy || fbAuxWritePort.io.busy

@@ -26,8 +26,17 @@ case class CoreSim(c: Config, memTiming: SimMemoryTiming = SimMemoryTiming()) ex
   val core = Core(c)
   core.io.cpuBus <> io.cpuBus
 
-  val fbRam = SimBmbMemory(p = Core.fbMemBmbParams(c), size = 4 * 1024 * 1024, timing = memTiming)
-  core.io.fbMem <> fbRam.io.bus
+  val fbWriteRam =
+    SimBmbMemory(p = Core.fbMemBmbParams(c), size = 4 * 1024 * 1024, timing = memTiming)
+  core.io.fbMemWrite <> fbWriteRam.io.bus
+
+  val fbColorReadRam =
+    SimBmbMemory(p = Core.fbMemBmbParams(c), size = 4 * 1024 * 1024, timing = memTiming)
+  core.io.fbColorReadMem <> fbColorReadRam.io.bus
+
+  val fbAuxReadRam =
+    SimBmbMemory(p = Core.fbMemBmbParams(c), size = 4 * 1024 * 1024, timing = memTiming)
+  core.io.fbAuxReadMem <> fbAuxReadRam.io.bus
 
   val texRam = SimBmbMemory(p = Core.texMemBmbParams(c), size = 8 * 1024 * 1024, timing = memTiming)
   core.io.texMem <> texRam.io.bus

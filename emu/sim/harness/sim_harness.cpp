@@ -127,10 +127,10 @@ static volatile sig_atomic_t quit_requested = 0;
 static void dump_fb_word(uint32_t byte_addr, const char *tag) {
     auto r = top->rootp;
     uint32_t idx = byte_addr / 4;
-    uint32_t word = (uint32_t)r->CoreSim__DOT__fbRam__DOT__ram_symbol0[idx]
-                  | ((uint32_t)r->CoreSim__DOT__fbRam__DOT__ram_symbol1[idx] << 8)
-                  | ((uint32_t)r->CoreSim__DOT__fbRam__DOT__ram_symbol2[idx] << 16)
-                  | ((uint32_t)r->CoreSim__DOT__fbRam__DOT__ram_symbol3[idx] << 24);
+    uint32_t word = (uint32_t)r->CoreSim__DOT__fbWriteRam__DOT__ram_symbol0[idx]
+                  | ((uint32_t)r->CoreSim__DOT__fbWriteRam__DOT__ram_symbol1[idx] << 8)
+                  | ((uint32_t)r->CoreSim__DOT__fbWriteRam__DOT__ram_symbol2[idx] << 16)
+                  | ((uint32_t)r->CoreSim__DOT__fbWriteRam__DOT__ram_symbol3[idx] << 24);
     fprintf(stderr, "[sim_harness] %s fbRam[0x%06x] = 0x%08x\n", tag, byte_addr, word);
 }
 
@@ -158,6 +158,9 @@ static void tick_one(void) {
 #endif
     sim_time++;
 
+    /* Internal signal logging below is best-effort debug only and is currently
+     * disabled for the native CoreSim harness until signal names are refreshed. */
+#if 0
     /* fbWrite logging: capture on rising edge */
     if (fbwrite_log) {
         auto r = top->rootp;
@@ -179,7 +182,11 @@ static void tick_one(void) {
             }
         }
     }
+#endif
 
+    /* TMU / watched-pixel internal logging is disabled here until these
+     * introspection signal names are refreshed for the refactored CoreSim. */
+#if 0
     /* TMU pipeline logging: capture rasterizer output for cutoff analysis */
     if (tmu_log) {
         auto r = top->rootp;
@@ -436,6 +443,7 @@ static void tick_one(void) {
         }
 
     }
+#endif
 
     /* Check cycle limit (sim_time/2 = tick count) */
     if (cycle_limit && (sim_time / 2) >= cycle_limit) {
@@ -795,20 +803,6 @@ void sim_shutdown(void) {
     }
 #endif
     if (top) {
-        auto r = top->rootp;
-        fprintf(stderr,
-                "[sim_harness] Fill stats: tmu hit=%u miss=%u burst=%u beats=%u stall=%u fastBi=%u | fb hit=%u miss=%u burst=%u beats=%u stall=%u\n",
-                r->CoreSim__DOT__core_1__DOT__tmu_1__DOT__textureCache__DOT__texFillHits,
-                r->CoreSim__DOT__core_1__DOT__tmu_1__DOT__textureCache__DOT__texFillMisses,
-                r->CoreSim__DOT__core_1__DOT__tmu_1__DOT__textureCache__DOT__texFillBurstCount,
-                r->CoreSim__DOT__core_1__DOT__tmu_1__DOT__textureCache__DOT__texFillBurstBeats,
-                r->CoreSim__DOT__core_1__DOT__tmu_1__DOT__textureCache__DOT__texFillStallCycles,
-                r->CoreSim__DOT__core_1__DOT__tmu_1__DOT__textureCache__DOT__texFastBilinearHits,
-                r->CoreSim__DOT__core_1__DOT__fbFillHits,
-                r->CoreSim__DOT__core_1__DOT__fbFillMisses,
-                r->CoreSim__DOT__core_1__DOT__fbFillBurstCount,
-                r->CoreSim__DOT__core_1__DOT__fbFillBurstBeats,
-                r->CoreSim__DOT__core_1__DOT__fbFillStallCycles);
         top->final();
         delete top;
         top = nullptr;
@@ -835,6 +829,10 @@ void sim_write16(uint32_t addr, uint16_t data) {
 
 uint32_t sim_read(uint32_t addr) {
     return bus_read(addr);
+}
+
+int sim_stalled(void) {
+    return 0;
 }
 
 
@@ -872,26 +870,11 @@ uint32_t sim_idle_wait(void) {
     }
 
     uint32_t status = bus_read(0x000000);
-    auto r = top->rootp;
     fprintf(stderr, "[sim_harness] WARNING: idle_wait timeout after 1M ticks (%lu elapsed)! status=0x%08x fifo=%u busy=%u swaps=%u\n",
             (unsigned long)((sim_time - t0) / 2), status,
             status & SST_FIFOFREE_MASK,
             (status & SST_BUSY) ? 1u : 0u,
             (status & SST_SWAPS_PENDING_MASK) >> 28);
-    fprintf(stderr,
-            "[sim_harness] Busy detail: pipe=%u regPipe=%u pciPipe=%u rastRun=%u tmuBusy=%u fbBusy=%u fbColorBusy=%u fbAuxBusy=%u lfbBusy=%u swapWait=%u fbOut=%u writeIn=%u\n",
-            r->CoreSim__DOT__core_1__DOT__pipelineBusySignal,
-            r->CoreSim__DOT__core_1__DOT__regBank__DOT__io_pipelineBusy,
-            r->CoreSim__DOT__core_1__DOT__pciFifo_1__DOT__io_pipelineBusy,
-            r->CoreSim__DOT__core_1__DOT__rasterizer_1_running,
-            r->CoreSim__DOT__core_1__DOT__tmu_1_io_busy,
-            r->CoreSim__DOT__core_1__DOT__fbAccess_io_busy,
-            r->CoreSim__DOT__core_1__DOT__fbColorBusy,
-            r->CoreSim__DOT__core_1__DOT__fbAuxBusy,
-            r->CoreSim__DOT__core_1__DOT__lfb_1_io_busy,
-            r->CoreSim__DOT__core_1__DOT__swapBuffer_1_io_waiting,
-            r->CoreSim__DOT__core_1__DOT__fbAccess_io_output_valid,
-            r->CoreSim__DOT__core_1__DOT__writeColor__DOT__i_fromPipeline_valid);
     return status;
 }
 
@@ -911,11 +894,15 @@ void sim_flush_fb_cache(void) {
     dump_fb_debug("after_flush_release");
 }
 
+void sim_invalidate_fb_cache(void) {
+    /* CoreSim's native harness does not model separate host-side cache state. */
+}
+
 /* ------------------------------------------------------------------ */
 /* Bulk direct RAM access (bypasses bus protocol)                       */
 /* ------------------------------------------------------------------ */
 
-/* fbRam: 4MB = 1048576 words, stored in 4 byte-lane arrays (ram_symbol0..3).
+/* fbWriteRam: 4MB = 1048576 words, stored in 4 byte-lane arrays (ram_symbol0..3).
  * Each ram_symbolN[i] holds byte N of 32-bit word i. */
 #define FB_WORD_COUNT   (4 * 1024 * 1024 / 4)
 #define TEX_WORD_COUNT  (8 * 1024 * 1024 / 4)
@@ -924,10 +911,10 @@ void sim_read_fb(uint32_t byte_offset, uint32_t *dst, uint32_t word_count) {
     auto r = top->rootp;
     uint32_t idx = byte_offset / 4;
     for (uint32_t i = 0; i < word_count && (idx + i) < FB_WORD_COUNT; i++) {
-        dst[i] = (uint32_t)r->CoreSim__DOT__fbRam__DOT__ram_symbol0[idx + i]
-               | ((uint32_t)r->CoreSim__DOT__fbRam__DOT__ram_symbol1[idx + i] << 8)
-               | ((uint32_t)r->CoreSim__DOT__fbRam__DOT__ram_symbol2[idx + i] << 16)
-               | ((uint32_t)r->CoreSim__DOT__fbRam__DOT__ram_symbol3[idx + i] << 24);
+        dst[i] = (uint32_t)r->CoreSim__DOT__fbWriteRam__DOT__ram_symbol0[idx + i]
+               | ((uint32_t)r->CoreSim__DOT__fbWriteRam__DOT__ram_symbol1[idx + i] << 8)
+               | ((uint32_t)r->CoreSim__DOT__fbWriteRam__DOT__ram_symbol2[idx + i] << 16)
+               | ((uint32_t)r->CoreSim__DOT__fbWriteRam__DOT__ram_symbol3[idx + i] << 24);
     }
 }
 
@@ -935,10 +922,10 @@ void sim_write_fb_bulk(uint32_t byte_offset, const uint32_t *src, uint32_t word_
     auto r = top->rootp;
     uint32_t idx = byte_offset / 4;
     for (uint32_t i = 0; i < word_count && (idx + i) < FB_WORD_COUNT; i++) {
-        r->CoreSim__DOT__fbRam__DOT__ram_symbol0[idx + i] = src[i] & 0xff;
-        r->CoreSim__DOT__fbRam__DOT__ram_symbol1[idx + i] = (src[i] >> 8) & 0xff;
-        r->CoreSim__DOT__fbRam__DOT__ram_symbol2[idx + i] = (src[i] >> 16) & 0xff;
-        r->CoreSim__DOT__fbRam__DOT__ram_symbol3[idx + i] = (src[i] >> 24) & 0xff;
+        r->CoreSim__DOT__fbWriteRam__DOT__ram_symbol0[idx + i] = src[i] & 0xff;
+        r->CoreSim__DOT__fbWriteRam__DOT__ram_symbol1[idx + i] = (src[i] >> 8) & 0xff;
+        r->CoreSim__DOT__fbWriteRam__DOT__ram_symbol2[idx + i] = (src[i] >> 16) & 0xff;
+        r->CoreSim__DOT__fbWriteRam__DOT__ram_symbol3[idx + i] = (src[i] >> 24) & 0xff;
         trace_record_write(0x400000u + byte_offset + i * 4u, src[i], true);
     }
 }
@@ -967,10 +954,58 @@ void sim_read_tex(uint32_t byte_offset, uint32_t *dst, uint32_t word_count) {
 }
 
 void sim_set_swap_count(uint32_t count) {
-    top->rootp->CoreSim__DOT__core_1__DOT__swapBuffer_1__DOT__swapCountReg = count & 0x3;
+    top->rootp->CoreSim__DOT__core_1__DOT__controlPlane_swapBuffer__DOT__swapCountReg = count & 0x3;
 }
 
 uint32_t sim_get_swap_count(void) {
     if (!top) return 0;
-    return top->rootp->CoreSim__DOT__core_1__DOT__swapBuffer_1__DOT__swapCountReg & 0x3u;
+    return top->rootp->CoreSim__DOT__core_1__DOT__controlPlane_swapBuffer__DOT__swapCountReg & 0x3u;
 }
+
+uint64_t sim_get_cycle(void) { return sim_time / 2; }
+uint64_t sim_get_total_read_ticks(void) { return total_read_ticks; }
+uint64_t sim_get_total_read_count(void) { return total_read_count; }
+uint64_t sim_get_total_write_ticks(void) { return total_write_ticks; }
+uint64_t sim_get_total_write_count(void) { return total_write_count; }
+
+uint32_t sim_get_pixels_in(void) { return 0; }
+uint32_t sim_get_pixels_out(void) { return 0; }
+uint32_t sim_get_fb_fill_hits(void) { return 0; }
+uint32_t sim_get_fb_fill_misses(void) { return 0; }
+uint32_t sim_get_fb_fill_burst_count(void) { return 0; }
+uint32_t sim_get_fb_fill_burst_beats(void) { return 0; }
+uint32_t sim_get_fb_fill_stall_cycles(void) { return 0; }
+uint32_t sim_get_fb_write_stall_cycles(void) { return 0; }
+uint32_t sim_get_fb_write_drain_count(void) { return 0; }
+uint32_t sim_get_fb_write_full_drain_count(void) { return 0; }
+uint32_t sim_get_fb_write_partial_drain_count(void) { return 0; }
+uint32_t sim_get_fb_write_drain_reason_full_count(void) { return 0; }
+uint32_t sim_get_fb_write_drain_reason_rotate_count(void) { return 0; }
+uint32_t sim_get_fb_write_drain_reason_flush_count(void) { return 0; }
+uint32_t sim_get_fb_write_drain_dirty_word_total(void) { return 0; }
+uint32_t sim_get_fb_write_rotate_blocked_cycles(void) { return 0; }
+uint32_t sim_get_fb_write_single_word_drain_count(void) { return 0; }
+uint32_t sim_get_fb_write_single_word_drain_start_at_zero_count(void) { return 0; }
+uint32_t sim_get_fb_write_single_word_drain_start_at_last_count(void) { return 0; }
+uint32_t sim_get_fb_write_rotate_adjacent_line_count(void) { return 0; }
+uint32_t sim_get_fb_write_rotate_same_line_gap_count(void) { return 0; }
+uint32_t sim_get_fb_write_rotate_other_line_count(void) { return 0; }
+uint32_t sim_get_fb_mem_color_write_cmd_count(void) { return 0; }
+uint32_t sim_get_fb_mem_aux_write_cmd_count(void) { return 0; }
+uint32_t sim_get_fb_mem_color_read_cmd_count(void) { return 0; }
+uint32_t sim_get_fb_mem_aux_read_cmd_count(void) { return 0; }
+uint32_t sim_get_fb_mem_lfb_read_cmd_count(void) { return 0; }
+uint32_t sim_get_fb_mem_color_write_blocked_cycles(void) { return 0; }
+uint32_t sim_get_fb_mem_aux_write_blocked_cycles(void) { return 0; }
+uint32_t sim_get_fb_mem_color_read_blocked_cycles(void) { return 0; }
+uint32_t sim_get_fb_mem_aux_read_blocked_cycles(void) { return 0; }
+uint32_t sim_get_fb_mem_lfb_read_blocked_cycles(void) { return 0; }
+uint32_t sim_get_fb_read_req_count(void) { return 0; }
+uint32_t sim_get_fb_read_req_forward_step_count(void) { return 0; }
+uint32_t sim_get_fb_read_req_backward_step_count(void) { return 0; }
+uint32_t sim_get_fb_read_req_same_word_count(void) { return 0; }
+uint32_t sim_get_fb_read_req_same_line_count(void) { return 0; }
+uint32_t sim_get_fb_read_req_other_count(void) { return 0; }
+uint32_t sim_get_fb_read_single_beat_burst_count(void) { return 0; }
+uint32_t sim_get_fb_read_multi_beat_burst_count(void) { return 0; }
+uint32_t sim_get_fb_read_max_queue_occupancy(void) { return 0; }

@@ -213,17 +213,6 @@ int main(int argc, char **argv) {
     if (const char *wy = getenv("SIM_WATCH_Y")) watch_y = atoi(wy);
     const bool sim_skip_final_idle = getenv("SIM_SKIP_FINAL_IDLE") != nullptr;
     const uint64_t sim_cycle_limit = getenv("SIM_CYCLE_LIMIT") ? strtoull(getenv("SIM_CYCLE_LIMIT"), nullptr, 0) : 0ull;
-#ifdef SIM_INTERFACE_DE10
-    const uint64_t sim_profile_writes = getenv("SIM_PROFILE_WRITES") ? strtoull(getenv("SIM_PROFILE_WRITES"), nullptr, 0) : 0ull;
-    uint64_t worst_write_cycles = 0;
-    uint32_t worst_write_entry = 0;
-    uint32_t worst_write_addr = 0;
-    uint32_t worst_write_data = 0;
-    uint32_t slow_write_logs = 0;
-    std::vector<uint64_t> sim_write_cycles_by_reg(0x400 / 4, 0);
-    std::vector<uint32_t> sim_write_count_by_reg(0x400 / 4, 0);
-    std::vector<ProgressSnapshot> progress_snapshots;
-    std::vector<RegHotspot> sim_write_hotspots;
     uint32_t sim_pixels_in_final = 0;
     uint32_t sim_pixels_out_final = 0;
     uint64_t sim_cycles_final = 0;
@@ -270,6 +259,17 @@ int main(int argc, char **argv) {
     uint32_t sim_fb_read_single_beat_burst_count_final = 0;
     uint32_t sim_fb_read_multi_beat_burst_count_final = 0;
     uint32_t sim_fb_read_max_queue_occupancy_final = 0;
+    uint64_t worst_write_cycles = 0;
+    uint32_t worst_write_entry = 0;
+    uint32_t worst_write_addr = 0;
+    uint32_t worst_write_data = 0;
+    std::vector<ProgressSnapshot> progress_snapshots;
+    std::vector<RegHotspot> sim_write_hotspots;
+#ifdef SIM_INTERFACE_DE10
+    const uint64_t sim_profile_writes = getenv("SIM_PROFILE_WRITES") ? strtoull(getenv("SIM_PROFILE_WRITES"), nullptr, 0) : 0ull;
+    uint32_t slow_write_logs = 0;
+    std::vector<uint64_t> sim_write_cycles_by_reg(0x400 / 4, 0);
+    std::vector<uint32_t> sim_write_count_by_reg(0x400 / 4, 0);
 #endif
 
     /* Parse arguments */
@@ -726,6 +726,11 @@ int main(int argc, char **argv) {
                 default:
                     /* Read operations etc. — skip */
                     break;
+            }
+
+            if (!ref_only && sim_stalled()) {
+                replay_truncated = true;
+                break;
             }
 
             if (!ref_only && sim_cycle_limit > 0 && sim_get_cycle() >= sim_cycle_limit) {

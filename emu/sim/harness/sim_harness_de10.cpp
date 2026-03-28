@@ -8,6 +8,7 @@
 #include "sim_harness.h"
 #include "VCoreDe10.h"
 #include "VCoreDe10_FramebufferPlaneBuffer.h"
+#include "VCoreDe10_FramebufferPlaneReader.h"
 #include "VCoreDe10___024root.h"
 #include <array>
 #include <csignal>
@@ -43,6 +44,8 @@ static VerilatedFstC* tfp = nullptr;
 static uint64_t sim_time = 0;
 static uint64_t cycle_limit = 0;
 static bool cycle_limit_hit = false;
+static uint32_t mmio_timeout_cycles = 400000;
+static bool mmio_timeout_hit = false;
 static volatile sig_atomic_t quit_requested = 0;
 
 static constexpr uint32_t FB_WORD_COUNT = (4u * 1024u * 1024u) / 4u;
@@ -74,7 +77,7 @@ static uint32_t last_tex_rvalid_data = 0;
 static int mmio_debug = 0;
 static int stall_debug = 0;
 static int tex_trace = 0;
-static uint32_t mem_read_delay = 64;
+static uint32_t mem_read_delay = 0;
 static uint32_t tex_trace_count = 0;
 
 static inline uint32_t effective_mem_read_delay(void) {
@@ -302,7 +305,7 @@ static void log_stalled_bus_state(const char* kind, const char* phase,
                                   uint32_t addr, uint64_t iter) {
     auto* root = top->rootp;
     fprintf(stderr,
-            "[sim_harness_de10] %s %s stall addr=0x%06x cycle=%lu iter=%lu h2f(wait=%u rvalid=%u rdata=0x%08x cmdInFlight=%u readRspPending=%u cpuCmdReady=%u pipeBusy=%u busyDebug=0x%08x) pci(canDrain=%u cmdBlocked=%u triV=%u triR=%u ftriV=%u ftriR=%u) mem(fbW=%u/%u 0x%08x fbCR=%u/%u 0x%08x fbAR=%u/%u 0x%08x tex=%u/%u 0x%08x) fb(accessBusy=%u inFlight=%u colorBusy=%u auxBusy=%u) tex(lastRead=0x%08x@%lu lastRvalid=0x%08x@%lu)\n",
+            "[sim_harness_de10] %s %s stall addr=0x%06x cycle=%lu iter=%lu h2f(wait=%u rvalid=%u rdata=0x%08x cmdInFlight=%u readRspPending=%u cpuCmdReady=%u pipeBusy=%u) pci(canDrain=%u cmdBlocked=%u triV=%u triR=%u ftriV=%u ftriR=%u) mem(fbW=%u/%u 0x%08x fbCR=%u/%u 0x%08x fbAR=%u/%u 0x%08x tex=%u/%u 0x%08x) fb(accessBusy=%u inFlight=%u colorBusy=%u auxBusy=%u) tex(lastRead=0x%08x@%lu lastRvalid=0x%08x@%lu cpuBus=%u/%u rsp=%u/%u)\n",
             kind, phase, addr, (unsigned long)(sim_time / 2),
             (unsigned long)iter,
             (unsigned)top->io_h2fLw_waitrequest,
@@ -311,10 +314,9 @@ static void log_stalled_bus_state(const char* kind, const char* phase,
             (unsigned)root->CoreDe10__DOT__h2fBridge__DOT__cmdInFlight,
             (unsigned)root->CoreDe10__DOT__h2fBridge__DOT__readRspPending,
             (unsigned)root->CoreDe10__DOT__core_1_io_cpuBus_cmd_ready,
-            (unsigned)root->CoreDe10__DOT__core_1__DOT__pipelineBusySignal,
-            (unsigned)root->CoreDe10__DOT__core_1__DOT__busyDebugSignal,
-            (unsigned)root->CoreDe10__DOT__core_1__DOT__pciFifo_1__DOT__canDrain,
-            (unsigned)root->CoreDe10__DOT__core_1__DOT__pciFifo_1__DOT__commandStreamBlocked,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__pipelineBusySignal,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__pciFifo_1__DOT__drainControl_canDrain,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__pciFifo_1__DOT__drainControl_commandStreamBlocked,
             (unsigned)root->CoreDe10__DOT__core_1__DOT__regBank__DOT__commands_triangleCmdStream_valid,
             (unsigned)root->CoreDe10__DOT__core_1__DOT__regBank__DOT__commands_triangleCmdStream_ready,
             (unsigned)root->CoreDe10__DOT__core_1__DOT__regBank__DOT__commands_ftriangleCmdStream_valid,
@@ -331,18 +333,18 @@ static void log_stalled_bus_state(const char* kind, const char* phase,
             (unsigned)top->io_memTex_read,
             (unsigned)top->io_memTex_readDataValid,
             (unsigned)top->io_memTex_address,
-            (unsigned)root->CoreDe10__DOT__core_1__DOT__fbAccess_io_busy,
-            (unsigned)root->CoreDe10__DOT__core_1__DOT__fbAccess__DOT__inFlightCount,
-            (unsigned)root->CoreDe10__DOT__core_1__DOT__fbColorBuffer_io_busy,
-            (unsigned)root->CoreDe10__DOT__core_1__DOT__fbAuxBuffer_io_busy,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__fbAccess_io_busy,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__fbAccess__DOT__inFlightCount,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__framebufferMem_io_status_colorBusy,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__framebufferMem_io_status_auxBusy,
             (unsigned)last_tex_read_addr,
             (unsigned long)last_tex_read_cycle,
             (unsigned)last_tex_rvalid_data,
             (unsigned long)last_tex_rvalid_cycle,
-            (unsigned)root->CoreDe10__DOT__core_1__DOT__cpuTexBus_cmd_valid,
-            (unsigned)root->CoreDe10__DOT__core_1__DOT__cpuTexBus_cmd_ready,
-            (unsigned)root->CoreDe10__DOT__core_1__DOT__cpuTexBus_rsp_valid,
-            (unsigned)root->CoreDe10__DOT__core_1__DOT__cpuTexBus_rsp_ready);
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__frontdoor__DOT__io_texReadBus_cmd_valid,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__frontdoor__DOT__io_texReadBus_cmd_ready,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__frontdoor__DOT__io_texReadBus_rsp_valid,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__frontdoor__DOT__io_texReadBus_rsp_ready);
     fflush(stderr);
 }
 
@@ -351,7 +353,7 @@ static void bus_write(uint32_t addr, uint32_t data) {
     mmio_begin(addr, true, data);
     maybe_log_mmio("WRITE", "begin", addr, data, 0);
 
-    int timeout = 5000000;
+    int timeout = (int)mmio_timeout_cycles;
     uint64_t iter = 0;
     const uint64_t stall_log_period = (addr == 0x000000) ? 10000 : 100000;
     while (timeout > 0) {
@@ -373,8 +375,10 @@ static void bus_write(uint32_t addr, uint32_t data) {
         iter++;
     }
     if (timeout == 0 && !cycle_limit_hit) {
-        fprintf(stderr, "[sim_harness_de10] ERROR: bus_write(0x%06x) cmd timeout after 5M cycles @ cycle %lu\n",
-                addr, (unsigned long)(sim_time / 2));
+        fprintf(stderr, "[sim_harness_de10] ERROR: bus_write(0x%06x) cmd timeout after %u cycles @ cycle %lu\n",
+                addr, mmio_timeout_cycles, (unsigned long)(sim_time / 2));
+        cycle_limit_hit = true;
+        mmio_timeout_hit = true;
     }
 
     mmio_end();
@@ -389,7 +393,7 @@ static void bus_write_masked(uint32_t addr, uint32_t data, uint8_t byteenable) {
     mmio_begin(addr, true, data, byteenable);
     maybe_log_mmio("WRITE", "begin", addr, data, 0);
 
-    int timeout = 5000000;
+    int timeout = (int)mmio_timeout_cycles;
     uint64_t iter = 0;
     const uint64_t stall_log_period = (addr == 0x000000) ? 10000 : 100000;
     while (timeout > 0) {
@@ -411,8 +415,10 @@ static void bus_write_masked(uint32_t addr, uint32_t data, uint8_t byteenable) {
         iter++;
     }
     if (timeout == 0 && !cycle_limit_hit) {
-        fprintf(stderr, "[sim_harness_de10] ERROR: bus_write_masked(0x%06x) cmd timeout after 5M cycles @ cycle %lu\n",
-                addr, (unsigned long)(sim_time / 2));
+        fprintf(stderr, "[sim_harness_de10] ERROR: bus_write_masked(0x%06x) cmd timeout after %u cycles @ cycle %lu\n",
+                addr, mmio_timeout_cycles, (unsigned long)(sim_time / 2));
+        cycle_limit_hit = true;
+        mmio_timeout_hit = true;
     }
 
     mmio_end();
@@ -427,7 +433,7 @@ static uint32_t bus_read(uint32_t addr) {
     mmio_begin(addr, false, 0);
     maybe_log_mmio("READ", "begin", addr, 0, 0);
 
-    int timeout = 1000000;
+    int timeout = (int)mmio_timeout_cycles;
     uint64_t iter = 0;
     const uint64_t stall_log_period = (addr == 0x000000) ? 10000 : 100000;
     while (timeout > 0) {
@@ -449,14 +455,16 @@ static uint32_t bus_read(uint32_t addr) {
         iter++;
     }
     if (timeout == 0 && !cycle_limit_hit) {
-        fprintf(stderr, "[sim_harness_de10] ERROR: bus_read(0x%06x) cmd timeout after 5M cycles @ cycle %lu\n",
-                addr, (unsigned long)(sim_time / 2));
+        fprintf(stderr, "[sim_harness_de10] ERROR: bus_read(0x%06x) cmd timeout after %u cycles @ cycle %lu\n",
+                addr, mmio_timeout_cycles, (unsigned long)(sim_time / 2));
+        cycle_limit_hit = true;
+        mmio_timeout_hit = true;
     }
 
     mmio_end();
     if (!cycle_limit_hit) tick_one();
 
-    timeout = 5000000;
+    timeout = (int)mmio_timeout_cycles;
     iter = 0;
     while (timeout > 0) {
         eval_inputs();
@@ -483,8 +491,10 @@ static uint32_t bus_read(uint32_t addr) {
 
     const uint64_t ticks = (sim_time - t0) / 2;
     if (!cycle_limit_hit) {
-        fprintf(stderr, "[sim_harness_de10] ERROR: bus_read(0x%06x) rsp timeout after 5M cycles @ cycle %lu\n",
-                addr, (unsigned long)(sim_time / 2));
+        fprintf(stderr, "[sim_harness_de10] ERROR: bus_read(0x%06x) rsp timeout after %u cycles @ cycle %lu\n",
+                addr, mmio_timeout_cycles, (unsigned long)(sim_time / 2));
+        cycle_limit_hit = true;
+        mmio_timeout_hit = true;
     }
     total_read_ticks += ticks;
     total_read_count++;
@@ -518,6 +528,7 @@ int sim_init(void) {
     sim_time = 0;
     cycle_limit = 0;
     cycle_limit_hit = false;
+    mmio_timeout_hit = false;
     quit_requested = 0;
 
     top = new VCoreDe10;
@@ -555,6 +566,11 @@ int sim_init(void) {
             fprintf(stderr, "[sim_harness_de10] Cycle limit set to %lu ticks\n",
                     (unsigned long)cycle_limit);
         }
+    }
+
+    const char* mmio_timeout_str = getenv("SIM_DE10_MMIO_TIMEOUT");
+    if (mmio_timeout_str) {
+        mmio_timeout_cycles = (uint32_t)strtoul(mmio_timeout_str, nullptr, 0);
     }
 
     const char* mmio_debug_str = getenv("SIM_DE10_MMIO_DEBUG");
@@ -612,10 +628,12 @@ void sim_shutdown(void) {
 }
 
 void sim_write(uint32_t addr, uint32_t data) {
+    if (mmio_timeout_hit) return;
     bus_write(addr, data);
 }
 
 void sim_write16(uint32_t addr, uint16_t data) {
+    if (mmio_timeout_hit) return;
     const int lane_hi = (addr & 0x2) != 0;
     const uint32_t packed_data = lane_hi ? ((uint32_t)data << 16) : (uint32_t)data;
     const uint8_t mask = lane_hi ? 0xC : 0x3;
@@ -623,6 +641,7 @@ void sim_write16(uint32_t addr, uint16_t data) {
 }
 
 uint32_t sim_read(uint32_t addr) {
+    if (mmio_timeout_hit) return 0;
     return bus_read(addr);
 }
 
@@ -688,20 +707,8 @@ void sim_invalidate_fb_cache(void) {
 
     };
 
-    clear_buffer(top->rootp->__PVT__CoreDe10__DOT__core_1__DOT__fbColorBuffer);
-    clear_buffer(top->rootp->__PVT__CoreDe10__DOT__core_1__DOT__fbAuxBuffer);
     fprintf(stderr,
-            "[sim_harness_de10] Invalidated fb buffers: color(valid=%u words=%u state=%u) aux(valid=%u words=%u state=%u)\n",
-            (unsigned)(top->rootp->__PVT__CoreDe10__DOT__core_1__DOT__fbColorBuffer->slotValid_0 |
-                       top->rootp->__PVT__CoreDe10__DOT__core_1__DOT__fbColorBuffer->slotValid_1),
-            (unsigned)(top->rootp->__PVT__CoreDe10__DOT__core_1__DOT__fbColorBuffer->slotWordCount_0 +
-                       top->rootp->__PVT__CoreDe10__DOT__core_1__DOT__fbColorBuffer->slotWordCount_1),
-            (unsigned)top->rootp->__PVT__CoreDe10__DOT__core_1__DOT__fbColorBuffer->directState_1,
-            (unsigned)(top->rootp->__PVT__CoreDe10__DOT__core_1__DOT__fbAuxBuffer->slotValid_0 |
-                       top->rootp->__PVT__CoreDe10__DOT__core_1__DOT__fbAuxBuffer->slotValid_1),
-            (unsigned)(top->rootp->__PVT__CoreDe10__DOT__core_1__DOT__fbAuxBuffer->slotWordCount_0 +
-                       top->rootp->__PVT__CoreDe10__DOT__core_1__DOT__fbAuxBuffer->slotWordCount_1),
-            (unsigned)top->rootp->__PVT__CoreDe10__DOT__core_1__DOT__fbAuxBuffer->directState_1);
+            "[sim_harness_de10] Invalidated host framebuffer image\n");
     tick_one();
 }
 
@@ -735,12 +742,12 @@ void sim_read_tex(uint32_t byte_offset, uint32_t* dst, uint32_t word_count) {
 
 void sim_set_swap_count(uint32_t count) {
     if (!top) return;
-    top->rootp->CoreDe10__DOT__core_1__DOT__swapBuffer_1__DOT__swapCountReg = count & 0x3u;
+    top->rootp->CoreDe10__DOT__core_1__DOT__controlPlane_swapBuffer__DOT__swapCountReg = count & 0x3u;
 }
 
 uint32_t sim_get_swap_count(void) {
     if (!top) return 0;
-    return top->rootp->CoreDe10__DOT__core_1__DOT__swapBuffer_1__DOT__swapCountReg & 0x3u;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__controlPlane_swapBuffer__DOT__swapCountReg & 0x3u;
 }
 
 uint64_t sim_get_cycle(void) {
@@ -765,205 +772,209 @@ uint64_t sim_get_total_write_count(void) {
 
 uint32_t sim_get_pixels_in(void) {
     if (!top) return 0;
-    return top->rootp->CoreDe10__DOT__core_1__DOT__regBank__DOT__io_statisticsIn_pixelsIn;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__regBank__DOT__io_statistics_pixelsIn;
 }
 
 uint32_t sim_get_pixels_out(void) {
     if (!top) return 0;
-    return top->rootp->CoreDe10__DOT__core_1__DOT__regBank__DOT__io_statisticsIn_pixelsOut;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__regBank__DOT__io_statistics_pixelsOut;
 }
 
 uint32_t sim_get_fb_fill_hits(void) {
     if (!top) return 0;
-    return top->rootp->CoreDe10__DOT__core_1__DOT__fbFillHits;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__framebufferMem_io_stats_fillHits;
 }
 
 uint32_t sim_get_fb_fill_misses(void) {
     if (!top) return 0;
-    return top->rootp->CoreDe10__DOT__core_1__DOT__fbFillMisses;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__framebufferMem_io_stats_fillMisses;
 }
 
 uint32_t sim_get_fb_fill_burst_count(void) {
     if (!top) return 0;
-    return top->rootp->CoreDe10__DOT__core_1__DOT__fbFillBurstCount;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__framebufferMem_io_stats_fillBurstCount;
 }
 
 uint32_t sim_get_fb_fill_burst_beats(void) {
     if (!top) return 0;
-    return top->rootp->CoreDe10__DOT__core_1__DOT__fbFillBurstBeats;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__framebufferMem_io_stats_fillBurstBeats;
 }
 
 uint32_t sim_get_fb_fill_stall_cycles(void) {
     if (!top) return 0;
-    return top->rootp->CoreDe10__DOT__core_1__DOT__fbFillStallCycles;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__framebufferMem_io_stats_fillStallCycles;
 }
 
 uint32_t sim_get_fb_write_stall_cycles(void) {
     if (!top) return 0;
-    return top->rootp->CoreDe10__DOT__core_1__DOT__fbWriteStallCycles;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__framebufferMem_io_stats_writeStallCycles;
 }
 
 uint32_t sim_get_fb_write_drain_count(void) {
     if (!top) return 0;
-    return top->rootp->CoreDe10__DOT__core_1__DOT__fbWriteDrainCount;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__framebufferMem_io_stats_writeDrainCount;
 }
 
 uint32_t sim_get_fb_write_full_drain_count(void) {
     if (!top) return 0;
-    return top->rootp->CoreDe10__DOT__core_1__DOT__fbWriteFullDrainCount;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__framebufferMem_io_stats_writeFullDrainCount;
 }
 
 uint32_t sim_get_fb_write_partial_drain_count(void) {
     if (!top) return 0;
-    return top->rootp->CoreDe10__DOT__core_1__DOT__fbWritePartialDrainCount;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__framebufferMem_io_stats_writePartialDrainCount;
 }
 
 uint32_t sim_get_fb_write_drain_reason_full_count(void) {
     if (!top) return 0;
-    return top->rootp->CoreDe10__DOT__core_1__DOT__fbWriteDrainReasonFullCount;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__framebufferMem_io_stats_writeDrainReasonFullCount;
 }
 
 uint32_t sim_get_fb_write_drain_reason_rotate_count(void) {
     if (!top) return 0;
-    return top->rootp->CoreDe10__DOT__core_1__DOT__fbWriteDrainReasonRotateCount;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__framebufferMem_io_stats_writeDrainReasonRotateCount;
 }
 
 uint32_t sim_get_fb_write_drain_reason_flush_count(void) {
     if (!top) return 0;
-    return top->rootp->CoreDe10__DOT__core_1__DOT__fbWriteDrainReasonFlushCount;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__framebufferMem_io_stats_writeDrainReasonFlushCount;
 }
 
 uint32_t sim_get_fb_write_drain_dirty_word_total(void) {
     if (!top) return 0;
-    return top->rootp->CoreDe10__DOT__core_1__DOT__fbWriteDrainDirtyWordTotal;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__framebufferMem_io_stats_writeDrainDirtyWordTotal;
 }
 
 uint32_t sim_get_fb_write_rotate_blocked_cycles(void) {
     if (!top) return 0;
-    return top->rootp->CoreDe10__DOT__core_1__DOT__fbWriteRotateBlockedCycles;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__framebufferMem_io_stats_writeRotateBlockedCycles;
 }
 
 uint32_t sim_get_fb_write_single_word_drain_count(void) {
     if (!top) return 0;
-    return top->rootp->CoreDe10__DOT__core_1__DOT__fbWriteSingleWordDrainCount;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__framebufferMem_io_stats_writeSingleWordDrainCount;
 }
 
 uint32_t sim_get_fb_write_single_word_drain_start_at_zero_count(void) {
     if (!top) return 0;
-    return top->rootp->CoreDe10__DOT__core_1__DOT__fbWriteSingleWordDrainStartAtZeroCount;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__framebufferMem_io_stats_writeSingleWordDrainStartAtZeroCount;
 }
 
 uint32_t sim_get_fb_write_single_word_drain_start_at_last_count(void) {
     if (!top) return 0;
-    return top->rootp->CoreDe10__DOT__core_1__DOT__fbWriteSingleWordDrainStartAtLastCount;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__framebufferMem_io_stats_writeSingleWordDrainStartAtLastCount;
 }
 
 uint32_t sim_get_fb_write_rotate_adjacent_line_count(void) {
     if (!top) return 0;
-    return top->rootp->CoreDe10__DOT__core_1__DOT__fbWriteRotateAdjacentLineCount;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__framebufferMem_io_stats_writeRotateAdjacentLineCount;
 }
 
 uint32_t sim_get_fb_write_rotate_same_line_gap_count(void) {
     if (!top) return 0;
-    return top->rootp->CoreDe10__DOT__core_1__DOT__fbWriteRotateSameLineGapCount;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__framebufferMem_io_stats_writeRotateSameLineGapCount;
 }
 
 uint32_t sim_get_fb_write_rotate_other_line_count(void) {
     if (!top) return 0;
-    return top->rootp->CoreDe10__DOT__core_1__DOT__fbWriteRotateOtherLineCount;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__framebufferMem_io_stats_writeRotateOtherLineCount;
 }
 
 uint32_t sim_get_fb_mem_color_write_cmd_count(void) {
     if (!top) return 0;
-    return top->rootp->CoreDe10__DOT__core_1__DOT__fbMemColorWriteCmdCount;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__framebufferMem_io_stats_memColorWriteCmdCount;
 }
 
 uint32_t sim_get_fb_mem_aux_write_cmd_count(void) {
     if (!top) return 0;
-    return top->rootp->CoreDe10__DOT__core_1__DOT__fbMemAuxWriteCmdCount;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__framebufferMem_io_stats_memAuxWriteCmdCount;
 }
 
 uint32_t sim_get_fb_mem_color_read_cmd_count(void) {
     if (!top) return 0;
-    return top->rootp->CoreDe10__DOT__core_1__DOT__fbMemColorReadCmdCount;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__framebufferMem_io_stats_memColorReadCmdCount;
 }
 
 uint32_t sim_get_fb_mem_aux_read_cmd_count(void) {
     if (!top) return 0;
-    return top->rootp->CoreDe10__DOT__core_1__DOT__fbMemAuxReadCmdCount;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__framebufferMem_io_stats_memAuxReadCmdCount;
 }
 
 uint32_t sim_get_fb_mem_lfb_read_cmd_count(void) {
     if (!top) return 0;
-    return top->rootp->CoreDe10__DOT__core_1__DOT__fbMemLfbReadCmdCount;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__framebufferMem_io_stats_memLfbReadCmdCount;
 }
 
 uint32_t sim_get_fb_mem_color_write_blocked_cycles(void) {
     if (!top) return 0;
-    return top->rootp->CoreDe10__DOT__core_1__DOT__fbMemColorWriteBlockedCycles;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__framebufferMem_io_stats_memColorWriteBlockedCycles;
 }
 
 uint32_t sim_get_fb_mem_aux_write_blocked_cycles(void) {
     if (!top) return 0;
-    return top->rootp->CoreDe10__DOT__core_1__DOT__fbMemAuxWriteBlockedCycles;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__framebufferMem_io_stats_memAuxWriteBlockedCycles;
 }
 
 uint32_t sim_get_fb_mem_color_read_blocked_cycles(void) {
     if (!top) return 0;
-    return top->rootp->CoreDe10__DOT__core_1__DOT__fbMemColorReadBlockedCycles;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__framebufferMem_io_stats_memColorReadBlockedCycles;
 }
 
 uint32_t sim_get_fb_mem_aux_read_blocked_cycles(void) {
     if (!top) return 0;
-    return top->rootp->CoreDe10__DOT__core_1__DOT__fbMemAuxReadBlockedCycles;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__framebufferMem_io_stats_memAuxReadBlockedCycles;
 }
 
 uint32_t sim_get_fb_mem_lfb_read_blocked_cycles(void) {
     if (!top) return 0;
-    return top->rootp->CoreDe10__DOT__core_1__DOT__fbMemLfbReadBlockedCycles;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__framebufferMem_io_stats_memLfbReadBlockedCycles;
 }
 
 uint32_t sim_get_fb_read_req_count(void) {
     if (!top) return 0;
-    return top->rootp->CoreDe10__DOT__core_1__DOT__fbReadReqCount;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__framebufferMem_io_stats_readReqCount;
 }
 
 uint32_t sim_get_fb_read_req_forward_step_count(void) {
     if (!top) return 0;
-    return top->rootp->CoreDe10__DOT__core_1__DOT__fbReadReqForwardStepCount;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__framebufferMem_io_stats_readReqForwardStepCount;
 }
 
 uint32_t sim_get_fb_read_req_backward_step_count(void) {
     if (!top) return 0;
-    return top->rootp->CoreDe10__DOT__core_1__DOT__fbReadReqBackwardStepCount;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__framebufferMem_io_stats_readReqBackwardStepCount;
 }
 
 uint32_t sim_get_fb_read_req_same_word_count(void) {
     if (!top) return 0;
-    return top->rootp->CoreDe10__DOT__core_1__DOT__fbReadReqSameWordCount;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__framebufferMem_io_stats_readReqSameWordCount;
 }
 
 uint32_t sim_get_fb_read_req_same_line_count(void) {
     if (!top) return 0;
-    return top->rootp->CoreDe10__DOT__core_1__DOT__fbReadReqSameLineCount;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__framebufferMem_io_stats_readReqSameLineCount;
 }
 
 uint32_t sim_get_fb_read_req_other_count(void) {
     if (!top) return 0;
-    return top->rootp->CoreDe10__DOT__core_1__DOT__fbReadReqOtherCount;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__framebufferMem_io_stats_readReqOtherCount;
 }
 
 uint32_t sim_get_fb_read_single_beat_burst_count(void) {
     if (!top) return 0;
-    return top->rootp->CoreDe10__DOT__core_1__DOT__fbReadSingleBeatBurstCount;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__framebufferMem_io_stats_readSingleBeatBurstCount;
 }
 
 uint32_t sim_get_fb_read_multi_beat_burst_count(void) {
     if (!top) return 0;
-    return top->rootp->CoreDe10__DOT__core_1__DOT__fbReadMultiBeatBurstCount;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__framebufferMem_io_stats_readMultiBeatBurstCount;
 }
 
 uint32_t sim_get_fb_read_max_queue_occupancy(void) {
     if (!top) return 0;
-    return top->rootp->CoreDe10__DOT__core_1__DOT__fbReadMaxQueueOccupancy;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__framebufferMem_io_stats_readMaxQueueOccupancy;
+}
+
+int sim_stalled(void) {
+    return mmio_timeout_hit ? 1 : 0;
 }

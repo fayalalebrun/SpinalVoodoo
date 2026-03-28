@@ -126,6 +126,9 @@ uint32_t sim_get_fb_read_single_beat_burst_count(void);
 uint32_t sim_get_fb_read_multi_beat_burst_count(void);
 uint32_t sim_get_fb_read_max_queue_occupancy(void);
 
+/* Return non-zero once the harness has hit a fatal stall/abort condition. */
+int sim_stalled(void);
+
 #ifdef __cplusplus
 }
 #endif

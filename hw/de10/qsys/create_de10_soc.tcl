@@ -74,11 +74,13 @@ set_instance_parameter_value fb_bridge DATA_WIDTH {32}
 set_instance_parameter_value fb_bridge SYMBOL_WIDTH {8}
 set_instance_parameter_value fb_bridge HDL_ADDR_WIDTH {32}
 set_instance_parameter_value fb_bridge ADDRESS_WIDTH {32}
+set_instance_parameter_value fb_bridge MAX_BURST_SIZE {1024}
 
 set_instance_parameter_value tex_bridge DATA_WIDTH {32}
 set_instance_parameter_value tex_bridge SYMBOL_WIDTH {8}
 set_instance_parameter_value tex_bridge HDL_ADDR_WIDTH {32}
 set_instance_parameter_value tex_bridge ADDRESS_WIDTH {32}
+set_instance_parameter_value tex_bridge MAX_BURST_SIZE {1024}
 
 add_connection clk_0.clk hps_0.h2f_lw_axi_clock
 add_connection clk_0.clk hps_0.h2f_axi_clock

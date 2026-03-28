@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <EnsembleReport name="de10_soc" kind="de10_soc" version="1.0" fabric="QSYS">
  <!-- Format version 24.1 1077 (Future versions may contain additional information.) -->
- <!-- 2026.03.23.13:59:59 -->
+ <!-- 2026.03.28.12:42:40 -->
  <!-- A collection of modules and connections -->
  <parameter name="AUTO_GENERATION_ID">
   <type>java.lang.Integer</type>
-  <value>1774274390</value>
+  <value>1774701751</value>
   <derived>false</derived>
   <enabled>true</enabled>
   <visible>false</visible>
@@ -530,7 +530,7 @@ the requested settings for a module instance. -->
   </parameter>
   <parameter name="BURSTCOUNT_WIDTH">
    <type>int</type>
-   <value>1</value>
+   <value>11</value>
    <derived>true</derived>
    <enabled>true</enabled>
    <visible>false</visible>
@@ -538,7 +538,7 @@ the requested settings for a module instance. -->
   </parameter>
   <parameter name="MAX_BURST_SIZE">
    <type>int</type>
-   <value>1</value>
+   <value>1024</value>
    <derived>false</derived>
    <enabled>true</enabled>
    <visible>true</visible>
@@ -1041,7 +1041,7 @@ parameters are a RESULT of the module parameters. -->
    <port>
     <name>s0_burstcount</name>
     <direction>Input</direction>
-    <width>1</width>
+    <width>11</width>
     <role>burstcount</role>
    </port>
    <port>
@@ -1364,7 +1364,7 @@ parameters are a RESULT of the module parameters. -->
    <port>
     <name>m0_burstcount</name>
     <direction>Output</direction>
-    <width>1</width>
+    <width>11</width>
     <role>burstcount</role>
    </port>
    <port>
@@ -75641,7 +75641,7 @@ the requested settings for a module instance. -->
   </parameter>
   <parameter name="BURSTCOUNT_WIDTH">
    <type>int</type>
-   <value>1</value>
+   <value>11</value>
    <derived>true</derived>
    <enabled>true</enabled>
    <visible>false</visible>
@@ -75649,7 +75649,7 @@ the requested settings for a module instance. -->
   </parameter>
   <parameter name="MAX_BURST_SIZE">
    <type>int</type>
-   <value>1</value>
+   <value>1024</value>
    <derived>false</derived>
    <enabled>true</enabled>
    <visible>true</visible>
@@ -76152,7 +76152,7 @@ parameters are a RESULT of the module parameters. -->
    <port>
     <name>s0_burstcount</name>
     <direction>Input</direction>
-    <width>1</width>
+    <width>11</width>
     <role>burstcount</role>
    </port>
    <port>
@@ -76475,7 +76475,7 @@ parameters are a RESULT of the module parameters. -->
    <port>
     <name>m0_burstcount</name>
     <direction>Output</direction>
-    <width>1</width>
+    <width>11</width>
     <role>burstcount</role>
    </port>
    <port>

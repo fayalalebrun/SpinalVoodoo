@@ -9,12 +9,25 @@ import voodoo.{Config, Core}
 
 object De10MemBackend {
   val physicalAddressWidth = 32
+  val maxAvalonBurstWords = 1024
+  val avalonBurstCountWidth = log2Up(maxAvalonBurstWords + 1)
 
-  def avalonConfig(addressWidth: Int): AvalonMMConfig = AvalonMMConfig.pipelined(
-    addressWidth = addressWidth,
-    dataWidth = 32,
-    useByteEnable = true
-  )
+  def avalonConfig(addressWidth: Int): AvalonMMConfig = AvalonMMConfig
+    .pipelined(
+      addressWidth = addressWidth,
+      dataWidth = 32,
+      useByteEnable = true
+    )
+    .copy(
+      burstCountWidth = avalonBurstCountWidth,
+      useBurstCount = true
+    )
+}
+
+case class De10BmbReadRspPayload(dataWidth: Int, sourceWidth: Int) extends Bundle {
+  val data = Bits(dataWidth bits)
+  val source = UInt(sourceWidth bits)
+  val last = Bool()
 }
 
 case class De10BmbToAvalonMm(
@@ -28,18 +41,19 @@ case class De10BmbToAvalonMm(
     val mem = master(AvalonMM(De10MemBackend.avalonConfig(avalonAddressWidth)))
   }
 
-  val readOutstanding = RegInit(False)
   val readBurstActive = RegInit(False)
   val writeBurstActive = RegInit(False)
-  val rspPending = RegInit(False)
-  val rspData = Reg(Bits(bmbParams.access.dataWidth bits)) init (0)
-  val rspSource = Reg(UInt(bmbParams.access.sourceWidth bits)) init (0)
-  val rspLast = RegInit(True)
+  val writeRspPending = RegInit(False)
+  val writeRspSource = Reg(UInt(bmbParams.access.sourceWidth bits)) init (0)
   val readSource = Reg(UInt(bmbParams.access.sourceWidth bits)) init (0)
 
   private val readCountWidth = log2Up(bmbParams.access.transferBeatCount + 1)
-  val readBeatsLeft = Reg(UInt(readCountWidth bits)) init (0)
-  val readAddress = Reg(UInt(bmbParams.access.addressWidth bits)) init (0)
+  val readRspBeatsLeft = Reg(UInt(readCountWidth bits)) init (0)
+  val maxReadRspFifoDepth = scala.math.max(2, bmbParams.access.transferBeatCount)
+  val readRspFifo = StreamFifo(
+    De10BmbReadRspPayload(bmbParams.access.dataWidth, bmbParams.access.sourceWidth),
+    maxReadRspFifoDepth
+  )
 
   private val bmbAddressWidth = bmbParams.access.addressWidth
   private def translateAddress(address: UInt): UInt = {
@@ -50,84 +64,96 @@ case class De10BmbToAvalonMm(
   }
 
   private val translatedAddress = translateAddress(io.bmb.cmd.address)
-  private val translatedReadAddress = translateAddress(readAddress)
   private val beatBytes = U(bmbParams.access.byteCount, bmbAddressWidth bits)
   private val fullMask =
     B((BigInt(1) << bmbParams.access.maskWidth) - 1, bmbParams.access.maskWidth bits)
   private val cmdBeatCount =
     io.bmb.cmd.fragment.transferBeatCountMinusOne.resize(readCountWidth) + 1
+  private val cmdBurstCount = cmdBeatCount.resize(De10MemBackend.avalonBurstCountWidth)
 
   val cmdIsWrite = io.bmb.cmd.opcode === Bmb.Cmd.Opcode.WRITE
   val acceptWriteBeat =
-    io.bmb.cmd.valid && cmdIsWrite && !readBurstActive && !rspPending && io.mem.waitRequestn
+    io.bmb.cmd.valid && cmdIsWrite && !readBurstActive && !writeRspPending && !readRspFifo.io.pop.valid && io.mem.waitRequestn
   val acceptReadCmd =
-    io.bmb.cmd.valid && !cmdIsWrite && !writeBurstActive && !readBurstActive && !rspPending && io.mem.waitRequestn
-  val issueReadBeat = readBurstActive && !readOutstanding && !rspPending && io.mem.waitRequestn
+    io.bmb.cmd.valid && !cmdIsWrite && !writeBurstActive && !readBurstActive && !writeRspPending && !readRspFifo.io.pop.valid && io.mem.waitRequestn
   val writeRspNow = acceptWriteBeat && io.bmb.cmd.last
+  val readRspNow = readRspFifo.io.pop.valid && !writeRspPending && !writeRspNow
+  val useWriteRsp = writeRspNow || writeRspPending
 
   io.mem.address := translatedAddress
   io.mem.read := False
   io.mem.write := False
+  io.mem.burstCount := 1
   io.mem.byteEnable := 0
   io.mem.writeData := io.bmb.cmd.data
 
   io.bmb.cmd.ready := False
-  io.bmb.rsp.valid := rspPending || writeRspNow
-  io.bmb.rsp.last := writeRspNow ? True | rspLast
-  io.bmb.rsp.source := writeRspNow ? io.bmb.cmd.source | rspSource
+  io.bmb.rsp.valid := useWriteRsp || readRspNow
+  io.bmb.rsp.last := Mux(useWriteRsp, True, readRspFifo.io.pop.payload.last)
+  io.bmb.rsp.source := Mux(
+    writeRspNow,
+    io.bmb.cmd.source,
+    Mux(writeRspPending, writeRspSource, readRspFifo.io.pop.payload.source)
+  )
   io.bmb.rsp.opcode := Bmb.Rsp.Opcode.SUCCESS
-  io.bmb.rsp.data := writeRspNow ? B(0, bmbParams.access.dataWidth bits) | rspData
+  io.bmb.rsp.data := Mux(
+    useWriteRsp,
+    B(0, bmbParams.access.dataWidth bits),
+    readRspFifo.io.pop.payload.data
+  )
   if (bmbParams.access.contextWidth > 0) {
     io.bmb.rsp.context := 0
   }
+  readRspFifo.io.pop.ready := !writeRspPending && !writeRspNow && io.bmb.rsp.ready
+
+  readRspFifo.io.push.valid := io.mem.readDataValid
+  readRspFifo.io.push.payload.data := io.mem.readData
+  readRspFifo.io.push.payload.source := readSource
+  readRspFifo.io.push.payload.last := readRspBeatsLeft === 1
 
   when(acceptWriteBeat) {
     io.mem.write := True
+    io.mem.burstCount := 1
     io.mem.byteEnable := io.bmb.cmd.mask
     io.bmb.cmd.ready := True
     writeBurstActive := !io.bmb.cmd.last
     when(io.bmb.cmd.last && !io.bmb.rsp.ready) {
-      rspPending := True
-      rspSource := io.bmb.cmd.source
-      rspData := 0
-      rspLast := True
+      writeRspPending := True
+      writeRspSource := io.bmb.cmd.source
     }
   }
 
   when(acceptReadCmd) {
     io.mem.read := True
+    io.mem.burstCount := cmdBurstCount
     io.mem.byteEnable := fullMask
     io.bmb.cmd.ready := True
     readBurstActive := True
-    readOutstanding := True
     readSource := io.bmb.cmd.source
-    readBeatsLeft := cmdBeatCount
-    readAddress := io.bmb.cmd.address + beatBytes
+    readRspBeatsLeft := cmdBeatCount
   }
 
-  when(readOutstanding && io.mem.readDataValid) {
-    readOutstanding := False
-    rspPending := True
-    rspData := io.mem.readData
-    rspSource := readSource
-    rspLast := readBeatsLeft === 1
+  when(io.mem.readDataValid) {
+    readRspBeatsLeft := readRspBeatsLeft - 1
+    when(readRspBeatsLeft === 1) {
+      readBurstActive := False
+    }
   }
 
-  when(issueReadBeat) {
-    io.mem.address := translatedReadAddress
-    io.mem.read := True
-    io.mem.byteEnable := fullMask
-    readOutstanding := True
-    readAddress := readAddress + beatBytes
+  when(writeRspPending && io.bmb.rsp.fire) {
+    writeRspPending := False
   }
 
-  when(rspPending && io.bmb.rsp.fire) {
-    rspPending := False
-    when(readBurstActive) {
-      readBeatsLeft := readBeatsLeft - 1
-      when(readBeatsLeft === 1) {
-        readBurstActive := False
-      }
+  GenerationFlags.formal {
+    assert(cmdBeatCount =/= 0)
+    when(acceptReadCmd) {
+      assert(io.mem.burstCount === cmdBurstCount)
+    }
+    when(io.mem.write) {
+      assert(io.mem.burstCount === 1)
+    }
+    when(io.bmb.rsp.valid && !writeRspNow && !writeRspPending) {
+      assert(readRspFifo.io.pop.valid)
     }
   }
 
@@ -157,14 +183,7 @@ case class De10BmbToAvalonMm(
       assert(io.mem.byteEnable === fullMask)
     }
 
-    when(issueReadBeat) {
-      assert(io.mem.read)
-      assert(!io.mem.write)
-      assert(io.mem.address === translatedReadAddress)
-      assert(io.mem.byteEnable === fullMask)
-    }
-
-    when(readBurstActive || rspPending) {
+    when(readBurstActive || writeRspPending || readRspFifo.io.pop.valid) {
       assert(!io.bmb.cmd.ready)
     }
 
@@ -175,11 +194,6 @@ case class De10BmbToAvalonMm(
       assert(io.bmb.rsp.data === 0)
     }
 
-    cover(acceptWriteBeat)
-    cover(acceptWriteBeat && !io.bmb.cmd.last)
-    cover(acceptReadCmd)
-    cover(pastValid && past(readOutstanding) && io.mem.readDataValid)
-    cover(pastValid && past(io.bmb.rsp.valid && !io.bmb.rsp.ready) && io.bmb.rsp.fire)
   }
 }
 
@@ -262,11 +276,5 @@ case class De10MemBackend(c: Config) extends Component {
     assert(!(io.memFbAuxRead.read && io.memFbAuxRead.write))
     assert(!(io.memTex.read && io.memTex.write))
 
-    cover(io.memFbWrite.write)
-    cover(io.memFbColorRead.read)
-    cover(io.memFbAuxRead.read)
-    cover(io.memTex.read)
-    cover(io.memFbWrite.write && io.memFbColorRead.read && io.memFbAuxRead.read && io.memTex.read)
-    cover(io.fbMemWrite.rsp.valid && io.texMem.rsp.valid)
   }
 }

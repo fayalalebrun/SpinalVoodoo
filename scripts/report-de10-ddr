@@ -1,0 +1,208 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+HOST="${DE10_HOST:-debian-fpga.local}"
+USER_NAME="${DE10_USER:-fpga}"
+REMOTE_TARGET="${USER_NAME}@${HOST}"
+REMOTE_TOOL_DIR="${DE10_REPORT_REMOTE_DIR:-/tmp/de10-ddr-report}"
+REMOTE_TOOL_BIN="${REMOTE_TOOL_DIR}/de10-ddr-stress"
+REMOTE_TOOL_SRC="${REMOTE_TOOL_DIR}/de10-ddr-stress.c"
+COUNT_WORDS="${DE10_REPORT_COUNT_WORDS:-4096}"
+TIMEOUT_MS="${DE10_REPORT_TIMEOUT_MS:-4000}"
+BITSTREAM_RBF="${DE10_RBF:-$ROOT_DIR/output/de10/bitstream/SpinalVoodoo_de10.rbf}"
+PROGRAM_STATE_FILE="${DE10_STATE_FILE:-/home/fpga/spinalvoodoo/current/.fpga-programmed.sha256}"
+BURSTS=(1 2 4 8 16 32 64 128 256 512 1024)
+
+run_remote() {
+  ssh "$REMOTE_TARGET" "$@"
+}
+
+capture_run() {
+  local mode="$1"
+  local burst="$2"
+  run_remote "sudo -n '$REMOTE_TOOL_BIN' --scenario '$mode' --count '$COUNT_WORDS' --timeout-ms '$TIMEOUT_MS' --burst-words '$burst'"
+}
+
+echo "[de10] Building host stress utility"
+make de10/check/ddr-stress >/dev/null
+
+if [[ ! -f "$BITSTREAM_RBF" ]]; then
+  echo "[de10] Missing bitstream, building DDR bench bitstream"
+  make de10/ddrbench/bitstream
+fi
+
+echo "[de10] Programming board"
+"$ROOT_DIR/scripts/program-de10" --host "$HOST" --user "$USER_NAME" --rbf "$BITSTREAM_RBF" --state-file "$PROGRAM_STATE_FILE"
+
+echo "[de10] Installing stress runner on board"
+run_remote "mkdir -p '$REMOTE_TOOL_DIR'"
+scp "$ROOT_DIR/tools/de10-ddr-stress.c" "${REMOTE_TARGET}:${REMOTE_TOOL_SRC}" >/dev/null
+run_remote "gcc -O2 -Wall -Wextra -o '$REMOTE_TOOL_BIN' '$REMOTE_TOOL_SRC'"
+
+tmp_dir="$(mktemp -d)"
+trap 'rm -rf "$tmp_dir"' EXIT
+seq_csv="$tmp_dir/seq.csv"
+cont_csv="$tmp_dir/cont.csv"
+load_csv="$tmp_dir/load.csv"
+write_txt="$tmp_dir/write.txt"
+
+echo "burst,throughput_mib_s,lat_min,lat_avg,lat_max,samples,active_cycles,issued_cmds" > "$seq_csv"
+echo "burst,fb_throughput_mib_s,fb_lat_avg,fb_lat_max,tex_throughput_mib_s,tex_lat_avg,tex_lat_max" > "$cont_csv"
+echo "case,burst,fb_throughput_mib_s,fb_lat_avg,fb_lat_max" > "$load_csv"
+
+PARSE_TOOL="$tmp_dir/parse_ddr_output.py"
+cat > "$PARSE_TOOL" <<'PY'
+import re
+import sys
+
+text = sys.stdin.read()
+ports = []
+for chunk in re.split(r"\n(?=[a-z]+:\n)", text):
+    m = re.match(
+        r"([a-z]+):\n\s+control=.*?burst_words=(\d+) issued=(\d+) completed=(\d+)\n\s+bytes=(\d+) active_cycles=(\d+) wait_cycles=(\d+) throughput=([0-9.]+) MiB/s stall=([0-9.]+)%",
+        chunk,
+        re.S,
+    )
+    if not m:
+        continue
+    name, burst, issued, completed, bytes_, active, wait, throughput, stall = m.groups()
+    lat = re.search(r"read_latency_cycles min=(\d+) avg=([0-9.]+) max=(\d+) samples=(\d+)", chunk)
+    if lat is None:
+        print(f"{name},{burst},{issued},{completed},{bytes_},{active},{wait},{throughput},{stall},-,-,-,0")
+    else:
+        print(
+            f"{name},{burst},{issued},{completed},{bytes_},{active},{wait},{throughput},{stall},{lat.group(1)},{lat.group(2)},{lat.group(3)},{lat.group(4)}"
+        )
+PY
+
+echo "[de10] Running sequential read burst sweep"
+for burst in "${BURSTS[@]}"; do
+  output="$(capture_run seq-read "$burst")"
+  parsed="$(python3 "$PARSE_TOOL" <<<"$output")"
+  fb_line="$(grep '^fb,' <<<"$parsed")"
+  IFS=, read -r _ b issued _ _ active _ throughput _ lat_min lat_avg lat_max samples <<< "$fb_line"
+  printf '%s,%s,%s,%s,%s,%s,%s,%s\n' "$b" "$throughput" "$lat_min" "$lat_avg" "$lat_max" "$samples" "$active" "$issued" >> "$seq_csv"
+done
+
+echo "[de10] Running contended burst sweep"
+for burst in "${BURSTS[@]}"; do
+  output="$(capture_run contended-burst-read-8 "$burst")"
+  parsed="$(python3 "$PARSE_TOOL" <<<"$output")"
+  fb_line="$(grep '^fb,' <<<"$parsed")"
+  tex_line="$(grep '^tex,' <<<"$parsed")"
+  IFS=, read -r _ b _ _ _ _ _ fb_throughput _ _ fb_lat_avg fb_lat_max _ <<< "$fb_line"
+  IFS=, read -r _ _ _ _ _ _ _ tex_throughput _ _ tex_lat_avg tex_lat_max _ <<< "$tex_line"
+  printf '%s,%s,%s,%s,%s,%s,%s\n' "$b" "$fb_throughput" "$fb_lat_avg" "$fb_lat_max" "$tex_throughput" "$tex_lat_avg" "$tex_lat_max" >> "$cont_csv"
+done
+
+echo "[de10] Running write baseline"
+capture_run seq-write 1 > "$write_txt"
+
+echo "[de10] Running Linux-load spot checks"
+for burst in 1 1024; do
+  output="$(run_remote "python3 -c \"a=bytearray(32*1024*1024); b=bytearray(32*1024*1024); exec('while True:\\n a[:] = b\\n b[:] = a')\" >/tmp/ddr-load.log 2>&1 & pid=\$!; sleep 1; sudo -n '$REMOTE_TOOL_BIN' --scenario seq-read --count '$COUNT_WORDS' --timeout-ms '$TIMEOUT_MS' --burst-words '$burst'; rc=\$?; kill \$pid; wait \$pid 2>/dev/null || true; exit \$rc")"
+  parsed="$(python3 "$PARSE_TOOL" <<<"$output")"
+  fb_line="$(grep '^fb,' <<<"$parsed")"
+  IFS=, read -r _ b _ _ _ _ _ fb_throughput _ _ fb_lat_avg fb_lat_max _ <<< "$fb_line"
+  printf 'linux-load,%s,%s,%s,%s\n' "$b" "$fb_throughput" "$fb_lat_avg" "$fb_lat_max" >> "$load_csv"
+done
+
+python3 - "$seq_csv" "$cont_csv" "$load_csv" "$write_txt" "$COUNT_WORDS" <<'PY'
+import csv
+import re
+import sys
+
+seq_csv, cont_csv, load_csv, write_txt, count_words = sys.argv[1:6]
+
+with open(seq_csv) as f:
+    seq = list(csv.DictReader(f))
+with open(cont_csv) as f:
+    cont = list(csv.DictReader(f))
+with open(load_csv) as f:
+    load = list(csv.DictReader(f))
+write_text = open(write_txt).read()
+
+m = re.search(r"fb:\n\s+control=.*?burst_words=(\d+) issued=(\d+) completed=(\d+)\n\s+bytes=(\d+) active_cycles=(\d+) wait_cycles=(\d+) throughput=([0-9.]+) MiB/s stall=([0-9.]+)%", write_text, re.S)
+if not m:
+    raise SystemExit("failed to parse write baseline")
+
+write = {
+    "burst": m.group(1),
+    "issued": m.group(2),
+    "completed": m.group(3),
+    "bytes": m.group(4),
+    "active": m.group(5),
+    "wait": m.group(6),
+    "throughput": m.group(7),
+    "stall": m.group(8),
+}
+
+baseline = float(seq[0]["throughput_mib_s"])
+def make_table(headers, rows):
+    widths = [len(h) for h in headers]
+    for row in rows:
+        for i, cell in enumerate(row):
+            widths[i] = max(widths[i], len(str(cell)))
+    def fmt(row):
+        return "  ".join(str(cell).ljust(widths[i]) for i, cell in enumerate(row))
+    sep = "  ".join("-" * widths[i] for i in range(len(headers)))
+    return [fmt(headers), sep] + [fmt(row) for row in rows]
+
+lines = []
+lines.append("Burst Capability")
+lines.append("================")
+lines.append("")
+lines.extend(make_table(
+    ["Interface / Item", "Value"],
+    [
+        ["Aggregate active FPGA DDR frontend width", "64 bits (fb_mem 32 + tex_mem 32)"],
+        ["HPS FPGA-to-SDRAM port width", "256 bits"],
+        ["Frontend width used vs HPS port", "25%"],
+        ["Narrow DE10 bridge maximum supported burst size", "1024 beats"],
+        ["Requested 2048-beat sweep", "unsupported by altera_avalon_mm_bridge (MAX_BURST_SIZE stops at 1024)"],
+        ["Default report sample size", f"{count_words} words per scenario"],
+    ],
+))
+lines.append("")
+lines.append("Sequential Read Burst Sweep")
+lines.append("===========================")
+lines.append("")
+seq_rows = []
+for row in seq:
+    speedup = float(row["throughput_mib_s"]) / baseline
+    seq_rows.append([
+        row["burst"], count_words, row["issued_cmds"], row["active_cycles"], row["throughput_mib_s"],
+        f"{speedup:.2f}x", row["lat_min"], row["lat_avg"], row["lat_max"], row["samples"],
+    ])
+lines.extend(make_table(
+        ["Burst words", "Count (words)", "Issued cmds", "Active cycles", "Throughput MiB/s", "Speedup vs b=1", "Lat min", "Lat avg", "Lat max", "Samples"],
+    seq_rows,
+))
+lines.append("")
+lines.append("Contended Read Burst Sweep")
+lines.append("==========================")
+lines.append("")
+lines.extend(make_table(
+    ["Burst words", "FB MiB/s", "FB lat avg", "FB lat max", "TEX MiB/s", "TEX lat avg", "TEX lat max"],
+    [[row["burst"], row["fb_throughput_mib_s"], row["fb_lat_avg"], row["fb_lat_max"], row["tex_throughput_mib_s"], row["tex_lat_avg"], row["tex_lat_max"]] for row in cont],
+))
+lines.append("")
+lines.append("Write Baseline")
+lines.append("==============")
+lines.append("")
+lines.extend(make_table(
+    ["Burst words", "Count (words)", "Issued cmds", "Active cycles", "Wait cycles", "Throughput MiB/s", "Stall %"],
+    [[write["burst"], count_words, write["issued"], write["active"], write["wait"], write["throughput"], write["stall"]]],
+))
+lines.append("")
+lines.append("Linux Load Spot Checks")
+lines.append("======================")
+lines.append("")
+lines.extend(make_table(
+    ["Case", "Burst words", "FB MiB/s", "FB lat avg", "FB lat max"],
+    [[row["case"], row["burst"], row["fb_throughput_mib_s"], row["fb_lat_avg"], row["fb_lat_max"]] for row in load],
+))
+
+print("\n".join(lines))
+PY

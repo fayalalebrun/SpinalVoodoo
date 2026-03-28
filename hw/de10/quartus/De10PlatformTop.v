@@ -35,7 +35,7 @@ module De10PlatformTop (
   wire        fb_waitrequest;
   wire [31:0] fb_readdata;
   wire        fb_readdatavalid;
-  wire [0:0]  fb_burstcount;
+  wire [10:0] fb_burstcount;
   wire [31:0] fb_writedata;
   wire [31:0] fb_address;
   wire        fb_write;
@@ -45,7 +45,7 @@ module De10PlatformTop (
   wire        tex_waitrequest;
   wire [31:0] tex_readdata;
   wire        tex_readdatavalid;
-  wire [0:0]  tex_burstcount;
+  wire [10:0] tex_burstcount;
   wire [31:0] tex_writedata;
   wire [31:0] tex_address;
   wire        tex_write;
@@ -132,6 +132,7 @@ module De10PlatformTop (
     .io_memFb_read           (fb_read),
     .io_memFb_write          (fb_write),
     .io_memFb_waitRequestn   (~fb_waitrequest),
+    .io_memFb_burstCount     (fb_burstcount),
     .io_memFb_address        (fb_address),
     .io_memFb_byteEnable     (fb_byteenable),
     .io_memFb_writeData      (fb_writedata),
@@ -140,6 +141,7 @@ module De10PlatformTop (
     .io_memTex_read          (tex_read),
     .io_memTex_write         (tex_write),
     .io_memTex_waitRequestn  (~tex_waitrequest),
+    .io_memTex_burstCount    (tex_burstcount),
     .io_memTex_address       (tex_address),
     .io_memTex_byteEnable    (tex_byteenable),
     .io_memTex_writeData     (tex_writedata),
@@ -150,7 +152,5 @@ module De10PlatformTop (
   );
 
   assign h2f_burstcount = 1'b1;
-  assign fb_burstcount = 1'b1;
-  assign tex_burstcount = 1'b1;
 
 endmodule

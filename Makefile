@@ -6,7 +6,7 @@
 #   tomb/<runtime>/<action>
 #   de10/<action>
 
-.PHONY: all clean clean-sim clean-glide clean-tests native/help native/sim/build native/trace/build native/sim/run-all native/sim/check-all dos/help dos/sim/build dos/trace/build dos/dosbox tomb/help tomb/prepare tomb/sim/run tomb/sim/headless tomb/sim/capture tomb/sim/trace tomb/sim/trace/check tomb/trace/run tomb/trace/headless tomb/trace/check tomb/trace/profile de10/help de10/setup/program de10/setup/deploy de10/check/mmio de10/run/tomb de10/run/tomb/vnc de10/trace/run de10/trace/tomb de10/plan de10/rtl de10/qsys de10/bitstream de10/sync-sysroot de10/glide de10/glide-tests de10/glide-cross de10/glide-tests-cross FORCE
+.PHONY: all clean clean-sim clean-glide clean-tests native/help native/sim/build native/trace/build native/sim/run-all native/sim/check-all dos/help dos/sim/build dos/trace/build dos/dosbox tomb/help tomb/prepare tomb/sim/run tomb/sim/headless tomb/sim/capture tomb/sim/trace tomb/sim/trace/check tomb/trace/run tomb/trace/headless tomb/trace/check tomb/trace/profile de10/help de10/setup/program de10/setup/deploy de10/check/mmio de10/check/ddr-stress de10/report/ddr de10/run/tomb de10/run/tomb/vnc de10/trace/run de10/trace/tomb de10/plan de10/rtl de10/qsys de10/bitstream de10/ddrbench/rtl de10/ddrbench/bitstream de10/sync-sysroot de10/glide de10/glide-tests de10/glide-cross de10/glide-tests-cross FORCE
 .PRECIOUS: dos/sim/build/% dos/trace/build/%
 
 # Derive CXX32 from CC32 for sub-makefiles that need it
@@ -42,6 +42,8 @@ DE10_DEPLOY_SCRIPT = scripts/deploy-de10.sh
 DE10_SYNC_SYSROOT_SCRIPT = scripts/sync-de10-sysroot
 DE10_CROSS_GLIDE_SCRIPT = scripts/build-de10-glide-cross
 DE10_MMIO_SMOKE_BIN = tools/de10-mmio-smoke
+DE10_DDR_STRESS_BIN = tools/de10-ddr-stress
+DE10_DDR_RBF = output/de10/bitstream/SpinalVoodoo_de10.rbf
 
 all: native/sim/build
 
@@ -146,6 +148,8 @@ de10/help:
 	@echo "  make de10/setup/program    # program the FPGA on the board"
 	@echo "  make de10/setup/deploy     # deploy the board runtime bundle"
 	@echo "  make de10/check/mmio       # run the board MMIO smoke utility"
+	@echo "  make de10/check/ddr-stress # build the DE10 DDR stress utility"
+	@echo "  make de10/report/ddr       # program board and collect DDR statistics tables"
 	@echo "  make de10/run/dos/df00sdk  # run one DOS workload from the board runtime dir"
 	@echo "  make de10/run/tomb         # run Tomb from a prepared remote Tomb tree"
 	@echo "  make de10/run/tomb/vnc     # run Tomb on the board under a VNC X server"
@@ -156,6 +160,8 @@ de10/help:
 	@echo "  make de10/rtl          # generate DE10-targeted RTL"
 	@echo "  make de10/qsys         # generate Platform Designer system"
 	@echo "  make de10/bitstream    # run Quartus bitstream build flow"
+	@echo "  make de10/ddrbench/rtl # generate DDR bench RTL as De10Top.v"
+	@echo "  make de10/ddrbench/bitstream # build the DDR bench bitstream"
 	@echo "  make de10/sync-sysroot # fetch DE10 userspace sysroot locally"
 	@echo "  make de10/glide        # build DE10-targeted Glide library"
 	@echo "  make de10/glide-tests  # build DE10-targeted Glide test binaries"
@@ -169,6 +175,11 @@ de10/setup/deploy:
 	$(DE10_DEPLOY_SCRIPT) $(ARGS)
 
 de10/check/mmio: $(DE10_MMIO_SMOKE_BIN)
+
+de10/check/ddr-stress: $(DE10_DDR_STRESS_BIN)
+
+de10/report/ddr: $(DE10_DDR_STRESS_BIN) $(DE10_DDR_RBF)
+	bash ./scripts/report-de10-ddr
 
 de10/run/dos/%:
 	bash ./scripts/run-de10-dos-workload --exe $*.EXE $(ARGS)
@@ -200,6 +211,15 @@ de10/qsys:
 de10/bitstream:
 	$(DE10_BUILD_SCRIPT)
 
+de10/ddrbench/rtl:
+	@mkdir -p $(DE10_RTL_DIR)
+	DE10_RTL_MAIN_CLASS=voodoo.de10.De10DdrBenchTopGen $(DE10_RTL_SCRIPT)
+
+de10/ddrbench/bitstream: $(DE10_DDR_RBF)
+
+$(DE10_DDR_RBF): $(SCALA_SRCS) hw/de10/quartus/De10PlatformTop.v hw/de10/qsys/create_de10_soc.tcl
+	DE10_RTL_MAIN_CLASS=voodoo.de10.De10DdrBenchTopGen $(DE10_BUILD_SCRIPT)
+
 de10/sync-sysroot:
 	$(DE10_SYNC_SYSROOT_SCRIPT) $(ARGS)
 
@@ -218,6 +238,10 @@ de10/glide-tests-cross:
 
 $(DE10_MMIO_SMOKE_BIN): tools/de10-mmio-smoke.c
 	$(CC) -O2 -Wall -Wextra -o $@ $<
+
+$(DE10_DDR_STRESS_BIN): tools/de10-ddr-stress.c
+	$(CC) -O2 -Wall -Wextra -o $@ $<
+
 
 # Internal sim build target: always recurse into sub-make
 _sim_build:

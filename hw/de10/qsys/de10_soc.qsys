@@ -97,7 +97,7 @@
   <parameter name="ADDRESS_WIDTH" value="32" />
   <parameter name="DATA_WIDTH" value="32" />
   <parameter name="LINEWRAPBURSTS" value="0" />
-  <parameter name="MAX_BURST_SIZE" value="1" />
+  <parameter name="MAX_BURST_SIZE" value="1024" />
   <parameter name="MAX_PENDING_RESPONSES" value="4" />
   <parameter name="PIPELINE_COMMAND" value="1" />
   <parameter name="PIPELINE_RESPONSE" value="1" />
@@ -663,7 +663,7 @@
   <parameter name="ADDRESS_WIDTH" value="32" />
   <parameter name="DATA_WIDTH" value="32" />
   <parameter name="LINEWRAPBURSTS" value="0" />
-  <parameter name="MAX_BURST_SIZE" value="1" />
+  <parameter name="MAX_BURST_SIZE" value="1024" />
   <parameter name="MAX_PENDING_RESPONSES" value="4" />
   <parameter name="PIPELINE_COMMAND" value="1" />
   <parameter name="PIPELINE_RESPONSE" value="1" />

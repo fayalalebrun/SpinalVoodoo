@@ -34,7 +34,8 @@
 #include <86box/vid_voodoo_trace.h>
 
 #include "ref_model.h"
-#include "../../emu/trace/voodoo_trace_format.h"
+
+#define REF_EXPECTED_STATE_VERSION 2
 
 /* -------------------------------------------------------------------
  * Globals required by 86Box code
@@ -42,6 +43,7 @@
 
 int tris = 0;
 uint64_t tsc = 0;
+int voodoo_trace_max_frames = 0;
 static uint64_t ref_total_pixels_in = 0;
 static uint64_t ref_total_pixels_out = 0;
 static uint64_t ref_total_zfunc_fail = 0;
@@ -966,9 +968,9 @@ int ref_load_state(const uint8_t *data, uint32_t size)
 
     if (hdr->magic != VOODOO_STATE_MAGIC)
         return -1;
-    if (hdr->version != VOODOO_STATE_VERSION) {
+    if (hdr->version != REF_EXPECTED_STATE_VERSION) {
         fprintf(stderr, "[ref_model] ERROR: Unsupported state version %u (expected %u). v1 is not supported.\n",
-                hdr->version, VOODOO_STATE_VERSION);
+                hdr->version, REF_EXPECTED_STATE_VERSION);
         return -1;
     }
 

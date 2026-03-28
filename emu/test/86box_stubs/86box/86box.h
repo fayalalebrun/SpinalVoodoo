@@ -21,6 +21,7 @@ static inline void pclog(const char *fmt, ...) { (void)fmt; }
 
 /* Global cycle counter used by trace code. */
 extern uint64_t tsc;
+extern int voodoo_trace_max_frames;
 
 /* Fatal error */
 static inline void fatal(const char *fmt, ...) {

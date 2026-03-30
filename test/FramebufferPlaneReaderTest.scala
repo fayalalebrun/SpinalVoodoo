@@ -1,3 +1,5 @@
+//> using target.scope test
+
 package voodoo
 
 import org.scalatest.funsuite.AnyFunSuite
@@ -15,13 +17,21 @@ class FramebufferPlaneReaderTest extends AnyFunSuite {
         fbWriteBufferCount = 2,
         useFbWriteBuffer = true,
         useTexFillCache = false,
+        maxFbDims = (16, 16),
         trace = TraceConfig(enabled = true)
       )
+
+  private def mkLengthFixerConfig =
+    mkConfig.copy(
+      addressWidth = 20 bits,
+      maxFbDims = (128, 16)
+    )
 
   private def initDut(dut: FramebufferPlaneReader): Unit = {
     dut.clockDomain.forkStimulus(10)
     dut.io.prefetchReq.valid #= false
-    dut.io.prefetchReq.address #= 0
+    dut.io.prefetchReq.startAddress #= 0
+    dut.io.prefetchReq.endAddress #= 0
     dut.io.readReq.valid #= false
     dut.io.readReq.address #= 0
     dut.io.readRsp.ready #= true
@@ -35,16 +45,14 @@ class FramebufferPlaneReaderTest extends AnyFunSuite {
     dut.clockDomain.waitSampling()
   }
 
-  test("adjacent reads collapse into one burst") {
+  test("span prefetch issues exact-length burst") {
     SimConfig.withIVerilog.compile(FramebufferPlaneReader(mkConfig)).doSim { dut =>
       initDut(dut)
 
-      val addrs = Seq(0x000, 0x002, 0x004, 0x006)
-      for (addr <- addrs) {
-        dut.io.prefetchReq.valid #= true
-        dut.io.prefetchReq.address #= addr
-        dut.clockDomain.waitSampling()
-      }
+      dut.io.prefetchReq.valid #= true
+      dut.io.prefetchReq.startAddress #= 0x000
+      dut.io.prefetchReq.endAddress #= 0x006
+      dut.clockDomain.waitSampling()
       dut.io.prefetchReq.valid #= false
 
       dut.io.mem.cmd.ready #= true
@@ -53,14 +61,14 @@ class FramebufferPlaneReaderTest extends AnyFunSuite {
       }
       assert(dut.io.mem.cmd.valid.toBoolean)
       assert(dut.io.mem.cmd.fragment.address.toLong == 0x000)
-      assert(dut.io.mem.cmd.fragment.length.toInt == 63)
+      assert(dut.io.mem.cmd.fragment.length.toInt == 7)
       dut.clockDomain.waitSampling()
 
       dut.io.readRsp.ready #= false
-      for (beat <- 0 until 16) {
+      for (beat <- 0 until 2) {
         dut.io.mem.rsp.valid #= true
         dut.io.mem.rsp.fragment.data #= (0x12340000L + beat)
-        dut.io.mem.rsp.last #= (beat == 15)
+        dut.io.mem.rsp.last #= (beat == 1)
         dut.clockDomain.waitSampling()
       }
       dut.io.mem.rsp.valid #= false
@@ -87,28 +95,25 @@ class FramebufferPlaneReaderTest extends AnyFunSuite {
     }
   }
 
-  test("idle timeout flushes buffered halfword run") {
-    SimConfig.withIVerilog.compile(FramebufferPlaneReader(mkConfig)).doSim { dut =>
+  test("length fixer splits long span bursts") {
+    SimConfig.withIVerilog.compile(FramebufferPlaneReader(mkLengthFixerConfig)).doSim { dut =>
       initDut(dut)
 
-      val addrs = Seq(0x020, 0x022, 0x024, 0x026)
-      for (addr <- addrs) {
-        dut.io.prefetchReq.valid #= true
-        dut.io.prefetchReq.address #= addr
-        dut.clockDomain.waitSampling()
-      }
+      dut.io.prefetchReq.valid #= true
+      dut.io.prefetchReq.startAddress #= 0x040
+      dut.io.prefetchReq.endAddress #= 0x0a0
+      dut.clockDomain.waitSampling()
       dut.io.prefetchReq.valid #= false
 
       dut.io.mem.cmd.ready #= true
-      var sawCmd = false
-      for (_ <- 0 until 25 if !sawCmd) {
+      val seen = scala.collection.mutable.ArrayBuffer.empty[(Long, Int)]
+      while (seen.length < 2) {
         dut.clockDomain.waitSampling()
-        sawCmd = dut.io.mem.cmd.valid.toBoolean
+        if (dut.io.mem.cmd.valid.toBoolean && dut.io.mem.cmd.ready.toBoolean) {
+          seen += ((dut.io.mem.cmd.fragment.address.toLong, dut.io.mem.cmd.fragment.length.toInt))
+        }
       }
-      assert(sawCmd, "reader should flush buffered run after idle timeout")
-      assert(dut.io.mem.cmd.fragment.address.toLong == 0x020)
-      assert(dut.io.mem.cmd.fragment.length.toInt == 63)
-      dut.clockDomain.waitSampling()
+      assert(seen == Seq((0x040L, 63), (0x080L, 35)))
     }
   }
 }

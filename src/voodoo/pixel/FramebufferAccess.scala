@@ -2,6 +2,7 @@ package voodoo.pixel
 
 import voodoo._
 import spinal.core._
+import spinal.core.sim._
 import spinal.lib._
 
 /** Framebuffer Access stage — reads existing FB contents for depth test and alpha blend.
@@ -30,8 +31,19 @@ case class FramebufferAccess(c: Config) extends Component {
     val busy = out Bool ()
     val zFuncFail = out Bool ()
   }
+  io.input.valid.simPublic()
+  io.input.ready.simPublic()
+  io.output.valid.simPublic()
+  io.output.ready.simPublic()
+  io.fbReadColorReq.valid.simPublic()
+  io.fbReadColorReq.ready.simPublic()
+  io.fbReadColorReq.address.simPublic()
+  io.fbReadAuxReq.valid.simPublic()
+  io.fbReadAuxReq.ready.simPublic()
+  io.fbReadAuxReq.address.simPublic()
 
   val inFlightCount = Reg(UInt(5 bits)) init 0
+  inFlightCount.simPublic()
 
   val payload = io.input.payload
   val fbzMode = payload.fbzMode

@@ -23,7 +23,8 @@ class FramebufferPlaneReaderFormalDut extends Component {
   val pastValid = RegNext(True) init (False)
 
   dut.io.prefetchReq.valid := anyseq(Bool())
-  dut.io.prefetchReq.address := anyseq(UInt(c.addressWidth))
+  dut.io.prefetchReq.startAddress := anyseq(UInt(c.addressWidth))
+  dut.io.prefetchReq.endAddress := anyseq(UInt(c.addressWidth))
   dut.io.readReq.valid := anyseq(Bool())
   dut.io.readReq.address := anyseq(UInt(c.addressWidth))
   dut.io.readRsp.ready := anyseq(Bool())
@@ -41,6 +42,9 @@ class FramebufferPlaneReaderFormalDut extends Component {
   }
   when(pastValid) {
     assume(!reset)
+  }
+  when(dut.io.prefetchReq.valid) {
+    assume(dut.io.prefetchReq.startAddress <= dut.io.prefetchReq.endAddress)
   }
 
   dut.io.readReq.formalAssumesSlave()

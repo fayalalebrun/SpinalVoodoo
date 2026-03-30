@@ -2,14 +2,19 @@ package voodoo.framebuffer
 
 import voodoo._
 import spinal.core._
-import spinal.core.formal._
 import spinal.core.sim._
 import spinal.lib._
 import spinal.lib.bus.bmb._
 
-case class FramebufferPlaneReader(c: Config, prefetchWords: Int = 16, bufferWords: Int = 32)
+case class FramebufferPlaneReader(c: Config, prefetchWords: Int = 16, bufferWords: Int = 256)
     extends Component {
   import FramebufferPlaneBuffer._
+
+  case class SpanCmd() extends Bundle {
+    val base = UInt(addrWidth bits)
+    val last = UInt(addrWidth bits)
+    val words = UInt(spanWordCountWidth bits)
+  }
 
   case class BufferLookup() extends Bundle {
     val hit = Bool()
@@ -20,7 +25,7 @@ case class FramebufferPlaneReader(c: Config, prefetchWords: Int = 16, bufferWord
   }
 
   val io = new Bundle {
-    val prefetchReq = slave Flow (ReadReq(c))
+    val prefetchReq = slave Stream (FramebufferPlaneReader.PrefetchReq(c))
     val readReq = slave Stream (ReadReq(c))
     val readRsp = master Stream (ReadRsp())
     val mem = master(Bmb(FramebufferPlaneReader.bmbParams(c)))
@@ -40,23 +45,35 @@ case class FramebufferPlaneReader(c: Config, prefetchWords: Int = 16, bufferWord
     val multiBeatBurstCount = out UInt (32 bits)
     val maxOccupancy = out UInt (8 bits)
   }
+  io.prefetchReq.valid.simPublic()
+  io.prefetchReq.ready.simPublic()
+  io.prefetchReq.startAddress.simPublic()
+  io.prefetchReq.endAddress.simPublic()
+  io.readReq.valid.simPublic()
+  io.readReq.ready.simPublic()
+  io.readReq.address.simPublic()
+  io.readRsp.valid.simPublic()
+  io.readRsp.ready.simPublic()
+  io.mem.cmd.valid.simPublic()
+  io.mem.cmd.ready.simPublic()
+  io.mem.cmd.fragment.address.simPublic()
+  io.mem.cmd.fragment.length.simPublic()
+  io.mem.rsp.valid.simPublic()
+  io.mem.rsp.ready.simPublic()
 
-  require(prefetchWords >= 2 && ((prefetchWords & (prefetchWords - 1)) == 0))
   require(bufferWords >= prefetchWords)
 
   val addrWidth = c.addressWidth.value
-  val beatIndexWidth = log2Up(prefetchWords)
   val countWidth = log2Up(bufferWords + 1)
   val lineBytes = c.fbWriteBufferLineWords * 4
+  val maxSpanWords = (c.maxFbDims._1 + 1) / 2
+  val maxSpanBytes = maxSpanWords * 4
+  val spanWordCountWidth = log2Up(maxSpanWords + 1)
 
   def wordBase(address: UInt): UInt = ((address >> 2) << 2).resize(addrWidth bits)
   def lineBaseOf(address: UInt): UInt = {
     val shift = log2Up(lineBytes)
     ((address >> shift) << shift).resize(addrWidth bits)
-  }
-  def inWindow(address: UInt, base: UInt, words: Int): Bool = {
-    val aligned = wordBase(address)
-    aligned >= base && aligned < (base + U(words * 4, addrWidth bits)).resized
   }
   def classifyPrefetchStep(curr: UInt, prev: UInt): UInt = {
     val sameWord = wordBase(curr) === wordBase(prev)
@@ -72,20 +89,27 @@ case class FramebufferPlaneReader(c: Config, prefetchWords: Int = 16, bufferWord
   val bufferValid = Vec(Reg(Bool()) init (False), bufferWords)
   val bufferAddr = Vec(Reg(UInt(addrWidth bits)) init (0), bufferWords)
   val bufferData = Vec(Reg(Bits(32 bits)) init (0), bufferWords)
+  bufferValid.foreach(_.simPublic())
+  bufferAddr.foreach(_.simPublic())
 
   val replayValid = Reg(Bool()) init (False)
   val replayAddr = Reg(UInt(addrWidth bits)) init (0)
   val replayData = Reg(Bits(32 bits)) init (0)
+  replayValid.simPublic()
+  replayAddr.simPublic()
+  replayData.simPublic()
 
-  val fillActive = Reg(Bool()) init (False)
-  val fillCmdIssued = Reg(Bool()) init (False)
-  val fillBase = Reg(UInt(addrWidth bits)) init (0)
-  val fillRspIndex = Reg(UInt(beatIndexWidth bits)) init (0)
-  val queuedFillValid = Reg(Bool()) init (False)
-  val queuedFillBase = Reg(UInt(addrWidth bits)) init (0)
+  val spanQueueDepth = c.maxFbDims._2 * 2
+  val pendingSpanQueue = StreamFifo(HardType(SpanCmd()), spanQueueDepth)
+  val issuedSpanQueue = StreamFifo(HardType(SpanCmd()), spanQueueDepth)
+  val issuedRspIndex = Reg(UInt(spanWordCountWidth bits)) init (0)
+  pendingSpanQueue.io.occupancy.simPublic()
+  issuedSpanQueue.io.occupancy.simPublic()
+  issuedRspIndex.simPublic()
 
-  val readRspValid = Reg(Bool()) init (False)
-  val readRspData = Reg(Bits(32 bits)) init (0)
+  val readRspFifo = StreamFifo(ReadRsp(), 16)
+  readRspFifo.io.push.valid := False
+  readRspFifo.io.push.data := 0
 
   val fillHits = Reg(UInt(32 bits)) init (0)
   val fillMisses = Reg(UInt(32 bits)) init (0)
@@ -103,6 +127,19 @@ case class FramebufferPlaneReader(c: Config, prefetchWords: Int = 16, bufferWord
   val maxOccupancy = Reg(UInt(8 bits)) init (0)
   val prevPrefetchValid = Reg(Bool()) init (False)
   val prevPrefetchAddr = Reg(UInt(addrWidth bits)) init (0)
+
+  val internalMem = Bmb(FramebufferPlaneReader.internalBmbParams(c))
+  if (FramebufferPlaneReader.needBurstSplitter(c)) {
+    val burstSplitter =
+      BmbAlignedSpliter(FramebufferPlaneReader.internalBmbParams(c), 1 << c.memBurstLengthWidth)
+    val contextRemover =
+      BmbContextRemover(FramebufferPlaneReader.splitterBmbParams(c), pendingMax = spanQueueDepth)
+    burstSplitter.io.input <> internalMem
+    contextRemover.io.input <> burstSplitter.io.output
+    contextRemover.io.output <> io.mem
+  } else {
+    internalMem <> io.mem
+  }
 
   if (c.trace.enabled) {
     fillHits.simPublic()
@@ -141,37 +178,6 @@ case class FramebufferPlaneReader(c: Config, prefetchWords: Int = 16, bufferWord
   singleBeatBurstCount := singleBeatBurstCount
   multiBeatBurstCount := multiBeatBurstCount
 
-  def startFill(base: UInt): Unit = {
-    fillActive := True
-    fillCmdIssued := False
-    fillBase := base
-    fillRspIndex := 0
-    fillBurstCount := fillBurstCount + 1
-    fillBurstBeats := fillBurstBeats + U(prefetchWords, 32 bits)
-    if (prefetchWords == 1) {
-      singleBeatBurstCount := singleBeatBurstCount + 1
-    } else {
-      multiBeatBurstCount := multiBeatBurstCount + 1
-    }
-  }
-
-  def scheduleFill(base: UInt): Unit = {
-    fillMisses := fillMisses + 1
-    when(!fillActive) {
-      startFill(base)
-    }.elsewhen(!queuedFillValid) {
-      queuedFillValid := True
-      queuedFillBase := base
-    }
-  }
-
-  def dropBufferedLines(): Unit = {
-    replayValid := False
-    for (idx <- 0 until bufferWords) {
-      bufferValid(idx) := False
-    }
-  }
-
   def bufferLookup(address: UInt): BufferLookup = {
     val lookup = BufferLookup()
     val hitVec = Vec(Bool(), bufferWords)
@@ -189,59 +195,10 @@ case class FramebufferPlaneReader(c: Config, prefetchWords: Int = 16, bufferWord
     lookup
   }
 
-  def requestCoveredByBuffer(address: UInt): Bool =
-    (0 until bufferWords)
-      .map(idx => bufferValid(idx) && bufferAddr(idx) === wordBase(address))
-      .reduce(_ || _)
-
-  def prefetchCovered(address: UInt): Bool =
-    (replayValid && replayAddr === wordBase(address)) ||
-      requestCoveredByBuffer(address) ||
-      (fillActive && inWindow(wordBase(address), fillBase, prefetchWords)) ||
-      (queuedFillValid && inWindow(wordBase(address), queuedFillBase, prefetchWords))
-
-  def serveReadHit(hitIndex: UInt, replayHit: Bool): Unit = {
-    fillHits := fillHits + 1
-    readRspValid := True
-    when(replayHit) {
-      readRspData := replayData
-    }.otherwise {
-      readRspData := bufferData(hitIndex)
-      replayValid := True
-      replayAddr := bufferAddr(hitIndex)
-      replayData := bufferData(hitIndex)
-      bufferValid(hitIndex) := False
-    }
-  }
-
-  val prefetchWord = wordBase(io.prefetchReq.address)
-  val readWord = wordBase(io.readReq.address)
-  val readLookup = bufferLookup(io.readReq.address)
-  val fillLookup = bufferLookup(io.prefetchReq.address)
-  val bufferHit = readLookup.hit
-  val bufferHitIndex = readLookup.hitIndex
-  val bufferOccupancy = readLookup.occupancy
-  val freeCount = fillLookup.freeCount
-  val firstFreeIndex = fillLookup.firstFreeIndex
-
-  val outstandingFillWords = UInt(countWidth bits)
-  outstandingFillWords := 0
-  when(fillActive) {
-    outstandingFillWords := U(prefetchWords, countWidth bits) - fillRspIndex.resize(countWidth bits)
-  }
-  val reservedWords =
-    outstandingFillWords + (queuedFillValid ? U(prefetchWords, countWidth bits) | U(
-      0,
-      countWidth bits
-    ))
-  val canReserveBurst = freeCount >= (U(prefetchWords, countWidth bits) + reservedWords)
-
-  val coveredPrefetch = prefetchCovered(io.prefetchReq.address)
-
-  when(io.prefetchReq.valid) {
+  def recordPrefetchAddress(address: UInt): Unit = {
     reqCount := reqCount + 1
     when(prevPrefetchValid) {
-      switch(classifyPrefetchStep(io.prefetchReq.address, prevPrefetchAddr)) {
+      switch(classifyPrefetchStep(address, prevPrefetchAddr)) {
         is(U(0, 3 bits)) {
           reqSameWordCount := reqSameWordCount + 1
         }
@@ -260,33 +217,87 @@ case class FramebufferPlaneReader(c: Config, prefetchWords: Int = 16, bufferWord
       }
     }
     prevPrefetchValid := True
-    prevPrefetchAddr := io.prefetchReq.address
-
+    prevPrefetchAddr := address
   }
 
-  val replayHit = replayValid && replayAddr === readWord
-  val demandMiss =
-    io.readReq.valid && !replayHit && !bufferHit && !prefetchCovered(io.readReq.address)
-  val demandFillNeeded = demandMiss && canReserveBurst
-  val demandNeedsRecycle =
-    demandMiss && !canReserveBurst && !fillActive && !queuedFillValid && !readRspValid
-  val prefetchFillNeeded =
-    io.prefetchReq.valid && !coveredPrefetch && canReserveBurst && !demandMiss
-
-  when(demandFillNeeded) {
-    scheduleFill(readWord)
-  }.elsewhen(demandNeedsRecycle) {
-    dropBufferedLines()
-    scheduleFill(readWord)
-  }.elsewhen(prefetchFillNeeded) {
-    scheduleFill(prefetchWord)
+  def serveReadHit(hitIndex: UInt, replayHit: Bool): Unit = {
+    fillHits := fillHits + 1
+    readRspFifo.io.push.valid := True
+    when(replayHit) {
+      readRspFifo.io.push.data := replayData
+    }.otherwise {
+      readRspFifo.io.push.data := bufferData(hitIndex)
+      replayValid := True
+      replayAddr := bufferAddr(hitIndex)
+      replayData := bufferData(hitIndex)
+      bufferValid(hitIndex) := False
+    }
   }
+
+  val readLookup = bufferLookup(io.readReq.address)
+  val bufferHit = readLookup.hit
+  val bufferHitIndex = readLookup.hitIndex
+  val bufferOccupancy = readLookup.occupancy
+  val freeCount = readLookup.freeCount
+  val firstFreeIndex = readLookup.firstFreeIndex
+  val replayHit = replayValid && replayAddr === wordBase(io.readReq.address)
+  val queueEmpty = !pendingSpanQueue.io.pop.valid && !issuedSpanQueue.io.pop.valid
+
+  pendingSpanQueue.io.push.valid := io.prefetchReq.valid
+  pendingSpanQueue.io.push.payload.base := wordBase(io.prefetchReq.startAddress)
+  pendingSpanQueue.io.push.payload.last := wordBase(io.prefetchReq.endAddress)
+  pendingSpanQueue.io.push.payload.words := (((wordBase(io.prefetchReq.endAddress) - wordBase(
+    io.prefetchReq.startAddress
+  )) >> 2).resize(spanWordCountWidth bits) + 1).resized
+  io.prefetchReq.ready := pendingSpanQueue.io.push.ready
+  when(io.prefetchReq.fire) {
+    fillMisses := fillMisses + 1
+    recordPrefetchAddress(wordBase(io.prefetchReq.startAddress))
+  }
+
+  val canIssueSpan = pendingSpanQueue.io.pop.valid && issuedSpanQueue.io.push.ready
+  internalMem.cmd.valid := canIssueSpan
+  internalMem.cmd.fragment.address := pendingSpanQueue.io.pop.payload.base
+  internalMem.cmd.fragment.opcode := Bmb.Cmd.Opcode.READ
+  internalMem.cmd.fragment.length :=
+    (pendingSpanQueue.io.pop.payload.last - pendingSpanQueue.io.pop.payload.base + 3).resized
+  internalMem.cmd.fragment.source := 0
+  internalMem.cmd.fragment.data := 0
+  internalMem.cmd.fragment.mask := 0
+  internalMem.cmd.last := True
+  pendingSpanQueue.io.pop.ready := internalMem.cmd.ready && issuedSpanQueue.io.push.ready
+  issuedSpanQueue.io.push.valid := internalMem.cmd.fire
+  issuedSpanQueue.io.push.payload := pendingSpanQueue.io.pop.payload
+  when(internalMem.cmd.fire) {
+    fillBurstCount := fillBurstCount + 1
+    fillBurstBeats := fillBurstBeats + pendingSpanQueue.io.pop.payload.words.resize(32 bits)
+    when(pendingSpanQueue.io.pop.payload.words === 1) {
+      singleBeatBurstCount := singleBeatBurstCount + 1
+    }.otherwise {
+      multiBeatBurstCount := multiBeatBurstCount + 1
+    }
+  }
+
+  internalMem.rsp.ready := issuedSpanQueue.io.pop.valid && freeCount =/= 0 && internalMem.rsp.source === 0
+  when(internalMem.rsp.fire && internalMem.rsp.source === 0) {
+    bufferValid(firstFreeIndex) := True
+    bufferAddr(firstFreeIndex) :=
+      (issuedSpanQueue.io.pop.payload.base + (issuedRspIndex.resize(addrWidth bits) << 2)).resized
+    bufferData(firstFreeIndex) := internalMem.rsp.fragment.data
+    when(internalMem.rsp.last || issuedRspIndex === issuedSpanQueue.io.pop.payload.words - 1) {
+      issuedRspIndex := 0
+    }.otherwise {
+      issuedRspIndex := issuedRspIndex + 1
+    }
+  }
+  issuedSpanQueue.io.pop.ready := internalMem.rsp.fire &&
+    (internalMem.rsp.last || issuedRspIndex === issuedSpanQueue.io.pop.payload.words - 1)
 
   when(bufferOccupancy.resize(8 bits) > maxOccupancy) {
     maxOccupancy := bufferOccupancy.resize(8 bits)
   }
 
-  io.readReq.ready := !readRspValid && (replayHit || bufferHit)
+  io.readReq.ready := readRspFifo.io.push.ready && (replayHit || bufferHit)
   when(io.readReq.valid && !io.readReq.ready) {
     fillStallCycles := fillStallCycles + 1
   }
@@ -294,64 +305,45 @@ case class FramebufferPlaneReader(c: Config, prefetchWords: Int = 16, bufferWord
     serveReadHit(bufferHitIndex, replayHit)
   }
 
-  io.readRsp.valid := readRspValid
-  io.readRsp.data := readRspData
-  when(io.readRsp.fire) {
-    readRspValid := False
-  }
+  io.readRsp << readRspFifo.io.pop
 
-  io.mem.cmd.valid := fillActive && !fillCmdIssued
-  io.mem.cmd.fragment.address := fillBase
-  io.mem.cmd.fragment.opcode := Bmb.Cmd.Opcode.READ
-  io.mem.cmd.fragment.length := U(prefetchWords * 4 - 1, c.memBurstLengthWidth bits)
-  io.mem.cmd.fragment.source := 0
-  io.mem.cmd.fragment.data := 0
-  io.mem.cmd.fragment.mask := 0
-  io.mem.cmd.last := True
-  when(io.mem.cmd.fire) {
-    fillCmdIssued := True
-  }
-
-  io.mem.rsp.ready := fillActive && fillCmdIssued && fillLookup.freeCount =/= 0 && io.mem.rsp.source === 0
-  when(io.mem.rsp.fire && io.mem.rsp.source === 0) {
-    bufferValid(firstFreeIndex) := True
-    bufferAddr(firstFreeIndex) := (fillBase + (fillRspIndex.resize(addrWidth bits) << 2)).resized
-    bufferData(firstFreeIndex) := io.mem.rsp.fragment.data
-    when(io.mem.rsp.last || fillRspIndex === U(prefetchWords - 1, beatIndexWidth bits)) {
-      fillActive := False
-      fillCmdIssued := False
-      fillRspIndex := 0
-      when(queuedFillValid) {
-        startFill(queuedFillBase)
-        queuedFillValid := False
-      }
-    }.otherwise {
-      fillRspIndex := fillRspIndex + 1
-    }
-  }
-
-  GenerationFlags.formal {
-    val formalReset = ClockDomain.current.isResetActive
-    when(!formalReset) {
-      when(fillActive && !fillCmdIssued) {
-        assert(io.mem.cmd.valid)
-        assert(io.mem.cmd.address === fillBase)
-      }
-    }
-  }
-
-  io.busy := fillActive || queuedFillValid || readRspValid || bufferOccupancy =/= 0
+  io.busy := !queueEmpty || readRspFifo.io.pop.valid || bufferOccupancy =/= 0
 }
 
 object FramebufferPlaneReader {
-  def bmbParams(c: Config) = BmbParameter(
+  case class PrefetchReq(c: Config) extends Bundle {
+    val startAddress = UInt(c.addressWidth.value bits)
+    val endAddress = UInt(c.addressWidth.value bits)
+  }
+
+  def needBurstSplitter(c: Config): Boolean = {
+    val maxSpanBytes = ((c.maxFbDims._1 + 1) / 2) * 4
+    maxSpanBytes > (1 << c.memBurstLengthWidth)
+  }
+
+  def internalBmbParams(c: Config) = BmbParameter(
     addressWidth = c.addressWidth.value,
     dataWidth = 32,
     sourceWidth = 1,
     contextWidth = 0,
-    lengthWidth = c.memBurstLengthWidth,
+    lengthWidth = if (needBurstSplitter(c)) {
+      (c.memBurstLengthWidth + 1) max log2Up(((c.maxFbDims._1 + 1) / 2) * 4)
+    } else {
+      c.memBurstLengthWidth
+    },
     canRead = true,
     canWrite = true,
     alignment = BmbParameter.BurstAlignement.BYTE
   )
+
+  def splitterBmbParams(c: Config) =
+    BmbParameter(
+      BmbAlignedSpliter.outputParameter(internalBmbParams(c).access, 1 << c.memBurstLengthWidth)
+    )
+
+  def bmbParams(c: Config) = if (needBurstSplitter(c)) {
+    BmbContextRemover.getOutputParameter(splitterBmbParams(c))
+  } else {
+    internalBmbParams(c)
+  }
 }

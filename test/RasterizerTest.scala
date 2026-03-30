@@ -1,3 +1,5 @@
+//> using target.scope test
+
 package voodoo
 
 import spinal.core._
@@ -20,6 +22,11 @@ class RasterizerTest extends AnyFunSuite {
     dut.clockDomain.forkStimulus(period = 10)
     dut.i.valid #= false
     dut.o.ready #= true
+    dut.enableClipping #= false
+    dut.clipLeft #= 0
+    dut.clipRight #= 0
+    dut.clipLowY #= 0
+    dut.clipHighY #= 0
     dut.clockDomain.waitSampling()
   }
 
@@ -67,6 +74,42 @@ class RasterizerTest extends AnyFunSuite {
   // and the edge value at the bounding box corner
   case class EdgeEquation(a: Double, b: Double, c: Double, startValue: Double)
 
+  case class Vertex(x: Double, y: Double)
+
+  def edgesFromVertices(
+      vertices: Seq[Vertex]
+  ): (Seq[EdgeEquation], (Double, Double, Double, Double)) = {
+    require(vertices.length == 3)
+    val signedArea2 =
+      vertices(0).x * (vertices(1).y - vertices(2).y) +
+        vertices(1).x * (vertices(2).y - vertices(0).y) +
+        vertices(2).x * (vertices(0).y - vertices(1).y)
+    val sign = if (signedArea2 < 0.0) -1.0 else 1.0
+    val edges = Seq((0, 1), (1, 2), (2, 0)).map { case (i0, i1) =>
+      val v0 = vertices(i0)
+      val v1 = vertices(i1)
+      val a = sign * (v1.y - v0.y)
+      val b = sign * (v0.x - v1.x)
+      val c = sign * (v1.x * v0.y - v0.x * v1.y)
+      EdgeEquation(a, b, c, 0.0)
+    }
+    val xmin = scala.math.floor(vertices.map(_.x).min)
+    val xmax = scala.math.ceil(vertices.map(_.x).max)
+    val ymin = scala.math.floor(vertices.map(_.y).min)
+    val ymax = scala.math.ceil(vertices.map(_.y).max)
+    val withStart = edges.map(e => e.copy(startValue = e.a * xmin + e.b * ymin + e.c))
+    (withStart, (xmin, xmax, ymin, ymax))
+  }
+
+  def referencePixels(vertices: Seq[Vertex]): Seq[(Int, Int)] = {
+    val (edges, (xmin, xmax, ymin, ymax)) = edgesFromVertices(vertices)
+    for {
+      y <- ymin.toInt until ymax.toInt
+      x <- xmin.toInt to xmax.toInt
+      if edges.forall(e => e.a * x + e.b * y + e.c >= 0.0)
+    } yield (x, y)
+  }
+
   def setTriangle(
       dut: Rasterizer,
       xmin: Double,
@@ -105,6 +148,27 @@ class RasterizerTest extends AnyFunSuite {
         outputs += ((x, y))
       }
     }
+    outputs.toSeq
+  }
+
+  def sendAndCollectUntilIdle(dut: Rasterizer, maxCycles: Int = 50000): Seq[(Int, Int)] = {
+    dut.i.valid #= true
+    dut.clockDomain.waitSamplingWhere(dut.i.ready.toBoolean)
+    dut.clockDomain.waitSampling()
+    dut.i.valid #= false
+
+    val outputs = scala.collection.mutable.ArrayBuffer[(Int, Int)]()
+    var idleSeen = false
+    var cycles = 0
+    while (cycles < maxCycles && !idleSeen) {
+      dut.clockDomain.waitSampling()
+      cycles += 1
+      if (dut.o.valid.toBoolean && dut.o.ready.toBoolean) {
+        outputs += ((dut.o.coords(0).toInt, dut.o.coords(1).toInt))
+      }
+      idleSeen = !dut.running.toBoolean && !dut.o.valid.toBoolean
+    }
+    assert(idleSeen, s"Rasterizer did not go idle within $maxCycles cycles")
     outputs.toSeq
   }
 
@@ -265,7 +329,7 @@ class RasterizerTest extends AnyFunSuite {
     }
   }
 
-  test("Rasterizer uses serpentine scanning") {
+  test("Rasterizer emits exact left-to-right spans") {
     val config = Config.voodoo1()
 
     SimConfig.withIVerilog.withWave.compile(Rasterizer(config)).doSim { dut =>
@@ -277,25 +341,23 @@ class RasterizerTest extends AnyFunSuite {
 
       val outputs = sendAndCollect(dut, cycles = 50)
 
-      println(s"Serpentine scan produced ${outputs.length} pixels:")
+      println(s"Exact span scan produced ${outputs.length} pixels:")
       outputs.foreach { case (x, y) => println(f"  ($x%d, $y%d)") }
 
-      // Expected serpentine pattern for 3x3:
-      // Row 0 (left to right): (0,0), (1,0), (2,0)
-      // Row 1 (right to left): (2,1), (1,1), (0,1)
-      // Row 2 (left to right): (0,2), (1,2), (2,2)
+      val expected = Seq(
+        (0, 0),
+        (1, 0),
+        (2, 0),
+        (0, 1),
+        (1, 1),
+        (2, 1),
+        (0, 2),
+        (1, 2),
+        (2, 2)
+      )
 
       assert(outputs.length == 9, s"Expected 9 pixels, got ${outputs.length}")
-
-      if (outputs.length >= 6) {
-        // Check first row goes left to right
-        assert(outputs(0)._1 < outputs(1)._1, "Row 0 should scan left to right")
-        assert(outputs(1)._1 < outputs(2)._1, "Row 0 should scan left to right")
-
-        // Check second row goes right to left
-        assert(outputs(3)._1 > outputs(4)._1, "Row 1 should scan right to left")
-        assert(outputs(4)._1 > outputs(5)._1, "Row 1 should scan right to left")
-      }
+      assert(outputs == expected, s"Expected $expected, got $outputs")
     }
   }
 
@@ -356,6 +418,11 @@ class RasterizerTest extends AnyFunSuite {
       dut.clockDomain.forkStimulus(period = 10)
       dut.i.valid #= false
       dut.o.ready #= false
+      dut.enableClipping #= false
+      dut.clipLeft #= 0
+      dut.clipRight #= 0
+      dut.clipLowY #= 0
+      dut.clipHighY #= 0
       dut.clockDomain.waitSampling()
 
       // 2x2 box — yrange is exclusive upper bound
@@ -670,6 +737,48 @@ class RasterizerTest extends AnyFunSuite {
       // depending on rounding behavior - don't assert nonEmpty
 
       capturedOutputs = outputs
+    }
+  }
+
+  test("Rasterizer matches software reference across many triangle configurations") {
+    val config = Config.voodoo1()
+    val cases = Seq(
+      Seq(Vertex(0, 0), Vertex(8, 0), Vertex(0, 8)),
+      Seq(Vertex(8, 0), Vertex(8, 8), Vertex(0, 8)),
+      Seq(Vertex(-4, 3), Vertex(6, 1), Vertex(2, 11)),
+      Seq(Vertex(0, 0), Vertex(15, 1), Vertex(1, 14)),
+      Seq(Vertex(12, 4), Vertex(14, 18), Vertex(2, 10)),
+      Seq(Vertex(20, 5), Vertex(3, 6), Vertex(21, 7)),
+      Seq(Vertex(5, 10), Vertex(25, 10), Vertex(13, 11)),
+      Seq(Vertex(30, 20), Vertex(0, 30), Vertex(31, 31)),
+      Seq(Vertex(-8, -8), Vertex(8, -6), Vertex(-6, 8)),
+      Seq(Vertex(100, 40), Vertex(140, 44), Vertex(101, 45)),
+      Seq(Vertex(611, 368), Vertex(474, 467), Vertex(568, 479)),
+      Seq(Vertex(471, 363), Vertex(611, 368), Vertex(474, 467)),
+      Seq(Vertex(458, 129), Vertex(401, 138), Vertex(409, 148)),
+      Seq(Vertex(456, 116), Vertex(458, 129), Vertex(401, 138))
+    )
+
+    SimConfig.withIVerilog.compile(Rasterizer(config)).doSim { dut =>
+      setupDut(dut)
+      setZeroGradients(dut)
+
+      for ((verts, idx) <- cases.zipWithIndex) {
+        val (edges, (xmin, xmax, ymin, ymax)) = edgesFromVertices(verts)
+        setTriangle(dut, xmin, xmax, ymin, ymax, edges)
+        val expected = referencePixels(verts)
+        val got =
+          try {
+            sendAndCollectUntilIdle(dut).distinct
+          } catch {
+            case e: Throwable =>
+              throw new RuntimeException(s"case $idx did not complete, verts=$verts", e)
+          }
+        assert(
+          got == expected,
+          s"case $idx mismatch\nverts=$verts\nexpected=${expected.take(80)}\ngot=${got.take(80)}"
+        )
+      }
     }
   }
 }

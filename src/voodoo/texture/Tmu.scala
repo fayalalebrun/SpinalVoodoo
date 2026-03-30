@@ -40,7 +40,8 @@ case class Tmu(c: voodoo.Config) extends Component {
     val busy = out Bool ()
   }
 
-  val inFlightCount = Reg(UInt(5 bits)) init 0
+  val requestIdWidth = Tmu.requestIdWidth
+  val inFlightCount = Reg(UInt(requestIdWidth bits)) init 0
 
   import Tmu._
 
@@ -77,10 +78,9 @@ case class Tmu(c: voodoo.Config) extends Component {
   val recipTable = lookupTables.recipTable
   val logTable = lookupTables.logTable
 
-  val requestIdWidth = 5
   val maxOutstanding = (1 << requestIdWidth) - 1
 
-  val (inputForStage, inputForMeta) = StreamFork2(io.input)
+  val inputForStage = io.input
 
   val texMode = Tmu.TextureMode.decode(inputForStage.payload.config.textureMode)
   val oow = inputForStage.payload.w // 1/W in 2.30 format (wider internal accumulator)
@@ -115,6 +115,8 @@ case class Tmu(c: voodoo.Config) extends Component {
         out.dTdX := inputForStage.payload.dTdX
         out.dSdY := inputForStage.payload.dSdY
         out.dTdY := inputForStage.payload.dTdY
+        out.meta.config := inputForStage.payload.config
+        if (c.trace.enabled) out.meta.trace := inputForStage.payload.trace
         out
       }
       .stage()
@@ -145,6 +147,7 @@ case class Tmu(c: voodoo.Config) extends Component {
         out.dTdX := stageRecipPrep.payload.dTdX
         out.dSdY := stageRecipPrep.payload.dSdY
         out.dTdY := stageRecipPrep.payload.dTdY
+        out.meta := stageRecipPrep.payload.meta
         out
       }
       .stage()
@@ -176,6 +179,7 @@ case class Tmu(c: voodoo.Config) extends Component {
         out.dTdX := stageRecip.payload.dTdX
         out.dSdY := stageRecip.payload.dSdY
         out.dTdY := stageRecip.payload.dTdY
+        out.meta := stageRecip.payload.meta
         out
       }
       .m2sPipe()
@@ -210,24 +214,9 @@ case class Tmu(c: voodoo.Config) extends Component {
         out.clampToZero := stageA.payload.clampToZero
         out.tempLOD := tempLOD
         out.perspLodAdjust := stageA.payload.perspLodAdjust
+        out.meta := stageA.payload.meta
         out
       }
-      .stage()
-
-    val metaDelay = inputForMeta
-      .translateWith {
-        val out = Tmu.FrontMeta(c)
-        out.config := inputForMeta.payload.config
-        if (c.trace.enabled) {
-          out.trace := inputForMeta.payload.trace
-        }
-        out
-      }
-      .stage()
-      .stage()
-      .stage()
-      .stage()
-      .stage()
       .stage()
 
     val baseLod_8_8 = SInt(16 bits)
@@ -259,6 +248,7 @@ case class Tmu(c: voodoo.Config) extends Component {
         out.clampToZero := stageGrad.payload.clampToZero
         out.baseLod_8_8 := baseLod_8_8
         out.perspLodAdjust := stageGrad.payload.perspLodAdjust
+        out.meta := stageGrad.payload.meta
         out
       }
       .stage()
@@ -320,12 +310,12 @@ case class Tmu(c: voodoo.Config) extends Component {
         out.lodLevel := lodLevel
         out.texWidthBits := texWidthBits
         out.texHeightBits := texHeightBits
+        out.meta := stageLodPrep.payload.meta
         out
       }
       .stage()
   }
   val stageGrad = lodPipeline.stageGrad
-  val metaDelay = lodPipeline.metaDelay
   val stageLodPrep = lodPipeline.stageLodPrep
   val tLOD = lodPipeline.tLOD
   val lodLevel = lodPipeline.lodLevel
@@ -334,7 +324,7 @@ case class Tmu(c: voodoo.Config) extends Component {
   val stageLod = lodPipeline.stageLod
 
   val coordGen = new Area {
-    val stageLodTexMode = Tmu.TextureMode.decode(metaDelay.payload.config.textureMode)
+    val stageLodTexMode = Tmu.TextureMode.decode(stageLod.payload.meta.config.textureMode)
     val bilinearEnable = stageLodTexMode.minFilter || stageLodTexMode.magFilter
 
     val sPoint = (stageLod.payload.texS >> (U(4) + stageLod.payload.lodLevel)).resize(14 bits)
@@ -371,6 +361,7 @@ case class Tmu(c: voodoo.Config) extends Component {
         out.lodLevel := stageLod.payload.lodLevel
         out.texWidthBits := stageLod.payload.texWidthBits
         out.texHeightBits := stageLod.payload.texHeightBits
+        out.meta := stageLod.payload.meta
         out
       }
       .stage()
@@ -379,13 +370,12 @@ case class Tmu(c: voodoo.Config) extends Component {
   val bilinearEnable = coordGen.bilinearEnable
   val stageB = coordGen.stageB
 
-  val stageMeta = StreamJoin(stageB, metaDelay)
-  val stageBTexMode = Tmu.TextureMode.decode(stageMeta.payload._2.config.textureMode)
+  val stageBTexMode = Tmu.TextureMode.decode(stageB.payload.meta.config.textureMode)
 
   val is16BitFormat = stageBTexMode.format >= Tmu.TextureFormat.ARGB8332
   val bytesPerTexel = Mux(is16BitFormat, U(2), U(1))
   val addressGen = new Area {
-    val packedTables = if (c.packedTexLayout) stageMeta.payload._2.config.texTables else null
+    val packedTables = if (c.packedTexLayout) stageB.payload.meta.config.texTables else null
     val packedLodBase =
       if (c.packedTexLayout)
         packedTables.texBase(stageB.payload.lodLevel).resize(c.addressWidth.value bits)
@@ -406,7 +396,7 @@ case class Tmu(c: voodoo.Config) extends Component {
 
     def texelAddr(x: UInt, y: UInt): UInt = {
       if (c.packedTexLayout) {
-        val tables = stageMeta.payload._2.config.texTables
+        val tables = stageB.payload.meta.config.texTables
         val lodBase = tables.texBase(stageB.payload.lodLevel)
         val lodShift = tables.texShift(stageB.payload.lodLevel)
         Mux(
@@ -418,7 +408,7 @@ case class Tmu(c: voodoo.Config) extends Component {
         ).resize(c.addressWidth.value bits)
       } else {
         val texBaseByteAddr =
-          (stageMeta.payload._2.config.texBaseAddr << 3).resize(c.addressWidth.value bits)
+          (stageB.payload.meta.config.texBaseAddr << 3).resize(c.addressWidth.value bits)
         val lodField = stageB.payload.lodLevel.resize(4 bits)
         val tField = y.resize(8 bits)
         val x8 = x.resize(8 bits)
@@ -481,16 +471,16 @@ case class Tmu(c: voodoo.Config) extends Component {
     inputPassthrough,
     stageBTexMode.format,
     bilinearEnable,
-    stageMeta.payload._2.config.sendConfig,
+    stageB.payload.meta.config.sendConfig,
     stageB.payload.finalDs,
     stageB.payload.finalDt,
     U(0, 2 bits),
-    U(0, 5 bits),
-    stageMeta.payload._2.config.ncc,
-    if (c.trace.enabled) stageMeta.payload._2.trace else null
+    U(0, Tmu.requestIdWidth bits),
+    stageB.payload.meta.config.ncc,
+    if (c.trace.enabled) stageB.payload.meta.trace else null
   )
 
-  val sampleRequestBase = stageMeta
+  val sampleRequestBase = stageB
     .translateWith {
       val req = Tmu.SampleRequest(c)
       req.pointAddr := pointAddr
@@ -508,7 +498,7 @@ case class Tmu(c: voodoo.Config) extends Component {
       req.lodShift := packedLodShift
       req.is16Bit := is16BitFormat
       if (c.packedTexLayout) {
-        req.texTables := stageMeta.payload._2.config.texTables
+        req.texTables := stageB.payload.meta.config.texTables
       }
       req.bilinear := bilinearEnable
       req.passthrough := inputPassthrough
@@ -573,7 +563,7 @@ case class Tmu(c: voodoo.Config) extends Component {
   }.elsewhen(!sampleRequest.fire && io.output.fire) {
     inFlightCount := inFlightCount - 1
   }
-  io.busy := inFlightCount =/= 0 || stageRecipPrep.valid || stageRecip.valid || stageA.valid || stageGrad.valid || stageLodPrep.valid || stageLod.valid || stageB.valid || metaDelay.valid || stageMeta.valid || sampleRequestBase.valid
+  io.busy := inFlightCount =/= 0 || stageRecipPrep.valid || stageRecip.valid || stageA.valid || stageGrad.valid || stageLodPrep.valid || stageLod.valid || stageB.valid || sampleRequestBase.valid
 
   /** BMB parameters for texture memory access */
   def bmbParams(c: voodoo.Config) = BmbParameter(
@@ -589,6 +579,8 @@ case class Tmu(c: voodoo.Config) extends Component {
 }
 
 object Tmu {
+  val requestIdWidth = 8
+
   case class BilinearWeights() extends Bundle {
     val w0 = UInt(10 bits)
     val w1 = UInt(10 bits)
@@ -729,7 +721,7 @@ object Tmu {
     val ds = UInt(4 bits)
     val dt = UInt(4 bits)
     val readIdx = UInt(2 bits)
-    val requestId = UInt(5 bits)
+    val requestId = UInt(Tmu.requestIdWidth bits)
     val ncc = Tmu.NccTableData()
     val trace = if (c.trace.enabled) Trace.PixelKey() else null
   }
@@ -750,6 +742,7 @@ object Tmu {
     val dTdX = AFix(c.texCoordsFormat)
     val dSdY = AFix(c.texCoordsFormat)
     val dTdY = AFix(c.texCoordsFormat)
+    val meta = FrontMeta(c)
   }
 
   case class FrontA(c: voodoo.Config) extends Bundle {
@@ -762,6 +755,7 @@ object Tmu {
     val dTdX = AFix(c.texCoordsFormat)
     val dSdY = AFix(c.texCoordsFormat)
     val dTdY = AFix(c.texCoordsFormat)
+    val meta = FrontMeta(c)
   }
 
   case class FrontRecip(c: voodoo.Config) extends Bundle {
@@ -777,6 +771,7 @@ object Tmu {
     val dTdX = AFix(c.texCoordsFormat)
     val dSdY = AFix(c.texCoordsFormat)
     val dTdY = AFix(c.texCoordsFormat)
+    val meta = FrontMeta(c)
   }
 
   case class FrontB(c: voodoo.Config) extends Bundle {
@@ -789,6 +784,7 @@ object Tmu {
     val lodLevel = UInt(4 bits)
     val texWidthBits = UInt(4 bits)
     val texHeightBits = UInt(4 bits)
+    val meta = FrontMeta(c)
   }
 
   case class FrontLodPrep(c: voodoo.Config) extends Bundle {
@@ -798,6 +794,7 @@ object Tmu {
     val clampToZero = Bool()
     val baseLod_8_8 = SInt(16 bits)
     val perspLodAdjust = SInt(16 bits)
+    val meta = FrontMeta(c)
   }
 
   case class FrontLod(c: voodoo.Config) extends Bundle {
@@ -807,6 +804,7 @@ object Tmu {
     val lodLevel = UInt(4 bits)
     val texWidthBits = UInt(4 bits)
     val texHeightBits = UInt(4 bits)
+    val meta = FrontMeta(c)
   }
 
   case class FrontGrad(c: voodoo.Config) extends Bundle {
@@ -816,6 +814,7 @@ object Tmu {
     val clampToZero = Bool()
     val tempLOD = UInt(64 bits)
     val perspLodAdjust = SInt(16 bits)
+    val meta = FrontMeta(c)
   }
 
   case class FrontMeta(c: voodoo.Config) extends Bundle {
@@ -1040,7 +1039,7 @@ object Tmu {
   case class Output(c: voodoo.Config) extends Bundle {
     val texture = Color.u8()
     val textureAlpha = UInt(8 bits)
-    val requestId = UInt(5 bits)
+    val requestId = UInt(Tmu.requestIdWidth bits)
     val trace = if (c.trace.enabled) Trace.PixelKey() else null
   }
 

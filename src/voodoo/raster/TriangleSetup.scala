@@ -231,6 +231,10 @@ case class TriangleSetup(c: Config, formalStrong: Boolean = false) extends Compo
     val yrange1 = tri(2)(1).roundHalfDown(0).fixTo(c.vertexFormat)
 
     val coeffsVec = Vec(Coefficients(c), 3)
+    val edgeBiasLsb = AFix(c.coefficientFormat)
+    edgeBiasLsb.raw := 1
+    val coeffZero = AFix(c.coefficientFormat)
+    coeffZero.raw := 0
     Seq((0, 1), (1, 2), (2, 0)).zipWithIndex.foreach { case ((i0, i1), idx) =>
       val v0 = tri(i0)
       val v1 = tri(i1)
@@ -242,10 +246,18 @@ case class TriangleSetup(c: Config, formalStrong: Boolean = false) extends Compo
       val a_coeff = Mux(signBit, -a_raw, a_raw)
       val b_coeff = Mux(signBit, -b_raw, b_raw)
       val c_coeff = Mux(signBit, -c_raw, c_raw)
+      val a_fixed = a_coeff.fixTo(c.coefficientFormat)
+      val b_fixed = b_coeff.fixTo(c.coefficientFormat)
+      val c_fixed = c_coeff.fixTo(c.coefficientFormat)
+      val isTopLeft = (a_fixed > coeffZero) || ((a_fixed === coeffZero) && (b_fixed > coeffZero))
 
-      coeffsVec(idx).a := a_coeff.fixTo(c.coefficientFormat)
-      coeffsVec(idx).b := b_coeff.fixTo(c.coefficientFormat)
-      coeffsVec(idx).c := c_coeff.fixTo(c.coefficientFormat)
+      coeffsVec(idx).a := a_fixed
+      coeffsVec(idx).b := b_fixed
+      coeffsVec(idx).c := Mux(
+        isTopLeft,
+        c_fixed,
+        (c_fixed - edgeBiasLsb).fixTo(c.coefficientFormat)
+      )
     }
 
     val halfPixel = AFix.SQ(3 bits, 4 bits)

@@ -77,6 +77,48 @@ object PixelPipeline {
       busy
     }
   }
+
+  case class SpanPrefetcher(c: Config, colorPlane: Boolean) extends Component {
+    val io = new Bundle {
+      val span = slave(Stream(Rasterizer.PrefetchSpan(c)))
+      val readReq = master(Stream(FramebufferPlaneReader.PrefetchReq(c)))
+      val yOriginEnable = in Bool ()
+      val yOriginSwapValue = in UInt (c.vertexFormat.nonFraction bits)
+    }
+
+    def evenWordX(value: AFix): UInt = {
+      val floored = value.floor(0).asUInt.resize(c.vertexFormat.nonFraction bits)
+      (floored & ~U(1, c.vertexFormat.nonFraction bits)).resized
+    }
+
+    val spanY = io.span.payload.y.floor(0).asUInt.resize(c.vertexFormat.nonFraction bits)
+    val transformedY = UInt(c.vertexFormat.nonFraction bits)
+    transformedY := spanY
+    when(io.yOriginEnable) {
+      transformedY := io.yOriginSwapValue.resize(c.vertexFormat.nonFraction bits) - spanY
+    }
+
+    val planeBase =
+      if (colorPlane) io.span.payload.config.drawColorBufferBase
+      else io.span.payload.config.drawAuxBufferBase
+    val startAddress = FramebufferAddressMath.planeAddress(
+      planeBase,
+      evenWordX(io.span.payload.xStart),
+      transformedY,
+      io.span.payload.config.fbPixelStride
+    )
+    val endAddress = FramebufferAddressMath.planeAddress(
+      planeBase,
+      evenWordX(io.span.payload.xEnd),
+      transformedY,
+      io.span.payload.config.fbPixelStride
+    )
+
+    io.readReq.valid := io.span.valid
+    io.span.ready := io.readReq.ready
+    io.readReq.startAddress := (startAddress(c.addressWidth.value - 1 downto 1) ## U"1'b0").asUInt
+    io.readReq.endAddress := (endAddress(c.addressWidth.value - 1 downto 1) ## U"1'b0").asUInt
+  }
 }
 
 case class PixelPipeline(c: Config) extends Component {
@@ -100,8 +142,8 @@ case class PixelPipeline(c: Config) extends Component {
     val colorReadRsp = slave(Stream(FramebufferPlaneBuffer.ReadRsp()))
     val auxReadReq = master(Stream(FramebufferPlaneBuffer.ReadReq(c)))
     val auxReadRsp = slave(Stream(FramebufferPlaneBuffer.ReadRsp()))
-    val prefetchColor = master(Flow(FramebufferPlaneBuffer.ReadReq(c)))
-    val prefetchAux = master(Flow(FramebufferPlaneBuffer.ReadReq(c)))
+    val prefetchColor = master(Stream(FramebufferPlaneReader.PrefetchReq(c)))
+    val prefetchAux = master(Stream(FramebufferPlaneReader.PrefetchReq(c)))
     val colorWrite = master(Stream(FramebufferPlaneBuffer.WriteReq(c)))
     val auxWrite = master(Stream(FramebufferPlaneBuffer.WriteReq(c)))
 
@@ -212,7 +254,7 @@ case class PixelPipeline(c: Config) extends Component {
 
   val rasterYPipe = rasterYTransformed.stage()
   val rasterFork = StreamFork2(rasterYPipe, synchronous = true)
-  val tmuGradQueue = rasterFork._2.queue(4).stage().stage()
+  val tmuGradQueue = rasterFork._2.queue(64).stage().stage()
 
   val tmuInput = Stream(Tmu.Input(c))
   tmuInput.translateFrom(rasterFork._1.stage())((out, in) => out := Tmu.Input.fromRasterizer(c, in))
@@ -233,30 +275,20 @@ case class PixelPipeline(c: Config) extends Component {
   )
   colorCombineInput >/-> colorCombine.io.input
 
-  val fbPrefetchTap = Flow(cloneOf(rasterYPipe.payload))
-  fbPrefetchTap.valid := rasterYPipe.fire
-  fbPrefetchTap.payload := rasterYPipe.payload
+  val spanPrefetchQueue = rasterizer.prefetchSpan.queue(8)
+  val spanPrefetchFork = StreamFork2(spanPrefetchQueue, synchronous = true)
+  val colorPrefetcher = SpanPrefetcher(c, colorPlane = true)
+  val auxPrefetcher = SpanPrefetcher(c, colorPlane = false)
 
-  val prefetchColorPlaneAddress = FramebufferAddressMath.planeAddress(
-    fbPrefetchTap.payload.config.drawColorBufferBase,
-    fbPrefetchTap.payload.coords(0).asUInt,
-    fbPrefetchTap.payload.coords(1).asUInt,
-    fbPrefetchTap.payload.config.fbPixelStride
-  )
-  val prefetchAuxPlaneAddress = FramebufferAddressMath.planeAddress(
-    fbPrefetchTap.payload.config.drawAuxBufferBase,
-    fbPrefetchTap.payload.coords(0).asUInt,
-    fbPrefetchTap.payload.coords(1).asUInt,
-    fbPrefetchTap.payload.config.fbPixelStride
-  )
-  io.prefetchColor.valid := fbPrefetchTap.valid
-  io.prefetchColor.address := (prefetchColorPlaneAddress(
-    c.addressWidth.value - 1 downto 1
-  ) ## U"1'b0").asUInt
-  io.prefetchAux.valid := fbPrefetchTap.valid
-  io.prefetchAux.address := (prefetchAuxPlaneAddress(
-    c.addressWidth.value - 1 downto 1
-  ) ## U"1'b0").asUInt
+  colorPrefetcher.io.span << spanPrefetchFork._1
+  auxPrefetcher.io.span << spanPrefetchFork._2
+  colorPrefetcher.io.yOriginEnable := yOriginEnable
+  colorPrefetcher.io.yOriginSwapValue := yOriginSwapValue.resize(c.vertexFormat.nonFraction bits)
+  auxPrefetcher.io.yOriginEnable := yOriginEnable
+  auxPrefetcher.io.yOriginSwapValue := yOriginSwapValue.resize(c.vertexFormat.nonFraction bits)
+
+  io.prefetchColor << colorPrefetcher.io.readReq
+  io.prefetchAux << auxPrefetcher.io.readReq
 
   val ckBits = colorCombine.io.output.payload.chromaKey
   val ckR = ckBits(23 downto 16).asUInt

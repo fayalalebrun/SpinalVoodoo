@@ -336,17 +336,18 @@ case class FramebufferPlaneBuffer(c: Config, formalStrong: Boolean = true) exten
           driveSlotPopReady(drainSlot)
         }
         when(drainPending) {
-          drainState := DrainState.Rsp
+          clearSlotMeta(drainSlot)
+          drainState := DrainState.Idle
         }.otherwise {
           drainIndex := drainIndex + 1
         }
       }
     }
 
+    io.mem.rsp.ready.allowOverride()
+    io.mem.rsp.ready := io.mem.rsp.source === 1
     when(drainState === DrainState.Rsp) {
-      io.mem.rsp.ready := io.mem.rsp.source === 1
       when(io.mem.rsp.fire && io.mem.rsp.source === 1) {
-        clearSlotMeta(drainSlot)
         drainState := DrainState.Idle
       }
     }

@@ -15,8 +15,8 @@ case class FramebufferMemSubsystem(c: Config) extends Component {
     val colorReadRsp = master(Stream(FramebufferPlaneBuffer.ReadRsp()))
     val auxReadReq = slave(Stream(FramebufferPlaneBuffer.ReadReq(c)))
     val auxReadRsp = master(Stream(FramebufferPlaneBuffer.ReadRsp()))
-    val prefetchColor = slave(Flow(FramebufferPlaneBuffer.ReadReq(c)))
-    val prefetchAux = slave(Flow(FramebufferPlaneBuffer.ReadReq(c)))
+    val prefetchColor = slave(Stream(FramebufferPlaneReader.PrefetchReq(c)))
+    val prefetchAux = slave(Stream(FramebufferPlaneReader.PrefetchReq(c)))
     val lfbReadBus = slave(Bmb(Lfb.fbReadBmbParams(c)))
     val flush = in Bool ()
 
@@ -87,6 +87,8 @@ case class FramebufferMemSubsystem(c: Config) extends Component {
     io.colorReadRsp << colorReaderDirect.io.readRsp
     io.auxReadReq.s2mPipe() >> auxReaderDirect.io.readReq
     io.auxReadRsp << auxReaderDirect.io.readRsp
+    io.prefetchColor.ready := True
+    io.prefetchAux.ready := True
   }
 
   disableReadPort(colorWritePort)

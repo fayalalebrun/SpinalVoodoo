@@ -133,20 +133,13 @@ class SpanRasterizerThroughputCoverDut extends Component {
     payload.xStart := 0.0
     payload.xEnd := 0.0
     payload.y := y.toDouble
-    payload.grads.all.foreach { grad =>
-      grad.start := 0.0
-      grad.d(0) := 0.0
-      grad.d(1) := 0.0
-    }
-    payload.texHi.sStart := 0.0
-    payload.texHi.tStart := 0.0
-    payload.texHi.dSdX := 0.0
-    payload.texHi.dTdX := 0.0
-    payload.texHi.dSdY := 0.0
-    payload.texHi.dTdY := 0.0
-    payload.hiAlpha.start := 0.0
-    payload.hiAlpha.dAdX := 0.0
-    payload.hiAlpha.dAdY := 0.0
+    payload.linear.all.foreach(_ := 0.0)
+    payload.hiS := 0.0
+    payload.hiT := 0.0
+    payload.hiAlpha := 0.0
+    payload.stepX.linear.all.foreach(_ := 0.0)
+    payload.stepX.tex.foreach(_ := 0.0)
+    payload.stepX.alpha := 0.0
     payload.config.assignFromBits(B(0, payload.config.getBitsWidth bits))
     payload.firstSpan := True
     payload.trace.valid := True

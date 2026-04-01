@@ -90,11 +90,16 @@ object Rasterizer {
   }
 
   case class SpanState(c: Config) extends Bundle {
-    val coords = vertex2d(c.vertexFormat)
-    val grads = GradientBundle(AFix(_), c)
-    val alphaHi = TriangleSetup.HiAlpha(c)
-    val texHi = TriangleSetup.HiTexCoords(c)
-    val input = SpanWalker.Output(c)
+    val x = AFix(c.vertexFormat)
+    val y = AFix(c.vertexFormat)
+    val linear = SpanWalker.LinearState(c)
+    val hiS = AFix(c.texCoordsHiFormat)
+    val hiT = AFix(c.texCoordsHiFormat)
+    val hiAlpha = AFix(c.texCoordsHiFormat)
+    val xEnd = AFix(c.vertexFormat)
+    val stepX = SpanWalker.StepX(c)
+    val config = TriangleSetup.PerTriangleConfig(c)
+    val trace = if (c.trace.enabled) Trace.PrimitiveKey() else null
   }
 
   case class SpanRasterizer(c: Config) extends Component {
@@ -118,24 +123,35 @@ object Rasterizer {
       maxIterations = c.maxFbDims._1,
       init = (input: SpanWalker.Output) => {
         val state = cloneOf(SpanState(c))
-        state.input := input
-        state.coords(0) := input.xStart
-        state.coords(1) := input.y
-        state.grads.all.zip(input.grads.all).foreach { case (out, in) =>
-          out := in.start
+        state.x := input.xStart
+        state.y := input.y
+        state.linear := input.linear
+        state.hiS := input.hiS
+        state.hiT := input.hiT
+        state.hiAlpha := input.hiAlpha
+        state.xEnd := input.xEnd
+        state.stepX := input.stepX
+        state.config := input.config
+        if (c.trace.enabled) {
+          state.trace := input.trace
         }
-        state.alphaHi := input.hiAlpha
-        state.texHi := input.texHi
         state
       },
       step = (idx: UInt, state: SpanState, output: SpanPixelOutput) => {
-        output.data.coords(0) := state.coords(0).floor(0).asSInt
-        output.data.coords(1) := state.coords(1).floor(0).asSInt
-        output.data.grads := state.grads
-        output.data.alphaGradHi := state.alphaHi.start
-        output.data.config := state.input.config
+        output.data.coords(0) := state.x.floor(0).asSInt
+        output.data.coords(1) := state.y.floor(0).asSInt
+        output.data.grads.redGrad := state.linear.red
+        output.data.grads.greenGrad := state.linear.green
+        output.data.grads.blueGrad := state.linear.blue
+        output.data.grads.depthGrad := state.linear.depth
+        output.data.grads.alphaGrad := state.linear.alpha
+        output.data.grads.wGrad := state.linear.w
+        output.data.grads.sGrad := state.hiS.fixTo(c.texCoordsAccumFormat)
+        output.data.grads.tGrad := state.hiT.fixTo(c.texCoordsAccumFormat)
+        output.data.alphaGradHi := state.hiAlpha
+        output.data.config := state.config
         if (c.trace.enabled) {
-          output.data.trace.primitive := state.input.trace
+          output.data.trace.primitive := state.trace
           output.data.trace.pixelSeq := currentPixelSeq
         }
 
@@ -151,7 +167,13 @@ object Rasterizer {
         output.insideClip := !enableClipping || insideClip
 
         val next = cloneOf(state)
-        next.input := state.input
+        next.y := state.y
+        next.xEnd := state.xEnd
+        next.stepX := state.stepX
+        next.config := state.config
+        if (c.trace.enabled) {
+          next.trace := state.trace
+        }
         val one = AFix(c.vertexFormat)
         one := 1.0
         val lowGradFormats = Seq(
@@ -163,32 +185,19 @@ object Rasterizer {
           c.wAccumFormat
         )
 
-        next.coords(0) := (state.coords(0) + one).fixTo(c.vertexFormat)
-        next.coords(1) := state.coords(1)
-        next.grads.all
-          .take(6)
-          .zip(state.grads.all.take(6))
-          .zip(state.input.grads.all.take(6))
+        next.x := (state.x + one).fixTo(c.vertexFormat)
+        next.linear.all
+          .zip(state.linear.all)
+          .zip(state.stepX.linear.all)
           .zipWithIndex
           .foreach { case (((nxt, cur), grad), gradIdx) =>
-            nxt := (cur + grad.d(0)).fixTo(lowGradFormats(gradIdx))
+            nxt := (cur + grad).fixTo(lowGradFormats(gradIdx))
           }
-        val nextS = (state.texHi.sStart + state.input.texHi.dSdX).fixTo(c.texCoordsHiFormat)
-        val nextT = (state.texHi.tStart + state.input.texHi.dTdX).fixTo(c.texCoordsHiFormat)
-        val nextA = (state.alphaHi.start + state.input.hiAlpha.dAdX).fixTo(c.texCoordsHiFormat)
-        next.texHi.sStart := nextS
-        next.texHi.tStart := nextT
-        next.texHi.dSdX := state.input.texHi.dSdX
-        next.texHi.dTdX := state.input.texHi.dTdX
-        next.texHi.dSdY := state.input.texHi.dSdY
-        next.texHi.dTdY := state.input.texHi.dTdY
-        next.alphaHi.start := nextA
-        next.alphaHi.dAdX := state.input.hiAlpha.dAdX
-        next.alphaHi.dAdY := state.input.hiAlpha.dAdY
-        next.grads.sGrad := nextS.fixTo(c.texCoordsAccumFormat)
-        next.grads.tGrad := nextT.fixTo(c.texCoordsAccumFormat)
+        next.hiS := (state.hiS + state.stepX.tex(0)).fixTo(c.texCoordsHiFormat)
+        next.hiT := (state.hiT + state.stepX.tex(1)).fixTo(c.texCoordsHiFormat)
+        next.hiAlpha := (state.hiAlpha + state.stepX.alpha).fixTo(c.texCoordsHiFormat)
 
-        val isLast = state.coords(0) >= state.input.xEnd
+        val isLast = state.x >= state.xEnd
         (next, isLast)
       }
     )

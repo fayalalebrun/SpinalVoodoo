@@ -14,12 +14,13 @@ case class SpanWalker(c: Config, formalStrong: Boolean = false) extends Componen
   val running = out(Bool())
 
   object WalkerState extends SpinalEnum {
-    val Idle, Decide, SearchRightToEnter, SearchLeftToExit, SearchRightToExit, EmitSpan =
+    val Idle, Decide, RecoverLeft, SearchRightToEnter, SearchLeftToExit, SearchRightToExit,
+        EmitSpan =
       newElement()
   }
 
   val state = RegInit(WalkerState.Idle)
-  val triangleReg = Reg(TriangleSetup.Output(c))
+  val triangleConst = Reg(SpanWalker.TriangleConst(c))
   val rowGuess = Reg(SpanWalker.Cursor(c))
   val probe = Reg(SpanWalker.Cursor(c))
   val bookmark = Reg(SpanWalker.Cursor(c))
@@ -27,6 +28,7 @@ case class SpanWalker(c: Config, formalStrong: Boolean = false) extends Componen
   val emitRight = Reg(AFix(c.vertexFormat))
   val emitFirstSpan = Reg(Bool()) init (False)
   val firstSpanPending = Reg(Bool()) init (False)
+  val recoverFoundInside = Reg(Bool()) init (False)
 
   running := state =/= WalkerState.Idle
   i.ready := state === WalkerState.Idle
@@ -48,17 +50,38 @@ case class SpanWalker(c: Config, formalStrong: Boolean = false) extends Componen
     c.wAccumFormat
   )
 
+  def initTriangleConst(dst: SpanWalker.TriangleConst, input: TriangleSetup.Output): Unit = {
+    dst.coeffs := input.coeffs
+    dst.xrange := input.xrange
+    dst.yrange := input.yrange
+    dst.linearDx.all.zip(input.grads.all.take(6)).foreach { case (out, in) =>
+      out := in.d(0)
+    }
+    dst.linearDy.all.zip(input.grads.all.take(6)).foreach { case (out, in) =>
+      out := in.d(1)
+    }
+    dst.texDx(0) := input.texHi.dSdX
+    dst.texDx(1) := input.texHi.dTdX
+    dst.texDy(0) := input.texHi.dSdY
+    dst.texDy(1) := input.texHi.dTdY
+    dst.alphaDx := input.hiAlpha.dAdX
+    dst.alphaDy := input.hiAlpha.dAdY
+    dst.config := input.config
+    if (c.trace.enabled) {
+      dst.trace := input.trace
+    }
+  }
+
   def initCursor(dst: SpanWalker.Cursor, input: TriangleSetup.Output): Unit = {
     dst.coords(0) := input.xrange(0)
     dst.coords(1) := input.yrange(0)
     dst.edge := input.edgeStart
-    dst.grads.all.take(6).zip(input.grads.all.take(6)).foreach { case (out, in) =>
+    dst.linear.all.zip(input.grads.all.take(6)).foreach { case (out, in) =>
       out := in.start
     }
-    dst.grads.sGrad := input.texHi.sStart.fixTo(c.texCoordsAccumFormat)
-    dst.grads.tGrad := input.texHi.tStart.fixTo(c.texCoordsAccumFormat)
-    dst.texHi := input.texHi
-    dst.alphaHi := input.hiAlpha
+    dst.hiS := input.texHi.sStart
+    dst.hiT := input.texHi.tStart
+    dst.hiAlpha := input.hiAlpha.start
   }
 
   def insideTriangle(cursor: SpanWalker.Cursor): Bool =
@@ -72,8 +95,8 @@ case class SpanWalker(c: Config, formalStrong: Boolean = false) extends Componen
     out
   }
 
-  val triangleXStartPix = triangleReg.xrange(0).floor(0).asSInt
-  val triangleXEndPix = triangleReg.xrange(1).floor(0).asSInt
+  val triangleXStartPix = triangleConst.xrange(0).floor(0).asSInt
+  val triangleXEndPix = triangleConst.xrange(1).floor(0).asSInt
   val clipLeftPix = clipLeft.resize(c.vertexFormat.nonFraction bits).asSInt
   val clipRightPix = clipRight.resize(c.vertexFormat.nonFraction bits).asSInt
   val visibleStartPix =
@@ -85,145 +108,109 @@ case class SpanWalker(c: Config, formalStrong: Boolean = false) extends Componen
     val xDelta = if (moveRight) one else negOne
     dst.coords(0) := (src.coords(0) + xDelta).fixTo(c.vertexFormat)
     dst.coords(1) := src.coords(1)
-    dst.edge.zip(src.edge).zip(triangleReg.coeffs).foreach { case ((nxt, cur), coeff) =>
+    dst.edge.zip(src.edge).zip(triangleConst.coeffs).foreach { case ((nxt, cur), coeff) =>
       val delta = if (moveRight) coeff.a else (-coeff.a).fixTo(c.coefficientFormat)
       nxt := (cur + delta).fixTo(c.coefficientFormat)
     }
-    dst.grads.all
-      .take(6)
-      .zip(src.grads.all.take(6))
-      .zip(triangleReg.grads.all.take(6))
+    dst.linear.all
+      .zip(src.linear.all)
+      .zip(triangleConst.linearDx.all)
       .zipWithIndex
       .foreach { case (((nxt, cur), grad), idx) =>
-        val delta = if (moveRight) grad.d(0) else (-grad.d(0)).fixTo(lowGradFormats(idx))
+        val delta = if (moveRight) grad else (-grad).fixTo(lowGradFormats(idx))
         nxt := (cur + delta).fixTo(lowGradFormats(idx))
       }
-    val sDelta = if (moveRight) triangleReg.texHi.dSdX else (-triangleReg.texHi.dSdX)
-    val tDelta = if (moveRight) triangleReg.texHi.dTdX else (-triangleReg.texHi.dTdX)
-    val aDelta = if (moveRight) triangleReg.hiAlpha.dAdX else (-triangleReg.hiAlpha.dAdX)
-    val nextS = (src.texHi.sStart + sDelta).fixTo(c.texCoordsHiFormat)
-    val nextT = (src.texHi.tStart + tDelta).fixTo(c.texCoordsHiFormat)
-    val nextA = (src.alphaHi.start + aDelta).fixTo(c.texCoordsHiFormat)
-    dst.texHi.sStart := nextS
-    dst.texHi.tStart := nextT
-    dst.texHi.dSdX := triangleReg.texHi.dSdX
-    dst.texHi.dTdX := triangleReg.texHi.dTdX
-    dst.texHi.dSdY := triangleReg.texHi.dSdY
-    dst.texHi.dTdY := triangleReg.texHi.dTdY
-    dst.alphaHi.start := nextA
-    dst.alphaHi.dAdX := triangleReg.hiAlpha.dAdX
-    dst.alphaHi.dAdY := triangleReg.hiAlpha.dAdY
-    dst.grads.sGrad := nextS.fixTo(c.texCoordsAccumFormat)
-    dst.grads.tGrad := nextT.fixTo(c.texCoordsAccumFormat)
+    val sDelta = if (moveRight) triangleConst.texDx(0) else (-triangleConst.texDx(0))
+    val tDelta = if (moveRight) triangleConst.texDx(1) else (-triangleConst.texDx(1))
+    val aDelta = if (moveRight) triangleConst.alphaDx else (-triangleConst.alphaDx)
+    dst.hiS := (src.hiS + sDelta).fixTo(c.texCoordsHiFormat)
+    dst.hiT := (src.hiT + tDelta).fixTo(c.texCoordsHiFormat)
+    dst.hiAlpha := (src.hiAlpha + aDelta).fixTo(c.texCoordsHiFormat)
   }
 
   def stepVertical(dst: SpanWalker.Cursor, src: SpanWalker.Cursor): Unit = {
     dst.coords(0) := src.coords(0)
     dst.coords(1) := (src.coords(1) + one).fixTo(c.vertexFormat)
-    dst.edge.zip(src.edge).zip(triangleReg.coeffs).foreach { case ((nxt, cur), coeff) =>
+    dst.edge.zip(src.edge).zip(triangleConst.coeffs).foreach { case ((nxt, cur), coeff) =>
       nxt := (cur + coeff.b).fixTo(c.coefficientFormat)
     }
-    dst.grads.all
-      .take(6)
-      .zip(src.grads.all.take(6))
-      .zip(triangleReg.grads.all.take(6))
+    dst.linear.all
+      .zip(src.linear.all)
+      .zip(triangleConst.linearDy.all)
       .zipWithIndex
       .foreach { case (((nxt, cur), grad), idx) =>
-        nxt := (cur + grad.d(1)).fixTo(lowGradFormats(idx))
+        nxt := (cur + grad).fixTo(lowGradFormats(idx))
       }
-    val nextS = (src.texHi.sStart + triangleReg.texHi.dSdY).fixTo(c.texCoordsHiFormat)
-    val nextT = (src.texHi.tStart + triangleReg.texHi.dTdY).fixTo(c.texCoordsHiFormat)
-    val nextA = (src.alphaHi.start + triangleReg.hiAlpha.dAdY).fixTo(c.texCoordsHiFormat)
-    dst.texHi.sStart := nextS
-    dst.texHi.tStart := nextT
-    dst.texHi.dSdX := triangleReg.texHi.dSdX
-    dst.texHi.dTdX := triangleReg.texHi.dTdX
-    dst.texHi.dSdY := triangleReg.texHi.dSdY
-    dst.texHi.dTdY := triangleReg.texHi.dTdY
-    dst.alphaHi.start := nextA
-    dst.alphaHi.dAdX := triangleReg.hiAlpha.dAdX
-    dst.alphaHi.dAdY := triangleReg.hiAlpha.dAdY
-    dst.grads.sGrad := nextS.fixTo(c.texCoordsAccumFormat)
-    dst.grads.tGrad := nextT.fixTo(c.texCoordsAccumFormat)
+    dst.hiS := (src.hiS + triangleConst.texDy(0)).fixTo(c.texCoordsHiFormat)
+    dst.hiT := (src.hiT + triangleConst.texDy(1)).fixTo(c.texCoordsHiFormat)
+    dst.hiAlpha := (src.hiAlpha + triangleConst.alphaDy).fixTo(c.texCoordsHiFormat)
   }
 
   def stepDownLeft(dst: SpanWalker.Cursor, src: SpanWalker.Cursor): Unit = {
     dst.coords(0) := (src.coords(0) + negOne).fixTo(c.vertexFormat)
     dst.coords(1) := (src.coords(1) + one).fixTo(c.vertexFormat)
-    dst.edge.zip(src.edge).zip(triangleReg.coeffs).foreach { case ((nxt, cur), coeff) =>
+    dst.edge.zip(src.edge).zip(triangleConst.coeffs).foreach { case ((nxt, cur), coeff) =>
       nxt := (cur + coeff.b - coeff.a).fixTo(c.coefficientFormat)
     }
-    dst.grads.all
-      .take(6)
-      .zip(src.grads.all.take(6))
-      .zip(triangleReg.grads.all.take(6))
+    dst.linear.all
+      .zip(src.linear.all)
+      .zip(triangleConst.linearDy.all.zip(triangleConst.linearDx.all))
       .zipWithIndex
-      .foreach { case (((nxt, cur), grad), idx) =>
-        nxt := (cur + grad.d(1) - grad.d(0)).fixTo(lowGradFormats(idx))
+      .foreach { case (((nxt, cur), (dy, dx)), idx) =>
+        nxt := (cur + dy - dx).fixTo(lowGradFormats(idx))
       }
-    val nextS = (src.texHi.sStart + triangleReg.texHi.dSdY - triangleReg.texHi.dSdX)
-      .fixTo(c.texCoordsHiFormat)
-    val nextT = (src.texHi.tStart + triangleReg.texHi.dTdY - triangleReg.texHi.dTdX)
-      .fixTo(c.texCoordsHiFormat)
-    val nextA = (src.alphaHi.start + triangleReg.hiAlpha.dAdY - triangleReg.hiAlpha.dAdX)
-      .fixTo(c.texCoordsHiFormat)
-    dst.texHi.sStart := nextS
-    dst.texHi.tStart := nextT
-    dst.texHi.dSdX := triangleReg.texHi.dSdX
-    dst.texHi.dTdX := triangleReg.texHi.dTdX
-    dst.texHi.dSdY := triangleReg.texHi.dSdY
-    dst.texHi.dTdY := triangleReg.texHi.dTdY
-    dst.alphaHi.start := nextA
-    dst.alphaHi.dAdX := triangleReg.hiAlpha.dAdX
-    dst.alphaHi.dAdY := triangleReg.hiAlpha.dAdY
-    dst.grads.sGrad := nextS.fixTo(c.texCoordsAccumFormat)
-    dst.grads.tGrad := nextT.fixTo(c.texCoordsAccumFormat)
+    dst.hiS := (src.hiS + triangleConst.texDy(0) - triangleConst.texDx(0)).fixTo(
+      c.texCoordsHiFormat
+    )
+    dst.hiT := (src.hiT + triangleConst.texDy(1) - triangleConst.texDx(1)).fixTo(
+      c.texCoordsHiFormat
+    )
+    dst.hiAlpha := (src.hiAlpha + triangleConst.alphaDy - triangleConst.alphaDx).fixTo(
+      c.texCoordsHiFormat
+    )
   }
 
   def prepareNextRow(base: SpanWalker.Cursor, leftBiasedGuess: Boolean): Unit = {
     val nextY = (base.coords(1) + one).fixTo(c.vertexFormat)
-    when(nextY >= triangleReg.yrange(1)) {
+    when(nextY >= triangleConst.yrange(1)) {
       state := WalkerState.Idle
       firstSpanPending := False
+      recoverFoundInside := False
     }.otherwise {
       if (leftBiasedGuess) {
         stepDownLeft(rowGuess, base)
         stepDownLeft(probe, base)
         stepDownLeft(bookmark, base)
+        recoverFoundInside := False
+        state := WalkerState.RecoverLeft
       } else {
         stepVertical(rowGuess, base)
         stepVertical(probe, base)
         stepVertical(bookmark, base)
+        recoverFoundInside := False
+        state := WalkerState.Decide
       }
-      state := WalkerState.Decide
     }
   }
 
   o.payload.xStart := leftEdge.coords(0)
   o.payload.xEnd := emitRight
   o.payload.y := leftEdge.coords(1)
-  o.payload.grads.all.zip(leftEdge.grads.all).zip(triangleReg.grads.all).foreach {
-    case ((out, cur), grad) =>
-      out.start := cur
-      out.d := grad.d
-  }
-  o.payload.texHi.sStart := leftEdge.texHi.sStart
-  o.payload.texHi.tStart := leftEdge.texHi.tStart
-  o.payload.texHi.dSdX := triangleReg.texHi.dSdX
-  o.payload.texHi.dTdX := triangleReg.texHi.dTdX
-  o.payload.texHi.dSdY := triangleReg.texHi.dSdY
-  o.payload.texHi.dTdY := triangleReg.texHi.dTdY
-  o.payload.hiAlpha.start := leftEdge.alphaHi.start
-  o.payload.hiAlpha.dAdX := triangleReg.hiAlpha.dAdX
-  o.payload.hiAlpha.dAdY := triangleReg.hiAlpha.dAdY
-  o.payload.config := triangleReg.config
+  o.payload.linear := leftEdge.linear
+  o.payload.hiS := leftEdge.hiS
+  o.payload.hiT := leftEdge.hiT
+  o.payload.hiAlpha := leftEdge.hiAlpha
+  o.payload.stepX.linear := triangleConst.linearDx
+  o.payload.stepX.tex := triangleConst.texDx
+  o.payload.stepX.alpha := triangleConst.alphaDx
+  o.payload.config := triangleConst.config
   o.payload.firstSpan := emitFirstSpan
   if (c.trace.enabled) {
-    o.payload.trace := triangleReg.trace
+    o.payload.trace := triangleConst.trace
   }
 
   when(state === WalkerState.Idle && i.fire) {
-    triangleReg := i.payload
+    initTriangleConst(triangleConst, i.payload)
     initCursor(rowGuess, i.payload)
     initCursor(probe, i.payload)
     initCursor(bookmark, i.payload)
@@ -240,17 +227,50 @@ case class SpanWalker(c: Config, formalStrong: Boolean = false) extends Componen
     }
   }
 
+  when(state === WalkerState.RecoverLeft) {
+    when(insideTriangle(probe)) {
+      when(!recoverFoundInside) {
+        bookmark := probe
+        recoverFoundInside := True
+      }
+      when(xPix(probe) <= visibleStartPix) {
+        leftEdge := probe
+        probe := bookmark
+        recoverFoundInside := False
+        state := WalkerState.SearchRightToExit
+      }.otherwise {
+        stepHorizontal(probe, probe, moveRight = false)
+      }
+    }.otherwise {
+      when(recoverFoundInside) {
+        stepHorizontal(leftEdge, probe, moveRight = true)
+        probe := bookmark
+        recoverFoundInside := False
+        state := WalkerState.SearchRightToExit
+      }.elsewhen(xPix(probe) <= visibleStartPix) {
+        probe := bookmark
+        state := WalkerState.SearchRightToEnter
+      }.otherwise {
+        stepHorizontal(probe, probe, moveRight = false)
+      }
+    }
+  }
+
   when(state === WalkerState.SearchRightToEnter) {
     when(insideTriangle(probe) && xPix(probe) >= visibleStartPix) {
       leftEdge := probe
       bookmark := probe
       state := WalkerState.SearchRightToExit
     }.elsewhen(
-      (!enableClipping && probe.coords(0) >= triangleReg.xrange(1)) || (enableClipping && xPix(
+      (!enableClipping && probe.coords(0) >= triangleConst.xrange(1)) || (enableClipping && xPix(
         probe
       ) >= visibleEndPix)
     ) {
-      prepareNextRow(rowGuess, leftBiasedGuess = false)
+      when(firstSpanPending) {
+        prepareNextRow(rowGuess, leftBiasedGuess = false)
+      }.otherwise {
+        prepareNextRow(bookmark, leftBiasedGuess = true)
+      }
     }.otherwise {
       stepHorizontal(probe, probe, moveRight = true)
     }
@@ -275,7 +295,7 @@ case class SpanWalker(c: Config, formalStrong: Boolean = false) extends Componen
   when(state === WalkerState.SearchRightToExit) {
     when(insideTriangle(probe)) {
       when(
-        (!enableClipping && probe.coords(0) >= triangleReg.xrange(1)) || (enableClipping && xPix(
+        (!enableClipping && probe.coords(0) >= triangleConst.xrange(1)) || (enableClipping && xPix(
           probe
         ) >= visibleEndPix)
       ) {
@@ -300,11 +320,43 @@ case class SpanWalker(c: Config, formalStrong: Boolean = false) extends Componen
 }
 
 object SpanWalker {
+  case class LinearState(c: Config) extends Bundle {
+    val red = AFix(c.vColorFormat)
+    val green = AFix(c.vColorFormat)
+    val blue = AFix(c.vColorFormat)
+    val depth = AFix(c.vDepthFormat)
+    val alpha = AFix(c.vColorFormat)
+    val w = AFix(c.wAccumFormat)
+
+    def all: Seq[AFix] = Seq(red, green, blue, depth, alpha, w)
+  }
+
+  case class StepX(c: Config) extends Bundle {
+    val linear = LinearState(c)
+    val tex = Vec.fill(2)(AFix(c.texCoordsHiFormat))
+    val alpha = AFix(c.texCoordsHiFormat)
+  }
+
+  case class TriangleConst(c: Config) extends Bundle {
+    val coeffs = Vec.fill(3)(Coefficients(c))
+    val xrange = vertex2d(c.vertexFormat)
+    val yrange = vertex2d(c.vertexFormat)
+    val linearDx = LinearState(c)
+    val linearDy = LinearState(c)
+    val texDx = Vec.fill(2)(AFix(c.texCoordsHiFormat))
+    val texDy = Vec.fill(2)(AFix(c.texCoordsHiFormat))
+    val alphaDx = AFix(c.texCoordsHiFormat)
+    val alphaDy = AFix(c.texCoordsHiFormat)
+    val config = TriangleSetup.PerTriangleConfig(c)
+    val trace = if (c.trace.enabled) Trace.PrimitiveKey() else null
+  }
+
   case class Cursor(c: Config) extends Bundle {
     val coords = vertex2d(c.vertexFormat)
-    val grads = Rasterizer.GradientBundle(AFix(_), c)
-    val alphaHi = TriangleSetup.HiAlpha(c)
-    val texHi = TriangleSetup.HiTexCoords(c)
+    val linear = LinearState(c)
+    val hiS = AFix(c.texCoordsHiFormat)
+    val hiT = AFix(c.texCoordsHiFormat)
+    val hiAlpha = AFix(c.texCoordsHiFormat)
     val edge = Vec.fill(3)(AFix(c.coefficientFormat))
   }
 
@@ -312,9 +364,11 @@ object SpanWalker {
     val xStart = AFix(c.vertexFormat)
     val xEnd = AFix(c.vertexFormat)
     val y = AFix(c.vertexFormat)
-    val grads = Rasterizer.GradientBundle(Rasterizer.InputGradient(_), c)
-    val hiAlpha = TriangleSetup.HiAlpha(c)
-    val texHi = TriangleSetup.HiTexCoords(c)
+    val linear = LinearState(c)
+    val hiS = AFix(c.texCoordsHiFormat)
+    val hiT = AFix(c.texCoordsHiFormat)
+    val hiAlpha = AFix(c.texCoordsHiFormat)
+    val stepX = StepX(c)
     val config = TriangleSetup.PerTriangleConfig(c)
     val firstSpan = Bool()
     val trace = if (c.trace.enabled) Trace.PrimitiveKey() else null

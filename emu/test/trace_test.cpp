@@ -32,6 +32,8 @@ extern "C" {
 }
 
 #include "../../emu/trace/trace_replay_backend.h"
+#include "../../emu/trace/trace_replay_image.h"
+#include "../../emu/trace/trace_replay_io.h"
 
 /* Sim harness (optional — omitted in --ref-only mode) */
 #include "sim_harness.h"
@@ -40,70 +42,25 @@ extern "C" {
  * Helpers
  * ------------------------------------------------------------------- */
 
-static bool is_directory(const char *path) {
-    struct stat st;
-    return (stat(path, &st) == 0 && S_ISDIR(st.st_mode));
-}
-
 static bool ensure_directory(const char *path) {
     if (!path || !path[0]) return false;
     std::string cur;
     if (path[0] == '/') cur = "/";
     for (const char *p = path; *p; ++p) {
         if (*p == '/') {
-            if (!cur.empty() && !is_directory(cur.c_str()) && mkdir(cur.c_str(), 0755) != 0 && errno != EEXIST) {
+            if (!cur.empty() && !traceReplayIsDirectory(cur.c_str()) && mkdir(cur.c_str(), 0755) != 0 && errno != EEXIST) {
                 return false;
             }
         }
         cur.push_back(*p);
     }
-    if (!is_directory(cur.c_str()) && mkdir(cur.c_str(), 0755) != 0 && errno != EEXIST) {
+    if (!traceReplayIsDirectory(cur.c_str()) && mkdir(cur.c_str(), 0755) != 0 && errno != EEXIST) {
         return false;
     }
     return true;
 }
 
-static uint8_t *read_file(const char *path, uint32_t *out_size) {
-    FILE *f = fopen(path, "rb");
-    if (!f) return nullptr;
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    uint8_t *buf = (uint8_t *)malloc(sz);
-    if (!buf) { fclose(f); return nullptr; }
-    if ((long)fread(buf, 1, sz, f) != sz) { free(buf); fclose(f); return nullptr; }
-    fclose(f);
-    *out_size = (uint32_t)sz;
-    return buf;
-}
-
-/* sRGB gamma encoding LUT — built once, maps linear 0-255 to sRGB 0-255.
- * Voodoo1 framebuffer stores linear values meant for a CRT with ~2.2 gamma.
- * PNG viewers assume sRGB, so we apply the sRGB transfer function. */
 static uint8_t srgb_lut[256];
-
-static void init_srgb_lut(void) {
-    for (int i = 0; i < 256; i++) {
-        double v = i / 255.0;
-        double s = (v <= 0.0031308)
-            ? v * 12.92
-            : 1.055 * pow(v, 1.0 / 2.4) - 0.055;
-        srgb_lut[i] = (uint8_t)(s * 255.0 + 0.5);
-    }
-}
-
-/* Convert RGB565 to 24-bit sRGB for PNG output */
-static void rgb565_to_rgb24(const uint16_t *src, uint8_t *dst, int count) {
-    for (int i = 0; i < count; i++) {
-        uint16_t px = src[i];
-        uint8_t r = (px >> 8) & 0xf8; r |= r >> 5;
-        uint8_t g = (px >> 3) & 0xfc; g |= g >> 6;
-        uint8_t b = (px << 3) & 0xf8; b |= b >> 5;
-        dst[i * 3 + 0] = srgb_lut[r];
-        dst[i * 3 + 1] = srgb_lut[g];
-        dst[i * 3 + 2] = srgb_lut[b];
-    }
-}
 
 /* Extract display name from path */
 static std::string basename_no_ext(const char *path) {
@@ -236,7 +193,7 @@ static uint32_t remap_backend_reg_addr(uint32_t addr) {
  * ------------------------------------------------------------------- */
 
 int main(int argc, char **argv) {
-    init_srgb_lut();
+    traceReplayInitSrgbLut(srgb_lut);
 
     int watch_x = -1;
     int watch_y = -1;
@@ -351,28 +308,10 @@ int main(int argc, char **argv) {
     }
 
     /* Resolve paths */
-    std::string trace_file;
-    std::string state_file;
-
-    if (is_directory(trace_path)) {
-        trace_file = std::string(trace_path) + "/trace.bin";
-        state_file = std::string(trace_path) + "/state.bin";
-        /* Check if state file exists */
-        struct stat st;
-        if (stat(state_file.c_str(), &st) != 0)
-            state_file.clear();
-    } else {
-        trace_file = trace_path;
-        std::string candidate = trace_file;
-        size_t slash = candidate.find_last_of('/');
-        if (slash == std::string::npos)
-            candidate = "state.bin";
-        else
-            candidate = candidate.substr(0, slash + 1) + "state.bin";
-        struct stat st;
-        if (stat(candidate.c_str(), &st) == 0)
-            state_file = candidate;
-    }
+    TraceReplayFiles replay_files;
+    traceReplayResolveFiles(trace_path, &replay_files);
+    std::string trace_file = replay_files.traceFile;
+    std::string state_file = replay_files.stateFile;
 
     std::string name = basename_no_ext(trace_path);
     std::string profile_json_path;
@@ -383,38 +322,23 @@ int main(int argc, char **argv) {
     }
 
     /* Read trace file */
-    uint32_t trace_size = 0;
-    uint8_t *trace_data = read_file(trace_file.c_str(), &trace_size);
-    if (!trace_data) {
+    TraceReplayLoadedTrace loaded_trace;
+    if (!traceReplayLoadTraceFile(trace_file, &loaded_trace)) {
         fprintf(stderr, "ERROR: Cannot read trace file: %s\n", trace_file.c_str());
         return 1;
     }
 
-    if (trace_size < sizeof(voodoo_trace_header_t)) {
-        fprintf(stderr, "ERROR: Trace file too small\n");
-        free(trace_data);
-        return 1;
-    }
-
-    const voodoo_trace_header_t *hdr = (const voodoo_trace_header_t *)trace_data;
-    if (hdr->magic != VOODOO_TRACE_MAGIC) {
-        fprintf(stderr, "ERROR: Bad trace magic: 0x%08x (expected 0x%08x)\n",
-                hdr->magic, VOODOO_TRACE_MAGIC);
-        free(trace_data);
-        return 1;
-    }
+    const voodoo_trace_header_t *hdr = loaded_trace.header;
 
     int fb_mb  = hdr->fb_size_mb ? hdr->fb_size_mb : 4;
     int tex_mb = hdr->tex_size_mb ? hdr->tex_size_mb : 4;
 
-    uint32_t entry_bytes = trace_size - sizeof(voodoo_trace_header_t);
-    uint32_t num_entries = entry_bytes / sizeof(voodoo_trace_entry_t);
+    uint32_t num_entries = loaded_trace.entryCount;
 
     fprintf(stderr, "[trace_test] Trace: %s (%u entries, fb=%dMB tex=%dMB)\n",
             trace_file.c_str(), num_entries, fb_mb, tex_mb);
 
-    const voodoo_trace_entry_t *entries =
-        (const voodoo_trace_entry_t *)(trace_data + sizeof(voodoo_trace_header_t));
+    const voodoo_trace_entry_t *entries = loaded_trace.entries;
 
     /* Read state file if present */
     uint8_t *state_data = nullptr;
@@ -424,12 +348,12 @@ int main(int argc, char **argv) {
     uint32_t state_aux_offset = 0;
     std::vector<uint16_t> ref_fb_initial;
     if (!state_file.empty()) {
-        state_data = read_file(state_file.c_str(), &state_size);
+        state_data = traceReplayReadFile(state_file.c_str(), &state_size);
         if (state_data) {
             if (state_size < sizeof(voodoo_state_header_t)) {
                 fprintf(stderr, "ERROR: State file too small: %s\n", state_file.c_str());
                 free(state_data);
-                free(trace_data);
+                free(loaded_trace.traceData);
                 return 1;
             }
             const voodoo_state_header_t *shdr = (const voodoo_state_header_t *)state_data;
@@ -437,7 +361,7 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "ERROR: Bad state magic: 0x%08x (expected 0x%08x)\n",
                         shdr->magic, VOODOO_STATE_MAGIC);
                 free(state_data);
-                free(trace_data);
+                free(loaded_trace.traceData);
                 return 1;
             }
             if (shdr->version != VOODOO_STATE_VERSION) {
@@ -445,7 +369,7 @@ int main(int argc, char **argv) {
                         "ERROR: Unsupported state version %u (expected %u). v1 is not supported.\n",
                         shdr->version, VOODOO_STATE_VERSION);
                 free(state_data);
-                free(trace_data);
+                free(loaded_trace.traceData);
                 return 1;
             }
             state_row_width = shdr->row_width;
@@ -1346,11 +1270,11 @@ int main(int argc, char **argv) {
     /* Compare and convert */
     for (int y = 0; y < disp_height; y++) {
         /* Convert reference row */
-        rgb565_to_rgb24(&ref_fb[y * row_stride], &ref_rgb[y * disp_width * 3], disp_width);
+        traceReplayRgb565ToRgb24(&ref_fb[y * row_stride], &ref_rgb[y * disp_width * 3], disp_width, srgb_lut);
 
         if (!ref_only) {
             /* Convert sim row */
-            rgb565_to_rgb24(&sim_fb[y * row_stride], &sim_rgb[y * disp_width * 3], disp_width);
+            traceReplayRgb565ToRgb24(&sim_fb[y * row_stride], &sim_rgb[y * disp_width * 3], disp_width, srgb_lut);
 
             /* Compare */
             for (int x = 0; x < disp_width; x++) {
@@ -1472,7 +1396,7 @@ int main(int argc, char **argv) {
     }
 
     /* Cleanup */
-    free(trace_data);
+    free(loaded_trace.traceData);
     ref_trace_close();
     ref_shutdown();
     if (!ref_only) sim_shutdown();

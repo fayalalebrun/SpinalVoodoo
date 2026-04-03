@@ -11,6 +11,7 @@ REMOTE_DIR="${DE10_TRACE_REMOTE_DIR:-/home/fpga/trace-replay}"
 INPUT_PATH="${DE10_TRACE_INPUT:-$ROOT_DIR/traces/tomb}"
 OUTPUT_DIR="${DE10_TRACE_OUTPUT_DIR:-$ROOT_DIR/output/de10-board-trace/tomb}"
 VERIFY_ONLY=0
+REPLAY_ARGS=()
 
 usage() {
   cat <<'EOF'
@@ -23,6 +24,11 @@ Options:
   --output-dir <path>   Local output dir (default: output/de10-board-trace/tomb)
   --remote-dir <path>   Remote staging dir (default: /home/fpga/trace-replay)
   --verify-programmed   Skip reprogramming; require the programmed marker to match
+  --skip-fb-state       Do not preload framebuffer bytes from state.bin before replay
+  --dump-texture        Dump full texture memory after replay to trace_board_tex.bin
+  --preload-trace-textures  Preload all texture writes before replay and skip them in-stream
+  --tex-write-delay-us N    Delay after each texture write during replay
+  --idle-after-tex-batch    Wait for core idle when leaving a texture-write burst
   -h, --help            Show this help
 EOF
 }
@@ -53,6 +59,26 @@ while [[ $# -gt 0 ]]; do
       VERIFY_ONLY=1
       shift
       ;;
+    --skip-fb-state)
+      REPLAY_ARGS+=("$1")
+      shift
+      ;;
+    --dump-texture)
+      REPLAY_ARGS+=("$1")
+      shift
+      ;;
+    --preload-trace-textures)
+      REPLAY_ARGS+=("$1")
+      shift
+      ;;
+    --tex-write-delay-us)
+      REPLAY_ARGS+=("$1" "$2")
+      shift 2
+      ;;
+    --idle-after-tex-batch)
+      REPLAY_ARGS+=("$1")
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -78,8 +104,7 @@ if [[ ! -f "$TRACE_FILE" ]]; then
   exit 1
 fi
 if [[ ! -f "$STATE_FILE" ]]; then
-  echo "Missing state file: $STATE_FILE" >&2
-  exit 1
+  STATE_FILE=""
 fi
 
 REMOTE_TARGET="${USER_NAME}@${HOST}"
@@ -97,17 +122,35 @@ else
 fi
 
 ssh "$REMOTE_TARGET" "mkdir -p '$REMOTE_DIR'"
-scp "$ROOT_DIR/tools/de10-trace-replay.cpp" \
-    "$ROOT_DIR/emu/trace/voodoo_trace_format.h" \
-    "$ROOT_DIR/emu/trace/trace_replay_backend.h" \
-    "$TRACE_FILE" "$STATE_FILE" \
-    "$REMOTE_TARGET:$REMOTE_DIR/"
+ssh "$REMOTE_TARGET" "rm -f '$REMOTE_DIR/trace.bin' '$REMOTE_DIR/state.bin' '$REMOTE_DIR/trace_board_fb.raw' '$REMOTE_DIR/trace_board_fb.png' '$REMOTE_DIR/de10-trace-replay' '$REMOTE_DIR/de10-trace-replay.cpp' '$REMOTE_DIR/voodoo_trace_format.h' '$REMOTE_DIR/trace_replay_backend.h' '$REMOTE_DIR/trace_replay_image.h' '$REMOTE_DIR/trace_replay_io.h' '$REMOTE_DIR/trace_replay_runner.h' '$REMOTE_DIR/stb_image_write.h'"
+scp "$ROOT_DIR/tools/de10-trace-replay.cpp" "$REMOTE_TARGET:$REMOTE_DIR/de10-trace-replay.cpp"
+scp "$ROOT_DIR/emu/trace/voodoo_trace_format.h" "$REMOTE_TARGET:$REMOTE_DIR/voodoo_trace_format.h"
+scp "$ROOT_DIR/emu/trace/trace_replay_backend.h" "$REMOTE_TARGET:$REMOTE_DIR/trace_replay_backend.h"
+scp "$ROOT_DIR/emu/trace/trace_replay_image.h" "$REMOTE_TARGET:$REMOTE_DIR/trace_replay_image.h"
+scp "$ROOT_DIR/emu/trace/trace_replay_io.h" "$REMOTE_TARGET:$REMOTE_DIR/trace_replay_io.h"
+scp "$ROOT_DIR/emu/trace/trace_replay_runner.h" "$REMOTE_TARGET:$REMOTE_DIR/trace_replay_runner.h"
+scp "$ROOT_DIR/emu/test/stb_image_write.h" "$REMOTE_TARGET:$REMOTE_DIR/stb_image_write.h"
+scp "$TRACE_FILE" "$REMOTE_TARGET:$REMOTE_DIR/trace.bin"
+if [[ -n "$STATE_FILE" ]]; then
+  scp "$STATE_FILE" "$REMOTE_TARGET:$REMOTE_DIR/state.bin"
+fi
 ssh "$REMOTE_TARGET" "g++ -O2 -std=c++17 -I'$REMOTE_DIR' -o '$REMOTE_DIR/de10-trace-replay' '$REMOTE_DIR/de10-trace-replay.cpp'"
 
 LOG_FILE="$OUTPUT_DIR/replay.log"
-ssh "$REMOTE_TARGET" "sudo -n '$REMOTE_DIR/de10-trace-replay' '$REMOTE_DIR' 2>&1" | tee "$LOG_FILE"
+ssh "$REMOTE_TARGET" "sudo -n '$REMOTE_DIR/de10-trace-replay' '$REMOTE_DIR' ${REPLAY_ARGS[*]} 2>&1" | tee "$LOG_FILE"
 
-readarray -t FB_META < <(python3 - <<'PY' "$STATE_FILE"
+RAW_FILE="$OUTPUT_DIR/trace_board_fb.raw"
+PNG_FILE="$OUTPUT_DIR/trace_board_fb.png"
+
+scp "$REMOTE_TARGET:$REMOTE_DIR/trace_board_fb.raw" "$RAW_FILE"
+if ssh "$REMOTE_TARGET" "test -f '$REMOTE_DIR/trace_board_fb.png'"; then
+  scp "$REMOTE_TARGET:$REMOTE_DIR/trace_board_fb.png" "$PNG_FILE"
+else
+  if [[ -z "$STATE_FILE" ]]; then
+    echo "Missing state file for local PNG fallback: $TRACE_FILE" >&2
+    exit 1
+  fi
+  readarray -t FB_META < <(python3 - <<'PY' "$STATE_FILE"
 import struct, sys
 data = open(sys.argv[1], 'rb').read(64)
 fields = struct.unpack('<16I', data)
@@ -119,15 +162,11 @@ print(h_disp)
 print(v_disp)
 PY
 )
-ROW_BYTES="${FB_META[0]}"
-WIDTH="${FB_META[1]}"
-HEIGHT="${FB_META[2]}"
-
-RAW_FILE="$OUTPUT_DIR/trace_board_fb.raw"
-PNG_FILE="$OUTPUT_DIR/trace_board_fb.png"
-
-scp "$REMOTE_TARGET:$REMOTE_DIR/trace_board_fb.raw" "$RAW_FILE"
-python3 "$ROOT_DIR/scripts/rgb565_to_png.py" "$RAW_FILE" "$PNG_FILE" "$WIDTH" "$HEIGHT" "$ROW_BYTES"
+  ROW_BYTES="${FB_META[0]}"
+  WIDTH="${FB_META[1]}"
+  HEIGHT="${FB_META[2]}"
+  python3 "$ROOT_DIR/scripts/rgb565_to_png.py" "$RAW_FILE" "$PNG_FILE" "$WIDTH" "$HEIGHT" "$ROW_BYTES"
+fi
 
 echo "[de10-trace] Screenshot: $PNG_FILE"
 echo "[de10-trace] Replay log: $LOG_FILE"

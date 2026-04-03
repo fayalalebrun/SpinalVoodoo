@@ -8,6 +8,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -18,6 +20,9 @@ extern "C" {
 }
 
 #include "trace_replay_backend.h"
+#include "trace_replay_image.h"
+#include "trace_replay_io.h"
+#include "trace_replay_runner.h"
 
 namespace {
 
@@ -48,6 +53,11 @@ struct Options {
   uint32_t fbBase = kDefaultFbBase;
   const char *memPath = "/dev/mem";
   bool skipState = false;
+  bool skipFbState = false;
+  bool dumpTexture = false;
+  bool preloadTraceTextures = false;
+  uint32_t texWriteDelayUs = 0;
+  bool idleAfterTexBatch = false;
   uint32_t maxEntries = 0;
 };
 
@@ -58,14 +68,16 @@ bool physWrite32(int fd, PageCache *cache, uint32_t physAddr, uint32_t value);
 bool physWrite16(int fd, PageCache *cache, uint32_t physAddr, uint16_t value);
 bool physWriteAll(int fd, PageCache *cache, uint32_t physBase, const void *src, size_t size);
 bool physReadAll(int fd, PageCache *cache, uint32_t physBase, void *dst, size_t size);
+bool physFillZero(int fd, PageCache *cache, uint32_t physBase, uint32_t size);
 uint32_t remapBackendRegAddr(uint32_t addr);
 uint32_t idleWait(volatile uint8_t *mmio);
 
 class De10HardwareReplayBackend : public TraceReplayBackend {
 public:
   De10HardwareReplayBackend(int fd, volatile uint8_t *mmio, PageCache *fbCache,
-                            PageCache *texCache, uint32_t fbBase)
-      : fd_(fd), mmio_(mmio), fbCache_(fbCache), texCache_(texCache), fbBase_(fbBase) {}
+                            PageCache *texCache, uint32_t fbBase, uint32_t texWriteDelayUs)
+      : fd_(fd), mmio_(mmio), fbCache_(fbCache), texCache_(texCache), fbBase_(fbBase),
+        texWriteDelayUs_(texWriteDelayUs) {}
 
   bool useDe10RegisterMap() const override { return true; }
   bool writeReg32(uint32_t mappedAddr, uint32_t, uint32_t value) override {
@@ -83,13 +95,17 @@ public:
     return physWrite16(fd_, fbCache_, fbBase_ + byteOffset, value);
   }
   bool writeTex32(uint32_t byteOffset, uint32_t value) override {
-    return physWrite32(fd_, texCache_, fbBase_ + kTextureOffset + byteOffset, value);
+    const bool ok = physWrite32(fd_, texCache_, fbBase_ + kTextureOffset + byteOffset, value);
+    if (ok && texWriteDelayUs_ != 0) usleep(texWriteDelayUs_);
+    return ok;
   }
   bool writeFbBulk(uint32_t byteOffset, const uint8_t *data, uint32_t size) override {
     return physWriteAll(fd_, fbCache_, fbBase_ + byteOffset, data, size);
   }
   bool writeTexBulk(uint32_t byteOffset, const uint8_t *data, uint32_t size) override {
-    return physWriteAll(fd_, texCache_, fbBase_ + kTextureOffset + byteOffset, data, size);
+    const bool ok = physWriteAll(fd_, texCache_, fbBase_ + kTextureOffset + byteOffset, data, size);
+    if (ok && texWriteDelayUs_ != 0) usleep(texWriteDelayUs_);
+    return ok;
   }
   bool readFbWords(uint32_t byteOffset, uint32_t *dst, uint32_t wordCount) override {
     return physReadAll(fd_, fbCache_, fbBase_ + byteOffset, dst, wordCount * sizeof(uint32_t));
@@ -108,6 +124,7 @@ private:
   PageCache *fbCache_;
   PageCache *texCache_;
   uint32_t fbBase_;
+  uint32_t texWriteDelayUs_;
 };
 
 using Clock = std::chrono::steady_clock;
@@ -116,45 +133,9 @@ double elapsedMs(Clock::time_point start) {
   return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
 }
 
-bool isDirectory(const char *path) {
-  struct stat st;
-  return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
-}
-
-uint8_t *readFile(const char *path, uint32_t *outSize) {
-  FILE *f = fopen(path, "rb");
-  if (!f) return nullptr;
-  if (fseek(f, 0, SEEK_END) != 0) {
-    fclose(f);
-    return nullptr;
-  }
-  long sz = ftell(f);
-  if (sz < 0) {
-    fclose(f);
-    return nullptr;
-  }
-  if (fseek(f, 0, SEEK_SET) != 0) {
-    fclose(f);
-    return nullptr;
-  }
-  uint8_t *buf = static_cast<uint8_t *>(malloc(static_cast<size_t>(sz)));
-  if (!buf) {
-    fclose(f);
-    return nullptr;
-  }
-  if (fread(buf, 1, static_cast<size_t>(sz), f) != static_cast<size_t>(sz)) {
-    free(buf);
-    fclose(f);
-    return nullptr;
-  }
-  fclose(f);
-  *outSize = static_cast<uint32_t>(sz);
-  return buf;
-}
-
 void usage(const char *argv0) {
   fprintf(stderr,
-          "Usage: %s <trace.bin|trace-dir> [--mmio-base HEX] [--mmio-span HEX] [--fb-base HEX] [--mem-path PATH] [--skip-state] [--max-entries N]\n",
+          "Usage: %s <trace.bin|trace-dir> [--mmio-base HEX] [--mmio-span HEX] [--fb-base HEX] [--mem-path PATH] [--skip-state] [--skip-fb-state] [--dump-texture] [--preload-trace-textures] [--tex-write-delay-us N] [--idle-after-tex-batch] [--max-entries N]\n",
           argv0);
 }
 
@@ -175,6 +156,16 @@ bool parseArgs(int argc, char **argv, Options *opts) {
       opts->memPath = argv[++i];
     } else if (strcmp(argv[i], "--skip-state") == 0) {
       opts->skipState = true;
+    } else if (strcmp(argv[i], "--skip-fb-state") == 0) {
+      opts->skipFbState = true;
+    } else if (strcmp(argv[i], "--dump-texture") == 0) {
+      opts->dumpTexture = true;
+    } else if (strcmp(argv[i], "--preload-trace-textures") == 0) {
+      opts->preloadTraceTextures = true;
+    } else if (strcmp(argv[i], "--tex-write-delay-us") == 0 && i + 1 < argc) {
+      opts->texWriteDelayUs = static_cast<uint32_t>(strtoul(argv[++i], nullptr, 0));
+    } else if (strcmp(argv[i], "--idle-after-tex-batch") == 0) {
+      opts->idleAfterTexBatch = true;
     } else if (strcmp(argv[i], "--max-entries") == 0 && i + 1 < argc) {
       opts->maxEntries = static_cast<uint32_t>(strtoul(argv[++i], nullptr, 0));
     } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
@@ -400,6 +391,7 @@ bool physWriteAll(int fd, PageCache *cache, uint32_t physBase, const void *src, 
     cache->bytesCopied += chunk;
     done += chunk;
   }
+  unmapRegion(&cache->region);
   return true;
 }
 
@@ -414,6 +406,17 @@ bool physReadAll(int fd, PageCache *cache, uint32_t physBase, void *dst, size_t 
     if (chunk > (0x1000u - pageOff)) chunk = 0x1000u - pageOff;
     memcpy(ptr + done, (void *)(cache->region.base + pageOff), chunk);
     done += chunk;
+  }
+  return true;
+}
+
+bool physFillZero(int fd, PageCache *cache, uint32_t physBase, uint32_t size) {
+  static uint8_t zeros[4096] = {};
+  uint32_t offset = 0;
+  while (offset < size) {
+    size_t chunk = (size - offset) > sizeof(zeros) ? sizeof(zeros) : (size - offset);
+    if (!physWriteAll(fd, cache, physBase + offset, zeros, chunk)) return false;
+    offset += static_cast<uint32_t>(chunk);
   }
   return true;
 }
@@ -505,43 +508,21 @@ int main(int argc, char **argv) {
   Options opts;
   if (!parseArgs(argc, argv, &opts)) return 2;
 
-  std::string traceFile;
-  std::string stateFile;
-  if (isDirectory(opts.inputPath.c_str())) {
-    traceFile = opts.inputPath + "/trace.bin";
-    stateFile = opts.inputPath + "/state.bin";
-    struct stat st;
-    if (stat(stateFile.c_str(), &st) != 0) stateFile.clear();
-  } else {
-    traceFile = opts.inputPath;
-  }
+  TraceReplayFiles files;
+  traceReplayResolveFiles(opts.inputPath.c_str(), &files);
 
-  uint32_t traceSize = 0;
-  uint8_t *traceData = readFile(traceFile.c_str(), &traceSize);
-  if (!traceData) {
-    fprintf(stderr, "[de10-trace] ERROR: cannot read %s\n", traceFile.c_str());
+  TraceReplayLoadedTrace trace;
+  if (!traceReplayLoadTraceFile(files.traceFile, &trace)) {
+    fprintf(stderr, "[de10-trace] ERROR: cannot read %s\n", files.traceFile.c_str());
     return 1;
   }
-  if (traceSize < sizeof(voodoo_trace_header_t)) {
-    fprintf(stderr, "[de10-trace] ERROR: trace too small\n");
-    free(traceData);
-    return 1;
-  }
-  const auto *hdr = reinterpret_cast<const voodoo_trace_header_t *>(traceData);
-  if (hdr->magic != VOODOO_TRACE_MAGIC) {
-    fprintf(stderr, "[de10-trace] ERROR: bad trace magic 0x%08x\n", hdr->magic);
-    free(traceData);
-    return 1;
-  }
-  uint32_t numEntries = (traceSize - sizeof(voodoo_trace_header_t)) / sizeof(voodoo_trace_entry_t);
-  const auto *entries = reinterpret_cast<const voodoo_trace_entry_t *>(traceData + sizeof(voodoo_trace_header_t));
-  fprintf(stderr, "[de10-trace] Loaded trace %s (%u entries)\n", traceFile.c_str(), numEntries);
+  fprintf(stderr, "[de10-trace] Loaded trace %s (%u entries)\n", files.traceFile.c_str(), trace.entryCount);
 
   int fd = open(opts.memPath, O_RDWR | O_SYNC);
   fprintf(stderr, "[de10-trace] open(%s) returned %d errno=%d\n", opts.memPath, fd, errno);
   if (fd < 0) {
     perror("open(/dev/mem)");
-    free(traceData);
+    free(trace.traceData);
     return 1;
   }
 
@@ -552,32 +533,77 @@ int main(int argc, char **argv) {
   if (!mapRegion(fd, opts.mmioBase, opts.mmioSpan, &mmio)) {
     unmapRegion(&mmio);
     close(fd);
-    free(traceData);
+    free(trace.traceData);
     return 1;
   }
   fprintf(stderr, "[de10-trace] MMIO mapping ready; DDR writes via pwrite at fb=0x%08x tex=0x%08x\n",
           opts.fbBase, opts.fbBase + kTextureOffset);
 
-  TraceReplayStateInfo stateInfo;
-
-  if (!stateFile.empty() && !opts.skipState) {
-    fprintf(stderr, "[de10-trace] Reading state %s\n", stateFile.c_str());
-    uint32_t stateSize = 0;
-    uint8_t *stateData = readFile(stateFile.c_str(), &stateSize);
-    if (!stateData) {
-      fprintf(stderr, "[de10-trace] ERROR: failed to read %s\n", stateFile.c_str());
+  if (files.stateFile.empty() && !opts.preloadTraceTextures) {
+    fprintf(stderr, "[de10-trace] No state.bin; clearing texture region before replay\n");
+    if (!physFillZero(fd, &texCache, opts.fbBase + kTextureOffset, kTextureBytes)) {
+      fprintf(stderr, "[de10-trace] ERROR: failed to clear texture region\n");
       unmapRegion(&mmio);
+      unmapRegion(&texCache.region);
       close(fd);
-      free(traceData);
+      free(trace.traceData);
       return 1;
     }
-    De10HardwareReplayBackend hwBackend(fd, mmio.base, &fbCache, &texCache, opts.fbBase);
-    if (!traceReplayLoadState(hwBackend, stateData, stateSize, false, &stateInfo)) {
-      free(stateData);
-      fprintf(stderr, "[de10-trace] ERROR: failed to load %s\n", stateFile.c_str());
+  }
+  unmapRegion(&fbCache.region);
+  unmapRegion(&texCache.region);
+
+  if (opts.preloadTraceTextures) {
+    uint32_t preloadWrites = 0;
+    for (uint32_t i = 0; i < trace.entryCount; ++i) {
+      const auto &e = trace.entries[i];
+      if (e.cmd_type != VOODOO_TRACE_WRITE_TEX_L) continue;
+      const uint32_t repeat = e.count ? e.count : 1u;
+      const uint32_t texAddr = e.addr & 0x7fffffu;
+      for (uint32_t r = 0; r < repeat; ++r) {
+        if (!physWrite32(fd, &texCache, opts.fbBase + kTextureOffset + texAddr + r * 4u, e.data)) {
+          fprintf(stderr, "[de10-trace] ERROR: failed to preload texture writes\n");
+          unmapRegion(&mmio);
+          close(fd);
+          free(trace.traceData);
+          return 1;
+        }
+        preloadWrites++;
+      }
+    }
+    unmapRegion(&texCache.region);
+    fprintf(stderr, "[de10-trace] Preloaded %u texture writes from trace before replay\n", preloadWrites);
+  }
+
+  TraceReplayStateInfo stateInfo;
+  if (files.stateFile.empty()) {
+    for (uint32_t i = 0; i < trace.entryCount; ++i) {
+      const auto &e = trace.entries[i];
+      if (e.cmd_type != VOODOO_TRACE_WRITE_REG_L) continue;
+      if ((e.addr & 0x3fcu) != 0x218u) continue;
+      stateInfo.bufferOffset = ((e.data >> 11) & 0x1ffu) << 12;
+      stateInfo.drawOffset = stateInfo.bufferOffset;
+    }
+  }
+
+  if (!files.stateFile.empty() && !opts.skipState) {
+    fprintf(stderr, "[de10-trace] Reading state %s\n", files.stateFile.c_str());
+    uint32_t stateSize = 0;
+    uint8_t *stateData = traceReplayReadFile(files.stateFile.c_str(), &stateSize);
+    if (!stateData) {
+      fprintf(stderr, "[de10-trace] ERROR: failed to read %s\n", files.stateFile.c_str());
       unmapRegion(&mmio);
       close(fd);
-      free(traceData);
+      free(trace.traceData);
+      return 1;
+    }
+    De10HardwareReplayBackend hwBackend(fd, mmio.base, &fbCache, &texCache, opts.fbBase, opts.texWriteDelayUs);
+    if (!traceReplayLoadState(hwBackend, stateData, stateSize, opts.skipFbState, &stateInfo)) {
+      free(stateData);
+      fprintf(stderr, "[de10-trace] ERROR: failed to load %s\n", files.stateFile.c_str());
+      unmapRegion(&mmio);
+      close(fd);
+      free(trace.traceData);
       return 1;
     }
     fprintf(stderr,
@@ -587,60 +613,48 @@ int main(int argc, char **argv) {
     free(stateData);
   }
 
-  uint32_t replayEntries = opts.maxEntries && opts.maxEntries < numEntries ? opts.maxEntries : numEntries;
-  bool havePresentedOffset = false;
-  uint32_t presentedOffset = stateInfo.drawOffset;
-  uint32_t currentDrawOffset = stateInfo.drawOffset;
-  uint32_t regWrites = 0;
-  uint32_t texWrites = 0;
-  uint32_t fbWrites = 0;
-  uint32_t swapWrites = 0;
+  uint32_t replayEntries = opts.maxEntries && opts.maxEntries < trace.entryCount ? opts.maxEntries : trace.entryCount;
   fbCache.mapCount = 0;
   fbCache.bytesCopied = 0;
   texCache.mapCount = 0;
   texCache.bytesCopied = 0;
-  De10HardwareReplayBackend replayBackend(fd, mmio.base, &fbCache, &texCache, opts.fbBase);
+  De10HardwareReplayBackend replayBackend(fd, mmio.base, &fbCache, &texCache, opts.fbBase, opts.texWriteDelayUs);
   auto replayStart = Clock::now();
-  for (uint32_t i = 0; i < replayEntries; ++i) {
-    const auto *e = &entries[i];
-    if (i < 4) {
-      fprintf(stderr, "[de10-trace] Entry %u type=%u addr=0x%08x data=0x%08x repeat=%u\n",
-              i, e->cmd_type, e->addr, e->data, e->count ? e->count : 1u);
-    }
-    bool sawSwap = false;
-    if (!traceReplayExecEntry(replayBackend, *e, &sawSwap)) return 1;
-    if (sawSwap) {
-      presentedOffset = currentDrawOffset;
-      havePresentedOffset = true;
-      if (stateInfo.bufferOffset > 0) {
-        currentDrawOffset = (currentDrawOffset == 0) ? stateInfo.bufferOffset : 0;
-      }
-    }
-    const uint32_t repeat = e->count ? e->count : 1u;
-    switch (e->cmd_type) {
-      case VOODOO_TRACE_WRITE_REG_L:
-      case VOODOO_TRACE_WRITE_REG_W:
-        regWrites += repeat;
-        break;
-      case VOODOO_TRACE_WRITE_TEX_L:
-        texWrites += repeat;
-        break;
-      case VOODOO_TRACE_WRITE_FB_L:
-      case VOODOO_TRACE_WRITE_FB_W:
-        fbWrites += repeat;
-        break;
-      default:
-        break;
-    }
-    if (sawSwap) swapWrites += repeat;
-    if ((i % 4096u) == 0u && i != 0u) {
-      fprintf(stderr, "[de10-trace] Progress: %u/%u entries\n", i, replayEntries);
-    }
+  bool previousWasTexWrite = false;
+  TraceReplayRunResult replayResult;
+  if (!traceReplayRunEntries(replayBackend, trace.entries, replayEntries,
+                             stateInfo.drawOffset, stateInfo.bufferOffset,
+                             &replayResult,
+                             [&](uint32_t i, const voodoo_trace_entry_t &e, uint32_t,
+                                 const TraceReplayRunResult &, bool) {
+                               const bool isTexWrite = e.cmd_type == VOODOO_TRACE_WRITE_TEX_L;
+                               if (opts.idleAfterTexBatch && previousWasTexWrite && !isTexWrite) {
+                                 replayBackend.idleWait();
+                               }
+                               if (opts.preloadTraceTextures && e.cmd_type == VOODOO_TRACE_WRITE_TEX_L) {
+                                 previousWasTexWrite = true;
+                                 return false;
+                               }
+                               if (i < 4) {
+                                 fprintf(stderr, "[de10-trace] Entry %u type=%u addr=0x%08x data=0x%08x repeat=%u\n",
+                                         i, e.cmd_type, e.addr, e.data, e.count ? e.count : 1u);
+                               }
+                               if ((i % 4096u) == 0u && i != 0u) {
+                                 fprintf(stderr, "[de10-trace] Progress: %u/%u entries\n", i, replayEntries);
+                               }
+                               previousWasTexWrite = isTexWrite;
+                               return true;
+                             })) {
+    unmapRegion(&mmio);
+    close(fd);
+    free(trace.traceData);
+    return 1;
   }
 
   fprintf(stderr,
           "[de10-trace] Replay loop body took %.3f ms (reg=%u tex=%u fb=%u swaps=%u fbMaps=%llu texMaps=%llu fbBytes=%llu texBytes=%llu)\n",
-          elapsedMs(replayStart), regWrites, texWrites, fbWrites, swapWrites,
+          elapsedMs(replayStart), replayResult.regWrites, replayResult.texWrites,
+          replayResult.fbWrites, replayResult.swapWrites,
           static_cast<unsigned long long>(fbCache.mapCount),
           static_cast<unsigned long long>(texCache.mapCount),
           static_cast<unsigned long long>(fbCache.bytesCopied),
@@ -649,30 +663,53 @@ int main(int argc, char **argv) {
   auto finalIdleStart = Clock::now();
   traceReplayFinish(replayBackend);
   uint32_t finalStatus = mmioRead32(mmio.base, 0x000);
+  uint32_t finalVideoDimensions = mmioRead32(mmio.base, 0x20c);
+  uint32_t finalFbiInit1 = mmioRead32(mmio.base, 0x214);
+  uint32_t finalFbiInit2 = mmioRead32(mmio.base, 0x218);
   fprintf(stderr, "[de10-trace] Final idle wait took %.3f ms\n", elapsedMs(finalIdleStart));
   uint32_t pixelsIn = mmioRead32(mmio.base, 0x14c);
   uint32_t pixelsOut = mmioRead32(mmio.base, 0x15c);
   fprintf(stderr,
           "[de10-trace] Replay complete: reg=%u tex=%u fb=%u swaps=%u status=0x%08x pixelsIn=%u pixelsOut=%u\n",
-          regWrites, texWrites, fbWrites, swapWrites, finalStatus, pixelsIn, pixelsOut);
+          replayResult.regWrites, replayResult.texWrites, replayResult.fbWrites,
+          replayResult.swapWrites, finalStatus, pixelsIn, pixelsOut);
 
-  if (!havePresentedOffset) {
-    presentedOffset = currentDrawOffset;
+  if (!replayResult.havePresentedOffset) {
+    replayResult.presentedOffset = replayResult.currentDrawOffset;
     fprintf(stderr,
             "[de10-trace] WARNING: Trace contains no swapbufferCMD; falling back to final draw_offset=0x%x\n",
-            presentedOffset);
+            replayResult.presentedOffset);
+  }
+
+  if (stateInfo.hDisp == 0 || stateInfo.vDisp == 0) {
+    stateInfo.hDisp = (finalVideoDimensions & 0xfffu) + 1u;
+    stateInfo.vDisp = (finalVideoDimensions >> 16) & 0xfffu;
+    if (stateInfo.vDisp == 386 || stateInfo.vDisp == 402 || stateInfo.vDisp == 482 || stateInfo.vDisp == 602)
+      stateInfo.vDisp -= 2;
+    if (stateInfo.hDisp <= 1 || stateInfo.vDisp == 0) {
+      stateInfo.hDisp = 640;
+      stateInfo.vDisp = 480;
+    }
+  }
+  if (stateInfo.rowWidth == 0) {
+    uint32_t tilesX = (finalFbiInit1 >> 4) & 0xfu;
+    if (tilesX > 0) stateInfo.rowWidth = (tilesX << 7);
+    if (stateInfo.rowWidth == 0) stateInfo.rowWidth = stateInfo.hDisp * 2;
+  }
+  if (stateInfo.bufferOffset == 0) {
+    stateInfo.bufferOffset = ((finalFbiInit2 >> 11) & 0x1ffu) << 12;
   }
 
   if (stateInfo.rowWidth && stateInfo.hDisp && stateInfo.vDisp) {
     std::vector<uint16_t> fb565;
-    if (!traceReplayCaptureRgb565(replayBackend, presentedOffset, stateInfo.rowWidth / 2,
+    if (!traceReplayCaptureRgb565(replayBackend, replayResult.presentedOffset, stateInfo.rowWidth / 2,
                                   stateInfo.hDisp, stateInfo.vDisp, &fb565)) {
       fprintf(stderr, "[de10-trace] ERROR: failed to capture framebuffer via shared backend\n");
       unmapRegion(&mmio);
       unmapRegion(&fbCache.region);
       unmapRegion(&texCache.region);
       close(fd);
-      free(traceData);
+      free(trace.traceData);
       return 1;
     }
     std::string rawPath = opts.inputPath + "/trace_board_fb.raw";
@@ -686,7 +723,37 @@ int main(int argc, char **argv) {
       fclose(raw);
       fprintf(stderr,
               "[de10-trace] Captured framebuffer via shared backend: %s (presented=0x%x row=%u disp=%ux%u)\n",
-              rawPath.c_str(), presentedOffset, stateInfo.rowWidth, stateInfo.hDisp, stateInfo.vDisp);
+              rawPath.c_str(), replayResult.presentedOffset, stateInfo.rowWidth, stateInfo.hDisp, stateInfo.vDisp);
+    }
+
+    uint8_t srgbLut[256];
+    traceReplayInitSrgbLut(srgbLut);
+    std::string pngPath = opts.inputPath + "/trace_board_fb.png";
+    if (!traceReplayWriteRgb565Png(pngPath.c_str(), fb565.data(),
+                                   static_cast<int>(stateInfo.hDisp),
+                                   static_cast<int>(stateInfo.vDisp),
+                                   static_cast<int>(stateInfo.rowWidth / 2),
+                                   srgbLut, stbi_write_png)) {
+      fprintf(stderr, "[de10-trace] ERROR: failed to write %s\n", pngPath.c_str());
+    } else {
+      fprintf(stderr, "[de10-trace] Wrote PNG via shared LUT path: %s\n", pngPath.c_str());
+    }
+  }
+
+  if (opts.dumpTexture) {
+    std::vector<uint8_t> texDump(kTextureBytes);
+    if (!physReadAll(fd, &texCache, opts.fbBase + kTextureOffset, texDump.data(), texDump.size())) {
+      fprintf(stderr, "[de10-trace] ERROR: failed to dump texture memory\n");
+    } else {
+      std::string dumpPath = opts.inputPath + "/trace_board_tex.bin";
+      FILE *dump = fopen(dumpPath.c_str(), "wb");
+      if (!dump) {
+        perror("fopen-tex-dump");
+      } else {
+        fwrite(texDump.data(), 1, texDump.size(), dump);
+        fclose(dump);
+        fprintf(stderr, "[de10-trace] Dumped texture memory: %s\n", dumpPath.c_str());
+      }
     }
   }
 
@@ -694,6 +761,6 @@ int main(int argc, char **argv) {
   unmapRegion(&fbCache.region);
   unmapRegion(&texCache.region);
   close(fd);
-    free(traceData);
+    free(trace.traceData);
     return 0;
 }

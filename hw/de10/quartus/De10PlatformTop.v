@@ -234,7 +234,6 @@ module De10PlatformTop (
     .reset                   (core_reset),
     .clk                     (core_clk)
   );
-
   assign h2f_burstcount = 1'b1;
 
 endmodule

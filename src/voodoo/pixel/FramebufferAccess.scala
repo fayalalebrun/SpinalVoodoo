@@ -113,6 +113,8 @@ case class FramebufferAccess(c: Config) extends Component {
   case class Internal() extends Bundle {
     val colorAddress = UInt(c.addressWidth.value bits)
     val auxAddress = UInt(c.addressWidth.value bits)
+    val needColorRead = Bool()
+    val needAuxRead = Bool()
     val passthrough = Passthrough()
   }
 
@@ -135,6 +137,8 @@ case class FramebufferAccess(c: Config) extends Component {
     )
   request.colorAddress := (colorPlaneAddress(c.addressWidth.value - 1 downto 1) ## U"1'b0").asUInt
   request.auxAddress := (auxPlaneAddress(c.addressWidth.value - 1 downto 1) ## U"1'b0").asUInt
+  request.needColorRead := payload.alphaMode.alphaBlendEnable || fbzMode.enableDitherSubtract
+  request.needAuxRead := fbzMode.enableDepthBuffer
   request.passthrough.coords := payload.coords
   request.passthrough.color := payload.color
   request.passthrough.alpha := payload.alpha
@@ -160,15 +164,34 @@ case class FramebufferAccess(c: Config) extends Component {
   val (forReads, queuedReqsRaw) = StreamFork2(requestStream, synchronous = true)
   val (forColorReads, forAuxReads) = StreamFork2(forReads, synchronous = true)
 
-  io.fbReadColorReq.translateFrom(forColorReads) { (out, in) =>
-    out.address := in.colorAddress
-  }
-  io.fbReadAuxReq.translateFrom(forAuxReads) { (out, in) =>
-    out.address := in.auxAddress
-  }
+  io.fbReadColorReq.valid := forColorReads.valid && forColorReads.payload.needColorRead
+  io.fbReadColorReq.address := forColorReads.payload.colorAddress
+  forColorReads.ready := !forColorReads.payload.needColorRead || io.fbReadColorReq.ready
 
-  val queuedReqs = queuedReqsRaw.queue(16)
-  val readJoined = StreamJoin(io.fbReadColorRsp, io.fbReadAuxRsp)
+  io.fbReadAuxReq.valid := forAuxReads.valid && forAuxReads.payload.needAuxRead
+  io.fbReadAuxReq.address := forAuxReads.payload.auxAddress
+  forAuxReads.ready := !forAuxReads.payload.needAuxRead || io.fbReadAuxReq.ready
+
+  val queuedReqsBase = queuedReqsRaw.queue(16)
+  val (queuedColorCtlRaw, queuedReqsRest) = StreamFork2(queuedReqsBase, synchronous = true)
+  val (queuedAuxCtlRaw, queuedReqsRaw2) = StreamFork2(queuedReqsRest, synchronous = true)
+  val queuedColorCtl = queuedColorCtlRaw.m2sPipe()
+  val queuedAuxCtl = queuedAuxCtlRaw.m2sPipe()
+  val queuedReqs = queuedReqsRaw2.m2sPipe()
+
+  val colorRsp = Stream(FramebufferPlaneBuffer.ReadRsp())
+  colorRsp.valid := queuedColorCtl.valid && (!queuedColorCtl.payload.needColorRead || io.fbReadColorRsp.valid)
+  colorRsp.data := queuedColorCtl.payload.needColorRead ? io.fbReadColorRsp.data | B(0, 32 bits)
+  queuedColorCtl.ready := colorRsp.ready && (!queuedColorCtl.payload.needColorRead || io.fbReadColorRsp.valid)
+  io.fbReadColorRsp.ready := colorRsp.ready && queuedColorCtl.valid && queuedColorCtl.payload.needColorRead
+
+  val auxRsp = Stream(FramebufferPlaneBuffer.ReadRsp())
+  auxRsp.valid := queuedAuxCtl.valid && (!queuedAuxCtl.payload.needAuxRead || io.fbReadAuxRsp.valid)
+  auxRsp.data := queuedAuxCtl.payload.needAuxRead ? io.fbReadAuxRsp.data | B(0, 32 bits)
+  queuedAuxCtl.ready := auxRsp.ready && (!queuedAuxCtl.payload.needAuxRead || io.fbReadAuxRsp.valid)
+  io.fbReadAuxRsp.ready := auxRsp.ready && queuedAuxCtl.valid && queuedAuxCtl.payload.needAuxRead
+
+  val readJoined = StreamJoin(colorRsp, auxRsp)
   val fetchedJoined = StreamJoin(readJoined, queuedReqs)
 
   fetched.valid := fetchedJoined.valid

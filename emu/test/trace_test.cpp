@@ -31,6 +31,8 @@ extern "C" {
 #include "ref_model.h"
 }
 
+#include "../../emu/trace/trace_replay_backend.h"
+
 /* Sim harness (optional — omitted in --ref-only mode) */
 #include "sim_harness.h"
 
@@ -155,49 +157,78 @@ struct RegHotspot {
     uint32_t count = 0;
 };
 
-static uint32_t remap_backend_reg_addr(uint32_t addr) {
+class SimReplayBackend : public TraceReplayBackend {
+public:
+    bool useDe10RegisterMap() const override {
 #ifdef SIM_INTERFACE_DE10
-    const uint32_t base = addr & 0x3FFFFFu;
-    if ((base & 0x200000u) != 0) {
-        const uint32_t reg = base & 0xfffu;
-        switch (reg) {
-            case 0x088: return 0x088;
-            case 0x08c: return 0x08c;
-            case 0x090: return 0x090;
-            case 0x094: return 0x094;
-            case 0x098: return 0x098;
-            case 0x09c: return 0x09c;
-            case 0x0a0: return 0x0a0;
-            case 0x0a4: return 0x0c0;
-            case 0x0a8: return 0x0e0;
-            case 0x0ac: return 0x0a4;
-            case 0x0b0: return 0x0c4;
-            case 0x0b4: return 0x0e4;
-            case 0x0b8: return 0x0a8;
-            case 0x0bc: return 0x0c8;
-            case 0x0c0: return 0x0e8;
-            case 0x0c4: return 0x0ac;
-            case 0x0c8: return 0x0cc;
-            case 0x0cc: return 0x0ec;
-            case 0x0d0: return 0x0b0;
-            case 0x0d4: return 0x0d0;
-            case 0x0d8: return 0x0f0;
-            case 0x0dc: return 0x0b4;
-            case 0x0e0: return 0x0d4;
-            case 0x0e4: return 0x0f4;
-            case 0x0e8: return 0x0b8;
-            case 0x0ec: return 0x0d8;
-            case 0x0f0: return 0x0f8;
-            case 0x0f4: return 0x0bc;
-            case 0x0f8: return 0x0dc;
-            case 0x0fc: return 0x0fc;
-            default: return base & ~0x200000u;
-        }
-    }
-    return base;
+        return true;
 #else
-    return addr & 0x3FFFFFu;
+        return false;
 #endif
+    }
+
+    bool writeReg32(uint32_t mappedAddr, uint32_t, uint32_t value) override {
+        sim_write(mappedAddr, value);
+        return !sim_stalled();
+    }
+    bool writeReg16(uint32_t mappedAddr, uint32_t, uint16_t value) override {
+        sim_write16(mappedAddr, value);
+        return !sim_stalled();
+    }
+    bool writeFb32(uint32_t byteOffset, uint32_t value) override {
+        sim_write(0x400000 | byteOffset, value);
+        return !sim_stalled();
+    }
+    bool writeFb16(uint32_t byteOffset, uint16_t value) override {
+        sim_write16(0x400000 | byteOffset, value);
+        return !sim_stalled();
+    }
+    bool writeTex32(uint32_t byteOffset, uint32_t value) override {
+        sim_write(0x800000 | byteOffset, value);
+        return !sim_stalled();
+    }
+    bool writeFbBulk(uint32_t byteOffset, const uint8_t *data, uint32_t size) override {
+        std::vector<uint32_t> words((size + 3) / 4, 0);
+        memcpy(words.data(), data, size);
+        sim_write_fb_bulk(byteOffset, words.data(), words.size());
+        return !sim_stalled();
+    }
+    bool writeTexBulk(uint32_t byteOffset, const uint8_t *data, uint32_t size) override {
+        std::vector<uint32_t> words((size + 3) / 4, 0);
+        memcpy(words.data(), data, size);
+        sim_write_tex_bulk(byteOffset, words.data(), words.size());
+        return !sim_stalled();
+    }
+    bool readFbWords(uint32_t byteOffset, uint32_t *dst, uint32_t wordCount) override {
+        sim_read_fb(byteOffset, dst, wordCount);
+        return true;
+    }
+    bool idleWait() override {
+        sim_idle_wait();
+        return !sim_stalled();
+    }
+    bool invalidateFbCache() override {
+        sim_invalidate_fb_cache();
+        return !sim_stalled();
+    }
+    bool flushFbCache() override {
+        sim_flush_fb_cache();
+        return !sim_stalled();
+    }
+    bool setSwapCount(uint32_t count) override {
+        sim_set_swap_count(count);
+        return !sim_stalled();
+    }
+};
+
+static uint32_t remap_backend_reg_addr(uint32_t addr) {
+    return traceReplayRemapBackendRegAddr(
+#ifdef SIM_INTERFACE_DE10
+        true,
+#else
+        false,
+#endif
+        addr);
 }
 
 /* -------------------------------------------------------------------
@@ -212,6 +243,8 @@ int main(int argc, char **argv) {
     if (const char *wx = getenv("SIM_WATCH_X")) watch_x = atoi(wx);
     if (const char *wy = getenv("SIM_WATCH_Y")) watch_y = atoi(wy);
     const bool sim_skip_final_idle = getenv("SIM_SKIP_FINAL_IDLE") != nullptr;
+    const bool skip_sim_fb_state = getenv("TRACE_TEST_SKIP_SIM_FB_STATE") != nullptr;
+    const bool dump_ctrl_regs = getenv("TRACE_TEST_DUMP_CTRL_REGS") != nullptr;
     const uint64_t sim_cycle_limit = getenv("SIM_CYCLE_LIMIT") ? strtoull(getenv("SIM_CYCLE_LIMIT"), nullptr, 0) : 0ull;
     uint32_t sim_pixels_in_final = 0;
     uint32_t sim_pixels_out_final = 0;
@@ -460,69 +493,35 @@ int main(int argc, char **argv) {
 
         if (!ref_only) {
             const voodoo_state_header_t *shdr = (const voodoo_state_header_t *)state_data;
-            const uint8_t *ptr = state_data + sizeof(voodoo_state_header_t);
-
-            /* Write registers to sim.
-             * Skip command registers (swap, fastfill, triangle) that have
-             * side effects — state dump stores values, not triggers. */
-            const voodoo_state_reg_t *regs = (const voodoo_state_reg_t *)ptr;
-            for (uint32_t i = 0; i < shdr->reg_count; i++) {
-                uint32_t reg_addr = regs[i].addr & 0x3fc;
-                if (reg_addr == 0x128 || reg_addr == 0x124 ||  /* swapbuffer, fastfill */
-                    reg_addr == 0x080 || reg_addr == 0x100 ||  /* triangleCMD, ftriangleCMD */
-                    reg_addr == 0x120)                         /* nopCMD */
-                    continue;
-                sim_write(remap_backend_reg_addr(regs[i].addr), regs[i].value);
+            SimReplayBackend simBackend;
+            TraceReplayStateInfo simStateInfo;
+            if (!traceReplayLoadState(simBackend, state_data, state_size, skip_sim_fb_state, &simStateInfo)) {
+                fprintf(stderr, "ERROR: traceReplayLoadState failed\n");
+                return 1;
             }
-            ptr += shdr->reg_count * sizeof(voodoo_state_reg_t);
-
-            /* Extract fbiInit2 for buffer offset calculations below. */
-            uint32_t fbiInit2_val = 0;
-            for (uint32_t i = 0; i < shdr->reg_count; i++) {
-                if ((regs[i].addr & 0x3fc) == 0x218) {
-                    fbiInit2_val = regs[i].value;
-                    break;
-                }
-            }
-
-            /* Restore framebuffer state from state.bin. */
-            {
-                const uint8_t *fb_mem = ptr;
-                std::vector<uint32_t> fb_words((shdr->fb_size + 3) / 4, 0);
-                memcpy(fb_words.data(), fb_mem, shdr->fb_size);
-                sim_write_fb_bulk(0, fb_words.data(), fb_words.size());
+            if (!skip_sim_fb_state) {
                 fprintf(stderr, "[trace_test] FB state loaded into sim: raw copy (%u bytes, aux_off=0x%x)\n",
-                        shdr->fb_size, shdr->aux_offset);
+                        shdr->fb_size, simStateInfo.auxOffset);
+            } else {
+                fprintf(stderr, "[trace_test] FB state load into sim skipped by TRACE_TEST_SKIP_SIM_FB_STATE\n");
             }
-            ptr += shdr->fb_size;
-
-            /* Write texture memory to sim */
-            sim_write_tex_bulk(0, (const uint32_t *)ptr, shdr->tex_size / 4);
-
-            /* Align sim's front/back assignment with 86Box draw_buffer.
-             * 86Box stores draw_offset as the currently selected draw buffer.
-             * CoreSim derives front/back from swapCount(0):
-             *   swapCount(0)=0 -> front=buffer0, back=buffer1
-             *   swapCount(0)=1 -> front=buffer1, back=buffer0
-             * For the common Voodoo1 double-buffer case, draw_buffer parity is
-             * therefore inverted relative to swapCount(0). */
-            {
-                uint32_t buffer_offset = ((fbiInit2_val >> 11) & 0x1FF) * 4096;
-                if (buffer_offset > 0) {
-                    uint32_t draw_buffer = shdr->draw_offset / buffer_offset;
-                    uint32_t swap_count = 1 - (draw_buffer & 0x1);
-                    sim_set_swap_count(swap_count);
-                    fprintf(stderr, "[trace_test] Buffer alignment: draw_offset=0x%x buffer_offset=0x%x draw_buffer=%u swap_count=%u\n",
-                            shdr->draw_offset, buffer_offset, draw_buffer, swap_count);
+            const uint32_t buffer_offset = ((simStateInfo.fbiInit2 >> 11) & 0x1FFu) * 4096u;
+            if (buffer_offset > 0) {
+                const uint32_t draw_buffer = simStateInfo.drawOffset / buffer_offset;
+                const uint32_t swap_count = 1u - (draw_buffer & 0x1u);
+                fprintf(stderr, "[trace_test] Buffer alignment: draw_offset=0x%x buffer_offset=0x%x draw_buffer=%u swap_count=%u\n",
+                        simStateInfo.drawOffset, buffer_offset, draw_buffer, swap_count);
+            }
+            fprintf(stderr, "[trace_test] State loaded into sim\n");
+            if (dump_ctrl_regs) {
+                const uint32_t regs_to_dump[] = {0x110, 0x118, 0x11c, 0x21c};
+                for (uint32_t reg : regs_to_dump) {
+                    uint32_t sim_val = sim_read(remap_backend_reg_addr(reg));
+                    fprintf(stderr,
+                            "[trace_test] Ctrl reg 0x%03x sim=0x%08x remap=0x%08x\n",
+                            reg, sim_val, remap_backend_reg_addr(reg));
                 }
             }
-
-            /* Ensure all state registers are drained from PciFifo before
-             * reading back or proceeding to trace replay. */
-            sim_invalidate_fb_cache();
-            sim_idle_wait();
-
-            fprintf(stderr, "[trace_test] State loaded into sim\n");
         }
 
         free(state_data);
@@ -1320,26 +1319,9 @@ int main(int argc, char **argv) {
     uint16_t *sim_fb = nullptr;
 
     if (!ref_only) {
-        /* sim_read_fb() is word-addressed. Support 2-byte offsets by aligning
-         * down and tracking the initial halfword lane. */
-        uint32_t aligned_sim_fb_offset = sim_fb_offset & ~0x3u;
-        uint32_t start_halfword = (sim_fb_offset >> 1) & 0x1u;
-        uint32_t total_halfwords = (uint32_t)sim_pixel_stride * (uint32_t)disp_height + start_halfword;
-        uint32_t sim_total_words = (total_halfwords + 1) / 2;
-        std::vector<uint32_t> sim_fb_raw(sim_total_words);
-        sim_read_fb(aligned_sim_fb_offset, sim_fb_raw.data(), sim_total_words);
-
-        /* Extract RGB565 pixels from packed 32-bit words into a flat buffer
-         * with the same row_stride as the reference. */
-        sim_fb_extracted.resize(row_stride * disp_height, 0);
-        for (int y = 0; y < disp_height; y++) {
-            for (int x = 0; x < disp_width; x++) {
-                uint32_t p = start_halfword + (uint32_t)y * (uint32_t)sim_pixel_stride + (uint32_t)x;
-                uint32_t word = sim_fb_raw[p >> 1];
-                uint16_t pixel = (p & 1) ? (uint16_t)((word >> 16) & 0xFFFF) : (uint16_t)(word & 0xFFFF);
-                sim_fb_extracted[y * row_stride + x] = pixel;
-            }
-        }
+        SimReplayBackend simBackend;
+        traceReplayCaptureRgb565(simBackend, sim_fb_offset, (uint32_t)sim_pixel_stride,
+                                 (uint32_t)disp_width, (uint32_t)disp_height, &sim_fb_extracted);
         sim_fb = sim_fb_extracted.data();
 
         uint32_t sim_black = 0;
@@ -1412,25 +1394,10 @@ int main(int argc, char **argv) {
     if (!ref_only && sim_buffer_offset > 0 &&
         (sim_fb_offset == 0 || sim_fb_offset == sim_buffer_offset)) {
         uint32_t alt_sim_fb_offset = (sim_fb_offset == 0) ? sim_buffer_offset : 0;
-        uint32_t aligned_alt_offset = alt_sim_fb_offset & ~0x3u;
-        uint32_t alt_start_halfword = (alt_sim_fb_offset >> 1) & 0x1u;
-        uint32_t alt_total_halfwords =
-            (uint32_t)sim_pixel_stride * (uint32_t)disp_height + alt_start_halfword;
-        uint32_t alt_total_words = (alt_total_halfwords + 1) / 2;
-        std::vector<uint32_t> alt_raw(alt_total_words);
         std::vector<uint16_t> alt_extracted(row_stride * disp_height, 0);
-        sim_read_fb(aligned_alt_offset, alt_raw.data(), alt_total_words);
-
-        for (int y = 0; y < disp_height; y++) {
-            for (int x = 0; x < disp_width; x++) {
-                uint32_t p =
-                    alt_start_halfword + (uint32_t)y * (uint32_t)sim_pixel_stride + (uint32_t)x;
-                uint32_t word = alt_raw[p >> 1];
-                uint16_t pixel = (p & 1) ? (uint16_t)((word >> 16) & 0xFFFF)
-                                         : (uint16_t)(word & 0xFFFF);
-                alt_extracted[y * row_stride + x] = pixel;
-            }
-        }
+        SimReplayBackend simBackend;
+        traceReplayCaptureRgb565(simBackend, alt_sim_fb_offset, (uint32_t)sim_pixel_stride,
+                                 (uint32_t)disp_width, (uint32_t)disp_height, &alt_extracted);
 
         int alt_mismatches = 0;
         uint32_t alt_black = 0;
@@ -1454,7 +1421,7 @@ int main(int argc, char **argv) {
                 alt_sim_fb_offset, alt_mismatches, alt_black, disp_width * disp_height);
         if (alt_mismatches + 64 < mismatches && (mismatches - alt_mismatches) > 256) {
             stale_frame_risk = true;
-            fprintf(stderr, "[trace_test] ERROR: alternate framebuffer matches better (stale-frame risk)\n");
+            fprintf(stderr, "[trace_test] ERROR: alternate framebuffer matches better than selected framebuffer\n");
         }
     }
 
@@ -1500,7 +1467,7 @@ int main(int argc, char **argv) {
             fprintf(stderr, " (tolerance=%d)", color_tolerance);
         fprintf(stderr, "\n");
         if (stale_frame_risk) {
-            fprintf(stderr, "[trace_test] ERROR: stale-frame risk detected by alternate buffer check\n");
+            fprintf(stderr, "[trace_test] ERROR: selected framebuffer appears worse than alternate framebuffer\n");
         }
     }
 

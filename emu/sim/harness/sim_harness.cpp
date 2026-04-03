@@ -156,6 +156,7 @@ static void tick_one(void) {
 #ifdef VM_TRACE_FST
     if (tfp) tfp->dump(sim_time);
 #endif
+
     sim_time++;
 
     /* Internal signal logging below is best-effort debug only and is currently
@@ -183,6 +184,7 @@ static void tick_one(void) {
         }
     }
 #endif
+
 
     /* TMU / watched-pixel internal logging is disabled here until these
      * introspection signal names are refreshed for the refactored CoreSim. */
@@ -960,6 +962,11 @@ void sim_set_swap_count(uint32_t count) {
 uint32_t sim_get_swap_count(void) {
     if (!top) return 0;
     return top->rootp->CoreSim__DOT__core_1__DOT__controlPlane_swapBuffer__DOT__swapCountReg & 0x3u;
+}
+
+void sim_dump_first_fb_writes(const char *path, uint32_t limit) {
+    (void)path;
+    (void)limit;
 }
 
 uint64_t sim_get_cycle(void) { return sim_time / 2; }

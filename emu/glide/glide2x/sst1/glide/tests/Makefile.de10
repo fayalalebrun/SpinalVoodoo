@@ -35,7 +35,8 @@ TESTS = test00.exe test01.exe test02.exe test03.exe test04.exe \
 		test10.exe test11.exe test12.exe test13.exe test14.exe \
 		test15.exe test16.exe test17.exe test18.exe test19.exe \
 		test20.exe test21.exe test22.exe test23.exe test24.exe \
-		test25.exe test26.exe test27.exe test28.exe test29.exe
+		test25.exe test26.exe test27.exe test28.exe test29.exe \
+		sst1perf.exe
 
 .c.o:
 	$(CC) -o $@ $(CFLAGS) -c $<

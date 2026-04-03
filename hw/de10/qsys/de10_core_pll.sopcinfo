@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <EnsembleReport name="de10_core_pll" kind="de10_core_pll" version="1.0" fabric="QSYS">
  <!-- Format version 24.1 1077 (Future versions may contain additional information.) -->
- <!-- 2026.03.30.18:08:58 -->
+ <!-- 2026.03.31.06:09:06 -->
  <!-- A collection of modules and connections -->
  <parameter name="AUTO_GENERATION_ID">
   <type>java.lang.Integer</type>
-  <value>1774894138</value>
+  <value>1774937346</value>
   <derived>false</derived>
   <enabled>true</enabled>
   <visible>false</visible>
@@ -310,7 +310,7 @@ the requested settings for a module instance. -->
   </parameter>
   <parameter name="gui_output_clock_frequency0">
    <type>double</type>
-   <value>50.0</value>
+   <value>5.0</value>
    <derived>false</derived>
    <enabled>true</enabled>
    <visible>true</visible>
@@ -342,7 +342,7 @@ the requested settings for a module instance. -->
   </parameter>
   <parameter name="gui_actual_divide_factor0">
    <type>int</type>
-   <value>6</value>
+   <value>60</value>
    <derived>true</derived>
    <enabled>true</enabled>
    <visible>false</visible>
@@ -2030,7 +2030,7 @@ the requested settings for a module instance. -->
   </parameter>
   <parameter name="output_clock_frequency0">
    <type>java.lang.String</type>
-   <value>50.000000 MHz</value>
+   <value>5.000000 MHz</value>
    <derived>true</derived>
    <enabled>true</enabled>
    <visible>false</visible>
@@ -2598,7 +2598,7 @@ the requested settings for a module instance. -->
   </parameter>
   <parameter name="c_cnt_hi_div0">
    <type>int</type>
-   <value>3</value>
+   <value>30</value>
    <derived>true</derived>
    <enabled>false</enabled>
    <visible>false</visible>
@@ -2606,7 +2606,7 @@ the requested settings for a module instance. -->
   </parameter>
   <parameter name="c_cnt_lo_div0">
    <type>int</type>
-   <value>3</value>
+   <value>30</value>
    <derived>true</derived>
    <enabled>false</enabled>
    <visible>false</visible>
@@ -3694,7 +3694,7 @@ the requested settings for a module instance. -->
   </parameter>
   <parameter name="gui_parameter_values">
    <type>[Ljava.lang.String;</type>
-   <value>3,3,256,256,false,true,false,false,3,3,1,0,ph_mux_clk,false,false,2,30,2000,300.0 MHz,1,none,glb,m_cnt,ph_mux_clk,false</value>
+   <value>3,3,256,256,false,true,false,false,30,30,1,0,ph_mux_clk,false,false,2,30,2000,300.0 MHz,1,none,glb,m_cnt,ph_mux_clk,false</value>
    <derived>true</derived>
    <enabled>true</enabled>
    <visible>true</visible>
@@ -3996,7 +3996,7 @@ parameters are a RESULT of the module parameters. -->
    </parameter>
    <parameter name="clockRate">
     <type>long</type>
-    <value>50000000</value>
+    <value>5000000</value>
     <derived>false</derived>
     <enabled>true</enabled>
     <visible>true</visible>

@@ -278,7 +278,23 @@ case class FramebufferPlaneBuffer(c: Config, formalStrong: Boolean = true) exten
   io.mem.cmd.last := True
   io.mem.rsp.ready := False
 
+  slotValid.foreach(v => v := v)
+  slotDraining.foreach(v => v := v)
+  slotStartAddr.foreach(v => v := v)
+  slotWordCount.foreach(v => v := v)
+  slotPendingAddress.foreach(v => v := v)
+  slotPendingData.foreach(v => v := v)
+  slotPendingMask.foreach(v => v := v)
+  activeSlot := activeSlot
   directState := directState
+  directWriteAddress := directWriteAddress
+  directWriteData := directWriteData
+  directWriteMask := directWriteMask
+  drainState := drainState
+  drainSlot := drainSlot
+  drainIndex := drainIndex
+  drainLastIndex := drainLastIndex
+  drainLength := drainLength
   writeReqPipe.ready := False
 
   val otherSlot = activeSlot ^ U(1, slotIndexWidth bits)

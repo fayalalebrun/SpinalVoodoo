@@ -52,7 +52,11 @@ readAndSum4x4(FxU32 *sstbase, FxU32 x, FxU32 y,
 
     /* wait for idle board */
     ISET(sst->lfbMode, SST_LFB_RGBALANES_ARGB | SST_LFB_READFRONTBUFFER);
+    fprintf(stderr, "[de10] readAndSum4x4: before idle x=%u y=%u\n", x, y);
+    fflush(stderr);
     sst1InitIdle(sstbase);
+    fprintf(stderr, "[de10] readAndSum4x4: after idle x=%u y=%u\n", x, y);
+    fflush(stderr);
     if (x & 1) {
 	INIT_PRINTF(("ERROR: readAndSum4x4 must have an even X (%d)\n", x));
 	return(FXFALSE);
@@ -131,8 +135,8 @@ initSumTables(FxU32 *sstbase)
     /* fill sum array */
     for (tst_color = 0; tst_color <= 255; tst_color++) {
 	#if defined(DE10_BACKEND) || defined(SIM_BACKEND)
-	if ((tst_color & 0x1f) == 0) {
-	    fprintf(stderr, "[de10] initSumTables: tst_color=%u\n", tst_color);
+	if ((tst_color < 8) || ((tst_color & 0x1f) == 0)) {
+	    fprintf(stderr, "[de10] initSumTables: tst_color=%u begin\n", tst_color);
 	    fflush(stderr);
 	}
 	#endif
@@ -140,20 +144,47 @@ initSumTables(FxU32 *sstbase)
 	ISET(sst->c1, (tst_color << 16) | (tst_color << 8) | tst_color);
 
 	drawTriangle(sst, x,y,36);
+	#if defined(DE10_BACKEND) || defined(SIM_BACKEND)
+	if (tst_color < 8) {
+	    fprintf(stderr, "[de10] initSumTables: tst_color=%u after drawTriangle status=0x%08x\n",
+	            tst_color, IGET(sst->status));
+	    fflush(stderr);
+	}
+	#endif
 	if(readAndSum4x4(sstbase, x,y, &r_sum,&g_sum,&b_sum) == FXFALSE)
 		return(FXFALSE);
+	#if defined(DE10_BACKEND) || defined(SIM_BACKEND)
+	if (tst_color < 8) {
+	    fprintf(stderr,
+	            "[de10] initSumTables: tst_color=%u sums r=0x%03x g=0x%03x b=0x%03x\n",
+	            tst_color, r_sum, g_sum, b_sum);
+	    fflush(stderr);
+	}
+	#endif
 
 	/* check sums for uniqueness and then store away */
 	if (r_sum != b_sum) {
+	    fprintf(stderr,
+	            "[de10] initSumTables: FAIL color=%u r_sum=0x%03x b_sum=0x%03x mismatch\n",
+	            tst_color, r_sum, b_sum);
+	    fflush(stderr);
 	    INIT_PRINTF(("ERROR:  b_sum=0x%03x  r_sum=0x%03x\n", r_sum, b_sum));
 		return(FXFALSE);
 	}
 	if (rb_tbl[r_sum] != -1) {
+	    fprintf(stderr,
+	            "[de10] initSumTables: FAIL color=%u duplicate rb_sum=0x%03x prev=%d\n",
+	            tst_color, r_sum, rb_tbl[r_sum]);
+	    fflush(stderr);
 	    INIT_PRINTF(("ERROR:  non-unique r/b_sum=0x%03x\n", r_sum));
 		return(FXFALSE);
 	}
 	rb_tbl[r_sum] = tst_color;
 	if (g_tbl[g_sum] != -1) {
+	    fprintf(stderr,
+	            "[de10] initSumTables: FAIL color=%u duplicate g_sum=0x%03x prev=%d\n",
+	            tst_color, g_sum, g_tbl[g_sum]);
+	    fflush(stderr);
 	    INIT_PRINTF(("ERROR:  non-unique g_sum=0x%03x\n", g_sum));
 		return(FXFALSE);
 	}

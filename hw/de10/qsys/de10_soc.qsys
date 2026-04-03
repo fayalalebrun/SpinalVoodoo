@@ -17,7 +17,23 @@
          type = "int";
       }
    }
-   element fb_bridge
+   element fb_aux_read_bridge
+   {
+      datum _sortIndex
+      {
+         value = "5";
+         type = "int";
+      }
+   }
+   element fb_color_read_bridge
+   {
+      datum _sortIndex
+      {
+         value = "4";
+         type = "int";
+      }
+   }
+   element fb_write_bridge
    {
       datum _sortIndex
       {
@@ -45,7 +61,7 @@
    {
       datum _sortIndex
       {
-         value = "4";
+         value = "6";
          type = "int";
       }
    }
@@ -71,7 +87,21 @@
  <parameter name="useTestBenchNamingPattern" value="false" />
  <instanceScript></instanceScript>
  <interface name="clk" internal="clk_0.clk_in" type="clock" dir="end" />
- <interface name="fb_mem" internal="fb_bridge.s0" type="avalon" dir="end" />
+ <interface
+   name="fb_aux_read_mem"
+   internal="fb_aux_read_bridge.s0"
+   type="avalon"
+   dir="end" />
+ <interface
+   name="fb_color_read_mem"
+   internal="fb_color_read_bridge.s0"
+   type="avalon"
+   dir="end" />
+ <interface
+   name="fb_write_mem"
+   internal="fb_write_bridge.s0"
+   type="avalon"
+   dir="end" />
  <interface name="h2f_avalon" internal="h2f_bridge.m0" type="avalon" dir="start" />
  <interface
    name="h2f_mpu_events"
@@ -83,13 +113,49 @@
  <interface name="reset" internal="clk_0.clk_in_reset" type="reset" dir="end" />
  <interface name="tex_mem" internal="tex_bridge.s0" type="avalon" dir="end" />
  <module name="clk_0" kind="clock_source" version="24.1" enabled="1">
-  <parameter name="clockFrequency" value="50000000" />
+  <parameter name="clockFrequency" value="5000000" />
   <parameter name="clockFrequencyKnown" value="true" />
   <parameter name="inputClockFrequency" value="0" />
   <parameter name="resetSynchronousEdges" value="NONE" />
  </module>
  <module
-   name="fb_bridge"
+   name="fb_aux_read_bridge"
+   kind="altera_avalon_mm_bridge"
+   version="24.1"
+   enabled="1">
+  <parameter name="ADDRESS_UNITS" value="SYMBOLS" />
+  <parameter name="ADDRESS_WIDTH" value="32" />
+  <parameter name="DATA_WIDTH" value="32" />
+  <parameter name="LINEWRAPBURSTS" value="0" />
+  <parameter name="MAX_BURST_SIZE" value="1024" />
+  <parameter name="MAX_PENDING_RESPONSES" value="4" />
+  <parameter name="PIPELINE_COMMAND" value="1" />
+  <parameter name="PIPELINE_RESPONSE" value="1" />
+  <parameter name="SYMBOL_WIDTH" value="8" />
+  <parameter name="SYSINFO_ADDR_WIDTH" value="32" />
+  <parameter name="USE_AUTO_ADDRESS_WIDTH" value="0" />
+  <parameter name="USE_RESPONSE" value="0" />
+ </module>
+ <module
+   name="fb_color_read_bridge"
+   kind="altera_avalon_mm_bridge"
+   version="24.1"
+   enabled="1">
+  <parameter name="ADDRESS_UNITS" value="SYMBOLS" />
+  <parameter name="ADDRESS_WIDTH" value="32" />
+  <parameter name="DATA_WIDTH" value="32" />
+  <parameter name="LINEWRAPBURSTS" value="0" />
+  <parameter name="MAX_BURST_SIZE" value="1024" />
+  <parameter name="MAX_PENDING_RESPONSES" value="4" />
+  <parameter name="PIPELINE_COMMAND" value="1" />
+  <parameter name="PIPELINE_RESPONSE" value="1" />
+  <parameter name="SYMBOL_WIDTH" value="8" />
+  <parameter name="SYSINFO_ADDR_WIDTH" value="32" />
+  <parameter name="USE_AUTO_ADDRESS_WIDTH" value="0" />
+  <parameter name="USE_RESPONSE" value="0" />
+ </module>
+ <module
+   name="fb_write_bridge"
    kind="altera_avalon_mm_bridge"
    version="24.1"
    enabled="1">
@@ -220,8 +286,8 @@
   <parameter name="ENABLE_USER_ECC" value="false" />
   <parameter name="EXPORT_AFI_HALF_CLK" value="false" />
   <parameter name="EXTRA_SETTINGS" value="" />
-  <parameter name="F2H_AXI_CLOCK_FREQ" value="50000000" />
-  <parameter name="F2H_SDRAM0_CLOCK_FREQ" value="50000000" />
+  <parameter name="F2H_AXI_CLOCK_FREQ" value="5000000" />
+  <parameter name="F2H_SDRAM0_CLOCK_FREQ" value="5000000" />
   <parameter name="F2H_SDRAM1_CLOCK_FREQ" value="100" />
   <parameter name="F2H_SDRAM2_CLOCK_FREQ" value="100" />
   <parameter name="F2H_SDRAM3_CLOCK_FREQ" value="100" />
@@ -275,10 +341,10 @@
   <parameter name="FPGA_PERIPHERAL_OUTPUT_CLOCK_FREQ_SPIM1_SCLK_OUT" value="100" />
   <parameter name="GPIO_Enable">No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No,No</parameter>
   <parameter name="GP_Enable" value="false" />
-  <parameter name="H2F_AXI_CLOCK_FREQ" value="50000000" />
+  <parameter name="H2F_AXI_CLOCK_FREQ" value="5000000" />
   <parameter name="H2F_CTI_CLOCK_FREQ" value="100" />
   <parameter name="H2F_DEBUG_APB_CLOCK_FREQ" value="100" />
-  <parameter name="H2F_LW_AXI_CLOCK_FREQ" value="50000000" />
+  <parameter name="H2F_LW_AXI_CLOCK_FREQ" value="5000000" />
   <parameter name="H2F_TPIU_CLOCK_IN_FREQ" value="100" />
   <parameter name="HARD_EMIF" value="true" />
   <parameter name="HCX_COMPAT_MODE" value="false" />
@@ -684,7 +750,25 @@
  <connection
    kind="avalon"
    version="24.1"
-   start="fb_bridge.m0"
+   start="fb_write_bridge.m0"
+   end="hps_0.f2h_sdram0_data">
+  <parameter name="arbitrationPriority" value="1" />
+  <parameter name="baseAddress" value="0x0000" />
+  <parameter name="defaultConnection" value="false" />
+ </connection>
+ <connection
+   kind="avalon"
+   version="24.1"
+   start="fb_color_read_bridge.m0"
+   end="hps_0.f2h_sdram0_data">
+  <parameter name="arbitrationPriority" value="1" />
+  <parameter name="baseAddress" value="0x0000" />
+  <parameter name="defaultConnection" value="false" />
+ </connection>
+ <connection
+   kind="avalon"
+   version="24.1"
+   start="fb_aux_read_bridge.m0"
    end="hps_0.f2h_sdram0_data">
   <parameter name="arbitrationPriority" value="1" />
   <parameter name="baseAddress" value="0x0000" />
@@ -700,7 +784,21 @@
   <parameter name="defaultConnection" value="false" />
  </connection>
  <connection kind="clock" version="24.1" start="clk_0.clk" end="h2f_bridge.clk" />
- <connection kind="clock" version="24.1" start="clk_0.clk" end="fb_bridge.clk" />
+ <connection
+   kind="clock"
+   version="24.1"
+   start="clk_0.clk"
+   end="fb_write_bridge.clk" />
+ <connection
+   kind="clock"
+   version="24.1"
+   start="clk_0.clk"
+   end="fb_color_read_bridge.clk" />
+ <connection
+   kind="clock"
+   version="24.1"
+   start="clk_0.clk"
+   end="fb_aux_read_bridge.clk" />
  <connection kind="clock" version="24.1" start="clk_0.clk" end="tex_bridge.clk" />
  <connection
    kind="clock"
@@ -731,7 +829,17 @@
    kind="reset"
    version="24.1"
    start="clk_0.clk_reset"
-   end="fb_bridge.reset" />
+   end="fb_write_bridge.reset" />
+ <connection
+   kind="reset"
+   version="24.1"
+   start="clk_0.clk_reset"
+   end="fb_color_read_bridge.reset" />
+ <connection
+   kind="reset"
+   version="24.1"
+   start="clk_0.clk_reset"
+   end="fb_aux_read_bridge.reset" />
  <connection
    kind="reset"
    version="24.1"

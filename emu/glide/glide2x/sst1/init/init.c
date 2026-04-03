@@ -137,9 +137,13 @@ initEnumHardware( InitHWEnumCallback *cb )
 
     numDevicesInSystem = 0;
     numSst1s = 0;
+    de10EnumStage("initEnumHardware: before pciOpen");
     if ( !pciOpen() ) return;
+    de10EnumStage("initEnumHardware: after pciOpen");
     for( busLocation = 0; busLocation < MAX_PCI_DEVICES; busLocation++ ) {
+      if (busLocation == 0) de10EnumStage("initEnumHardware: before pciDeviceExists(0)");
       if ( pciDeviceExists( busLocation ) ) {
+        if (busLocation == 0) de10EnumStage("initEnumHardware: after pciDeviceExists(0)");
         FxU32 vId, dId;
         pciGetConfigData( PCI_VENDOR_ID, busLocation, &vId );
         pciGetConfigData( PCI_DEVICE_ID, busLocation, &dId );

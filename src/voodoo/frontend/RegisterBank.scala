@@ -407,21 +407,21 @@ case class RegisterBank(config: Config) extends Component {
   ): Rasterizer.GradientBundle[Rasterizer.InputGradient] = {
     val grads = Rasterizer.GradientBundle(Rasterizer.InputGradient(_), config)
     grads.all.zip(sources).foreach { case (grad, (start, dx, dy)) =>
-      grad.start.raw := start.asSInt.resize(grad.start.raw.getWidth bits).asBits
-      grad.d(0).raw := dx.asSInt.resize(grad.d(0).raw.getWidth bits).asBits
-      grad.d(1).raw := dy.asSInt.resize(grad.d(1).raw.getWidth bits).asBits
+      grad.start.raw := start.asSInt.resize(grad.start.raw.getWidth).asBits
+      grad.d(0).raw := dx.asSInt.resize(grad.d(0).raw.getWidth).asBits
+      grad.d(1).raw := dy.asSInt.resize(grad.d(1).raw.getWidth).asBits
     }
     grads
   }
 
   private def captureTriangleHiTexCoords(useFloatShadow: Bool): TriangleSetup.HiTexCoords = {
     val hi = TriangleSetup.HiTexCoords(config)
-    val startSInt = triangleGeometry.startS.asSInt.resize(60 bits) |<< 12
-    val startTInt = triangleGeometry.startT.asSInt.resize(60 bits) |<< 12
-    val dSdXInt = triangleGeometry.dSdX.asSInt.resize(60 bits) |<< 12
-    val dTdXInt = triangleGeometry.dTdX.asSInt.resize(60 bits) |<< 12
-    val dSdYInt = triangleGeometry.dSdY.asSInt.resize(60 bits) |<< 12
-    val dTdYInt = triangleGeometry.dTdY.asSInt.resize(60 bits) |<< 12
+    val startSInt = triangleGeometry.startS.raw.asSInt.resize(60) |<< 12
+    val startTInt = triangleGeometry.startT.raw.asSInt.resize(60) |<< 12
+    val dSdXInt = triangleGeometry.dSdX.raw.asSInt.resize(60) |<< 12
+    val dTdXInt = triangleGeometry.dTdX.raw.asSInt.resize(60) |<< 12
+    val dSdYInt = triangleGeometry.dSdY.raw.asSInt.resize(60) |<< 12
+    val dTdYInt = triangleGeometry.dTdY.raw.asSInt.resize(60) |<< 12
 
     hi.sStart.raw := Mux(
       useFloatShadow,
@@ -442,9 +442,9 @@ case class RegisterBank(config: Config) extends Component {
 
   private def captureTriangleHiAlpha(useFloatShadow: Bool): TriangleSetup.HiAlpha = {
     val hi = TriangleSetup.HiAlpha(config)
-    val startAInt = triangleGeometry.startA.asSInt.resize(60 bits) |<< 18
-    val dAdXInt = triangleGeometry.dAdX.asSInt.resize(60 bits) |<< 18
-    val dAdYInt = triangleGeometry.dAdY.asSInt.resize(60 bits) |<< 18
+    val startAInt = triangleGeometry.startA.raw.asSInt.resize(60) |<< 18
+    val dAdXInt = triangleGeometry.dAdX.raw.asSInt.resize(60) |<< 18
+    val dAdYInt = triangleGeometry.dAdY.raw.asSInt.resize(60) |<< 18
 
     hi.start.raw := Mux(
       useFloatShadow,
@@ -471,17 +471,17 @@ case class RegisterBank(config: Config) extends Component {
           Mux(
             useFloatShadow,
             floatShadowStartW.asBits,
-            g.startW.asSInt.resize(60 bits).asBits
+            g.startW.raw.asSInt.resize(60).asBits
           ),
           Mux(
             useFloatShadow,
             floatShadowDWdX.asBits,
-            g.dWdX.asSInt.resize(60 bits).asBits
+            g.dWdX.raw.asSInt.resize(60).asBits
           ),
           Mux(
             useFloatShadow,
             floatShadowDWdY.asBits,
-            g.dWdY.asSInt.resize(60 bits).asBits
+            g.dWdY.raw.asSInt.resize(60).asBits
           )
         ),
         (g.startS.asBits, g.dSdX.asBits, g.dSdY.asBits),
@@ -625,20 +625,29 @@ case class RegisterBank(config: Config) extends Component {
         }
       }
     val (nopCmdReg, nopCmdStream) =
-      busif.newCommandReg(0x120, "nopCMD", RegisterCategory.fifoWithSync)
+      busif.newCommandRegWithPayload(
+        0x120,
+        "nopCMD",
+        RegisterCategory.fifoWithSync,
+        HardType(Bits(32 bits))
+      ) { (_, payload) =>
+        Component.current.addPrePopTask { () =>
+          payload := io.bus.cmd.data.asBits
+        }
+      }
     val (fastfillCmdReg, fastfillCmdStream) =
       busif.newCommandReg(0x124, "fastfillCMD", RegisterCategory.fifoWithSync)
     val (swapbufferCmdReg, swapbufferCmdStream) =
       busif.newCommandReg(0x128, "swapbufferCMD", RegisterCategory.fifoWithSync)
 
-    if (config.trace.enabled) {
-      when(swapbufferCmdStream.fire) {
-        triangleDrawTraceId := triangleDrawTraceId + 1
+      if (config.trace.enabled) {
+        when(swapbufferCmdStream.fire) {
+          triangleDrawTraceId := triangleDrawTraceId + 1
+        }
+        when(triangleCmdStream.valid || ftriangleCmdStream.valid) {
+          trianglePrimitiveTraceId := trianglePrimitiveTraceId + 1
+        }
       }
-      when(triangleCmdReg.hitDoWrite || ftriangleCmdReg.hitDoWrite) {
-        trianglePrimitiveTraceId := trianglePrimitiveTraceId + 1
-      }
-    }
 
     // Define full 32-bit fields for other command registers
     nopCmdReg.field(Bits(32 bits), AccessType.RW, 0, "NOP command data")

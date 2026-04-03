@@ -6,7 +6,7 @@
 #   tomb/<runtime>/<action>
 #   de10/<action>
 
-.PHONY: all clean clean-sim clean-glide clean-tests native/help native/sim/build native/trace/build native/sim/run-all native/sim/check-all dos/help dos/sim/build dos/trace/build dos/dosbox tomb/help tomb/prepare tomb/sim/run tomb/sim/headless tomb/sim/capture tomb/sim/trace tomb/sim/trace/check tomb/trace/run tomb/trace/headless tomb/trace/check tomb/trace/profile de10/help de10/setup/program de10/setup/deploy de10/check/mmio de10/check/ddr-stress de10/report/ddr de10/run/tomb de10/run/tomb/vnc de10/trace/run de10/trace/tomb de10/plan de10/rtl de10/qsys de10/bitstream de10/ddrbench/rtl de10/ddrbench/bitstream de10/sync-sysroot de10/glide de10/glide-tests de10/glide-cross de10/glide-tests-cross FORCE
+.PHONY: all clean clean-sim clean-glide clean-tests native/help native/sim/build native/trace/build native/sim/run-all native/sim/check-all native/de10sim/check-all dos/help dos/sim/build dos/trace/build dos/dosbox tomb/help tomb/prepare tomb/sim/run tomb/sim/headless tomb/sim/capture tomb/sim/trace tomb/sim/trace/check tomb/trace/run tomb/trace/headless tomb/trace/check tomb/trace/profile de10/help de10/setup/program de10/setup/deploy de10/check/mmio de10/check/ddr-stress de10/report/ddr de10/run/tomb de10/run/tomb/vnc de10/trace/run de10/trace/tomb de10/plan de10/rtl de10/qsys de10/bitstream de10/ddrbench/rtl de10/ddrbench/bitstream de10/sync-sysroot de10/glide de10/glide-tests de10/glide-cross de10/glide-tests-cross FORCE
 .PRECIOUS: dos/sim/build/% dos/trace/build/%
 
 # Derive CXX32 from CC32 for sub-makefiles that need it
@@ -56,6 +56,7 @@ native/help:
 	@echo "  make native/trace/build           # build the trace-capture Glide runtime"
 	@echo "  make native/trace/run/test00      # capture a trace from one Linux-hosted test"
 	@echo "  make native/sim/check/test00      # replay an existing trace through the check pipeline"
+	@echo "  make native/de10sim/check/test00  # replay an existing trace through the DE10 sim pipeline"
 	@echo "  make native/sim/test/test00       # capture and check in one step"
 	@echo "  make native/sim/check-all         # replay every existing trace"
 
@@ -139,6 +140,31 @@ tomb/trace/check: $(TRACE_TEST_BIN)
 	@mkdir -p output/tomb/trace_replay
 	$(TRACE_TEST_BIN) traces/tomb --output-dir output/tomb/trace_replay
 
+native/de10sim/check/%: FORCE
+	$(MAKE) -C emu/test SIM_INTERFACE=de10
+	@mkdir -p test-output/$*-de10sim
+	@if [ -f traces/$*.bin ]; then \
+	  src=traces/$*.bin; \
+	elif [ -d traces/$* ]; then \
+	  src=traces/$*/; \
+	else \
+	  echo "ERROR: neither traces/$*.bin nor traces/$*/ found. Run a trace capture first."; exit 1; \
+	fi; \
+	emu/test/obj_dir/trace_test "$$src" --output-dir test-output/$*-de10sim
+
+native/de10sim/check-all: FORCE
+	@for f in traces/*.bin; do \
+	  [ -f "$$f" ] || continue; \
+	  name="$${f##*/}"; name="$${name%.bin}"; \
+	  $(MAKE) native/de10sim/check/$$name || exit 1; \
+	done; \
+	for d in traces/*; do \
+	  [ -d "$$d" ] || continue; \
+	  [ -f "$$d/trace.bin" ] || continue; \
+	  name="$${d##*/}"; \
+	  $(MAKE) native/de10sim/check/$$name || exit 1; \
+	done
+
 tomb/trace/profile:
 	bash ./scripts/profile-trace-corede10 traces/tomb $(ARGS)
 
@@ -154,6 +180,7 @@ de10/help:
 	@echo "  make de10/run/tomb         # run Tomb from a prepared remote Tomb tree"
 	@echo "  make de10/run/tomb/vnc     # run Tomb on the board under a VNC X server"
 	@echo "  make de10/trace/tomb       # replay traces/tomb on the board and dump a screenshot"
+	@echo "  make native/de10sim/check/tomb # replay traces/tomb through the DE10 simulator backend"
 	@echo ""
 	@echo "Advanced DE10 targets:"
 	@echo "  make de10/plan         # open goals and bring-up docs"

@@ -508,12 +508,30 @@ case class Tmu(c: voodoo.Config) extends Component {
     .queue(16)
 
   val requestIdAlloc = Reg(UInt(requestIdWidth bits)) init 0
+  val bypassOutput = Stream(Tmu.Output(c))
+  val bypassTexture = !stageB.payload.meta.config.textureEnable
+  val bypassSafe = bypassTexture && (inFlightCount === 0)
+
+  bypassOutput.valid := sampleRequestBase.valid && bypassSafe
+  bypassOutput.payload.texture.r := 0
+  bypassOutput.payload.texture.g := 0
+  bypassOutput.payload.texture.b := 0
+  bypassOutput.payload.textureAlpha := U(255, 8 bits)
+  bypassOutput.payload.requestId := requestIdAlloc
+  if (c.trace.enabled) {
+    bypassOutput.payload.trace := sampleRequestBase.payload.passthrough.trace
+  }
+
   val canAllocate = inFlightCount =/= maxOutstanding
   val sampleRequest = Stream(Tmu.SampleRequest(c))
-  sampleRequest.valid := sampleRequestBase.valid && canAllocate
+  sampleRequest.valid := sampleRequestBase.valid && !bypassTexture && canAllocate
   copySampleRequest(sampleRequest.payload, sampleRequestBase.payload, c)
   sampleRequest.payload.passthrough.requestId := requestIdAlloc
-  sampleRequestBase.ready := sampleRequest.ready && canAllocate
+  sampleRequestBase.ready := Mux(
+    bypassTexture,
+    bypassOutput.ready && bypassSafe,
+    sampleRequest.ready && canAllocate
+  )
 
   val textureCache = TmuTextureCache(c)
   sampleRequest >/-> textureCache.io.sampleRequest
@@ -538,6 +556,7 @@ case class Tmu(c: voodoo.Config) extends Component {
 
   fastOutput.ready := !retireValid(fastOutput.payload.requestId)
   normalOutput.ready := !retireValid(normalOutput.payload.requestId)
+  bypassOutput.ready := !retireValid(requestIdAlloc)
 
   when(fastOutput.fire) {
     retireValid(fastOutput.payload.requestId) := True
@@ -547,6 +566,10 @@ case class Tmu(c: voodoo.Config) extends Component {
     retireValid(normalOutput.payload.requestId) := True
     retireData(normalOutput.payload.requestId) := normalOutput.payload
   }
+  when(bypassOutput.fire) {
+    retireValid(bypassOutput.payload.requestId) := True
+    retireData(bypassOutput.payload.requestId) := bypassOutput.payload
+  }
 
   io.output.valid := retireValid(retireHead)
   io.output.payload := retireData(retireHead)
@@ -555,12 +578,12 @@ case class Tmu(c: voodoo.Config) extends Component {
     retireHead := retireHead + 1
   }
 
-  when(sampleRequest.fire) {
+  when(sampleRequest.fire || bypassOutput.fire) {
     requestIdAlloc := requestIdAlloc + 1
   }
-  when(sampleRequest.fire && !io.output.fire) {
+  when((sampleRequest.fire || bypassOutput.fire) && !io.output.fire) {
     inFlightCount := inFlightCount + 1
-  }.elsewhen(!sampleRequest.fire && io.output.fire) {
+  }.elsewhen(!(sampleRequest.fire || bypassOutput.fire) && io.output.fire) {
     inFlightCount := inFlightCount - 1
   }
   io.busy := inFlightCount =/= 0 || stageRecipPrep.valid || stageRecip.valid || stageA.valid || stageGrad.valid || stageLodPrep.valid || stageLod.valid || stageB.valid || sampleRequestBase.valid
@@ -990,6 +1013,7 @@ object Tmu {
     val textureMode = Bits(32 bits)
     val texBaseAddr = UInt(24 bits)
     val tLOD = Bits(27 bits)
+    val textureEnable = Bool()
     val sendConfig = Bool()
     val ncc = NccTableData()
     val texTables = if (c != null && c.packedTexLayout) TexLayoutTables.Tables() else null
@@ -1023,6 +1047,7 @@ object Tmu {
       out.config.textureMode := in.config.tmuTextureMode
       out.config.texBaseAddr := in.config.tmuTexBaseAddr
       out.config.tLOD := in.config.tmuTLOD
+      out.config.textureEnable := in.config.fbzColorPath.textureEnable
       out.config.sendConfig := in.config.tmuSendConfig
       out.config.ncc := in.config.ncc
       if (c.packedTexLayout) out.config.texTables := in.config.texTables

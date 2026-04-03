@@ -76,6 +76,8 @@ void sim_set_swap_count(uint32_t count);
 /* Read the current swap buffer count register. */
 uint32_t sim_get_swap_count(void);
 
+void sim_dump_first_fb_writes(const char *path, uint32_t limit);
+
 /* Return current simulation cycle count. */
 uint64_t sim_get_cycle(void);
 

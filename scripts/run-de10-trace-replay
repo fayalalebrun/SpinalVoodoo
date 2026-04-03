@@ -99,6 +99,7 @@ fi
 ssh "$REMOTE_TARGET" "mkdir -p '$REMOTE_DIR'"
 scp "$ROOT_DIR/tools/de10-trace-replay.cpp" \
     "$ROOT_DIR/emu/trace/voodoo_trace_format.h" \
+    "$ROOT_DIR/emu/trace/trace_replay_backend.h" \
     "$TRACE_FILE" "$STATE_FILE" \
     "$REMOTE_TARGET:$REMOTE_DIR/"
 ssh "$REMOTE_TARGET" "g++ -O2 -std=c++17 -I'$REMOTE_DIR' -o '$REMOTE_DIR/de10-trace-replay' '$REMOTE_DIR/de10-trace-replay.cpp'"
@@ -122,40 +123,11 @@ ROW_BYTES="${FB_META[0]}"
 WIDTH="${FB_META[1]}"
 HEIGHT="${FB_META[2]}"
 
-FBIINIT2_HEX="$(ssh "$REMOTE_TARGET" "sudo -n python3 - <<'PY'
-import mmap, os, struct
-fd = os.open('/dev/mem', os.O_RDWR | os.O_SYNC)
-mm = mmap.mmap(fd, 0x00400000, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE, offset=0xC0000000)
-val = struct.unpack_from('<I', mm, 0x218)[0]
-print(f'{val:08x}')
-mm.close()
-os.close(fd)
-PY")"
-FB_OFFSET="$(( ((16#$FBIINIT2_HEX >> 11) & 0x1ff) * 4096 ))"
 RAW_FILE="$OUTPUT_DIR/trace_board_fb.raw"
 PNG_FILE="$OUTPUT_DIR/trace_board_fb.png"
 
-ssh "$REMOTE_TARGET" "sudo -n python3 - <<'PY' '$REMOTE_DIR/trace_board_fb.raw' '$FB_OFFSET' '$ROW_BYTES' '$HEIGHT'
-import mmap, os, sys
-out_path = sys.argv[1]
-fb_offset = int(sys.argv[2])
-row_bytes = int(sys.argv[3])
-height = int(sys.argv[4])
-length = row_bytes * height
-phys = 0x3F000000 + fb_offset
-page = phys & ~0xfff
-page_off = phys - page
-map_len = page_off + length
-fd = os.open('/dev/mem', os.O_RDWR | os.O_SYNC)
-mm = mmap.mmap(fd, map_len, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE, offset=page)
-with open(out_path, 'wb') as f:
-    f.write(mm[page_off:page_off + length])
-mm.close()
-os.close(fd)
-PY"
 scp "$REMOTE_TARGET:$REMOTE_DIR/trace_board_fb.raw" "$RAW_FILE"
 python3 "$ROOT_DIR/scripts/rgb565_to_png.py" "$RAW_FILE" "$PNG_FILE" "$WIDTH" "$HEIGHT" "$ROW_BYTES"
 
 echo "[de10-trace] Screenshot: $PNG_FILE"
 echo "[de10-trace] Replay log: $LOG_FILE"
-echo "[de10-trace] Final fbiInit2: 0x$FBIINIT2_HEX (front offset 0x$(printf '%x' "$FB_OFFSET"))"

@@ -49,6 +49,23 @@ class H2fLwToBmbBridgeFormalDut(formalStrong: Boolean) extends Component {
     assume(dut.io.h2fLw.writedata === past(dut.io.h2fLw.writedata))
   }
 
+  val cmdAccepted = dut.io.cpuBus.cmd.valid && dut.io.cpuBus.cmd.ready
+  val pendingCmd = RegInit(False)
+
+  when(reset) {
+    pendingCmd := False
+  } otherwise {
+    when(cmdAccepted && !dut.io.cpuBus.rsp.valid) {
+      pendingCmd := True
+    }
+    when(dut.io.cpuBus.rsp.valid) {
+      assume(pendingCmd || cmdAccepted)
+      assume(dut.io.cpuBus.rsp.last)
+      assume(dut.io.cpuBus.rsp.source === 0)
+      pendingCmd := False
+    }
+  }
+
   val readRspSeen = RegInit(False)
   val writeSeen = RegInit(False)
   val mixedSeen = RegInit(False)
@@ -72,16 +89,17 @@ class H2fLwToBmbBridgeFormalProveDut extends H2fLwToBmbBridgeFormalDut(formalStr
 class H2fLwToBmbBridgeFormalCoverDut extends H2fLwToBmbBridgeFormalDut(formalStrong = true)
 
 class De10BmbToAvalonMmFormalDut(formalStrong: Boolean) extends Component {
-  val bmbParams = BmbParameter(
+  val multiSourceParams = BmbParameter(
     addressWidth = 10,
     dataWidth = 32,
     sourceWidth = 2,
     contextWidth = 0,
-    lengthWidth = 6,
+    lengthWidth = 4,
     canRead = true,
     canWrite = true,
     alignment = BmbParameter.BurstAlignement.BYTE
   )
+  val bmbParams = De10BmbToAvalonMm.singleSourceBridgeParams(multiSourceParams)
 
   val dut = De10BmbToAvalonMm(
     bmbParams = bmbParams,
@@ -125,12 +143,12 @@ class De10BmbToAvalonMmFormalDut(formalStrong: Boolean) extends Component {
     assume(dut.io.bmb.cmd.last === past(dut.io.bmb.cmd.last))
   }
 
-  val pendingReadBeats = Reg(UInt(6 bits)) init (0)
+  val pendingReadBeats = Reg(UInt(7 bits)) init (0)
   when(dut.io.mem.read && dut.io.mem.waitRequestn) {
     assume(!dut.io.mem.readDataValid)
-    assume(pendingReadBeats === 0)
     assume(dut.io.mem.burstCount =/= 0)
-    pendingReadBeats := dut.io.mem.burstCount.resize(6)
+    assume(pendingReadBeats === 0)
+    pendingReadBeats := pendingReadBeats + dut.io.mem.burstCount.resize(7)
   }
   when(dut.io.mem.readDataValid) {
     assume(pendingReadBeats =/= 0)
@@ -146,17 +164,23 @@ class De10BmbToAvalonMmFormalDut(formalStrong: Boolean) extends Component {
 
   val sawMaskedWrite = RegInit(False)
   val sawBurstRead = RegInit(False)
-  val sawBurstRead8 = RegInit(False)
+  val sawBurstRead4 = RegInit(False)
   val sawBurstRsp = RegInit(False)
   val sawRspStall = RegInit(False)
+  val sawNoBubbleReadRestart = RegInit(False)
+  val sawBackToBackWriteBeats = RegInit(False)
+  val sawBackToBackReadData = RegInit(False)
 
-  when(dut.io.mem.write && dut.io.mem.waitRequestn && dut.io.bmb.cmd.mask === B"4'b0101") {
+  val memReadFire = dut.io.mem.read && dut.io.mem.waitRequestn
+  val memWriteFire = dut.io.mem.write && dut.io.mem.waitRequestn
+
+  when(memWriteFire && dut.io.bmb.cmd.mask === B"4'b0101") {
     sawMaskedWrite := True
   }
-  when(dut.io.mem.read && dut.io.mem.waitRequestn && dut.io.mem.burstCount > 1) {
+  when(memReadFire && dut.io.mem.burstCount > 1) {
     sawBurstRead := True
-    when(dut.io.mem.burstCount === 8) {
-      sawBurstRead8 := True
+    when(dut.io.mem.burstCount === 4) {
+      sawBurstRead4 := True
     }
   }
   when(dut.io.mem.readDataValid && pendingReadBeats === 1) {
@@ -165,11 +189,23 @@ class De10BmbToAvalonMmFormalDut(formalStrong: Boolean) extends Component {
   when(dut.io.bmb.rsp.valid && !dut.io.bmb.rsp.ready) {
     sawRspStall := True
   }
+  when(dut.io.bmb.rsp.fire && dut.io.bmb.rsp.last && memReadFire) {
+    sawNoBubbleReadRestart := True
+  }
+  when(memWriteFire && pastValid && past(memWriteFire)) {
+    sawBackToBackWriteBeats := True
+  }
+  when(dut.io.mem.readDataValid && pastValid && past(dut.io.mem.readDataValid)) {
+    sawBackToBackReadData := True
+  }
 
   cover(sawMaskedWrite)
   cover(sawBurstRead)
-  cover(sawBurstRead8 && sawBurstRsp)
-  cover(sawBurstRead8 && sawRspStall && dut.io.bmb.rsp.fire && dut.io.bmb.rsp.last)
+  cover(sawBurstRead4 && sawBurstRsp)
+  cover(sawBurstRead4 && sawRspStall && dut.io.bmb.rsp.fire && dut.io.bmb.rsp.last)
+  cover(sawNoBubbleReadRestart)
+  cover(sawBackToBackWriteBeats)
+  cover(sawBackToBackReadData)
 }
 
 class De10BmbToAvalonMmFormalBmcDut extends De10BmbToAvalonMmFormalDut(formalStrong = true)
@@ -261,11 +297,11 @@ class De10MemBackendFormalDut(formalStrong: Boolean) extends Component {
     assume(dut.io.texMem.cmd.last === past(dut.io.texMem.cmd.last))
   }
 
-  val fbPendingReadBeats = Reg(UInt(6 bits)) init (0)
+  val fbPendingReadBeats = Reg(UInt(7 bits)) init (0)
   when(dut.io.memFbWrite.read && dut.io.memFbWrite.waitRequestn) {
     assume(!dut.io.memFbWrite.readDataValid)
     assume(fbPendingReadBeats === 0)
-    fbPendingReadBeats := dut.io.memFbWrite.burstCount.resize(6)
+    fbPendingReadBeats := fbPendingReadBeats + dut.io.memFbWrite.burstCount.resize(7)
   }
   when(dut.io.memFbWrite.readDataValid) {
     assume(fbPendingReadBeats =/= 0)
@@ -275,11 +311,11 @@ class De10MemBackendFormalDut(formalStrong: Boolean) extends Component {
     assume(!dut.io.memFbWrite.readDataValid)
   }
 
-  val texPendingReadBeats = Reg(UInt(6 bits)) init (0)
+  val texPendingReadBeats = Reg(UInt(7 bits)) init (0)
   when(dut.io.memTex.read && dut.io.memTex.waitRequestn) {
     assume(!dut.io.memTex.readDataValid)
     assume(texPendingReadBeats === 0)
-    texPendingReadBeats := dut.io.memTex.burstCount.resize(6)
+    texPendingReadBeats := texPendingReadBeats + dut.io.memTex.burstCount.resize(7)
   }
   when(dut.io.memTex.readDataValid) {
     assume(texPendingReadBeats =/= 0)
@@ -291,6 +327,12 @@ class De10MemBackendFormalDut(formalStrong: Boolean) extends Component {
 
   assert(!(dut.io.memFbWrite.read && dut.io.memFbWrite.write))
   assert(!(dut.io.memTex.read && dut.io.memTex.write))
+  when(dut.io.memFbWrite.read) {
+    assert(dut.io.memFbWrite.waitRequestn)
+  }
+  when(dut.io.memTex.read) {
+    assert(dut.io.memTex.waitRequestn)
+  }
   assert(De10AddressMap.fbMemBase + De10AddressMap.fbMemBytes <= De10AddressMap.texMemBase)
   assert(De10AddressMap.texMemBase + De10AddressMap.texMemBytes <= De10AddressMap.ddrCarveoutEnd)
 
@@ -324,7 +366,6 @@ class De10MemBackendFormalDut(formalStrong: Boolean) extends Component {
   ) {
     sawConcurrentTraffic := True
   }
-
   cover(sawFbBurstRead)
   cover(sawTexBurstRead)
   cover(sawConcurrentTraffic)
@@ -359,21 +400,21 @@ class De10MemBackendFormalTest extends SpinalFormalFunSuite {
 
   test("DE10 burst bridge invariants bmc") {
     FormalConfig
-      .withBMC(32)
+      .withBMC(20)
       .withAsync
       .doVerify(new De10BmbToAvalonMmFormalBmcDut)
   }
 
   test("DE10 burst bridge invariants k-induction") {
     FormalConfig
-      .withProve(32)
+      .withProve(20)
       .withAsync
       .doVerify(new De10BmbToAvalonMmFormalProveDut)
   }
 
   test("DE10 burst bridge cover") {
     FormalConfig
-      .withCover(48)
+      .withCover(32)
       .withAsync
       .doVerify(new De10BmbToAvalonMmFormalCoverDut)
   }

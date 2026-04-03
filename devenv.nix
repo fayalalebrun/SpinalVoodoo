@@ -74,6 +74,7 @@
     pkgs.yices
     pkgs.z3
     pkgs.verilator
+    pkgs.gtkwave
     pkgs.surfer
     pkgs.metals
     pkgs.scalafmt

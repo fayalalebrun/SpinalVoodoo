@@ -6,8 +6,11 @@ int main(void) {
   GrHwConfiguration hw;
   FxU16 pix = 0;
 
+  setvbuf(stdout, NULL, _IONBF, 0);
+  setvbuf(stderr, NULL, _IONBF, 0);
   printf("smoke start\n");
   grGlideInit();
+  printf("after grGlideInit\n");
   if (!grSstQueryHardware(&hw)) {
     printf("query failed\n");
     return 2;
@@ -20,8 +23,11 @@ int main(void) {
     grGlideShutdown();
     return 3;
   }
+  printf("after grSstWinOpen\n");
   grBufferClear(0x00ff0000u, 0, 0xffff);
+  printf("after grBufferClear\n");
   grBufferSwap(1);
+  printf("after grBufferSwap\n");
   if (!grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 0, 0, 1, 1, 2, &pix)) {
     printf("lfbread failed\n");
     grGlideShutdown();

@@ -32,15 +32,35 @@ module De10PlatformTop (
   wire        h2f_reset_n;
   wire        core_reset;
 
-  wire        fb_waitrequest;
-  wire [31:0] fb_readdata;
-  wire        fb_readdatavalid;
-  wire [10:0] fb_burstcount;
-  wire [31:0] fb_writedata;
-  wire [31:0] fb_address;
-  wire        fb_write;
-  wire        fb_read;
-  wire [3:0]  fb_byteenable;
+  wire        fb_write_waitrequest;
+  wire [31:0] fb_write_readdata;
+  wire        fb_write_readdatavalid;
+  wire [10:0] fb_write_burstcount;
+  wire [31:0] fb_write_writedata;
+  wire [31:0] fb_write_address;
+  wire        fb_write_write;
+  wire        fb_write_read;
+  wire [3:0]  fb_write_byteenable;
+
+  wire        fb_color_waitrequest;
+  wire [31:0] fb_color_readdata;
+  wire        fb_color_readdatavalid;
+  wire [10:0] fb_color_burstcount;
+  wire [31:0] fb_color_writedata;
+  wire [31:0] fb_color_address;
+  wire        fb_color_write;
+  wire        fb_color_read;
+  wire [3:0]  fb_color_byteenable;
+
+  wire        fb_aux_waitrequest;
+  wire [31:0] fb_aux_readdata;
+  wire        fb_aux_readdatavalid;
+  wire [10:0] fb_aux_burstcount;
+  wire [31:0] fb_aux_writedata;
+  wire [31:0] fb_aux_address;
+  wire        fb_aux_write;
+  wire        fb_aux_read;
+  wire [3:0]  fb_aux_byteenable;
 
   wire        tex_waitrequest;
   wire [31:0] tex_readdata;
@@ -64,16 +84,36 @@ module De10PlatformTop (
 
   de10_soc soc_0 (
     .clk_clk                     (core_clk),
-    .fb_mem_waitrequest          (fb_waitrequest),
-    .fb_mem_readdata             (fb_readdata),
-    .fb_mem_readdatavalid        (fb_readdatavalid),
-    .fb_mem_burstcount           (fb_burstcount),
-    .fb_mem_writedata            (fb_writedata),
-    .fb_mem_address              (fb_address),
-    .fb_mem_write                (fb_write),
-    .fb_mem_read                 (fb_read),
-    .fb_mem_byteenable           (fb_byteenable),
-    .fb_mem_debugaccess          (1'b0),
+    .fb_write_mem_waitrequest    (fb_write_waitrequest),
+    .fb_write_mem_readdata       (fb_write_readdata),
+    .fb_write_mem_readdatavalid  (fb_write_readdatavalid),
+    .fb_write_mem_burstcount     (fb_write_burstcount),
+    .fb_write_mem_writedata      (fb_write_writedata),
+    .fb_write_mem_address        (fb_write_address),
+    .fb_write_mem_write          (fb_write_write),
+    .fb_write_mem_read           (fb_write_read),
+    .fb_write_mem_byteenable     (fb_write_byteenable),
+    .fb_write_mem_debugaccess    (1'b0),
+    .fb_color_read_mem_waitrequest   (fb_color_waitrequest),
+    .fb_color_read_mem_readdata      (fb_color_readdata),
+    .fb_color_read_mem_readdatavalid (fb_color_readdatavalid),
+    .fb_color_read_mem_burstcount    (fb_color_burstcount),
+    .fb_color_read_mem_writedata     (fb_color_writedata),
+    .fb_color_read_mem_address       (fb_color_address),
+    .fb_color_read_mem_write         (fb_color_write),
+    .fb_color_read_mem_read          (fb_color_read),
+    .fb_color_read_mem_byteenable    (fb_color_byteenable),
+    .fb_color_read_mem_debugaccess   (1'b0),
+    .fb_aux_read_mem_waitrequest   (fb_aux_waitrequest),
+    .fb_aux_read_mem_readdata      (fb_aux_readdata),
+    .fb_aux_read_mem_readdatavalid (fb_aux_readdatavalid),
+    .fb_aux_read_mem_burstcount    (fb_aux_burstcount),
+    .fb_aux_read_mem_writedata     (fb_aux_writedata),
+    .fb_aux_read_mem_address       (fb_aux_address),
+    .fb_aux_read_mem_write         (fb_aux_write),
+    .fb_aux_read_mem_read          (fb_aux_read),
+    .fb_aux_read_mem_byteenable    (fb_aux_byteenable),
+    .fb_aux_read_mem_debugaccess   (1'b0),
     .h2f_avalon_waitrequest      (h2f_waitrequest),
     .h2f_avalon_readdata         (h2f_readdata),
     .h2f_avalon_readdatavalid    (h2f_readdatavalid),
@@ -118,7 +158,33 @@ module De10PlatformTop (
     .tex_mem_debugaccess         (1'b0)
   );
 
-  assign core_reset = ~pll_locked | ~h2f_reset_n;
+  reg pll_locked_meta = 1'b0;
+  reg pll_locked_sync = 1'b0;
+  reg h2f_reset_meta = 1'b0;
+  reg h2f_reset_sync = 1'b0;
+  reg [7:0] core_reset_release = 8'h00;
+
+  always @(posedge core_clk or negedge pll_locked) begin
+    if (!pll_locked) begin
+      pll_locked_meta <= 1'b0;
+      pll_locked_sync <= 1'b0;
+      h2f_reset_meta <= 1'b0;
+      h2f_reset_sync <= 1'b0;
+      core_reset_release <= 8'h00;
+    end else begin
+      pll_locked_meta <= 1'b1;
+      pll_locked_sync <= pll_locked_meta;
+      h2f_reset_meta <= h2f_reset_n;
+      h2f_reset_sync <= h2f_reset_meta;
+      if (!h2f_reset_sync) begin
+        core_reset_release <= 8'h00;
+      end else if (!core_reset_release[7]) begin
+        core_reset_release <= core_reset_release + 8'h01;
+      end
+    end
+  end
+
+  assign core_reset = ~pll_locked_sync | ~h2f_reset_sync | ~core_reset_release[7];
 
   De10Top core_0 (
     .io_h2fLw_address        (h2f_address[23:2]),
@@ -129,15 +195,33 @@ module De10PlatformTop (
     .io_h2fLw_waitrequest    (h2f_waitrequest),
     .io_h2fLw_readdata       (h2f_readdata),
     .io_h2fLw_readdatavalid  (h2f_readdatavalid),
-    .io_memFb_read           (fb_read),
-    .io_memFb_write          (fb_write),
-    .io_memFb_waitRequestn   (~fb_waitrequest),
-    .io_memFb_burstCount     (fb_burstcount),
-    .io_memFb_address        (fb_address),
-    .io_memFb_byteEnable     (fb_byteenable),
-    .io_memFb_writeData      (fb_writedata),
-    .io_memFb_readDataValid  (fb_readdatavalid),
-    .io_memFb_readData       (fb_readdata),
+    .io_memFbWrite_read          (fb_write_read),
+    .io_memFbWrite_write         (fb_write_write),
+    .io_memFbWrite_waitRequestn  (~fb_write_waitrequest),
+    .io_memFbWrite_burstCount    (fb_write_burstcount),
+    .io_memFbWrite_address       (fb_write_address),
+    .io_memFbWrite_byteEnable    (fb_write_byteenable),
+    .io_memFbWrite_writeData     (fb_write_writedata),
+    .io_memFbWrite_readDataValid (fb_write_readdatavalid),
+    .io_memFbWrite_readData      (fb_write_readdata),
+    .io_memFbColorRead_read          (fb_color_read),
+    .io_memFbColorRead_write         (fb_color_write),
+    .io_memFbColorRead_waitRequestn  (~fb_color_waitrequest),
+    .io_memFbColorRead_burstCount    (fb_color_burstcount),
+    .io_memFbColorRead_address       (fb_color_address),
+    .io_memFbColorRead_byteEnable    (fb_color_byteenable),
+    .io_memFbColorRead_writeData     (fb_color_writedata),
+    .io_memFbColorRead_readDataValid (fb_color_readdatavalid),
+    .io_memFbColorRead_readData      (fb_color_readdata),
+    .io_memFbAuxRead_read          (fb_aux_read),
+    .io_memFbAuxRead_write         (fb_aux_write),
+    .io_memFbAuxRead_waitRequestn  (~fb_aux_waitrequest),
+    .io_memFbAuxRead_burstCount    (fb_aux_burstcount),
+    .io_memFbAuxRead_address       (fb_aux_address),
+    .io_memFbAuxRead_byteEnable    (fb_aux_byteenable),
+    .io_memFbAuxRead_writeData     (fb_aux_writedata),
+    .io_memFbAuxRead_readDataValid (fb_aux_readdatavalid),
+    .io_memFbAuxRead_readData      (fb_aux_readdata),
     .io_memTex_read          (tex_read),
     .io_memTex_write         (tex_write),
     .io_memTex_waitRequestn  (~tex_waitrequest),

@@ -67,9 +67,12 @@ VERILATE_STAMP = $(OBJ_DIR)/.verilate.stamp
 # Trace mode sentinel: forces rebuild when TRACE= setting changes.
 TRACE_MODE_FILE = $(OBJ_DIR)/.trace_mode
 TRACE_MODE_VAL  = $(if $(filter 1,$(TRACE)),trace,notrace)
+SIM_INTERFACE_FILE = $(OBJ_DIR)/.sim_interface
+SIM_INTERFACE_VAL = $(SIM_INTERFACE)
 CORE_SIM_GEN_ARGS_FILE = $(OBJ_DIR)/.core_sim_gen_args
 $(shell mkdir -p $(OBJ_DIR))
 $(shell [ -f $(TRACE_MODE_FILE) ] && [ "$$(cat $(TRACE_MODE_FILE))" = "$(TRACE_MODE_VAL)" ] || echo "$(TRACE_MODE_VAL)" > $(TRACE_MODE_FILE))
+$(shell [ -f $(SIM_INTERFACE_FILE) ] && [ "$$(cat $(SIM_INTERFACE_FILE))" = "$(SIM_INTERFACE_VAL)" ] || echo "$(SIM_INTERFACE_VAL)" > $(SIM_INTERFACE_FILE))
 $(shell [ -f $(CORE_SIM_GEN_ARGS_FILE) ] && [ "$$(cat $(CORE_SIM_GEN_ARGS_FILE))" = "$(CORE_SIM_GEN_ARGS)" ] || printf '%s\n' "$(CORE_SIM_GEN_ARGS)" > $(CORE_SIM_GEN_ARGS_FILE))
 
 ###############################################################################
@@ -80,13 +83,13 @@ all: $(OBJ_DIR)/trace_test
 state-roundtrip: $(OBJ_DIR)/state_roundtrip_test
 
 # Step 1: Generate Verilog (reuse existing or rebuild)
-$(VERILOG): $(SCALA_SRCS) $(CORE_SIM_GEN_ARGS_FILE)
+$(VERILOG): $(SCALA_SRCS) $(CORE_SIM_GEN_ARGS_FILE) $(SIM_INTERFACE_FILE)
 	@rm -f $(dir $(VERILOG))*.bin
 	cd $(PROJ_ROOT) && java -Xmx2g -cp "$$( $(SCALA_CLI) compile project.scala src --print-class-path $(SCALA_CLI_FLAGS) )" $(SIM_GEN_CLASS) $(if $(filter 1,$(TRACE)),--trace-pipeline) $(CORE_SIM_GEN_ARGS)
 	@sed -i 's|\$$readmemb("\([^/"]*\.bin\)"|\$$readmemb("$(abspath $(dir $(VERILOG)))/\1"|g' $@
 
 # Step 2: Verilate (64-bit obj_dir, separate from 32-bit Glide build)
-$(VERILATE_STAMP): $(VERILOG) $(TRACE_MODE_FILE)
+$(VERILATE_STAMP): $(VERILOG) $(TRACE_MODE_FILE) $(SIM_INTERFACE_FILE)
 	@mkdir -p $(OBJ_DIR)
 	$(VERILATOR) $(VERILATOR_FLAGS) $(VERILOG) --Mdir $(OBJ_DIR)
 	@touch $@
@@ -134,10 +137,10 @@ $(OBJ_DIR)/ref_model.o: ref_model.c
 	$(OBJCACHE) $(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ $<
 
 # Step 5: C++ objects
-$(OBJ_DIR)/sim_harness.o: $(SIM_HARNESS_SRC) Makefile $(TRACE_MODE_FILE) | $(VERILATE_STAMP)
+$(OBJ_DIR)/sim_harness.o: $(SIM_HARNESS_SRC) Makefile $(TRACE_MODE_FILE) $(SIM_INTERFACE_FILE) | $(VERILATE_STAMP)
 	$(OBJCACHE) $(CXX) $(CXXFLAGS) $(DEPFLAGS) -DVL_USER_WARN -c -o $@ $<
 
-$(OBJ_DIR)/trace_test.o: trace_test.cpp Makefile $(TRACE_MODE_FILE) | $(VERILATE_STAMP)
+$(OBJ_DIR)/trace_test.o: trace_test.cpp Makefile $(TRACE_MODE_FILE) $(SIM_INTERFACE_FILE) | $(VERILATE_STAMP)
 	$(OBJCACHE) $(CXX) $(CXXFLAGS) $(CFLAGS) $(DEPFLAGS) -c -o $@ $<
 
 $(OBJ_DIR)/state_roundtrip_test.o: state_roundtrip_test.cpp Makefile

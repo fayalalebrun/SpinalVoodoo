@@ -62,6 +62,7 @@ object PixelPipeline {
 
   case class ExternalBusy() extends Bundle {
     val nopCmd = Bool()
+    val nopCmdReset = Bool()
     val fastfillCmd = Bool()
     val swapbufferCmd = Bool()
     val swapWaiting = Bool()
@@ -71,6 +72,7 @@ object PixelPipeline {
     def fromCore(regBank: RegisterBank, swapBuffer: SwapBuffer): ExternalBusy = {
       val busy = ExternalBusy()
       busy.nopCmd := regBank.commands.nopCmd.valid
+      busy.nopCmdReset := regBank.commands.nopCmd.valid && regBank.commands.nopCmd.payload(0)
       busy.fastfillCmd := regBank.commands.fastfillCmd.valid
       busy.swapbufferCmd := regBank.commands.swapbufferCmd.valid
       busy.swapWaiting := swapBuffer.io.waiting
@@ -339,23 +341,32 @@ case class PixelPipeline(c: Config) extends Component {
   val zFuncFailCounter = Reg(UInt(24 bits)) init (0)
   val aFuncFailCounter = Reg(UInt(24 bits)) init (0)
   val pixelsOutCounter = Reg(UInt(24 bits)) init (0)
+  val clearPerfCounters = io.externalBusy.nopCmdReset
 
-  when(colorCombine.io.output.fire && chromaKill) {
-    chromaFailCounter := chromaFailCounter + 1
-  }
-  when(fog.io.output.fire && alphaKill) {
-    aFuncFailCounter := aFuncFailCounter + 1
-  }
-  when(fbAccess.io.zFuncFail) {
-    zFuncFailCounter := zFuncFailCounter + 1
-  }
+  when(clearPerfCounters) {
+    pixelsInCounter := 0
+    chromaFailCounter := 0
+    zFuncFailCounter := 0
+    aFuncFailCounter := 0
+    pixelsOutCounter := 0
+  } otherwise {
+    when(colorCombine.io.output.fire && chromaKill) {
+      chromaFailCounter := chromaFailCounter + 1
+    }
+    when(fog.io.output.fire && alphaKill) {
+      aFuncFailCounter := aFuncFailCounter + 1
+    }
+    when(fbAccess.io.zFuncFail) {
+      zFuncFailCounter := zFuncFailCounter + 1
+    }
 
-  val pixelsInDelta =
-    colorCombine.io.output.fire.asUInt.resize(3 bits) +
-      lfb.io.pipelineOutput.fire.asUInt.resize(3 bits) +
-      lfb.io.writeOutput.fire.asUInt.resize(3 bits) +
-      fastfillWriter.io.generatedPixels.resize(3 bits)
-  pixelsInCounter := pixelsInCounter + pixelsInDelta.resize(24 bits)
+    val pixelsInDelta =
+      colorCombine.io.output.fire.asUInt.resize(3 bits) +
+        lfb.io.pipelineOutput.fire.asUInt.resize(3 bits) +
+        lfb.io.writeOutput.fire.asUInt.resize(3 bits) +
+        fastfillWriter.io.generatedPixels.resize(3 bits)
+    pixelsInCounter := pixelsInCounter + pixelsInDelta.resize(24 bits)
+  }
 
   val preDitherMerged = StreamArbiterFactory.lowerFirst
     .on(Seq(trianglePreDither, lfb.io.writeOutput))
@@ -394,7 +405,7 @@ case class PixelPipeline(c: Config) extends Component {
   io.colorWrite << colorWriteMerged
   io.auxWrite << auxWriteMerged
 
-  when(writeColor.i.fromPipeline.fire) {
+  when(!clearPerfCounters && writeColor.i.fromPipeline.fire) {
     pixelsOutCounter := pixelsOutCounter + 1
   }
   when(fastfillWriter.io.colorWrite.fire) {

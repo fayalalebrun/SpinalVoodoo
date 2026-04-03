@@ -167,11 +167,8 @@ case class FramebufferMemSubsystem(c: Config) extends Component {
     }
   }
 
-  io.status.colorBusy := colorWritePort.io.busy || (if (c.useFbWriteBuffer)
-                                                      colorReaderCached.io.busy
-                                                    else colorReaderDirect.io.busy)
-  io.status.auxBusy := auxWritePort.io.busy || (if (c.useFbWriteBuffer) auxReaderCached.io.busy
-                                                else auxReaderDirect.io.busy)
+  io.status.colorBusy := colorWritePort.io.busy
+  io.status.auxBusy := auxWritePort.io.busy
 
   io.stats.fillHits := (if (c.useFbWriteBuffer)
                           (colorReaderCached.io.fillHits + auxReaderCached.io.fillHits).resized

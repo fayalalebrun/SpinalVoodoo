@@ -1,10 +1,11 @@
 package voodoo.de10
 
 import spinal.core._
-import voodoo.{Config, GenSupport}
+import voodoo.{Config, GenSupport, TraceConfig}
 
 object CoreDe10SimGen extends App {
-  val defaultConfig = Config.voodoo1()
+  val enableTrace = args.contains("--trace-pipeline")
+  val defaultConfig = Config.voodoo1(trace = TraceConfig(enabled = enableTrace))
   val useFbWriteBuffer =
     if (args.contains("--fb-write-buffer") || args.contains("--fb-fill-cache")) true
     else if (args.contains("--no-fb-write-buffer") || args.contains("--no-fb-fill-cache")) false
@@ -14,7 +15,7 @@ object CoreDe10SimGen extends App {
     else if (args.contains("--no-tex-fill-cache")) false
     else defaultConfig.useTexFillCache
 
-  GenSupport
+  val report = GenSupport
     .simVerilog()
     .generate(
       CoreDe10(
@@ -25,4 +26,5 @@ object CoreDe10SimGen extends App {
           )
       )
     )
+  GenSupport.mirrorRomSidecars("emu/sim/rtl", report.toplevelName)
 }

@@ -41,5 +41,6 @@ object CoreSimGen extends App {
     writeLatency = argIntValue("--sim-mem-write-latency").getOrElse(0)
   )
 
-  GenSupport.simVerilog().generate(CoreSim(config, memTiming))
+  val report = GenSupport.simVerilog().generate(CoreSim(config, memTiming))
+  GenSupport.mirrorRomSidecars("emu/sim/rtl", report.toplevelName)
 }

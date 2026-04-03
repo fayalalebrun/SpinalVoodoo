@@ -38,10 +38,10 @@ case class H2fLwToBmbBridge(addressWidth: Int, bmbParams: BmbParameter) extends 
   val cmdAddress = (io.h2fLw.address.resize(addressWidth) |<< 2)
   val writeReq = io.h2fLw.write
   val readReq = io.h2fLw.read
+  val illegalReq = writeReq && readReq
   val selectedReadReq = !writeReq && readReq
   val hasReq = writeReq || readReq
 
-  io.cpuBus.cmd.valid := False
   io.cpuBus.cmd.last := True
   io.cpuBus.cmd.source := 0
   io.cpuBus.cmd.opcode := Bmb.Cmd.Opcode.READ
@@ -59,35 +59,40 @@ case class H2fLwToBmbBridge(addressWidth: Int, bmbParams: BmbParameter) extends 
   val reqSeen = RegInit(False)
 
   val cmdBlocked = cmdInFlight || readRspPending || readDataPending || readDataValid
-  val acceptWindow = hasReq && !reqSeen && !cmdBlocked
+  val canIssueReq = hasReq && !illegalReq && !reqSeen && !cmdBlocked
+  val acceptWindow = canIssueReq && io.cpuBus.cmd.ready
+  val rspCompletesCurrent = io.cpuBus.rsp.valid && (cmdInFlight || acceptWindow)
+  val rspIsRead = (cmdInFlight && readRspPending) || acceptWindow && selectedReadReq
 
-  io.h2fLw.waitrequest := hasReq && (!acceptWindow || !io.cpuBus.cmd.ready)
+  io.h2fLw.waitrequest := hasReq && (!canIssueReq || !io.cpuBus.cmd.ready)
   io.h2fLw.readdata := readData
   io.h2fLw.readdatavalid := readDataValid
 
   readDataValid := False
+
   when(!hasReq) {
     reqSeen := False
   }
 
-  when(acceptWindow) {
-    io.cpuBus.cmd.valid := True
-    when(writeReq) {
-      io.cpuBus.cmd.opcode := Bmb.Cmd.Opcode.WRITE
-    } otherwise {
-      io.cpuBus.cmd.opcode := Bmb.Cmd.Opcode.READ
-    }
+  io.cpuBus.cmd.valid := canIssueReq
+  when(writeReq) {
+    io.cpuBus.cmd.opcode := Bmb.Cmd.Opcode.WRITE
+  } otherwise {
+    io.cpuBus.cmd.opcode := Bmb.Cmd.Opcode.READ
   }
 
-  when(io.cpuBus.cmd.fire) {
-    cmdInFlight := True
-    readRspPending := selectedReadReq
+  when(acceptWindow) {
     reqSeen := True
   }
 
-  when(cmdInFlight && io.cpuBus.rsp.valid) {
+  when(acceptWindow && !rspCompletesCurrent) {
+    cmdInFlight := True
+    readRspPending := selectedReadReq
+  }
+
+  when(rspCompletesCurrent) {
     cmdInFlight := False
-    when(readRspPending) {
+    when(rspIsRead) {
       readData := io.cpuBus.rsp.data
       readDataPending := True
     }
@@ -117,22 +122,38 @@ case class H2fLwToBmbBridge(addressWidth: Int, bmbParams: BmbParameter) extends 
       }
     }
 
-    when(writeReq && readReq && io.cpuBus.cmd.valid) {
-      assert(io.cpuBus.cmd.opcode === Bmb.Cmd.Opcode.WRITE)
+    when(illegalReq) {
+      assert(io.h2fLw.waitrequest)
+      assert(!io.cpuBus.cmd.valid)
     }
 
     when(cmdBlocked && hasReq) {
       assert(io.h2fLw.waitrequest)
     }
 
+    when(canIssueReq && !io.cpuBus.cmd.ready) {
+      assert(io.h2fLw.waitrequest)
+      assert(io.cpuBus.cmd.valid)
+    }
+
+    when(acceptWindow && selectedReadReq && io.cpuBus.rsp.valid) {
+      assert(!cmdInFlight)
+      assert(!readRspPending)
+    }
+
+    when(rspCompletesCurrent) {
+      assert(io.cpuBus.rsp.last)
+      assert(io.cpuBus.rsp.source === 0)
+    }
+
     when(readDataValid) {
       assert(io.h2fLw.readdatavalid)
+      assert(io.h2fLw.readdata === readData)
     }
 
     cover(io.cpuBus.cmd.fire && io.cpuBus.cmd.opcode === Bmb.Cmd.Opcode.WRITE)
     cover(io.cpuBus.cmd.fire && io.cpuBus.cmd.opcode === Bmb.Cmd.Opcode.READ)
-    cover(pastValid && past(io.cpuBus.rsp.valid) && io.h2fLw.readdatavalid)
-    cover(writeReq && readReq && io.cpuBus.cmd.fire)
+    cover(acceptWindow && io.cpuBus.rsp.valid && selectedReadReq)
   }
 }
 

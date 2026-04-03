@@ -138,7 +138,7 @@ STAGES = {
         "fb_output",
         [
             Signal("valid", "core_1.fbAccess.io_output_valid"),
-            Signal("ready", "core_1.fbAccess.io_output_ready"),
+            Signal("ready", "core_1.fbAccess.io_output_translated_ready"),
             Signal("origin", "core_1.fbAccess.io_output_payload_trace_primitive_origin"),
             Signal("draw_id", "core_1.fbAccess.io_output_payload_trace_primitive_drawId"),
             Signal("primitive_id", "core_1.fbAccess.io_output_payload_trace_primitive_primitiveId"),
@@ -259,6 +259,15 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Suppress per-stage progress messages.",
     )
+    parser.add_argument(
+        "--signal-subset",
+        help="Optional comma-separated subset of signal columns or full signal paths to export.",
+    )
+    parser.add_argument(
+        "--skip-triangles",
+        action="store_true",
+        help="Skip DUT triangle-stream export.",
+    )
     return parser.parse_args()
 
 
@@ -291,24 +300,51 @@ def run_conetrace_changes(
     signal_path: str,
     time_range: Optional[str],
 ) -> List[dict]:
-    query = f"prefix detect; changes {signal_path}"
-    if time_range:
-        query += f" | where time in {time_range}"
-    query += " | json"
-    result = subprocess.run(
-        [conetrace, netlist, trace, "-e", query],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    stdout = result.stdout
-    start = stdout.find("[")
-    end = stdout.rfind("]")
-    if start == -1 or end == -1 or end < start:
-        raise RuntimeError(f"Failed to parse JSON from conetrace for {signal_path}\n{stdout}\n{result.stderr}")
-    rows = json.loads(stdout[start : end + 1])
-    suffix = f".{signal_path}"
-    return [row for row in rows if row.get("signal", "").endswith(suffix)]
+    candidate_paths = [signal_path]
+    if signal_path.startswith("core_1."):
+        candidate_paths.append(signal_path[len("core_1.") :])
+    if "." in signal_path:
+        flattened = signal_path.replace(".", "_")
+        if flattened not in candidate_paths:
+            candidate_paths.append(flattened)
+        if signal_path.startswith("core_1."):
+            stripped_flattened = signal_path[len("core_1.") :].replace(".", "_")
+            if stripped_flattened not in candidate_paths:
+                candidate_paths.append(stripped_flattened)
+
+    last_error = None
+    for candidate in candidate_paths:
+        query = f"prefix detect; changes {candidate}"
+        if time_range:
+            query += f" | where time in {time_range}"
+        query += " | json"
+        try:
+            result = subprocess.run(
+                [conetrace, netlist, trace, "-e", query],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            last_error = exc
+            continue
+        stdout = result.stdout
+        start = stdout.find("[")
+        end = stdout.rfind("]")
+        if start == -1 or end == -1 or end < start:
+            last_error = RuntimeError(f"Failed to parse JSON from conetrace for {candidate}\n{stdout}\n{result.stderr}")
+            continue
+        rows = json.loads(stdout[start : end + 1])
+        suffixes = (f".{candidate}", candidate)
+        filtered = [row for row in rows if any(row.get("signal", "").endswith(sfx) for sfx in suffixes)]
+        if filtered or candidate == candidate_paths[-1]:
+            return filtered
+
+    if isinstance(last_error, subprocess.CalledProcessError):
+        raise last_error
+    if last_error is not None:
+        raise last_error
+    return []
 
 
 def collect_stage_changes(
@@ -317,11 +353,19 @@ def collect_stage_changes(
     trace: str,
     stage: Stage,
     time_range: Optional[str],
+    signal_subset: Optional[set],
     quiet: bool,
 ) -> tuple[Dict[int, List[tuple]], Dict[str, Optional[int]]]:
     by_time: Dict[int, List[tuple]] = defaultdict(list)
     initial_state: Dict[str, Optional[int]] = {}
-    for signal in stage.signals:
+    selected_signals = [
+        signal
+        for signal in stage.signals
+        if signal_subset is None or signal.column in signal_subset or signal.path in signal_subset
+    ]
+    if not selected_signals:
+        return by_time, initial_state
+    for signal in selected_signals:
         if not quiet:
             print(f"[{stage.name}] reading {signal.column}", file=sys.stderr)
         rows = run_conetrace_changes(conetrace, netlist, trace, signal.path, time_range)
@@ -843,6 +887,9 @@ def import_reference_jsonl(conn: sqlite3.Connection, jsonl_path: str, quiet: boo
 
 def main() -> int:
     args = parse_args()
+    signal_subset = None
+    if args.signal_subset:
+        signal_subset = {item.strip() for item in args.signal_subset.split(",") if item.strip()}
     stage_names = [name.strip() for name in args.stages.split(",") if name.strip()]
     unknown = [name for name in stage_names if name not in STAGES]
     if unknown:
@@ -864,19 +911,30 @@ def main() -> int:
         write_metadata(conn, args, stage_names)
         total_rows = 0
         if not args.skip_dut:
-            triangle_changes, triangle_initial_state = collect_stage_changes(
-                args.conetrace,
-                args.netlist,
-                args.trace,
-                TRIANGLE_STREAM,
-                args.time_range,
-                args.quiet,
-            )
-            triangle_rows = reconstruct_triangle_rows(triangle_changes, triangle_initial_state)
-            insert_dut_triangles(conn, triangle_rows)
-            conn.commit()
-            if not args.quiet:
-                print(f"[dut_triangles] wrote {len(triangle_rows)} rows", file=sys.stderr)
+            if not args.skip_triangles:
+                triangle_subset = None
+                if signal_subset is not None:
+                    triangle_subset = {
+                        item
+                        for item in signal_subset
+                        if item in {signal.column for signal in TRIANGLE_STREAM.signals}
+                        or item in {signal.path for signal in TRIANGLE_STREAM.signals}
+                    }
+                triangle_changes, triangle_initial_state = collect_stage_changes(
+                    args.conetrace,
+                    args.netlist,
+                    args.trace,
+                    TRIANGLE_STREAM,
+                    args.time_range,
+                    triangle_subset,
+                    args.quiet,
+                )
+                if triangle_changes or triangle_initial_state:
+                    triangle_rows = reconstruct_triangle_rows(triangle_changes, triangle_initial_state)
+                    insert_dut_triangles(conn, triangle_rows)
+                    conn.commit()
+                    if not args.quiet:
+                        print(f"[dut_triangles] wrote {len(triangle_rows)} rows", file=sys.stderr)
             for stage_name in stage_names:
                 stage = STAGES[stage_name]
                 by_time, initial_state = collect_stage_changes(
@@ -885,6 +943,7 @@ def main() -> int:
                     args.trace,
                     stage,
                     args.time_range,
+                    signal_subset,
                     args.quiet,
                 )
                 rows = reconstruct_stage_rows(stage, by_time, initial_state)

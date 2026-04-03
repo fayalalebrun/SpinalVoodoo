@@ -23,10 +23,10 @@ case class TmuCollector(c: voodoo.Config) extends Component {
   }
 
   val collectCount = Reg(UInt(2 bits)) init 0
-  val storedR = Vec(Reg(UInt(8 bits)), 3)
-  val storedG = Vec(Reg(UInt(8 bits)), 3)
-  val storedB = Vec(Reg(UInt(8 bits)), 3)
-  val storedA = Vec(Reg(UInt(8 bits)), 3)
+  val storedR = Vec(Reg(UInt(8 bits)), 4)
+  val storedG = Vec(Reg(UInt(8 bits)), 4)
+  val storedB = Vec(Reg(UInt(8 bits)), 4)
+  val storedA = Vec(Reg(UInt(8 bits)), 4)
   val storedDs = Reg(UInt(4 bits))
   val storedDt = Reg(UInt(4 bits))
 
@@ -59,16 +59,16 @@ case class TmuCollector(c: voodoo.Config) extends Component {
       result.requestId := io.decoded.payload.passthrough.requestId
       result.bilinear := isBilinear
       result.weights := weights
-      assignTexel(result.texels(0), storedR(0), storedG(0), storedB(0), storedA(0))
-      assignTexel(result.texels(1), storedR(1), storedG(1), storedB(1), storedA(1))
-      assignTexel(result.texels(2), storedR(2), storedG(2), storedB(2), storedA(2))
-      assignTexel(
-        result.texels(3),
-        io.decoded.payload.r,
-        io.decoded.payload.g,
-        io.decoded.payload.b,
-        io.decoded.payload.a
-      )
+      for (idx <- 0 until 4) {
+        val useCurrent = io.decoded.payload.passthrough.readIdx === U(idx, 2 bits)
+        assignTexel(
+          result.texels(idx),
+          Mux(useCurrent, io.decoded.payload.r, storedR(idx)),
+          Mux(useCurrent, io.decoded.payload.g, storedG(idx)),
+          Mux(useCurrent, io.decoded.payload.b, storedB(idx)),
+          Mux(useCurrent, io.decoded.payload.a, storedA(idx))
+        )
+      }
       if (c.trace.enabled) {
         result.trace := io.decoded.payload.passthrough.trace
       }
@@ -111,7 +111,7 @@ case class TmuCollector(c: voodoo.Config) extends Component {
 
   when(io.decoded.fire) {
     when(isBilinear && collectCount < 3) {
-      assignStored(collectCount, io.decoded.payload)
+      assignStored(io.decoded.payload.passthrough.readIdx, io.decoded.payload)
       when(collectCount === 0) {
         storedDs := io.decoded.payload.passthrough.ds
         storedDt := io.decoded.payload.passthrough.dt

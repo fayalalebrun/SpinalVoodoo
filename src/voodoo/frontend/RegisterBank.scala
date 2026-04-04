@@ -9,6 +9,7 @@ import spinal.lib.bus.regif._
 import spinal.lib.bus.misc.SizeMapping
 import voodoo.core.{CoreDebug, CoreStats}
 import voodoo.bus.{BmbBusInterface, FloatShadowWrite, PciFifo, RegisterCategory}
+import voodoo.texture.Tmu
 
 /** Voodoo Graphics Register Bank
   *
@@ -63,7 +64,12 @@ case class RegisterBank(config: Config) extends Component {
 
     val floatShadow = in(Flow(FloatShadowWrite(RegisterBank.bmbParams(config).access.addressWidth)))
     val drawRouting = in(FbRouting(config))
+    val paletteWrite = master(Flow(RegisterBank.PaletteWrite()))
   }
+
+  io.paletteWrite.valid := False
+  io.paletteWrite.payload.address := 0
+  io.paletteWrite.payload.data := 0
 
   var texTablesRegOpt: Option[TexLayoutTables.Tables] = None
   var triangleTexTablesRegOpt: Option[TexLayoutTables.Tables] = None
@@ -112,6 +118,27 @@ case class RegisterBank(config: Config) extends Component {
   when(io.floatShadow.valid) {
     setFloatShadowRaw(io.floatShadow.address, io.floatShadow.raw)
   }.elsewhen(io.bus.cmd.fire && io.bus.cmd.opcode === Bmb.Cmd.Opcode.WRITE) {
+    val paletteRegHit = io.bus.cmd.address.mux(
+      U(0x334, 12 bits) -> True,
+      U(0x338, 12 bits) -> True,
+      U(0x33c, 12 bits) -> True,
+      U(0x340, 12 bits) -> True,
+      U(0x344, 12 bits) -> True,
+      U(0x348, 12 bits) -> True,
+      U(0x34c, 12 bits) -> True,
+      U(0x350, 12 bits) -> True,
+      default -> False
+    )
+    when(paletteRegHit && io.bus.cmd.data(31)) {
+      val evenEntry = io.bus.cmd.data(30 downto 23).asUInt & U(0xfe, 8 bits)
+      val isOddReg = io.bus.cmd.address === U(0x338, 12 bits) ||
+        io.bus.cmd.address === U(0x340, 12 bits) ||
+        io.bus.cmd.address === U(0x348, 12 bits) ||
+        io.bus.cmd.address === U(0x350, 12 bits)
+      io.paletteWrite.valid := True
+      io.paletteWrite.payload.address := (evenEntry | isOddReg.asUInt.resize(8 bits)).resized
+      io.paletteWrite.payload.data := io.bus.cmd.data(23 downto 0)
+    }
     switch(io.bus.cmd.address) {
       is(U(0x030, 12 bits)) { floatShadowStartA := (io.bus.cmd.data.asSInt.resize(60 bits) |<< 18) }
       is(U(0x034, 12 bits)) { floatShadowStartS := (io.bus.cmd.data.asSInt.resize(60 bits) |<< 12) }
@@ -1164,6 +1191,11 @@ case class RegisterBank(config: Config) extends Component {
 }
 
 object RegisterBank {
+  case class PaletteWrite() extends Bundle {
+    val address = UInt(8 bits)
+    val data = Bits(24 bits)
+  }
+
   def bmbParams(c: Config) = BmbParameter(
     addressWidth = 12, // 4KB address space (remapping handled by AddressRemapper)
     dataWidth = 32,

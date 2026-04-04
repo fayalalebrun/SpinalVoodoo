@@ -130,6 +130,7 @@ case class PixelPipeline(c: Config) extends Component {
     val triangleCmd = slave(Stream(TriangleSetup.Input(c)))
     val ftriangleCmd = slave(Stream(TriangleSetup.Input(c)))
     val fastfillCmd = slave Stream (NoData)
+    val paletteWrite = slave(Flow(RegisterBank.PaletteWrite()))
     val lfbBus = slave(Bmb(Lfb.bmbParams(c)))
     val controls = in(Controls(c))
     val externalBusy = in(ExternalBusy())
@@ -236,8 +237,12 @@ case class PixelPipeline(c: Config) extends Component {
   lfb.io.pciFifoEmpty := io.pciFifoEmpty
   io.lfbReadBus <> lfb.io.fbReadBus
 
-  val paletteWriteFlow = buildPaletteWriteFlow(io.controls.paletteRegs)
-  tmu.io.paletteWrite << paletteWriteFlow
+  tmu.io.paletteWrite << io.paletteWrite.translateWith {
+    val out = Tmu.PaletteWrite()
+    out.address := io.paletteWrite.payload.address
+    out.data := io.paletteWrite.payload.data
+    out
+  }
   tmu.io.invalidate := io.tmuInvalidate
   io.texRead <> tmu.io.texRead
 

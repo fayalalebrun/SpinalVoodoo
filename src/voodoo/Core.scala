@@ -147,6 +147,7 @@ case class Core(c: Config) extends Component {
   pixelPipeline.io.triangleCmd << regBank.commands.triangleCmd
   pixelPipeline.io.ftriangleCmd << regBank.commands.ftriangleCmd
   pixelPipeline.io.fastfillCmd << regBank.commands.fastfillCmd
+  pixelPipeline.io.paletteWrite << regBank.io.paletteWrite
   pixelPipeline.io.tmuInvalidate := frontdoor.io.invalidate
   pixelPipeline.io.pciFifoEmpty := pciFifo.io.fifoEmpty
   pixelPipeline.io.fbStatus := framebufferMem.io.status

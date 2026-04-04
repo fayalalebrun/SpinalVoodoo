@@ -524,41 +524,20 @@ case class RegisterBank(config: Config) extends Component {
     cfg.fbzColorPath := renderConfig.fbzColorPathBundle
     cfg.fogMode := renderConfig.fogModeBundle
     cfg.alphaMode := renderConfig.alphaModeBundle
-    cfg.fbzMode := renderConfig.fbzModeBundle
 
     cfg.tmuTextureMode := tmuConfig.textureMode
     cfg.tmuTexBaseAddr := tmuConfig.texBaseAddr
+    cfg.tmuTexBaseAddr1 := tmuConfig.texBaseAddr1
+    cfg.tmuTexBaseAddr2 := tmuConfig.texBaseAddr2
+    cfg.tmuTexBaseAddr38 := tmuConfig.texBaseAddr38
     cfg.tmuTLOD := tmuConfig.tLOD.resized
-    cfg.tmuSendConfig := tmuConfig.trexInit1(18)
     cfg.tmudSdX.raw := g.dSdX.asBits
     cfg.tmudTdX.raw := g.dTdX.asBits
     cfg.tmudSdY.raw := g.dSdY.asBits
     cfg.tmudTdY.raw := g.dTdY.asBits
 
-    cfg.color0 := renderConfig.color0
-    cfg.color1 := renderConfig.color1
-    cfg.fogColor := renderConfig.fogColor
-    cfg.chromaKey := renderConfig.chromaKey
-    cfg.zaColor := renderConfig.zaColor
-    cfg.routing := io.drawRouting
-
     if (config.packedTexLayout) {
       cfg.texTables := triangleTexTablesRegOpt.get
-    }
-
-    val nccSel = tmuConfig.textureMode(5)
-    for (r <- 0 until 4; b <- 0 until 4) {
-      cfg.ncc.y(r * 4 + b) := Mux(
-        nccSel,
-        nccTable.table1Y(r)((b + 1) * 8 - 1 downto b * 8).asUInt,
-        nccTable.table0Y(r)((b + 1) * 8 - 1 downto b * 8).asUInt
-      )
-    }
-    for (i <- 0 until 4) {
-      cfg.ncc
-        .i(i) := Mux(nccSel, nccTable.table1I(i)(26 downto 0), nccTable.table0I(i)(26 downto 0))
-      cfg.ncc
-        .q(i) := Mux(nccSel, nccTable.table1Q(i)(26 downto 0), nccTable.table0Q(i)(26 downto 0))
     }
 
     cfg
@@ -586,14 +565,14 @@ case class RegisterBank(config: Config) extends Component {
     )
   }
 
-  private def fifoNoSyncBitsReg(addr: Int, name: String, doc: String): Bits =
+  private def fifoRegBits(addr: Int, name: String, category: RegisterCategory, doc: String): Bits =
     busif
-      .newRegAtWithCategory(addr, name, RegisterCategory.fifoNoSync)
+      .newRegAtWithCategory(addr, name, category)
       .field(Bits(32 bits), AccessType.WO, 0, doc)
       .asOutput()
 
   private def fogEntryPair(addr: Int, baseName: String, index: Int): Seq[(Bits, Bits)] = {
-    val reg = busif.newRegAt(addr, baseName)
+    val reg = busif.newRegAtWithCategory(addr, baseName, RegisterCategory.fifoWithSync)
     val entry0Dfog =
       reg.field(Bits(8 bits), AccessType.WO, 0, s"Fog entry ${index * 2} delta").asOutput()
     val entry0Fog =
@@ -610,9 +589,10 @@ case class RegisterBank(config: Config) extends Component {
   private def nccBlock(table: Int, kind: String, baseAddr: Int): Vec[Bits] =
     Vec(
       (0 until 4).map(i =>
-        fifoNoSyncBitsReg(
+        fifoRegBits(
           baseAddr + i * 4,
           s"nccTable${table}${kind}${i}",
+          RegisterCategory.fifoWithSync,
           s"NCC table $table $kind$i"
         )
       )
@@ -1001,7 +981,7 @@ case class RegisterBank(config: Config) extends Component {
       fbiInit0Reg.fieldAt(1, Bool(), AccessType.RW, 0, "Graphics reset").asOutput()
 
     // fbiInit1 (0x214) - PCI timing and SLI enable
-    val fbiInit1Reg = busif.newRegAt(0x214, "fbiInit1")
+    val fbiInit1Reg = busif.newRegAtWithCategory(0x214, "fbiInit1", RegisterCategory.bypassFifo)
     val fbiInit1_pciWriteWaitStates = fbiInit1Reg
       .fieldAt(1, Bool(), AccessType.RW, 0, "PCI write wait states: 0=fast, 1=slow")
       .asOutput()
@@ -1021,7 +1001,7 @@ case class RegisterBank(config: Config) extends Component {
     // Note: yOriginSwap is in fbiInit3 (0x21C), not fbiInit1 — see below
 
     // fbiInit2 (0x218) - Buffer config and swap algorithm
-    val fbiInit2Reg = busif.newRegAt(0x218, "fbiInit2")
+    val fbiInit2Reg = busif.newRegAtWithCategory(0x218, "fbiInit2", RegisterCategory.bypassFifo)
     val fbiInit2_swapAlgorithm = fbiInit2Reg
       .fieldAt(
         9,
@@ -1036,7 +1016,7 @@ case class RegisterBank(config: Config) extends Component {
       .asOutput()
 
     // fbiInit3 (0x21C) - Register remapping and Y origin
-    val fbiInit3Reg = busif.newRegAt(0x21c, "fbiInit3")
+    val fbiInit3Reg = busif.newRegAtWithCategory(0x21c, "fbiInit3", RegisterCategory.bypassFifo)
     val fbiInit3_remapEnable =
       fbiInit3Reg.field(Bool(), AccessType.RW, 0, "Enable register address remapping").asOutput()
     val fbiInit3_yOriginSwap = fbiInit3Reg
@@ -1044,13 +1024,13 @@ case class RegisterBank(config: Config) extends Component {
       .asOutput()
 
     // hSync (0x220) - Horizontal sync timing
-    val hSyncReg = busif.newRegAt(0x220, "hSync")
+    val hSyncReg = busif.newRegAtWithCategory(0x220, "hSync", RegisterCategory.bypassFifo)
     val hSyncOn = hSyncReg.field(UInt(8 bits), AccessType.WO, 0, "Horizontal sync start").asOutput()
     val hSyncOff =
       hSyncReg.fieldAt(16, UInt(10 bits), AccessType.WO, 0, "Horizontal sync end").asOutput()
 
     // vSync (0x224) - Vertical sync timing
-    val vSyncReg = busif.newRegAt(0x224, "vSync")
+    val vSyncReg = busif.newRegAtWithCategory(0x224, "vSync", RegisterCategory.bypassFifo)
     val vSyncOn =
       vSyncReg.field(UInt(16 bits), AccessType.WO, 0, "Vertical sync start (lines)").asOutput()
     val vSyncOff =
@@ -1058,7 +1038,7 @@ case class RegisterBank(config: Config) extends Component {
 
     // maxRgbDelta (0x230) - Max RGB difference for video filtering
     val maxRgbDelta = busif
-      .newRegAt(0x230, "maxRgbDelta")
+      .newRegAtWithCategory(0x230, "maxRgbDelta", RegisterCategory.bypassFifo)
       .field(Bits(32 bits), AccessType.WO, 0, "Max RGB difference for video filtering")
       .asOutput()
 
@@ -1069,19 +1049,19 @@ case class RegisterBank(config: Config) extends Component {
     debugBusy := io.debug.busy.bitsValue
 
     // fbiInit5 (0x244) - Multi-chip config
-    val fbiInit5Reg = busif.newRegAt(0x244, "fbiInit5")
+    val fbiInit5Reg = busif.newRegAtWithCategory(0x244, "fbiInit5", RegisterCategory.bypassFifo)
     val fbiInit5_multiCvg = fbiInit5Reg
       .fieldAt(14, Bool(), AccessType.RW, 0, "Multi-chip coverage (SLI for V2)")
       .asOutput()
 
     // fbiInit6 (0x248) - Extended init
-    val fbiInit6Reg = busif.newRegAt(0x248, "fbiInit6")
+    val fbiInit6Reg = busif.newRegAtWithCategory(0x248, "fbiInit6", RegisterCategory.bypassFifo)
     val fbiInit6_blockWidthExtend = fbiInit6Reg
       .fieldAt(30, Bool(), AccessType.RW, 0, "Extends block width calculation")
       .asOutput()
 
     // fbiInit7 (0x24C) - Command FIFO enable [V2+]
-    val fbiInit7Reg = busif.newRegAt(0x24c, "fbiInit7")
+    val fbiInit7Reg = busif.newRegAtWithCategory(0x24c, "fbiInit7", RegisterCategory.bypassFifo)
     val fbiInit7_cmdFifoEnable =
       fbiInit7Reg.fieldAt(8, Bool(), AccessType.RW, 0, "Enable command FIFO mode [V2+]").asOutput()
 
@@ -1124,21 +1104,45 @@ case class RegisterBank(config: Config) extends Component {
     val texBaseAddr =
       texBaseAddrReg.field(UInt(24 bits), AccessType.WO, 0, "Texture base address").asOutput()
 
+    val texBaseAddr1Reg =
+      busif.newRegAtWithCategory(0x310, "texBaseAddr_1", RegisterCategory.fifoNoSync)
+    val texBaseAddr1 =
+      texBaseAddr1Reg
+        .field(UInt(24 bits), AccessType.WO, 0, "Texture base address for LOD 1")
+        .asOutput()
+
+    val texBaseAddr2Reg =
+      busif.newRegAtWithCategory(0x314, "texBaseAddr_2", RegisterCategory.fifoNoSync)
+    val texBaseAddr2 =
+      texBaseAddr2Reg
+        .field(UInt(24 bits), AccessType.WO, 0, "Texture base address for LOD 2")
+        .asOutput()
+
+    val texBaseAddr38Reg =
+      busif.newRegAtWithCategory(0x318, "texBaseAddr_3_8", RegisterCategory.fifoNoSync)
+    val texBaseAddr38 = texBaseAddr38Reg
+      .field(UInt(24 bits), AccessType.WO, 0, "Texture base address for LOD 3 through 8")
+      .asOutput()
+
     // trexInit0 (0x31C) - TMU hardware init / memory config
-    val trexInit0Reg = busif.newRegAtWithCategory(0x31c, "trexInit0", RegisterCategory.fifoNoSync)
+    val trexInit0Reg = busif.newRegAtWithCategory(0x31c, "trexInit0", RegisterCategory.fifoWithSync)
     val trexInit0 = trexInit0Reg.field(Bits(32 bits), AccessType.WO, 0, "TMU init 0").asOutput()
 
     // trexInit1 (0x320) - TMU hardware init / config output control
-    val trexInit1Reg = busif.newRegAtWithCategory(0x320, "trexInit1", RegisterCategory.fifoNoSync)
+    val trexInit1Reg = busif.newRegAtWithCategory(0x320, "trexInit1", RegisterCategory.fifoWithSync)
     val trexInit1 = trexInit1Reg.field(Bits(32 bits), AccessType.WO, 0, "TMU init 1").asOutput()
   }
 
   if (config.packedTexLayout) {
     val texCfg = TexLayoutTables.TexConfig()
     texCfg.texBaseAddr := tmuConfig.texBaseAddr(18 downto 0)
+    texCfg.texBaseAddr1 := tmuConfig.texBaseAddr1(18 downto 0)
+    texCfg.texBaseAddr2 := tmuConfig.texBaseAddr2(18 downto 0)
+    texCfg.texBaseAddr38 := tmuConfig.texBaseAddr38(18 downto 0)
     texCfg.tformat := tmuConfig.textureMode(11 downto 8).asUInt
     texCfg.tLOD_aspect := tmuConfig.tLOD(22 downto 21).asUInt
     texCfg.tLOD_sIsWider := tmuConfig.tLOD(20)
+    texCfg.tLOD_multibase := tmuConfig.tLOD(24)
     val texTablesReg = Reg(TexLayoutTables.Tables())
     val triangleTexTablesReg = Reg(TexLayoutTables.Tables())
     texTablesReg := TexLayoutTables.compute(texCfg)

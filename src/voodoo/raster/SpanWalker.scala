@@ -66,7 +66,8 @@ case class SpanWalker(c: Config, formalStrong: Boolean = false) extends Componen
     dst.texDy(1) := input.texHi.dTdY
     dst.alphaDx := input.hiAlpha.dAdX
     dst.alphaDy := input.hiAlpha.dAdY
-    dst.config := input.config
+    dst.tmuConfig := TriangleSetup.TmuConfig.fromPerTriangle(c, input.config)
+    dst.pixelConfig := TriangleSetup.PixelPipelineConfig.fromPerTriangle(c, input.config)
     if (c.trace.enabled) {
       dst.trace := input.trace
     }
@@ -203,7 +204,8 @@ case class SpanWalker(c: Config, formalStrong: Boolean = false) extends Componen
   o.payload.stepX.linear := triangleConst.linearDx
   o.payload.stepX.tex := triangleConst.texDx
   o.payload.stepX.alpha := triangleConst.alphaDx
-  o.payload.config := triangleConst.config
+  o.payload.tmuConfig := triangleConst.tmuConfig
+  o.payload.pixelConfig := triangleConst.pixelConfig
   o.payload.firstSpan := emitFirstSpan
   if (c.trace.enabled) {
     o.payload.trace := triangleConst.trace
@@ -347,7 +349,8 @@ object SpanWalker {
     val texDy = Vec.fill(2)(AFix(c.texCoordsHiFormat))
     val alphaDx = AFix(c.texCoordsHiFormat)
     val alphaDy = AFix(c.texCoordsHiFormat)
-    val config = TriangleSetup.PerTriangleConfig(c)
+    val tmuConfig = TriangleSetup.TmuConfig(c)
+    val pixelConfig = TriangleSetup.PixelPipelineConfig(c)
     val trace = if (c.trace.enabled) Trace.PrimitiveKey() else null
   }
 
@@ -369,7 +372,8 @@ object SpanWalker {
     val hiT = AFix(c.texCoordsHiFormat)
     val hiAlpha = AFix(c.texCoordsHiFormat)
     val stepX = StepX(c)
-    val config = TriangleSetup.PerTriangleConfig(c)
+    val tmuConfig = TriangleSetup.TmuConfig(c)
+    val pixelConfig = TriangleSetup.PixelPipelineConfig(c)
     val firstSpan = Bool()
     val trace = if (c.trace.enabled) Trace.PrimitiveKey() else null
   }

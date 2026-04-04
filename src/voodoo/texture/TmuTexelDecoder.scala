@@ -12,6 +12,8 @@ case class TmuTexelDecoder(c: voodoo.Config) extends Component {
     val decoded = master Stream (Tmu.DecodedTexel(c))
     val fastOutput = master Stream (Tmu.Output(c))
     val paletteWrite = slave Flow (Tmu.PaletteWrite())
+    val sendConfig = in Bool ()
+    val nccTables = in(Tmu.NccTables())
   }
 
   val paletteRam = Mem(Bits(24 bits), 256)
@@ -154,12 +156,13 @@ case class TmuTexelDecoder(c: voodoo.Config) extends Component {
     val rspData32 = fetchedPipe.payload.rspData32
     val queued = fetchedPipe.payload.queued
     val pass = queued.passthrough
+    val ncc = pass.nccTableSelect ? io.nccTables.table1 | io.nccTables.table0
     val decoded = decodeTexelWord(
       rspData32,
       queued.addrHalf,
       queued.addrByte,
       pass.format,
-      pass.ncc,
+      ncc,
       fetchedPaletteColor
     )
 
@@ -168,18 +171,25 @@ case class TmuTexelDecoder(c: voodoo.Config) extends Component {
     result.g := decoded.g
     result.b := decoded.b
     result.a := decoded.a
-    when(pass.sendConfig) {
+    result.meta.bilinear := pass.bilinear
+    result.meta.ds := pass.ds
+    result.meta.dt := pass.dt
+    result.meta.readIdx := pass.readIdx
+    result.meta.requestId := pass.requestId
+    if (c.trace.enabled) {
+      result.meta.trace := pass.trace
+    }
+    when(io.sendConfig) {
       result.r := 0
       result.g := 0
       result.b := 1
       result.a := U(255, 8 bits)
     }
-    result.passthrough := pass
     result
   }
 
   case class FastBilinearPrep(c: voodoo.Config) extends Bundle {
-    val passthrough = Tmu.TmuPassthrough(c)
+    val meta = Tmu.FastOutputMeta(c)
     val weights = Tmu.BilinearWeights()
     val texels = Vec.fill(4)(Bits(32 bits))
   }
@@ -199,8 +209,12 @@ case class TmuTexelDecoder(c: voodoo.Config) extends Component {
   val fastBlendPrep = fastFetchPipe
     .translateWith {
       val pass = fastFetchPipe.payload.passthrough
+      val ncc = pass.nccTableSelect ? io.nccTables.table1 | io.nccTables.table0
       val out = FastBilinearPrep(c)
-      out.passthrough := pass
+      out.meta.requestId := pass.requestId
+      if (c.trace.enabled) {
+        out.meta.trace := pass.trace
+      }
       out.weights := Tmu.bilinearWeights(pass.ds, pass.dt)
       def decodeFastTexel(idx: Int) =
         decodeTexelWord(
@@ -208,7 +222,7 @@ case class TmuTexelDecoder(c: voodoo.Config) extends Component {
           fastFetchPipe.payload.texels(idx).addrHalf,
           fastFetchPipe.payload.texels(idx).addrByte,
           pass.format,
-          pass.ncc,
+          ncc,
           fastPaletteColors(idx)
         )
       val decoded = Seq.tabulate(4)(decodeFastTexel)
@@ -221,7 +235,7 @@ case class TmuTexelDecoder(c: voodoo.Config) extends Component {
 
   io.fastOutput << fastBlendPrep
     .translateWith {
-      val pass = fastBlendPrep.payload.passthrough
+      val meta = fastBlendPrep.payload.meta
       def channel(texel: Bits, hi: Int, lo: Int) = texel(hi downto lo).asUInt
 
       val result = Tmu.Output(c)
@@ -253,15 +267,15 @@ case class TmuTexelDecoder(c: voodoo.Config) extends Component {
         channel(fastBlendPrep.payload.texels(2), 7, 0),
         channel(fastBlendPrep.payload.texels(3), 7, 0)
       )
-      result.requestId := pass.requestId
-      when(pass.sendConfig) {
+      result.requestId := meta.requestId
+      when(io.sendConfig) {
         result.texture.r := 0
         result.texture.g := 0
         result.texture.b := 1
         result.textureAlpha := U(255, 8 bits)
       }
       if (c.trace.enabled) {
-        result.trace := pass.trace
+        result.trace := meta.trace
       }
       result
     }

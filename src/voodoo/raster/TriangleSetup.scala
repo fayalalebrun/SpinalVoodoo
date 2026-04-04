@@ -396,6 +396,58 @@ object TriangleSetup {
     val dTdY = AFix(c.texCoordsHiFormat)
   }
 
+  case class PrefetchConfig(c: Config) extends Bundle {}
+
+  case class PixelPipelineConfig(c: Config) extends Bundle {
+    val fbzColorPath = FbzColorPath()
+    val fogMode = FogMode()
+    val alphaMode = AlphaMode()
+  }
+
+  object PixelPipelineConfig {
+    def fromPerTriangle(c: Config, src: PerTriangleConfig): PixelPipelineConfig = {
+      val out = PixelPipelineConfig(c)
+      out.fbzColorPath := src.fbzColorPath
+      out.fogMode := src.fogMode
+      out.alphaMode := src.alphaMode
+      out
+    }
+  }
+
+  case class TmuConfig(c: Config) extends Bundle {
+    val textureEnable = Bool()
+    val textureMode = Bits(32 bits)
+    val texBaseAddr = UInt(24 bits)
+    val texBaseAddr1 = UInt(24 bits)
+    val texBaseAddr2 = UInt(24 bits)
+    val texBaseAddr38 = UInt(24 bits)
+    val tLOD = Bits(27 bits)
+    val dSdX = AFix(c.texCoordsFormat)
+    val dTdX = AFix(c.texCoordsFormat)
+    val dSdY = AFix(c.texCoordsFormat)
+    val dTdY = AFix(c.texCoordsFormat)
+    val texTables = if (c.packedTexLayout) TexLayoutTables.Tables() else null
+  }
+
+  object TmuConfig {
+    def fromPerTriangle(c: Config, src: PerTriangleConfig): TmuConfig = {
+      val out = TmuConfig(c)
+      out.textureEnable := src.fbzColorPath.textureEnable
+      out.textureMode := src.tmuTextureMode
+      out.texBaseAddr := src.tmuTexBaseAddr
+      out.texBaseAddr1 := src.tmuTexBaseAddr1
+      out.texBaseAddr2 := src.tmuTexBaseAddr2
+      out.texBaseAddr38 := src.tmuTexBaseAddr38
+      out.tLOD := src.tmuTLOD
+      out.dSdX := src.tmudSdX
+      out.dTdX := src.tmudTdX
+      out.dSdY := src.tmudSdY
+      out.dTdY := src.tmudTdY
+      if (c.packedTexLayout) out.texTables := src.texTables
+      out
+    }
+  }
+
   /** Per-triangle configuration captured at command time. These are registers with FIFO=Yes,
     * Sync=No in the datasheet, meaning they must be captured when the triangle command is issued to
     * avoid synchronization hazards.
@@ -405,37 +457,22 @@ object TriangleSetup {
     val fbzColorPath = FbzColorPath() // Color path control (FBI + TREX)
     val fogMode = FogMode() // Fog mode control (FBI)
     val alphaMode = AlphaMode() // Alpha mode control (FBI)
-    val fbzMode = FbzMode() // Framebuffer/depth mode control (FBI)
 
     // TMU registers (single TMU support - Voodoo 1 level functionality)
     val tmuTextureMode = Bits(32 bits) // Texture mode (format, filtering, clamp/wrap)
     val tmuTexBaseAddr = UInt(24 bits)
+    val tmuTexBaseAddr1 = UInt(24 bits)
+    val tmuTexBaseAddr2 = UInt(24 bits)
+    val tmuTexBaseAddr38 = UInt(24 bits)
     val tmuTLOD = Bits(27 bits) // tLOD register for mipmapping
-    val tmuSendConfig = Bool()
     // TMU texture coordinate gradients for LOD calculation
     val tmudSdX = AFix(c.texCoordsFormat)
     val tmudTdX = AFix(c.texCoordsFormat)
     val tmudSdY = AFix(c.texCoordsFormat)
     val tmudTdY = AFix(c.texCoordsFormat)
-    // NCC table data (pre-extracted at capture time)
-    val ncc = Tmu.NccTableData()
 
     // Packed texture layout tables (computed at triangle capture time)
     val texTables = if (c.packedTexLayout) TexLayoutTables.Tables() else null
-
-    // Constant colors (captured per-triangle to avoid pipelineBusy gap)
-    val color0 = Bits(32 bits)
-    val color1 = Bits(32 bits)
-    val fogColor = Bits(32 bits)
-    val chromaKey = Bits(32 bits)
-    val zaColor = Bits(32 bits)
-
-    // Framebuffer routing (captured per-triangle so in-flight pixels survive swaps)
-    val routing = FbRouting(c)
-
-    def drawColorBufferBase: UInt = routing.colorBaseAddr
-    def drawAuxBufferBase: UInt = routing.auxBaseAddr
-    def fbPixelStride: UInt = routing.pixelStride
   }
 
   /** Input bundle - triangle with gradients and render config captured at command time */

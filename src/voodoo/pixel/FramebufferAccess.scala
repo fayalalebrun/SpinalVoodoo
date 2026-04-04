@@ -254,9 +254,15 @@ case class FramebufferAccess(c: Config) extends Component {
   val destDsub = Color.u8()
   val dsubX = afterPdata.coords(0)(1 downto 0).asUInt
   val dsubY = afterPdata.coords(1)(1 downto 0).asUInt
-  destDsub.r := dsubRbRom(ditherAddr(destColor.r, afterPdata.fbzMode.ditherAlgorithm, dsubX, dsubY))
-  destDsub.g := dsubGRom(ditherAddr(destColor.g, afterPdata.fbzMode.ditherAlgorithm, dsubX, dsubY))
-  destDsub.b := dsubRbRom(ditherAddr(destColor.b, afterPdata.fbzMode.ditherAlgorithm, dsubX, dsubY))
+  destDsub.r := dsubRbRom(
+    ditherAddr(destColor.r, afterPdata.fbzMode.ditherAlgorithm, dsubX, dsubY)
+  )
+  destDsub.g := dsubGRom(
+    ditherAddr(destColor.g, afterPdata.fbzMode.ditherAlgorithm, dsubX, dsubY)
+  )
+  destDsub.b := dsubRbRom(
+    ditherAddr(destColor.b, afterPdata.fbzMode.ditherAlgorithm, dsubX, dsubY)
+  )
   val blendDestColor = afterPdata.fbzMode.enableDitherSubtract ? destDsub | destColor
   val destA = U(0xff, 8 bits)
 

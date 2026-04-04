@@ -70,9 +70,9 @@ case class TmuTextureCache(c: voodoo.Config, formalStrong: Boolean = true) exten
     val biBank = Vec(req.biBankSel0, req.biBankSel1, req.biBankSel2, req.biBankSel3)
     val pass = Tmu.TmuPassthrough(c)
     pass.format := req.passthrough.format; pass.bilinear := req.passthrough.bilinear;
-    pass.sendConfig := req.passthrough.sendConfig
+    pass.nccTableSelect := req.passthrough.nccTableSelect
     pass.ds := req.passthrough.ds; pass.dt := req.passthrough.dt; pass.readIdx := idx;
-    pass.requestId := req.passthrough.requestId; pass.ncc := req.passthrough.ncc
+    pass.requestId := req.passthrough.requestId
     if (c.trace.enabled) pass.trace := req.passthrough.trace
     stream.valid := running || (io.sampleRequest.valid && !useFastBilinear)
     stream.payload.address := req.bilinear ? biAddr(idx) | req.pointAddr

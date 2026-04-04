@@ -15,7 +15,7 @@ case class TmuCollector(c: voodoo.Config) extends Component {
   }
 
   case class PreBlend() extends Bundle {
-    val requestId = cloneOf(io.decoded.payload.passthrough.requestId)
+    val requestId = cloneOf(io.decoded.payload.meta.requestId)
     val bilinear = Bool()
     val texels = Vec(TexelRgba(), 4)
     val weights = Tmu.BilinearWeights()
@@ -44,23 +44,23 @@ case class TmuCollector(c: voodoo.Config) extends Component {
     dst.a := a
   }
 
-  val blendDs = Mux(collectCount =/= 0, storedDs, io.decoded.payload.passthrough.ds)
-  val blendDt = Mux(collectCount =/= 0, storedDt, io.decoded.payload.passthrough.dt)
+  val blendDs = Mux(collectCount =/= 0, storedDs, io.decoded.payload.meta.ds)
+  val blendDt = Mux(collectCount =/= 0, storedDt, io.decoded.payload.meta.dt)
   val weights = Tmu.bilinearWeights(blendDs, blendDt)
 
   val isCollecting = collectCount =/= 0
-  val isBilinear = Mux(isCollecting, True, io.decoded.payload.passthrough.bilinear)
+  val isBilinear = Mux(isCollecting, True, io.decoded.payload.meta.bilinear)
   val bilinearAccumulating = isBilinear && (collectCount < 3)
 
   val preBlend = io.decoded
     .throwWhen(bilinearAccumulating)
     .translateWith {
       val result = PreBlend()
-      result.requestId := io.decoded.payload.passthrough.requestId
+      result.requestId := io.decoded.payload.meta.requestId
       result.bilinear := isBilinear
       result.weights := weights
       for (idx <- 0 until 4) {
-        val useCurrent = io.decoded.payload.passthrough.readIdx === U(idx, 2 bits)
+        val useCurrent = io.decoded.payload.meta.readIdx === U(idx, 2 bits)
         assignTexel(
           result.texels(idx),
           Mux(useCurrent, io.decoded.payload.r, storedR(idx)),
@@ -70,7 +70,7 @@ case class TmuCollector(c: voodoo.Config) extends Component {
         )
       }
       if (c.trace.enabled) {
-        result.trace := io.decoded.payload.passthrough.trace
+        result.trace := io.decoded.payload.meta.trace
       }
       result
     }
@@ -111,10 +111,10 @@ case class TmuCollector(c: voodoo.Config) extends Component {
 
   when(io.decoded.fire) {
     when(isBilinear && collectCount < 3) {
-      assignStored(io.decoded.payload.passthrough.readIdx, io.decoded.payload)
+      assignStored(io.decoded.payload.meta.readIdx, io.decoded.payload)
       when(collectCount === 0) {
-        storedDs := io.decoded.payload.passthrough.ds
-        storedDt := io.decoded.payload.passthrough.dt
+        storedDs := io.decoded.payload.meta.ds
+        storedDt := io.decoded.payload.meta.dt
       }
       collectCount := collectCount + 1
     }.otherwise {

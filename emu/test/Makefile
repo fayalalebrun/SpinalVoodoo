@@ -127,9 +127,6 @@ $(OBJ_DIR)/vid_voodoo_fb.o: $(EBOX_SRC)/vid_voodoo_fb.c
 $(OBJ_DIR)/vid_voodoo_blitter.o: $(EBOX_SRC)/vid_voodoo_blitter.c
 	$(OBJCACHE) $(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ $<
 
-$(OBJ_DIR)/vid_voodoo_trace.o: $(EBOX_SRC)/vid_voodoo_trace.c
-	$(OBJCACHE) $(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ $<
-
 $(OBJ_DIR)/voodoo_trace_writer.o: $(TRACE_DIR)/voodoo_trace_writer.c
 	$(OBJCACHE) $(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ $<
 
@@ -157,7 +154,6 @@ OBJS = $(OBJ_DIR)/trace_test.o \
        $(OBJ_DIR)/vid_voodoo_reg.o \
        $(OBJ_DIR)/vid_voodoo_fb.o \
        $(OBJ_DIR)/vid_voodoo_blitter.o \
-       $(OBJ_DIR)/vid_voodoo_trace.o \
        $(OBJ_DIR)/voodoo_trace_writer.o \
        $(OBJ_DIR)/sim_harness.o
 
@@ -171,7 +167,6 @@ ROUNDTRIP_OBJS = $(OBJ_DIR)/state_roundtrip_test.o \
                  $(OBJ_DIR)/vid_voodoo_reg.o \
                  $(OBJ_DIR)/vid_voodoo_fb.o \
                  $(OBJ_DIR)/vid_voodoo_blitter.o \
-                 $(OBJ_DIR)/vid_voodoo_trace.o \
                  $(OBJ_DIR)/voodoo_trace_writer.o
 
 $(OBJ_DIR)/state_roundtrip_test: $(ROUNDTRIP_OBJS)

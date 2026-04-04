@@ -11,6 +11,9 @@ object TextureMem {
   case class DownloadConfig(c: Config) extends Bundle {
     val textureMode = Bits(32 bits)
     val texBaseAddr = UInt(24 bits)
+    val texBaseAddr1 = UInt(24 bits)
+    val texBaseAddr2 = UInt(24 bits)
+    val texBaseAddr38 = UInt(24 bits)
     val tLOD = Bits(32 bits)
   }
 
@@ -19,6 +22,9 @@ object TextureMem {
       val cfg = DownloadConfig(c)
       cfg.textureMode := regBank.tmuConfig.textureMode
       cfg.texBaseAddr := regBank.tmuConfig.texBaseAddr
+      cfg.texBaseAddr1 := regBank.tmuConfig.texBaseAddr1
+      cfg.texBaseAddr2 := regBank.tmuConfig.texBaseAddr2
+      cfg.texBaseAddr38 := regBank.tmuConfig.texBaseAddr38
       cfg.tLOD := regBank.tmuConfig.tLOD
       cfg
     }
@@ -76,9 +82,13 @@ object TextureMem {
       if (c.packedTexLayout) {
         val texCfg = TexLayoutTables.TexConfig()
         texCfg.texBaseAddr := cfg.texBaseAddr(18 downto 0)
+        texCfg.texBaseAddr1 := cfg.texBaseAddr1(18 downto 0)
+        texCfg.texBaseAddr2 := cfg.texBaseAddr2(18 downto 0)
+        texCfg.texBaseAddr38 := cfg.texBaseAddr38(18 downto 0)
         texCfg.tformat := cfg.textureMode(11 downto 8).asUInt
         texCfg.tLOD_aspect := cfg.tLOD(22 downto 21).asUInt
         texCfg.tLOD_sIsWider := cfg.tLOD(20)
+        texCfg.tLOD_multibase := cfg.tLOD(24)
         val writeTables = TexLayoutTables.compute(texCfg)
 
         val is16bit = texCfg.tformat >= Tmu.TextureFormat.ARGB8332
@@ -135,8 +145,26 @@ object TextureMem {
           }
           .m2sPipe()
       } else {
+        val lod = pciAddr(20 downto 17)
+        val baseReg = UInt(24 bits)
+        baseReg := cfg.texBaseAddr
+        when(cfg.tLOD(24)) {
+          switch(lod.resize(4 bits)) {
+            is(U(1, 4 bits)) {
+              baseReg := cfg.texBaseAddr1
+            }
+            is(U(2, 4 bits)) {
+              baseReg := cfg.texBaseAddr2
+            }
+            default {
+              when(lod >= 3) {
+                baseReg := cfg.texBaseAddr38
+              }
+            }
+          }
+        }
         val flatSramAddr =
-          ((cfg.texBaseAddr(18 downto 0) << 3) +^ pciAddr).resize(c.addressWidth.value bits)
+          ((baseReg(18 downto 0) << 3) +^ pciAddr).resize(c.addressWidth.value bits)
 
         val prepared = drain
           .translateWith {

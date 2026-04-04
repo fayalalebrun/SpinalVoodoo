@@ -27,10 +27,23 @@ object PixelPipeline {
     val table0Q3 = Bits(32 bits)
   }
 
+  case class SyncRender(c: Config) extends Bundle {
+    val fbzMode = FbzMode()
+    val color0 = Bits(32 bits)
+    val color1 = Bits(32 bits)
+    val fogColor = Bits(32 bits)
+    val chromaKey = Bits(32 bits)
+    val zaColor = Bits(32 bits)
+    val routing = FbRouting(c)
+    val tmuSendConfig = Bool()
+  }
+
   case class Controls(c: Config) extends Bundle {
     val clip = ClipRect()
     val lfb = Lfb.Regs(c)
     val fastfill = FastfillWrite.Regs(c)
+    val syncRender = SyncRender(c)
+    val nccTables = Tmu.NccTables()
     val fogTable = Vec(Bits(16 bits), 64)
     val paletteRegs = PaletteRegs()
   }
@@ -44,6 +57,27 @@ object PixelPipeline {
       ctrl.clip.highY := regBank.renderConfig.clipHighY
       ctrl.lfb := Lfb.Regs.fromRegisterBank(c, regBank, layout)
       ctrl.fastfill := FastfillWrite.Regs.fromRegisterBank(c, regBank, layout.draw)
+      ctrl.syncRender.fbzMode := regBank.renderConfig.fbzModeBundle
+      ctrl.syncRender.color0 := regBank.renderConfig.color0
+      ctrl.syncRender.color1 := regBank.renderConfig.color1
+      ctrl.syncRender.fogColor := regBank.renderConfig.fogColor
+      ctrl.syncRender.chromaKey := regBank.renderConfig.chromaKey
+      ctrl.syncRender.zaColor := regBank.renderConfig.zaColor
+      ctrl.syncRender.routing := layout.draw
+      ctrl.syncRender.tmuSendConfig := regBank.tmuConfig.trexInit1(18)
+      for (table <- 0 until 2) {
+        val yRegs = if (table == 0) regBank.nccTable.table0Y else regBank.nccTable.table1Y
+        val iRegs = if (table == 0) regBank.nccTable.table0I else regBank.nccTable.table1I
+        val qRegs = if (table == 0) regBank.nccTable.table0Q else regBank.nccTable.table1Q
+        val dst = if (table == 0) ctrl.nccTables.table0 else ctrl.nccTables.table1
+        for (r <- 0 until 4; b <- 0 until 4) {
+          dst.y(r * 4 + b) := yRegs(r)((b + 1) * 8 - 1 downto b * 8).asUInt
+        }
+        for (idx <- 0 until 4) {
+          dst.i(idx) := iRegs(idx)(26 downto 0)
+          dst.q(idx) := qRegs(idx)(26 downto 0)
+        }
+      }
       for ((entry, (dfog, fog)) <- ctrl.fogTable.zip(regBank.fogTable.fogTable)) {
         entry(15 downto 8) := dfog
         entry(7 downto 0) := fog
@@ -84,6 +118,7 @@ object PixelPipeline {
     val io = new Bundle {
       val span = slave(Stream(Rasterizer.PrefetchSpan(c)))
       val readReq = master(Stream(FramebufferPlaneReader.PrefetchReq(c)))
+      val routing = in(FbRouting(c))
       val yOriginEnable = in Bool ()
       val yOriginSwapValue = in UInt (c.vertexFormat.nonFraction bits)
     }
@@ -100,20 +135,18 @@ object PixelPipeline {
       transformedY := io.yOriginSwapValue.resize(c.vertexFormat.nonFraction bits) - spanY
     }
 
-    val planeBase =
-      if (colorPlane) io.span.payload.config.drawColorBufferBase
-      else io.span.payload.config.drawAuxBufferBase
+    val planeBase = if (colorPlane) io.routing.colorBaseAddr else io.routing.auxBaseAddr
     val startAddress = FramebufferAddressMath.planeAddress(
       planeBase,
       evenWordX(io.span.payload.xStart),
       transformedY,
-      io.span.payload.config.fbPixelStride
+      io.routing.pixelStride
     )
     val endAddress = FramebufferAddressMath.planeAddress(
       planeBase,
       evenWordX(io.span.payload.xEnd),
       transformedY,
-      io.span.payload.config.fbPixelStride
+      io.routing.pixelStride
     )
 
     io.readReq.valid := io.span.valid
@@ -243,6 +276,8 @@ case class PixelPipeline(c: Config) extends Component {
     out.data := io.paletteWrite.payload.data
     out
   }
+  tmu.io.sendConfig := io.controls.syncRender.tmuSendConfig
+  tmu.io.nccTables := io.controls.nccTables
   tmu.io.invalidate := io.tmuInvalidate
   io.texRead <> tmu.io.texRead
 
@@ -261,15 +296,19 @@ case class PixelPipeline(c: Config) extends Component {
 
   val rasterYPipe = rasterYTransformed.stage()
   val rasterFork = StreamFork2(rasterYPipe, synchronous = true)
-  val tmuGradQueue = rasterFork._2.queue(64).stage().stage()
+  val postTmuQueue = rasterFork._2
+    .translateWith(Rasterizer.PostTmu.fromOutput(c, rasterFork._2.payload))
+    .queue(64)
+    .stage()
+    .stage()
 
   val tmuInput = Stream(Tmu.Input(c))
   tmuInput.translateFrom(rasterFork._1.stage())((out, in) => out := Tmu.Input.fromRasterizer(c, in))
   tmuInput >/-> tmu.io.input
 
-  val tmuJoined = StreamJoin(tmu.io.output.stage(), tmuGradQueue)
+  val tmuJoined = StreamJoin(tmu.io.output.stage(), postTmuQueue)
   if (c.trace.enabled) {
-    tmuGradQueue.simPublic()
+    postTmuQueue.simPublic()
     tmuJoined.simPublic()
     when(tmuJoined.valid) {
       assert(tmuJoined.payload._1.trace.asBits === tmuJoined.payload._2.trace.asBits)
@@ -278,7 +317,7 @@ case class PixelPipeline(c: Config) extends Component {
 
   val colorCombineInput = Stream(ColorCombine.Input(c))
   colorCombineInput.translateFrom(tmuJoined.stage())((out, payload) =>
-    out := ColorCombine.Input.fromTmuAndRaster(c, payload._1, payload._2)
+    out := ColorCombine.Input.fromTmuAndRaster(c, payload._1, payload._2, io.controls.syncRender)
   )
   colorCombineInput >/-> colorCombine.io.input
 
@@ -289,6 +328,8 @@ case class PixelPipeline(c: Config) extends Component {
 
   colorPrefetcher.io.span << spanPrefetchFork._1
   auxPrefetcher.io.span << spanPrefetchFork._2
+  colorPrefetcher.io.routing := io.controls.syncRender.routing
+  auxPrefetcher.io.routing := io.controls.syncRender.routing
   colorPrefetcher.io.yOriginEnable := yOriginEnable
   colorPrefetcher.io.yOriginSwapValue := yOriginSwapValue.resize(c.vertexFormat.nonFraction bits)
   auxPrefetcher.io.yOriginEnable := yOriginEnable

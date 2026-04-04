@@ -30,10 +30,7 @@ case class Rasterizer(c: Config, formalStrong: Boolean = false) extends Componen
   spanWalker.clipRight := clipRight
   spanRasterizer.i << queuedSpan
   prefetchSpan.translateFrom(queuedPrefetchSpan) { (out, in) =>
-    out.xStart := in.xStart
-    out.xEnd := in.xEnd
-    out.y := in.y
-    out.config := in.config
+    out := Rasterizer.PrefetchSpan.fromSpanWalker(c, in)
   }
   spanRasterizer.enableClipping := enableClipping
   spanRasterizer.clipLeft := clipLeft
@@ -73,7 +70,8 @@ object Rasterizer {
     val grads = GradientBundle(AFix(_), c)
     val alphaGradHi = AFix(c.texCoordsHiFormat)
     val coords = Vec.fill(2)(SInt(c.vertexFormat.nonFraction bits))
-    val config = TriangleSetup.PerTriangleConfig(c)
+    val tmuConfig = TriangleSetup.TmuConfig(c)
+    val pixelConfig = TriangleSetup.PixelPipelineConfig(c)
     val trace = if (c.trace.enabled) Trace.PixelKey() else null
   }
 
@@ -81,7 +79,38 @@ object Rasterizer {
     val xStart = AFix(c.vertexFormat)
     val xEnd = AFix(c.vertexFormat)
     val y = AFix(c.vertexFormat)
-    val config = TriangleSetup.PerTriangleConfig(c)
+  }
+
+  object PrefetchSpan {
+    def fromSpanWalker(c: Config, in: SpanWalker.Output): PrefetchSpan = {
+      val out = PrefetchSpan(c)
+      out.xStart := in.xStart
+      out.xEnd := in.xEnd
+      out.y := in.y
+      out
+    }
+  }
+
+  case class PostTmu(c: Config) extends Bundle {
+    val grads = GradientBundle(AFix(_), c)
+    val alphaGradHi = AFix(c.texCoordsHiFormat)
+    val coords = Vec.fill(2)(SInt(c.vertexFormat.nonFraction bits))
+    val config = TriangleSetup.PixelPipelineConfig(c)
+    val trace = if (c.trace.enabled) Trace.PixelKey() else null
+  }
+
+  object PostTmu {
+    def fromOutput(c: Config, in: Output): PostTmu = {
+      val out = PostTmu(c)
+      out.grads := in.grads
+      out.alphaGradHi := in.alphaGradHi
+      out.coords := in.coords
+      out.config := in.pixelConfig
+      if (c.trace.enabled) {
+        out.trace := in.trace
+      }
+      out
+    }
   }
 
   case class SpanPixelOutput(c: Config) extends Bundle {
@@ -98,7 +127,8 @@ object Rasterizer {
     val hiAlpha = AFix(c.texCoordsHiFormat)
     val xEnd = AFix(c.vertexFormat)
     val stepX = SpanWalker.StepX(c)
-    val config = TriangleSetup.PerTriangleConfig(c)
+    val tmuConfig = TriangleSetup.TmuConfig(c)
+    val pixelConfig = TriangleSetup.PixelPipelineConfig(c)
     val trace = if (c.trace.enabled) Trace.PrimitiveKey() else null
   }
 
@@ -131,7 +161,8 @@ object Rasterizer {
         state.hiAlpha := input.hiAlpha
         state.xEnd := input.xEnd
         state.stepX := input.stepX
-        state.config := input.config
+        state.tmuConfig := input.tmuConfig
+        state.pixelConfig := input.pixelConfig
         if (c.trace.enabled) {
           state.trace := input.trace
         }
@@ -149,7 +180,8 @@ object Rasterizer {
         output.data.grads.sGrad := state.hiS.fixTo(c.texCoordsAccumFormat)
         output.data.grads.tGrad := state.hiT.fixTo(c.texCoordsAccumFormat)
         output.data.alphaGradHi := state.hiAlpha
-        output.data.config := state.config
+        output.data.tmuConfig := state.tmuConfig
+        output.data.pixelConfig := state.pixelConfig
         if (c.trace.enabled) {
           output.data.trace.primitive := state.trace
           output.data.trace.pixelSeq := currentPixelSeq
@@ -170,7 +202,8 @@ object Rasterizer {
         next.y := state.y
         next.xEnd := state.xEnd
         next.stepX := state.stepX
-        next.config := state.config
+        next.tmuConfig := state.tmuConfig
+        next.pixelConfig := state.pixelConfig
         if (c.trace.enabled) {
           next.trace := state.trace
         }

@@ -32,6 +32,10 @@ case class Tmu(c: voodoo.Config) extends Component {
 
     // Palette write port (from Core, driven by NCC table 0 I/Q register writes with bit 31 set)
     val paletteWrite = slave Flow (Tmu.PaletteWrite())
+    val sendConfig = in Bool ()
+
+    // Live NCC tables. Sync-backed table writes only happen after the render pipeline drains.
+    val nccTables = in(Tmu.NccTables())
 
     // Invalidate texture-side fast caches after texture memory writes
     val invalidate = in Bool ()
@@ -407,8 +411,24 @@ case class Tmu(c: voodoo.Config) extends Component {
           lodBase + x.resize(22 bits) + (y.resize(22 bits) << lodShift).resize(22 bits)
         ).resize(c.addressWidth.value bits)
       } else {
-        val texBaseByteAddr =
-          (stageB.payload.meta.config.texBaseAddr << 3).resize(c.addressWidth.value bits)
+        val baseReg = UInt(24 bits)
+        baseReg := stageB.payload.meta.config.texBaseAddr
+        when(tLOD.tmultibaseaddr) {
+          switch(stageB.payload.lodLevel) {
+            is(U(1, 4 bits)) {
+              baseReg := stageB.payload.meta.config.texBaseAddr1
+            }
+            is(U(2, 4 bits)) {
+              baseReg := stageB.payload.meta.config.texBaseAddr2
+            }
+            default {
+              when(stageB.payload.lodLevel >= U(3, 4 bits)) {
+                baseReg := stageB.payload.meta.config.texBaseAddr38
+              }
+            }
+          }
+        }
+        val texBaseByteAddr = (baseReg << 3).resize(c.addressWidth.value bits)
         val lodField = stageB.payload.lodLevel.resize(4 bits)
         val tField = y.resize(8 bits)
         val x8 = x.resize(8 bits)
@@ -471,12 +491,11 @@ case class Tmu(c: voodoo.Config) extends Component {
     inputPassthrough,
     stageBTexMode.format,
     bilinearEnable,
-    stageB.payload.meta.config.sendConfig,
+    stageB.payload.meta.config.textureMode(5),
     stageB.payload.finalDs,
     stageB.payload.finalDt,
     U(0, 2 bits),
     U(0, Tmu.requestIdWidth bits),
-    stageB.payload.meta.config.ncc,
     if (c.trace.enabled) stageB.payload.meta.trace else null
   )
 
@@ -542,6 +561,8 @@ case class Tmu(c: voodoo.Config) extends Component {
   textureCache.io.fetched >/-> texelDecoder.io.fetched
   textureCache.io.fastFetch >/-> texelDecoder.io.fastFetch
   texelDecoder.io.paletteWrite <> io.paletteWrite
+  texelDecoder.io.sendConfig := io.sendConfig
+  texelDecoder.io.nccTables := io.nccTables
 
   val collector = TmuCollector(c)
   texelDecoder.io.decoded >/-> collector.io.decoded
@@ -684,22 +705,20 @@ object Tmu {
       dst: TmuPassthrough,
       format: UInt,
       bilinear: Bool,
-      sendConfig: Bool,
+      nccTableSelect: Bool,
       ds: UInt,
       dt: UInt,
       readIdx: UInt,
       requestId: UInt,
-      ncc: NccTableData,
       trace: Trace.PixelKey = null
   ): Unit = {
     dst.format := format
     dst.bilinear := bilinear
-    dst.sendConfig := sendConfig
+    dst.nccTableSelect := nccTableSelect
     dst.ds := ds
     dst.dt := dt
     dst.readIdx := readIdx
     dst.requestId := requestId
-    dst.ncc := ncc
     if (trace != null) dst.trace := trace
   }
 
@@ -722,11 +741,10 @@ object Tmu {
     dst.bilinear := src.bilinear
     dst.passthrough.format := src.passthrough.format
     dst.passthrough.bilinear := src.passthrough.bilinear
-    dst.passthrough.sendConfig := src.passthrough.sendConfig
+    dst.passthrough.nccTableSelect := src.passthrough.nccTableSelect
     dst.passthrough.ds := src.passthrough.ds
     dst.passthrough.dt := src.passthrough.dt
     dst.passthrough.readIdx := src.passthrough.readIdx
-    dst.passthrough.ncc := src.passthrough.ncc
     if (c.trace.enabled) dst.passthrough.trace := src.passthrough.trace
   }
 
@@ -740,12 +758,11 @@ object Tmu {
   case class TmuPassthrough(c: voodoo.Config) extends Bundle {
     val format = UInt(4 bits)
     val bilinear = Bool()
-    val sendConfig = Bool()
+    val nccTableSelect = Bool()
     val ds = UInt(4 bits)
     val dt = UInt(4 bits)
     val readIdx = UInt(2 bits)
     val requestId = UInt(Tmu.requestIdWidth bits)
-    val ncc = Tmu.NccTableData()
     val trace = if (c.trace.enabled) Trace.PixelKey() else null
   }
 
@@ -911,12 +928,26 @@ object Tmu {
     val passthrough = TmuPassthrough(c)
   }
 
+  case class DecodedMeta(c: voodoo.Config) extends Bundle {
+    val bilinear = Bool()
+    val ds = UInt(4 bits)
+    val dt = UInt(4 bits)
+    val readIdx = UInt(2 bits)
+    val requestId = UInt(Tmu.requestIdWidth bits)
+    val trace = if (c.trace.enabled) Trace.PixelKey() else null
+  }
+
+  case class FastOutputMeta(c: voodoo.Config) extends Bundle {
+    val requestId = UInt(Tmu.requestIdWidth bits)
+    val trace = if (c.trace.enabled) Trace.PixelKey() else null
+  }
+
   case class DecodedTexel(c: voodoo.Config) extends Bundle {
     val r = UInt(8 bits)
     val g = UInt(8 bits)
     val b = UInt(8 bits)
     val a = UInt(8 bits)
-    val passthrough = TmuPassthrough(c)
+    val meta = DecodedMeta(c)
   }
 
   /** Decoded textureMode register fields */
@@ -1008,14 +1039,20 @@ object Tmu {
     val q = Vec(Bits(27 bits), 4)
   }
 
+  case class NccTables() extends Bundle {
+    val table0 = NccTableData()
+    val table1 = NccTableData()
+  }
+
   /** Per-TMU configuration (captured per-triangle) */
   case class TmuConfig(c: voodoo.Config = null) extends Bundle {
     val textureMode = Bits(32 bits)
     val texBaseAddr = UInt(24 bits)
+    val texBaseAddr1 = UInt(24 bits)
+    val texBaseAddr2 = UInt(24 bits)
+    val texBaseAddr38 = UInt(24 bits)
     val tLOD = Bits(27 bits)
     val textureEnable = Bool()
-    val sendConfig = Bool()
-    val ncc = NccTableData()
     val texTables = if (c != null && c.packedTexLayout) TexLayoutTables.Tables() else null
   }
 
@@ -1044,17 +1081,18 @@ object Tmu {
       out.cOther.g := 0
       out.cOther.b := 0
       out.aOther := 0
-      out.config.textureMode := in.config.tmuTextureMode
-      out.config.texBaseAddr := in.config.tmuTexBaseAddr
-      out.config.tLOD := in.config.tmuTLOD
-      out.config.textureEnable := in.config.fbzColorPath.textureEnable
-      out.config.sendConfig := in.config.tmuSendConfig
-      out.config.ncc := in.config.ncc
-      if (c.packedTexLayout) out.config.texTables := in.config.texTables
-      out.dSdX := in.config.tmudSdX
-      out.dTdX := in.config.tmudTdX
-      out.dSdY := in.config.tmudSdY
-      out.dTdY := in.config.tmudTdY
+      out.config.textureMode := in.tmuConfig.textureMode
+      out.config.texBaseAddr := in.tmuConfig.texBaseAddr
+      out.config.texBaseAddr1 := in.tmuConfig.texBaseAddr1
+      out.config.texBaseAddr2 := in.tmuConfig.texBaseAddr2
+      out.config.texBaseAddr38 := in.tmuConfig.texBaseAddr38
+      out.config.tLOD := in.tmuConfig.tLOD
+      out.config.textureEnable := in.tmuConfig.textureEnable
+      if (c.packedTexLayout) out.config.texTables := in.tmuConfig.texTables
+      out.dSdX := in.tmuConfig.dSdX
+      out.dTdX := in.tmuConfig.dTdX
+      out.dSdY := in.tmuConfig.dSdY
+      out.dTdY := in.tmuConfig.dTdY
       if (c.trace.enabled) out.trace := in.trace
       out
     }

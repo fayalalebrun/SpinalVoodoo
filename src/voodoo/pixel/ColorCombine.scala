@@ -1,6 +1,7 @@
 package voodoo.pixel
 
 import voodoo._
+import voodoo.core.PixelPipeline
 import spinal.core._
 import spinal.lib._
 import spinal.lib.misc.pipeline._
@@ -97,7 +98,8 @@ object ColorCombine {
     def fromTmuAndRaster(
         c: voodoo.Config,
         tmuOut: Tmu.Output,
-        rasterOut: Rasterizer.Output
+        rasterOut: Rasterizer.PostTmu,
+        sync: PixelPipeline.SyncRender
     ): Input = {
       val out = Input(c)
       val redSat = rasterOut.grads.redGrad.sat(satMax = 255, satMin = 0, exp = 0 exp)
@@ -116,18 +118,18 @@ object ColorCombine {
       out.rawW := rasterOut.grads.wGrad.asSInt.resize(32 bits)
       out.texture := tmuOut.texture
       out.textureAlpha := tmuOut.textureAlpha
-      assignRgb888(out.color0, rasterOut.config.color0)
-      out.color0Alpha := rasterOut.config.color0(31 downto 24).asUInt
-      assignRgb888(out.color1, rasterOut.config.color1)
-      out.color1Alpha := rasterOut.config.color1(31 downto 24).asUInt
-      out.fogColor := rasterOut.config.fogColor
-      out.chromaKey := rasterOut.config.chromaKey
-      out.zaColor := rasterOut.config.zaColor
+      assignRgb888(out.color0, sync.color0)
+      out.color0Alpha := sync.color0(31 downto 24).asUInt
+      assignRgb888(out.color1, sync.color1)
+      out.color1Alpha := sync.color1(31 downto 24).asUInt
+      out.fogColor := sync.fogColor
+      out.chromaKey := sync.chromaKey
+      out.zaColor := sync.zaColor
       out.config := Config.fromFbzColorPath(rasterOut.config.fbzColorPath)
       out.alphaMode := rasterOut.config.alphaMode
       out.fogMode := rasterOut.config.fogMode
-      out.fbzMode := rasterOut.config.fbzMode
-      out.routing := rasterOut.config.routing
+      out.fbzMode := sync.fbzMode
+      out.routing := sync.routing
       if (c.trace.enabled) out.trace := rasterOut.trace
       out
     }

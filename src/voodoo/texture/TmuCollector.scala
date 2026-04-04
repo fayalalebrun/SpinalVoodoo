@@ -100,7 +100,7 @@ case class TmuCollector(c: voodoo.Config) extends Component {
           channelSeq(2),
           channelSeq(3)
         ),
-        channelSeq(3)
+        channelSeq(0)
       )
     }
     if (c.trace.enabled) {

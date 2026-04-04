@@ -11,6 +11,83 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
 
+class ConetraceMachineSession:
+    def __init__(self, conetrace: str, netlist: str, trace: str):
+        self._proc = subprocess.Popen(
+            [conetrace, netlist, trace, "--machine", "--", "shell"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+        hello = self._read_frame()
+        if hello.get("type") != "hello":
+            raise RuntimeError(f"Unexpected conetrace hello frame: {hello}")
+        self._next_id = 1
+        self.trace_prefix = ((hello.get("session") or {}).get("trace_prefix")) or ""
+        if self.trace_prefix:
+            self.exec(f"prefix {self.trace_prefix}")
+        else:
+            self.exec("prefix detect")
+
+    def _read_frame(self) -> dict:
+        assert self._proc.stdout is not None
+        line = self._proc.stdout.readline()
+        if not line:
+            stderr = ""
+            if self._proc.stderr is not None:
+                stderr = self._proc.stderr.read()
+            raise RuntimeError(f"conetrace machine mode terminated unexpectedly\n{stderr}")
+        return json.loads(line)
+
+    def exec(self, cmd: str) -> dict:
+        req_id = self._next_id
+        self._next_id += 1
+        assert self._proc.stdin is not None
+        self._proc.stdin.write(json.dumps({"id": req_id, "op": "exec", "cmd": cmd}) + "\n")
+        self._proc.stdin.flush()
+        while True:
+            frame = self._read_frame()
+            if frame.get("id") != req_id:
+                continue
+            if not frame.get("ok", False):
+                raise RuntimeError(f"conetrace command failed for `{cmd}`\n{json.dumps(frame)}")
+            return frame
+
+    def exec_doc_text(self, cmd: str) -> str:
+        frame = self.exec(cmd)
+        lines: List[str] = []
+        for block in ((frame.get("doc") or {}).get("blocks") or []):
+            lines.extend(block.get("lines") or [])
+        return "\n".join(lines)
+
+    def close(self) -> None:
+        if self._proc.poll() is not None:
+            return
+        try:
+            req_id = self._next_id
+            self._next_id += 1
+            assert self._proc.stdin is not None
+            self._proc.stdin.write(json.dumps({"id": req_id, "op": "shutdown"}) + "\n")
+            self._proc.stdin.flush()
+            self._proc.wait(timeout=2)
+        except Exception:
+            self._proc.terminate()
+            try:
+                self._proc.wait(timeout=2)
+            except Exception:
+                self._proc.kill()
+                self._proc.wait(timeout=2)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+        return False
+
+
 @dataclass(frozen=True)
 class Signal:
     column: str
@@ -48,6 +125,18 @@ STAGES = {
             Signal("w", "core_1.rasterizer_1.o_payload_grads_wGrad"),
         ],
     ),
+    "spanwalker_out": Stage(
+        "spanwalker_out",
+        [
+            Signal("valid", "core_1.pixelPipeline_1.rasterizer_1.spanWalker_1.o_valid"),
+            Signal("ready", "core_1.pixelPipeline_1.rasterizer_1.spanWalker_1.o_ready"),
+            Signal("x", "core_1.pixelPipeline_1.rasterizer_1.spanWalker_1.o_payload_xStart"),
+            Signal("y", "core_1.pixelPipeline_1.rasterizer_1.spanWalker_1.o_payload_y"),
+            Signal("s", "core_1.pixelPipeline_1.rasterizer_1.spanWalker_1.o_payload_hiS"),
+            Signal("t", "core_1.pixelPipeline_1.rasterizer_1.spanWalker_1.o_payload_hiT"),
+            Signal("w", "core_1.pixelPipeline_1.rasterizer_1.spanWalker_1.o_payload_xEnd"),
+        ],
+    ),
     "tmu_input": Stage(
         "tmu_input",
         [
@@ -64,6 +153,8 @@ STAGES = {
             Signal("dsdy", "core_1.tmu_1.io_input_payload_dSdY"),
             Signal("dtdx", "core_1.tmu_1.io_input_payload_dTdX"),
             Signal("dtdy", "core_1.tmu_1.io_input_payload_dTdY"),
+            Signal("alpha", "core_1.pixelPipeline_1.tmu_1.coordGen_stageB_translated_m2sPipe_payload_passthrough_format"),
+            Signal("rgb_write", "core_1.pixelPipeline_1.tmu_1.coordGen_stageB_translated_m2sPipe_payload_passthrough_sendConfig"),
             Signal("bilinear_enable", "core_1.tmu_1.bilinearEnable"),
             Signal("frac_s", "core_1.tmu_1.finalDs"),
             Signal("frac_t", "core_1.tmu_1.finalDt"),
@@ -72,8 +163,8 @@ STAGES = {
             Signal("tex_t_x4", "core_1.tmu_1.texT"),
             Signal("adj_s_x4", "core_1.tmu_1.adjS"),
             Signal("adj_t_x4", "core_1.tmu_1.adjT"),
-            Signal("point_texel_x", "core_1.tmu_1.pointTexelX"),
-            Signal("point_texel_y", "core_1.tmu_1.pointTexelY"),
+            Signal("point_texel_x", "core_1.pixelPipeline_1.tmu_1.addressGen_pointTexelX"),
+            Signal("point_texel_y", "core_1.pixelPipeline_1.tmu_1.addressGen_pointTexelY"),
             Signal("bi_x0", "core_1.tmu_1.biX0"),
             Signal("bi_x1", "core_1.tmu_1.biX1"),
             Signal("bi_y0", "core_1.tmu_1.biY0"),
@@ -156,46 +247,62 @@ STAGES = {
             Signal("dither_algorithm", "core_1.fbAccess.io_output_payload_ditherAlgorithm"),
         ],
     ),
+    "write_color_input": Stage(
+        "write_color_input",
+        [
+            Signal("valid", "core_1.pixelPipeline_1.writeColor.i_fromPipeline_valid"),
+            Signal("ready", "core_1.pixelPipeline_1.writeColor.i_fromPipeline_ready"),
+            Signal("x", "core_1.pixelPipeline_1.writeColor.i_fromPipeline_payload_coords_x"),
+            Signal("y", "core_1.pixelPipeline_1.writeColor.i_fromPipeline_payload_coords_y"),
+            Signal("new_depth", "core_1.pixelPipeline_1.writeColor.i_fromPipeline_payload_data"),
+        ],
+    ),
+    "color_write_req": Stage(
+        "color_write_req",
+        [
+            Signal("valid", "core_1.pixelPipeline_1.writeColor.o_fbWrite_valid"),
+            Signal("ready", "core_1.pixelPipeline_1.writeColor.o_fbWrite_ready"),
+            Signal("depth", "core_1.pixelPipeline_1.writeColor.o_fbWrite_payload_address"),
+            Signal("w_depth", "core_1.pixelPipeline_1.writeColor.o_fbWrite_payload_data"),
+            Signal("alpha", "core_1.pixelPipeline_1.writeColor.o_fbWrite_payload_mask"),
+        ],
+    ),
 }
 
 TRIANGLE_STREAM = Stage(
     "dut_triangle_stream",
     [
-        Signal("valid", "core_1.streamArbiter_5_io_output_valid"),
-        Signal("ready", "core_1.triangleSetup_1_i_ready"),
-        Signal("origin", "core_1.streamArbiter_5_io_output_payload_trace_origin"),
-        Signal("draw_id", "core_1.streamArbiter_5_io_output_payload_trace_drawId"),
-        Signal("primitive_id", "core_1.streamArbiter_5_io_output_payload_trace_primitiveId"),
-        Signal("trace_valid", "core_1.streamArbiter_5_io_output_payload_trace_valid"),
-        Signal("sign", "core_1.streamArbiter_5_io_output_payload_triWithSign_signBit"),
-        Signal("vertex_ax", "core_1.streamArbiter_5_io_output_payload_triWithSign_tri_0_0"),
-        Signal("vertex_ay", "core_1.streamArbiter_5_io_output_payload_triWithSign_tri_0_1"),
-        Signal("vertex_bx", "core_1.streamArbiter_5_io_output_payload_triWithSign_tri_1_0"),
-        Signal("vertex_by", "core_1.streamArbiter_5_io_output_payload_triWithSign_tri_1_1"),
-        Signal("vertex_cx", "core_1.streamArbiter_5_io_output_payload_triWithSign_tri_2_0"),
-        Signal("vertex_cy", "core_1.streamArbiter_5_io_output_payload_triWithSign_tri_2_1"),
-        Signal("fbz_color_path_texture_enable", "core_1.triangleSetup_1_o_payload_config_fbzColorPath_textureEnable"),
-        Signal("fbz_color_path_param_adjust", "core_1.triangleSetup_1_o_payload_config_fbzColorPath_paramAdjust"),
-        Signal("texture_mode_0", "core_1.triangleSetup_1_o_payload_config_tmuTextureMode"),
-        Signal("tlod_0", "core_1.triangleSetup_1_o_payload_config_tmuTLOD"),
-        Signal("tex_base_addr_0", "core_1.triangleSetup_1_o_payload_config_tmuTexBaseAddr"),
-        Signal("start_s", "core_1.triangleSetup_1_o_payload_grads_sGrad_start"),
-        Signal("start_t", "core_1.triangleSetup_1_o_payload_grads_tGrad_start"),
-        Signal("start_w", "core_1.triangleSetup_1_o_payload_grads_wGrad_start"),
-        Signal("hi_start_s", "core_1.triangleSetup_1_o_payload_texHi_sStart"),
-        Signal("hi_start_t", "core_1.triangleSetup_1_o_payload_texHi_tStart"),
-        Signal("x_start", "core_1.triangleSetup_1_o_payload_xrange_0"),
-        Signal("y_start", "core_1.triangleSetup_1_o_payload_yrange_0"),
-        Signal("dsdx", "core_1.triangleSetup_1_o_payload_config_tmudSdX"),
-        Signal("dtdx", "core_1.triangleSetup_1_o_payload_config_tmudTdX"),
-        Signal("dsdy", "core_1.triangleSetup_1_o_payload_config_tmudSdY"),
-        Signal("dtdy", "core_1.triangleSetup_1_o_payload_config_tmudTdY"),
-        Signal("hi_dsdx", "core_1.triangleSetup_1_o_payload_texHi_dSdX"),
-        Signal("hi_dtdx", "core_1.triangleSetup_1_o_payload_texHi_dTdX"),
-        Signal("hi_dsdy", "core_1.triangleSetup_1_o_payload_texHi_dSdY"),
-        Signal("hi_dtdy", "core_1.triangleSetup_1_o_payload_texHi_dTdY"),
-        Signal("dwdx", "core_1.triangleSetup_1_o_payload_grads_wGrad_d_0"),
-        Signal("dwdy", "core_1.triangleSetup_1_o_payload_grads_wGrad_d_1"),
+        Signal("valid", "core_1.pixelPipeline_1.triangleSetup_1.o_valid"),
+        Signal("ready", "core_1.pixelPipeline_1.triangleSetup_1.o_ready"),
+        Signal("sign", "core_1.pixelPipeline_1.triangleSetup_1.pending_triWithSign_signBit"),
+        Signal("vertex_ax", "core_1.pixelPipeline_1.triangleSetup_1.pending_triWithSign_tri_0_0"),
+        Signal("vertex_ay", "core_1.pixelPipeline_1.triangleSetup_1.pending_triWithSign_tri_0_1"),
+        Signal("vertex_bx", "core_1.pixelPipeline_1.triangleSetup_1.pending_triWithSign_tri_1_0"),
+        Signal("vertex_by", "core_1.pixelPipeline_1.triangleSetup_1.pending_triWithSign_tri_1_1"),
+        Signal("vertex_cx", "core_1.pixelPipeline_1.triangleSetup_1.pending_triWithSign_tri_2_0"),
+        Signal("vertex_cy", "core_1.pixelPipeline_1.triangleSetup_1.pending_triWithSign_tri_2_1"),
+        Signal("fbz_color_path_texture_enable", "core_1.pixelPipeline_1.triangleSetup_1.pending_config_fbzColorPath_textureEnable"),
+        Signal("fbz_color_path_param_adjust", "core_1.pixelPipeline_1.triangleSetup_1.pending_config_fbzColorPath_paramAdjust"),
+        Signal("texture_mode_0", "core_1.pixelPipeline_1.triangleSetup_1.outputReg_config_tmuTextureMode"),
+        Signal("tlod_0", "core_1.pixelPipeline_1.triangleSetup_1.outputReg_config_tmuTLOD"),
+        Signal("tex_base_addr_0", "core_1.pixelPipeline_1.triangleSetup_1.outputReg_config_tmuTexBaseAddr"),
+        Signal("start_s", "core_1.pixelPipeline_1.triangleSetup_1.o_payload_grads_sGrad_start"),
+        Signal("start_t", "core_1.pixelPipeline_1.triangleSetup_1.o_payload_grads_tGrad_start"),
+        Signal("start_w", "core_1.pixelPipeline_1.triangleSetup_1.o_payload_grads_wGrad_start"),
+        Signal("hi_start_s", "core_1.pixelPipeline_1.triangleSetup_1.o_payload_texHi_sStart"),
+        Signal("hi_start_t", "core_1.pixelPipeline_1.triangleSetup_1.o_payload_texHi_tStart"),
+        Signal("x_start", "core_1.pixelPipeline_1.triangleSetup_1.o_payload_xrange_0"),
+        Signal("y_start", "core_1.pixelPipeline_1.triangleSetup_1.o_payload_yrange_0"),
+        Signal("dsdx", "core_1.pixelPipeline_1.triangleSetup_1.outputReg_config_tmudSdX"),
+        Signal("dtdx", "core_1.pixelPipeline_1.triangleSetup_1.outputReg_config_tmudTdX"),
+        Signal("dsdy", "core_1.pixelPipeline_1.triangleSetup_1.outputReg_config_tmudSdY"),
+        Signal("dtdy", "core_1.pixelPipeline_1.triangleSetup_1.outputReg_config_tmudTdY"),
+        Signal("hi_dsdx", "core_1.pixelPipeline_1.triangleSetup_1.outputReg_texHi_dSdX"),
+        Signal("hi_dtdx", "core_1.pixelPipeline_1.triangleSetup_1.outputReg_texHi_dTdX"),
+        Signal("hi_dsdy", "core_1.pixelPipeline_1.triangleSetup_1.outputReg_texHi_dSdY"),
+        Signal("hi_dtdy", "core_1.pixelPipeline_1.triangleSetup_1.outputReg_texHi_dTdY"),
+        Signal("dwdx", "core_1.pixelPipeline_1.triangleSetup_1.outputReg_grads_wGrad_d_0"),
+        Signal("dwdy", "core_1.pixelPipeline_1.triangleSetup_1.outputReg_grads_wGrad_d_1"),
     ],
 )
 
@@ -294,9 +401,7 @@ def sign_extend(value: Optional[int], width: int) -> Optional[int]:
 
 
 def run_conetrace_changes(
-    conetrace: str,
-    netlist: str,
-    trace: str,
+    session: ConetraceMachineSession,
     signal_path: str,
     time_range: Optional[str],
 ) -> List[dict]:
@@ -314,25 +419,19 @@ def run_conetrace_changes(
 
     last_error = None
     for candidate in candidate_paths:
-        query = f"prefix detect; changes {candidate}"
+        query = f"changes {candidate}"
         if time_range:
             query += f" | where time in {time_range}"
         query += " | json"
         try:
-            result = subprocess.run(
-                [conetrace, netlist, trace, "-e", query],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-        except subprocess.CalledProcessError as exc:
+            stdout = session.exec_doc_text(query)
+        except RuntimeError as exc:
             last_error = exc
             continue
-        stdout = result.stdout
         start = stdout.find("[")
         end = stdout.rfind("]")
         if start == -1 or end == -1 or end < start:
-            last_error = RuntimeError(f"Failed to parse JSON from conetrace for {candidate}\n{stdout}\n{result.stderr}")
+            last_error = RuntimeError(f"Failed to parse JSON from conetrace for {candidate}\n{stdout}")
             continue
         rows = json.loads(stdout[start : end + 1])
         suffixes = (f".{candidate}", candidate)
@@ -340,17 +439,13 @@ def run_conetrace_changes(
         if filtered or candidate == candidate_paths[-1]:
             return filtered
 
-    if isinstance(last_error, subprocess.CalledProcessError):
-        raise last_error
     if last_error is not None:
         raise last_error
     return []
 
 
 def collect_stage_changes(
-    conetrace: str,
-    netlist: str,
-    trace: str,
+    session: ConetraceMachineSession,
     stage: Stage,
     time_range: Optional[str],
     signal_subset: Optional[set],
@@ -368,7 +463,7 @@ def collect_stage_changes(
     for signal in selected_signals:
         if not quiet:
             print(f"[{stage.name}] reading {signal.column}", file=sys.stderr)
-        rows = run_conetrace_changes(conetrace, netlist, trace, signal.path, time_range)
+        rows = run_conetrace_changes(session, signal.path, time_range)
         if rows:
             initial_state[signal.column] = parse_value(rows[0].get("from"))
         for row in rows:
@@ -692,6 +787,7 @@ def reconstruct_triangle_rows(
     }
     rows = []
     seen_keys = set()
+    synthetic_primitive_id = 0
     for time in sorted(by_time):
         changed = set()
         for column, value in by_time[time]:
@@ -704,14 +800,21 @@ def reconstruct_triangle_rows(
         )
         if not transfer_triggered:
             continue
-        key = (state.get("draw_id"), state.get("primitive_id"))
+        draw_id = state.get("draw_id")
+        primitive_id = state.get("primitive_id")
+        if draw_id is None:
+            draw_id = 0
+        if primitive_id is None:
+            primitive_id = synthetic_primitive_id
+            synthetic_primitive_id += 1
+        key = (draw_id, primitive_id)
         event_identity = (time, key)
         if event_identity in seen_keys:
             continue
         seen_keys.add(event_identity)
         row = {
-            "draw_id": state.get("draw_id"),
-            "primitive_id": state.get("primitive_id"),
+            "draw_id": draw_id,
+            "primitive_id": primitive_id,
             "origin": state.get("origin"),
             "textured": state.get("fbz_color_path_texture_enable"),
             "sign": state.get("sign"),
@@ -911,47 +1014,44 @@ def main() -> int:
         write_metadata(conn, args, stage_names)
         total_rows = 0
         if not args.skip_dut:
-            if not args.skip_triangles:
-                triangle_subset = None
-                if signal_subset is not None:
-                    triangle_subset = {
-                        item
-                        for item in signal_subset
-                        if item in {signal.column for signal in TRIANGLE_STREAM.signals}
-                        or item in {signal.path for signal in TRIANGLE_STREAM.signals}
-                    }
-                triangle_changes, triangle_initial_state = collect_stage_changes(
-                    args.conetrace,
-                    args.netlist,
-                    args.trace,
-                    TRIANGLE_STREAM,
-                    args.time_range,
-                    triangle_subset,
-                    args.quiet,
-                )
-                if triangle_changes or triangle_initial_state:
-                    triangle_rows = reconstruct_triangle_rows(triangle_changes, triangle_initial_state)
-                    insert_dut_triangles(conn, triangle_rows)
+            with ConetraceMachineSession(args.conetrace, args.netlist, args.trace) as session:
+                if not args.skip_triangles:
+                    triangle_subset = None
+                    if signal_subset is not None:
+                        triangle_subset = {
+                            item
+                            for item in signal_subset
+                            if item in {signal.column for signal in TRIANGLE_STREAM.signals}
+                            or item in {signal.path for signal in TRIANGLE_STREAM.signals}
+                        }
+                    triangle_changes, triangle_initial_state = collect_stage_changes(
+                        session,
+                        TRIANGLE_STREAM,
+                        args.time_range,
+                        triangle_subset,
+                        args.quiet,
+                    )
+                    if triangle_changes or triangle_initial_state:
+                        triangle_rows = reconstruct_triangle_rows(triangle_changes, triangle_initial_state)
+                        insert_dut_triangles(conn, triangle_rows)
+                        conn.commit()
+                        if not args.quiet:
+                            print(f"[dut_triangles] wrote {len(triangle_rows)} rows", file=sys.stderr)
+                for stage_name in stage_names:
+                    stage = STAGES[stage_name]
+                    by_time, initial_state = collect_stage_changes(
+                        session,
+                        stage,
+                        args.time_range,
+                        signal_subset,
+                        args.quiet,
+                    )
+                    rows = reconstruct_stage_rows(stage, by_time, initial_state)
+                    insert_stage_rows(conn, rows)
                     conn.commit()
+                    total_rows += len(rows)
                     if not args.quiet:
-                        print(f"[dut_triangles] wrote {len(triangle_rows)} rows", file=sys.stderr)
-            for stage_name in stage_names:
-                stage = STAGES[stage_name]
-                by_time, initial_state = collect_stage_changes(
-                    args.conetrace,
-                    args.netlist,
-                    args.trace,
-                    stage,
-                    args.time_range,
-                    signal_subset,
-                    args.quiet,
-                )
-                rows = reconstruct_stage_rows(stage, by_time, initial_state)
-                insert_stage_rows(conn, rows)
-                conn.commit()
-                total_rows += len(rows)
-                if not args.quiet:
-                    print(f"[{stage.name}] wrote {len(rows)} rows", file=sys.stderr)
+                        print(f"[{stage.name}] wrote {len(rows)} rows", file=sys.stderr)
             if not args.quiet:
                 print(f"Wrote {total_rows} DUT stage rows to {db_path}", file=sys.stderr)
         if args.ref_jsonl:

@@ -6,7 +6,7 @@
 #   tomb/<runtime>/<action>
 #   de10/<action>
 
-.PHONY: all clean clean-sim clean-glide clean-tests native/help native/sim/build native/trace/build native/sim/run-all native/sim/check-all native/de10sim/check-all dos/help dos/sim/build dos/trace/build dos/dosbox tomb/help tomb/prepare tomb/sim/run tomb/sim/headless tomb/sim/capture tomb/sim/trace tomb/sim/trace/check tomb/trace/run tomb/trace/headless tomb/trace/check tomb/trace/profile de10/help de10/setup/program de10/setup/deploy de10/check/mmio de10/check/ddr-stress de10/report/ddr de10/run/tomb de10/run/tomb/vnc de10/trace/run de10/trace/tomb de10/plan de10/rtl de10/qsys de10/bitstream de10/ddrbench/rtl de10/ddrbench/bitstream de10/sync-sysroot de10/glide de10/glide-tests de10/glide-cross de10/glide-tests-cross FORCE
+.PHONY: all clean clean-sim clean-glide clean-tests native/help native/sim/build native/trace/build native/sim/run-all native/sim/check-all native/de10sim/check-all dos/help dos/sim/build dos/trace/build dos/dosbox tomb/help tomb/prepare tomb/sim/run tomb/sim/headless tomb/sim/capture tomb/sim/trace tomb/sim/trace/check tomb/trace/run tomb/trace/headless tomb/trace/check tomb/trace/profile de10/help de10/setup/program de10/setup/deploy de10/check/mmio de10/check/ddr-stress de10/report/ddr de10/run/tomb de10/run/tomb/vnc de10/trace/build de10/trace/run de10/plan de10/rtl de10/qsys de10/bitstream de10/ddrbench/rtl de10/ddrbench/bitstream de10/sync-sysroot de10/glide de10/glide-tests de10/glide-cross de10/glide-tests-cross FORCE
 .PRECIOUS: dos/sim/build/% dos/trace/build/%
 
 # Derive CXX32 from CC32 for sub-makefiles that need it
@@ -43,7 +43,11 @@ DE10_SYNC_SYSROOT_SCRIPT = scripts/sync-de10-sysroot
 DE10_CROSS_GLIDE_SCRIPT = scripts/build-de10-glide-cross
 DE10_MMIO_SMOKE_BIN = tools/de10-mmio-smoke
 DE10_DDR_STRESS_BIN = tools/de10-ddr-stress
+DE10_TRACE_REPLAY_BIN = output/de10/bin/de10-trace-replay
 DE10_DDR_RBF = output/de10/bitstream/SpinalVoodoo_de10.rbf
+DE10_HOST ?= debian-fpga.local
+DE10_USER ?= fpga
+DE10_TRACE_BUILD_REMOTE_DIR ?= /home/$(DE10_USER)/trace-replay-build
 
 all: native/sim/build
 
@@ -179,7 +183,8 @@ de10/help:
 	@echo "  make de10/run/dos/df00sdk  # run one DOS workload from the board runtime dir"
 	@echo "  make de10/run/tomb         # run Tomb from a prepared remote Tomb tree"
 	@echo "  make de10/run/tomb/vnc     # run Tomb on the board under a VNC X server"
-	@echo "  make de10/trace/tomb       # replay traces/tomb on the board and dump a screenshot"
+	@echo "  make de10/trace/build      # build the DE10 board trace replay tool"
+	@echo "  make de10/trace/run/tomb   # replay traces/tomb on the board and dump a screenshot"
 	@echo "  make native/de10sim/check/tomb # replay traces/tomb through the DE10 simulator backend"
 	@echo ""
 	@echo "Advanced DE10 targets:"
@@ -217,11 +222,13 @@ de10/run/tomb:
 de10/run/tomb/vnc:
 	bash ./scripts/run-de10-tomb-vnc $(ARGS)
 
-de10/trace/run:
+de10/trace/build: $(DE10_TRACE_REPLAY_BIN)
+
+de10/trace/run: $(DE10_TRACE_REPLAY_BIN)
 	bash ./scripts/run-de10-trace-replay $(ARGS)
 
-de10/trace/tomb:
-	bash ./scripts/run-de10-trace-replay --input traces/tomb --output-dir output/de10-board-trace/tomb $(ARGS)
+de10/trace/run/%: $(DE10_TRACE_REPLAY_BIN)
+	bash ./scripts/run-de10-trace-replay --input traces/$* --output-dir output/de10-board-trace/$* $(ARGS)
 
 de10/plan:
 	@echo "See docs/DE10_MILESTONES.md"
@@ -268,6 +275,26 @@ $(DE10_MMIO_SMOKE_BIN): tools/de10-mmio-smoke.c
 
 $(DE10_DDR_STRESS_BIN): tools/de10-ddr-stress.c
 	$(CC) -O2 -Wall -Wextra -o $@ $<
+
+$(DE10_TRACE_REPLAY_BIN): tools/de10-trace-replay.cpp \
+			emu/trace/voodoo_trace_format.h \
+			emu/trace/trace_replay_backend.h \
+			emu/trace/trace_replay_image.h \
+			emu/trace/trace_replay_io.h \
+			emu/trace/trace_replay_runner.h \
+			emu/test/stb_image_write.h
+	@mkdir -p $(dir $@)
+	ssh $(DE10_USER)@$(DE10_HOST) "mkdir -p '$(DE10_TRACE_BUILD_REMOTE_DIR)'"
+	ssh $(DE10_USER)@$(DE10_HOST) "rm -f '$(DE10_TRACE_BUILD_REMOTE_DIR)/de10-trace-replay' '$(DE10_TRACE_BUILD_REMOTE_DIR)/de10-trace-replay.cpp' '$(DE10_TRACE_BUILD_REMOTE_DIR)/voodoo_trace_format.h' '$(DE10_TRACE_BUILD_REMOTE_DIR)/trace_replay_backend.h' '$(DE10_TRACE_BUILD_REMOTE_DIR)/trace_replay_image.h' '$(DE10_TRACE_BUILD_REMOTE_DIR)/trace_replay_io.h' '$(DE10_TRACE_BUILD_REMOTE_DIR)/trace_replay_runner.h' '$(DE10_TRACE_BUILD_REMOTE_DIR)/stb_image_write.h'"
+	scp tools/de10-trace-replay.cpp $(DE10_USER)@$(DE10_HOST):$(DE10_TRACE_BUILD_REMOTE_DIR)/de10-trace-replay.cpp
+	scp emu/trace/voodoo_trace_format.h $(DE10_USER)@$(DE10_HOST):$(DE10_TRACE_BUILD_REMOTE_DIR)/voodoo_trace_format.h
+	scp emu/trace/trace_replay_backend.h $(DE10_USER)@$(DE10_HOST):$(DE10_TRACE_BUILD_REMOTE_DIR)/trace_replay_backend.h
+	scp emu/trace/trace_replay_image.h $(DE10_USER)@$(DE10_HOST):$(DE10_TRACE_BUILD_REMOTE_DIR)/trace_replay_image.h
+	scp emu/trace/trace_replay_io.h $(DE10_USER)@$(DE10_HOST):$(DE10_TRACE_BUILD_REMOTE_DIR)/trace_replay_io.h
+	scp emu/trace/trace_replay_runner.h $(DE10_USER)@$(DE10_HOST):$(DE10_TRACE_BUILD_REMOTE_DIR)/trace_replay_runner.h
+	scp emu/test/stb_image_write.h $(DE10_USER)@$(DE10_HOST):$(DE10_TRACE_BUILD_REMOTE_DIR)/stb_image_write.h
+	ssh $(DE10_USER)@$(DE10_HOST) "g++ -O2 -std=c++17 -I'$(DE10_TRACE_BUILD_REMOTE_DIR)' -o '$(DE10_TRACE_BUILD_REMOTE_DIR)/de10-trace-replay' '$(DE10_TRACE_BUILD_REMOTE_DIR)/de10-trace-replay.cpp'"
+	scp $(DE10_USER)@$(DE10_HOST):$(DE10_TRACE_BUILD_REMOTE_DIR)/de10-trace-replay $@
 
 
 # Internal sim build target: always recurse into sub-make

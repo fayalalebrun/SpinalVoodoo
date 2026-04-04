@@ -10,6 +10,7 @@ STATE_MARKER="${DE10_STATE_FILE:-/home/fpga/spinalvoodoo/current/.fpga-programme
 REMOTE_DIR="${DE10_TRACE_REMOTE_DIR:-/home/fpga/trace-replay}"
 INPUT_PATH="${DE10_TRACE_INPUT:-$ROOT_DIR/traces/tomb}"
 OUTPUT_DIR="${DE10_TRACE_OUTPUT_DIR:-$ROOT_DIR/output/de10-board-trace/tomb}"
+TRACE_REPLAY_BIN="${DE10_TRACE_REPLAY_BIN:-$ROOT_DIR/output/de10/bin/de10-trace-replay}"
 VERIFY_ONLY=0
 REPLAY_ARGS=()
 
@@ -24,6 +25,7 @@ Options:
   --output-dir <path>   Local output dir (default: output/de10-board-trace/tomb)
   --remote-dir <path>   Remote staging dir (default: /home/fpga/trace-replay)
   --verify-programmed   Skip reprogramming; require the programmed marker to match
+  --reset-before-playback  Pulse FPGA fabric reset before state load and trace replay
   --skip-fb-state       Do not preload framebuffer bytes from state.bin before replay
   --dump-texture        Dump full texture memory after replay to trace_board_tex.bin
   --preload-trace-textures  Preload all texture writes before replay and skip them in-stream
@@ -57,6 +59,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --verify-programmed)
       VERIFY_ONLY=1
+      shift
+      ;;
+    --reset-before-playback)
+      REPLAY_ARGS+=("$1")
       shift
       ;;
     --skip-fb-state)
@@ -103,6 +109,11 @@ if [[ ! -f "$TRACE_FILE" ]]; then
   echo "Missing trace file: $TRACE_FILE" >&2
   exit 1
 fi
+if [[ ! -x "$TRACE_REPLAY_BIN" ]]; then
+  echo "Missing built trace replay binary: $TRACE_REPLAY_BIN" >&2
+  echo "Build it first with: make de10/trace/build" >&2
+  exit 1
+fi
 if [[ ! -f "$STATE_FILE" ]]; then
   STATE_FILE=""
 fi
@@ -122,19 +133,12 @@ else
 fi
 
 ssh "$REMOTE_TARGET" "mkdir -p '$REMOTE_DIR'"
-ssh "$REMOTE_TARGET" "rm -f '$REMOTE_DIR/trace.bin' '$REMOTE_DIR/state.bin' '$REMOTE_DIR/trace_board_fb.raw' '$REMOTE_DIR/trace_board_fb.png' '$REMOTE_DIR/de10-trace-replay' '$REMOTE_DIR/de10-trace-replay.cpp' '$REMOTE_DIR/voodoo_trace_format.h' '$REMOTE_DIR/trace_replay_backend.h' '$REMOTE_DIR/trace_replay_image.h' '$REMOTE_DIR/trace_replay_io.h' '$REMOTE_DIR/trace_replay_runner.h' '$REMOTE_DIR/stb_image_write.h'"
-scp "$ROOT_DIR/tools/de10-trace-replay.cpp" "$REMOTE_TARGET:$REMOTE_DIR/de10-trace-replay.cpp"
-scp "$ROOT_DIR/emu/trace/voodoo_trace_format.h" "$REMOTE_TARGET:$REMOTE_DIR/voodoo_trace_format.h"
-scp "$ROOT_DIR/emu/trace/trace_replay_backend.h" "$REMOTE_TARGET:$REMOTE_DIR/trace_replay_backend.h"
-scp "$ROOT_DIR/emu/trace/trace_replay_image.h" "$REMOTE_TARGET:$REMOTE_DIR/trace_replay_image.h"
-scp "$ROOT_DIR/emu/trace/trace_replay_io.h" "$REMOTE_TARGET:$REMOTE_DIR/trace_replay_io.h"
-scp "$ROOT_DIR/emu/trace/trace_replay_runner.h" "$REMOTE_TARGET:$REMOTE_DIR/trace_replay_runner.h"
-scp "$ROOT_DIR/emu/test/stb_image_write.h" "$REMOTE_TARGET:$REMOTE_DIR/stb_image_write.h"
+ssh "$REMOTE_TARGET" "rm -f '$REMOTE_DIR/trace.bin' '$REMOTE_DIR/state.bin' '$REMOTE_DIR/trace_board_fb.raw' '$REMOTE_DIR/trace_board_fb.png' '$REMOTE_DIR/de10-trace-replay'"
+scp "$TRACE_REPLAY_BIN" "$REMOTE_TARGET:$REMOTE_DIR/de10-trace-replay"
 scp "$TRACE_FILE" "$REMOTE_TARGET:$REMOTE_DIR/trace.bin"
 if [[ -n "$STATE_FILE" ]]; then
   scp "$STATE_FILE" "$REMOTE_TARGET:$REMOTE_DIR/state.bin"
 fi
-ssh "$REMOTE_TARGET" "g++ -O2 -std=c++17 -I'$REMOTE_DIR' -o '$REMOTE_DIR/de10-trace-replay' '$REMOTE_DIR/de10-trace-replay.cpp'"
 
 LOG_FILE="$OUTPUT_DIR/replay.log"
 ssh "$REMOTE_TARGET" "sudo -n '$REMOTE_DIR/de10-trace-replay' '$REMOTE_DIR' ${REPLAY_ARGS[*]} 2>&1" | tee "$LOG_FILE"

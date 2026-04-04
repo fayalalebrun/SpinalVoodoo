@@ -29,6 +29,10 @@ namespace {
 constexpr uint32_t kDefaultMmioBase = 0xC0000000u;
 constexpr uint32_t kDefaultMmioSpan = 0x00400000u;
 constexpr uint32_t kDefaultFbBase = 0x3F000000u;
+constexpr uint32_t kResetManagerBase = 0xFFD05000u;
+constexpr uint32_t kResetManagerSpan = 0x1000u;
+constexpr uint32_t kBridgeModuleResetOff = 0x1Cu;
+constexpr uint32_t kBridgeResetS2f = 1u << 6;
 constexpr uint32_t kTextureOffset = 0x00400000u;
 constexpr uint32_t kFramebufferBytes = 4u * 1024u * 1024u;
 constexpr uint32_t kTextureBytes = 8u * 1024u * 1024u;
@@ -58,6 +62,7 @@ struct Options {
   bool preloadTraceTextures = false;
   uint32_t texWriteDelayUs = 0;
   bool idleAfterTexBatch = false;
+  bool resetBeforePlayback = false;
   uint32_t maxEntries = 0;
 };
 
@@ -71,6 +76,7 @@ bool physReadAll(int fd, PageCache *cache, uint32_t physBase, void *dst, size_t 
 bool physFillZero(int fd, PageCache *cache, uint32_t physBase, uint32_t size);
 uint32_t remapBackendRegAddr(uint32_t addr);
 uint32_t idleWait(volatile uint8_t *mmio);
+bool pulseFpgaFabricReset(int fd);
 
 class De10HardwareReplayBackend : public TraceReplayBackend {
 public:
@@ -166,6 +172,8 @@ bool parseArgs(int argc, char **argv, Options *opts) {
       opts->texWriteDelayUs = static_cast<uint32_t>(strtoul(argv[++i], nullptr, 0));
     } else if (strcmp(argv[i], "--idle-after-tex-batch") == 0) {
       opts->idleAfterTexBatch = true;
+    } else if (strcmp(argv[i], "--reset-before-playback") == 0) {
+      opts->resetBeforePlayback = true;
     } else if (strcmp(argv[i], "--max-entries") == 0 && i + 1 < argc) {
       opts->maxEntries = static_cast<uint32_t>(strtoul(argv[++i], nullptr, 0));
     } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
@@ -499,6 +507,30 @@ uint32_t idleWait(volatile uint8_t *mmio) {
   return status;
 }
 
+bool pulseFpgaFabricReset(int fd) {
+  MapRegion rstmgr;
+  if (!mapRegion(fd, kResetManagerBase, kResetManagerSpan, &rstmgr)) {
+    fprintf(stderr, "[de10-trace] ERROR: failed to map reset manager\n");
+    return false;
+  }
+
+  auto *brgmodrst = reinterpret_cast<volatile uint32_t *>(const_cast<volatile uint8_t *>(rstmgr.base) + kBridgeModuleResetOff);
+  const uint32_t before = *brgmodrst;
+  const uint32_t asserted = before | kBridgeResetS2f;
+  const uint32_t released = before & ~kBridgeResetS2f;
+  fprintf(stderr, "[de10-trace] Pulsing FPGA fabric reset: brgmodrst before=0x%08x asserted=0x%08x released=0x%08x\n",
+          before, asserted, released);
+  *brgmodrst = asserted;
+  __sync_synchronize();
+  usleep(1000);
+  *brgmodrst = released;
+  __sync_synchronize();
+  usleep(1000);
+  fprintf(stderr, "[de10-trace] FPGA fabric reset complete: brgmodrst now=0x%08x\n", *brgmodrst);
+  unmapRegion(&rstmgr);
+  return true;
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -522,6 +554,12 @@ int main(int argc, char **argv) {
   fprintf(stderr, "[de10-trace] open(%s) returned %d errno=%d\n", opts.memPath, fd, errno);
   if (fd < 0) {
     perror("open(/dev/mem)");
+    free(trace.traceData);
+    return 1;
+  }
+
+  if (opts.resetBeforePlayback && !pulseFpgaFabricReset(fd)) {
+    close(fd);
     free(trace.traceData);
     return 1;
   }
@@ -577,6 +615,15 @@ int main(int argc, char **argv) {
 
   TraceReplayStateInfo stateInfo;
   if (files.stateFile.empty()) {
+    De10HardwareReplayBackend hwBackend(fd, mmio.base, &fbCache, &texCache, opts.fbBase, opts.texWriteDelayUs);
+    if (!hwBackend.setSwapCount(0)) {
+      fprintf(stderr, "[de10-trace] ERROR: failed to initialize swapCount for no-state replay\n");
+      unmapRegion(&mmio);
+      close(fd);
+      free(trace.traceData);
+      return 1;
+    }
+    fprintf(stderr, "[de10-trace] No state.bin; initialized swapCount=0 for replay\n");
     for (uint32_t i = 0; i < trace.entryCount; ++i) {
       const auto &e = trace.entries[i];
       if (e.cmd_type != VOODOO_TRACE_WRITE_REG_L) continue;

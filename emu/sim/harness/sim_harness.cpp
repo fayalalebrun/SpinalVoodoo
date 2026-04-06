@@ -54,6 +54,7 @@ static uint64_t cycle_limit = 0;  /* 0 = no limit; set via SIM_CYCLE_LIMIT */
 #define VSYNC_HIGH_TICKS 200
 static uint32_t vsync_counter = 0;
 static int32_t debug_fb_addr = -1;
+static bool reader_mismatch_logged = false;
 
 /* fbWrite logging: log addresses written to framebuffer */
 static FILE *fbwrite_log = nullptr;
@@ -141,6 +142,70 @@ static void dump_fb_debug(const char *tag) {
     dump_fb_word((uint32_t)debug_fb_addr & ~0x3u, tag);
 }
 
+static void dump_timeout_debug(const char *tag, uint32_t addr) {
+    auto r = top->rootp;
+    fprintf(stderr,
+            "[sim_harness] %s addr=0x%06x cpuReady=%u frontdoorReady=%u pciFree=%u syncDrained=%u pipeBusy=%u issuedValid=%u issuedAddr=0x%03x issuedSync=%u tri=%u rast=%u tmu=%u fbAcc=%u wColorV=%u wColorR=%u wAuxV=%u wAuxR=%u fbColorBusy=%u fbAuxBusy=%u ffRun=%u ffOutV=%u pixInNZ=%u pixOutNZ=%u cSlotV=%u/%u cWords=%u/%u cDrain=%u cAct=%u cMem=%u/%u aSlotV=%u/%u aWords=%u/%u aDrain=%u aAct=%u aMem=%u/%u arbW=%u arbCR=%u arbAR=%u arbOut=%u/%u op=%u rspV=%u rspR=%u topRspW=%u topRspCR=%u topRspAR=%u cReadRspV=%u fbAccColorRspR=%u colorReaderRspV=%u aReadRspV=%u fbAccAuxRspR=%u auxReaderRspV=%u fbInFlight=%u\n",
+            tag,
+            addr,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__pciFifo_1_io_cpuSide_cmd_ready,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__frontdoor_io_cpuBus_cmd_ready,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__pciFifo_1_io_pciFifoFree,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__pciFifo_1_io_syncDrained,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__pixelPipeline_1_io_debug_pipelineBusy,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__pciFifo_1__DOT__drainControl_issuedWrite_valid,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__pciFifo_1__DOT__drainControl_issuedWrite_payload_address,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__pciFifo_1__DOT__drainControl_issuedWrite_payload_syncRequired,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__pixelPipeline_1_io_debug_busy_triangleSetupValid,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__pixelPipeline_1_io_debug_busy_rasterizerRunning,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__pixelPipeline_1_io_debug_busy_tmuBusy,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__pixelPipeline_1_io_debug_busy_fbAccessBusy,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__pixelPipeline_1_io_debug_busy_writeColorInputValid,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__pixelPipeline_1_io_debug_busy_writeColorReady,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__pixelPipeline_1_io_debug_busy_writeAuxInputValid,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__pixelPipeline_1_io_debug_busy_writeAuxReady,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__pixelPipeline_1_io_debug_writePath_fbColorBusy,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__pixelPipeline_1_io_debug_writePath_fbAuxBusy,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__pixelPipeline_1_io_debug_busy_fastfillRunning,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__pixelPipeline_1_io_debug_busy_fastfillOutputValid,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__pixelPipeline_1_io_debug_writePath_pixelsInNonZero,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__pixelPipeline_1_io_debug_writePath_pixelsOutNonZero,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__slotValid_0,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__slotValid_1,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__slotWordCount_0,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__slotWordCount_1,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__drainState_1,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__activeSlot,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__io_mem_cmd_valid,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__io_mem_cmd_ready,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__slotValid_0,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__slotValid_1,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__slotWordCount_0,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__slotWordCount_1,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__drainState_1,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__activeSlot,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__io_mem_cmd_valid,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__io_mem_cmd_ready,
+            (unsigned)r->CoreSim__DOT__fbArbiter_io_inputs_0_cmd_ready,
+            (unsigned)r->CoreSim__DOT__fbArbiter_io_inputs_1_cmd_ready,
+            (unsigned)r->CoreSim__DOT__fbArbiter_io_inputs_2_cmd_ready,
+            (unsigned)r->CoreSim__DOT__fbArbiter_io_output_cmd_valid,
+            (unsigned)r->CoreSim__DOT__fbWriteRam_io_bus_cmd_ready,
+            (unsigned)r->CoreSim__DOT__fbArbiter_io_output_cmd_payload_fragment_opcode,
+            (unsigned)r->CoreSim__DOT__fbWriteRam_io_bus_rsp_valid,
+            (unsigned)r->CoreSim__DOT__fbArbiter_io_output_rsp_ready,
+            (unsigned)r->CoreSim__DOT__core_1_io_fbMemWrite_rsp_ready,
+            (unsigned)r->CoreSim__DOT__core_1_io_fbColorReadMem_rsp_ready,
+            (unsigned)r->CoreSim__DOT__core_1_io_fbAuxReadMem_rsp_ready,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__framebufferMem_io_colorReadRsp_valid,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__pixelPipeline_1__DOT__fbAccess_io_fbReadColorRsp_ready,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__framebufferMem__DOT__fbColorReader_io_readRsp_valid,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__framebufferMem_io_auxReadRsp_valid,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__pixelPipeline_1__DOT__fbAccess_io_fbReadAuxRsp_ready,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__framebufferMem__DOT__fbAuxReader_io_readRsp_valid,
+            (unsigned)r->CoreSim__DOT__core_1__DOT__pixelPipeline_1__DOT__fbAccess__DOT__inFlightCount);
+}
+
 static void signal_handler(int sig) {
     quit_requested = sig;  /* async-signal-safe */
 }
@@ -158,6 +223,12 @@ static void tick_one(void) {
 #endif
 
     sim_time++;
+
+    auto r = top->rootp;
+
+    if (contextp && contextp->gotFinish()) {
+        quit_requested = SIGTERM;
+    }
 
     /* Internal signal logging below is best-effort debug only and is currently
      * disabled for the native CoreSim harness until signal names are refreshed. */
@@ -499,6 +570,7 @@ static uint64_t total_read_ticks = 0;
 static uint64_t total_read_count = 0;
 static uint64_t total_write_ticks = 0;
 static uint64_t total_write_count = 0;
+static uint32_t mmio_timeout_cycles = 5000000;
 #define STATS_INTERVAL 10000
 
 static void print_periodic_stats(void) {
@@ -537,7 +609,7 @@ static void bus_write_masked(uint32_t addr, uint32_t data, uint8_t mask, uint8_t
     /* Tick until cmd accepted: check ready BEFORE each rising edge.
      * Timeout must be large enough to handle FIFO backpressure — the PCI
      * FIFO can take 500K+ cycles to drain when filled with triangle data. */
-    int timeout = 5000000;
+    int timeout = (int)mmio_timeout_cycles;
     while (timeout > 0) {
         top->eval();  /* Settle combinational logic with current inputs */
         if (top->io_cpuBus_cmd_ready) {
@@ -548,15 +620,16 @@ static void bus_write_masked(uint32_t addr, uint32_t data, uint8_t mask, uint8_t
         timeout--;
     }
     if (timeout == 0) {
-        fprintf(stderr, "[sim_harness] ERROR: bus_write(0x%06x) cmd timeout after 5M cycles @ cycle %lu\n",
-                addr, (unsigned long)(sim_time / 2));
+        fprintf(stderr, "[sim_harness] ERROR: bus_write(0x%06x) cmd timeout after %u cycles @ cycle %lu\n",
+                addr, mmio_timeout_cycles, (unsigned long)(sim_time / 2));
+        dump_timeout_debug("write-cmd-timeout", addr);
     }
 
     /* Deassert cmd */
     top->io_cpuBus_cmd_valid = 0;
 
     /* Wait for response: check rsp_valid BEFORE each rising edge */
-    timeout = 5000000;
+    timeout = (int)mmio_timeout_cycles;
     while (timeout > 0) {
         top->eval();
         if (top->io_cpuBus_rsp_valid) {
@@ -567,8 +640,9 @@ static void bus_write_masked(uint32_t addr, uint32_t data, uint8_t mask, uint8_t
         timeout--;
     }
     if (timeout == 0) {
-        fprintf(stderr, "[sim_harness] ERROR: bus_write(0x%06x) rsp timeout after 5M cycles @ cycle %lu\n",
-                addr, (unsigned long)(sim_time / 2));
+        fprintf(stderr, "[sim_harness] ERROR: bus_write(0x%06x) rsp timeout after %u cycles @ cycle %lu\n",
+                addr, mmio_timeout_cycles, (unsigned long)(sim_time / 2));
+        dump_timeout_debug("write-rsp-timeout", addr);
     }
 
     total_write_ticks += (sim_time - t0) / 2;
@@ -599,7 +673,7 @@ static uint32_t bus_read(uint32_t addr) {
     top->io_cpuBus_rsp_ready = 1;
 
     /* Tick until cmd accepted: check ready BEFORE each rising edge */
-    int timeout = 1000000;
+    int timeout = (int)mmio_timeout_cycles;
     while (timeout > 0) {
         top->eval();
         if (top->io_cpuBus_cmd_ready) {
@@ -610,15 +684,15 @@ static uint32_t bus_read(uint32_t addr) {
         timeout--;
     }
     if (timeout == 0) {
-        fprintf(stderr, "[sim_harness] ERROR: bus_read(0x%06x) cmd timeout after 5M cycles @ cycle %lu\n",
-                addr, (unsigned long)(sim_time / 2));
+        fprintf(stderr, "[sim_harness] ERROR: bus_read(0x%06x) cmd timeout after %u cycles @ cycle %lu\n",
+                addr, mmio_timeout_cycles, (unsigned long)(sim_time / 2));
     }
 
     /* Deassert cmd */
     top->io_cpuBus_cmd_valid = 0;
 
     /* Wait for response: check rsp_valid BEFORE each rising edge */
-    timeout = 5000000;
+    timeout = (int)mmio_timeout_cycles;
     while (timeout > 0) {
         top->eval();
         if (top->io_cpuBus_rsp_valid) {
@@ -764,6 +838,14 @@ int sim_init(void) {
         if (cycle_limit)
             fprintf(stderr, "[sim_harness] Cycle limit set to %lu ticks\n",
                     (unsigned long)cycle_limit);
+    }
+
+    const char *mmio_timeout_str = getenv("SIM_MMIO_TIMEOUT_CYCLES");
+    if (mmio_timeout_str) {
+        mmio_timeout_cycles = strtoul(mmio_timeout_str, nullptr, 0);
+        if (mmio_timeout_cycles)
+            fprintf(stderr, "[sim_harness] MMIO timeout set to %u cycles\n",
+                    mmio_timeout_cycles);
     }
 
     /* Pixel pipeline trace: SIM_WATCH_X + SIM_WATCH_Y */

@@ -119,14 +119,12 @@ object PixelPipeline {
       val span = slave(Stream(Rasterizer.PrefetchSpan(c)))
       val readReq = master(Stream(FramebufferPlaneReader.PrefetchReq(c)))
       val routing = in(FbRouting(c))
+      val fbzMode = in(FbzMode())
       val yOriginEnable = in Bool ()
       val yOriginSwapValue = in UInt (c.vertexFormat.nonFraction bits)
     }
 
-    def evenWordX(value: AFix): UInt = {
-      val floored = value.floor(0).asUInt.resize(c.vertexFormat.nonFraction bits)
-      (floored & ~U(1, c.vertexFormat.nonFraction bits)).resized
-    }
+    def pixelX(value: AFix): UInt = value.floor(0).asUInt.resize(c.vertexFormat.nonFraction bits)
 
     val spanY = io.span.payload.y.floor(0).asUInt.resize(c.vertexFormat.nonFraction bits)
     val transformedY = UInt(c.vertexFormat.nonFraction bits)
@@ -138,21 +136,26 @@ object PixelPipeline {
     val planeBase = if (colorPlane) io.routing.colorBaseAddr else io.routing.auxBaseAddr
     val startAddress = FramebufferAddressMath.planeAddress(
       planeBase,
-      evenWordX(io.span.payload.xStart),
+      pixelX(io.span.payload.xStart),
       transformedY,
       io.routing.pixelStride
     )
     val endAddress = FramebufferAddressMath.planeAddress(
       planeBase,
-      evenWordX(io.span.payload.xEnd),
+      pixelX(io.span.payload.xEnd),
       transformedY,
       io.routing.pixelStride
     )
 
-    io.readReq.valid := io.span.valid
-    io.span.ready := io.readReq.ready
-    io.readReq.startAddress := (startAddress(c.addressWidth.value - 1 downto 1) ## U"1'b0").asUInt
-    io.readReq.endAddress := (endAddress(c.addressWidth.value - 1 downto 1) ## U"1'b0").asUInt
+    val planeReadNeeded =
+      if (colorPlane)
+        io.span.payload.pixelConfig.alphaMode.alphaBlendEnable || io.fbzMode.enableDitherSubtract
+      else io.fbzMode.enableDepthBuffer
+
+    io.readReq.valid := io.span.valid && planeReadNeeded
+    io.span.ready := !planeReadNeeded || io.readReq.ready
+    io.readReq.startAddress := startAddress(c.addressWidth.value - 1 downto 0)
+    io.readReq.endAddress := endAddress(c.addressWidth.value - 1 downto 0)
   }
 }
 
@@ -330,6 +333,8 @@ case class PixelPipeline(c: Config) extends Component {
   auxPrefetcher.io.span << spanPrefetchFork._2
   colorPrefetcher.io.routing := io.controls.syncRender.routing
   auxPrefetcher.io.routing := io.controls.syncRender.routing
+  colorPrefetcher.io.fbzMode := io.controls.syncRender.fbzMode
+  auxPrefetcher.io.fbzMode := io.controls.syncRender.fbzMode
   colorPrefetcher.io.yOriginEnable := yOriginEnable
   colorPrefetcher.io.yOriginSwapValue := yOriginSwapValue.resize(c.vertexFormat.nonFraction bits)
   auxPrefetcher.io.yOriginEnable := yOriginEnable
@@ -345,11 +350,10 @@ case class PixelPipeline(c: Config) extends Component {
   val ccColor = colorCombine.io.output.payload.color
   val chromaKill = colorCombine.io.output.payload.fbzMode.enableChromaKey &&
     ccColor.r === ckR && ccColor.g === ckG && ccColor.b === ckB
-  val afterChromaKey = colorCombine.io.output.throwWhen(chromaKill).stage()
 
   fog.io.fogTable := io.controls.fogTable
   val fogArbiterInput =
-    StreamArbiterFactory.lowerFirst.on(Seq(afterChromaKey, lfb.io.pipelineOutput))
+    StreamArbiterFactory.lowerFirst.on(Seq(colorCombine.io.output, lfb.io.pipelineOutput))
   fogArbiterInput >/-> fog.io.input
 
   val alphaBits = fog.io.output.payload.alphaMode
@@ -368,17 +372,35 @@ case class PixelPipeline(c: Config) extends Component {
     7 -> True
   )
   val alphaKill = alphaTestEnable && !alphaPassed
-  val afterAlphaTest = fog.io.output.throwWhen(alphaKill).stage()
 
-  afterAlphaTest >/-> fbAccess.io.input
+  fog.io.output >/-> fbAccess.io.input
   fbAccess.io.fbReadColorRsp << io.colorReadRsp
   fbAccess.io.fbReadAuxRsp << io.auxReadRsp
   io.colorReadReq << fbAccess.io.fbReadColorReq.s2mPipe()
   io.auxReadReq << fbAccess.io.fbReadAuxReq.s2mPipe()
 
-  val trianglePreDither = fbAccess.io.output
+  val fbAccessChromaKey = fbAccess.io.output.payload.chromaKey
+  val fbAccessChromaKill = fbAccess.io.output.payload.fbzMode.enableChromaKey &&
+    fbAccess.io.output.payload.colorBeforeFog.r === fbAccessChromaKey(23 downto 16).asUInt &&
+    fbAccess.io.output.payload.colorBeforeFog.g === fbAccessChromaKey(15 downto 8).asUInt &&
+    fbAccess.io.output.payload.colorBeforeFog.b === fbAccessChromaKey(7 downto 0).asUInt
+  val fbAccessAlphaBits = fbAccess.io.output.payload.alphaMode
+  val fbAccessAlphaPassed = fbAccessAlphaBits.alphaFunc.mux(
+    0 -> False,
+    1 -> (fbAccess.io.output.payload.alpha < fbAccessAlphaBits.alphaRef),
+    2 -> (fbAccess.io.output.payload.alpha === fbAccessAlphaBits.alphaRef),
+    3 -> (fbAccess.io.output.payload.alpha <= fbAccessAlphaBits.alphaRef),
+    4 -> (fbAccess.io.output.payload.alpha > fbAccessAlphaBits.alphaRef),
+    5 -> (fbAccess.io.output.payload.alpha =/= fbAccessAlphaBits.alphaRef),
+    6 -> (fbAccess.io.output.payload.alpha >= fbAccessAlphaBits.alphaRef),
+    7 -> True
+  )
+  val fbAccessAlphaKill = fbAccessAlphaBits.alphaTestEnable && !fbAccessAlphaPassed
+  val afterFbKills = fbAccess.io.output.throwWhen(fbAccessChromaKill || fbAccessAlphaKill).stage()
+
+  val trianglePreDither = afterFbKills
     .translateWith {
-      Write.PreDither.fromFramebufferAccess(c, fbAccess.io.output.payload)
+      Write.PreDither.fromFramebufferAccess(c, afterFbKills.payload)
     }
     .m2sPipe()
 
@@ -396,10 +418,10 @@ case class PixelPipeline(c: Config) extends Component {
     aFuncFailCounter := 0
     pixelsOutCounter := 0
   } otherwise {
-    when(colorCombine.io.output.fire && chromaKill) {
+    when(fbAccess.io.output.fire && fbAccessChromaKill) {
       chromaFailCounter := chromaFailCounter + 1
     }
-    when(fog.io.output.fire && alphaKill) {
+    when(fbAccess.io.output.fire && fbAccessAlphaKill) {
       aFuncFailCounter := aFuncFailCounter + 1
     }
     when(fbAccess.io.zFuncFail) {

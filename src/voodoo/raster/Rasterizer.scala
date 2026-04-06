@@ -28,16 +28,12 @@ case class Rasterizer(c: Config, formalStrong: Boolean = false) extends Componen
   spanWalker.enableClipping := enableClipping
   spanWalker.clipLeft := clipLeft
   spanWalker.clipRight := clipRight
+  spanWalker.clipLowY := clipLowY
+  spanWalker.clipHighY := clipHighY
   spanRasterizer.i << queuedSpan
   prefetchSpan.translateFrom(queuedPrefetchSpan) { (out, in) =>
     out := Rasterizer.PrefetchSpan.fromSpanWalker(c, in)
   }
-  spanRasterizer.enableClipping := enableClipping
-  spanRasterizer.clipLeft := clipLeft
-  spanRasterizer.clipRight := clipRight
-  spanRasterizer.clipLowY := clipLowY
-  spanRasterizer.clipHighY := clipHighY
-
   o << spanRasterizer.o
 
   val running = out(Bool())
@@ -79,6 +75,7 @@ object Rasterizer {
     val xStart = AFix(c.vertexFormat)
     val xEnd = AFix(c.vertexFormat)
     val y = AFix(c.vertexFormat)
+    val pixelConfig = TriangleSetup.PixelPipelineConfig(c)
   }
 
   object PrefetchSpan {
@@ -87,6 +84,7 @@ object Rasterizer {
       out.xStart := in.xStart
       out.xEnd := in.xEnd
       out.y := in.y
+      out.pixelConfig := in.pixelConfig
       out
     }
   }
@@ -113,11 +111,6 @@ object Rasterizer {
     }
   }
 
-  case class SpanPixelOutput(c: Config) extends Bundle {
-    val data = Output(c)
-    val insideClip = Bool()
-  }
-
   case class SpanState(c: Config) extends Bundle {
     val x = AFix(c.vertexFormat)
     val y = AFix(c.vertexFormat)
@@ -137,19 +130,13 @@ object Rasterizer {
     val o = master Stream (Output(c))
     val running = out(Bool())
 
-    val enableClipping = in Bool ()
-    val clipLeft = in UInt (10 bits)
-    val clipRight = in UInt (10 bits)
-    val clipLowY = in UInt (10 bits)
-    val clipHighY = in UInt (10 bits)
-
     val pixelSeqCounter = if (c.trace.enabled) Reg(UInt(24 bits)) init (0) else null
     val currentPixelSeq = if (c.trace.enabled) pixelSeqCounter else null
 
     val streamWhileResult = StreamWhile(
       i,
       stateType = HardType(SpanState(c)),
-      outputType = HardType(SpanPixelOutput(c)),
+      outputType = HardType(Output(c)),
       maxIterations = c.maxFbDims._1,
       init = (input: SpanWalker.Output) => {
         val state = cloneOf(SpanState(c))
@@ -168,35 +155,24 @@ object Rasterizer {
         }
         state
       },
-      step = (idx: UInt, state: SpanState, output: SpanPixelOutput) => {
-        output.data.coords(0) := state.x.floor(0).asSInt
-        output.data.coords(1) := state.y.floor(0).asSInt
-        output.data.grads.redGrad := state.linear.red
-        output.data.grads.greenGrad := state.linear.green
-        output.data.grads.blueGrad := state.linear.blue
-        output.data.grads.depthGrad := state.linear.depth
-        output.data.grads.alphaGrad := state.linear.alpha
-        output.data.grads.wGrad := state.linear.w
-        output.data.grads.sGrad := state.hiS.fixTo(c.texCoordsAccumFormat)
-        output.data.grads.tGrad := state.hiT.fixTo(c.texCoordsAccumFormat)
-        output.data.alphaGradHi := state.hiAlpha
-        output.data.tmuConfig := state.tmuConfig
-        output.data.pixelConfig := state.pixelConfig
+      step = (idx: UInt, state: SpanState, output: Output) => {
+        output.coords(0) := state.x.floor(0).asSInt
+        output.coords(1) := state.y.floor(0).asSInt
+        output.grads.redGrad := state.linear.red
+        output.grads.greenGrad := state.linear.green
+        output.grads.blueGrad := state.linear.blue
+        output.grads.depthGrad := state.linear.depth
+        output.grads.alphaGrad := state.linear.alpha
+        output.grads.wGrad := state.linear.w
+        output.grads.sGrad := state.hiS.fixTo(c.texCoordsAccumFormat)
+        output.grads.tGrad := state.hiT.fixTo(c.texCoordsAccumFormat)
+        output.alphaGradHi := state.hiAlpha
+        output.tmuConfig := state.tmuConfig
+        output.pixelConfig := state.pixelConfig
         if (c.trace.enabled) {
-          output.data.trace.primitive := state.trace
-          output.data.trace.pixelSeq := currentPixelSeq
+          output.trace.primitive := state.trace
+          output.trace.pixelSeq := currentPixelSeq
         }
-
-        val clipLeftS = clipLeft.resize(c.vertexFormat.nonFraction bits).asSInt
-        val clipRightS = clipRight.resize(c.vertexFormat.nonFraction bits).asSInt
-        val clipLowYS = clipLowY.resize(c.vertexFormat.nonFraction bits).asSInt
-        val clipHighYS = clipHighY.resize(c.vertexFormat.nonFraction bits).asSInt
-        val insideClip =
-          (output.data.coords(0) >= clipLeftS) &&
-            (output.data.coords(0) < clipRightS) &&
-            (output.data.coords(1) >= clipLowYS) &&
-            (output.data.coords(1) < clipHighYS)
-        output.insideClip := !enableClipping || insideClip
 
         val next = cloneOf(state)
         next.y := state.y
@@ -235,15 +211,14 @@ object Rasterizer {
       }
     )
 
-    val withClipFlag = streamWhileResult.output
     running := streamWhileResult.running
 
-    o << withClipFlag.takeWhen(withClipFlag.payload.insideClip).map(_.data)
+    o << streamWhileResult.output
 
     if (c.trace.enabled) {
       when(i.fire && i.payload.firstSpan) {
         pixelSeqCounter := 0
-      }.elsewhen(withClipFlag.fire && withClipFlag.payload.insideClip) {
+      }.elsewhen(streamWhileResult.output.fire) {
         pixelSeqCounter := currentPixelSeq + 1
       }
     }

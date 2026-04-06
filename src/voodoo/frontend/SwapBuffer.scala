@@ -12,8 +12,8 @@ import spinal.lib._
   * exceeds the swap interval.
   *
   * The fifoWithSync mechanism ensures the pipeline is idle before SwapBuffer receives the command.
-  * While SwapBuffer holds the stream not-ready (waiting for vsync), the FIFO is stalled — no
-  * further commands drain.
+  * SwapBuffer must therefore accept the command immediately in Idle and then hold its own internal
+  * state while waiting for retrace.
   *
   * Note: The command stream (from s2mPipe) presents valid one cycle before the register field
   * values are updated. We use a SAMPLING state to wait one cycle after cmd.valid before reading
@@ -55,17 +55,16 @@ case class SwapBuffer(formalStrong: Boolean = false) extends Component {
   io.waiting := state =/= State.Idle
   io.swapCount := swapCountReg
   io.swapsPending := swapsPendingReg
-  io.cmd.ready := False
+  io.cmd.ready := state === State.Idle
 
   switch(state) {
     is(State.Idle) {
-      when(io.cmd.valid) {
+      when(io.cmd.fire) {
         state := State.Sampling
       }
     }
     is(State.Sampling) {
       when(!io.vsyncEnable) {
-        io.cmd.ready := True
         swapCountReg := swapCountReg + 1
         swapCompleted := True
         state := State.Idle
@@ -78,7 +77,6 @@ case class SwapBuffer(formalStrong: Boolean = false) extends Component {
     is(State.Waiting) {
       when(vRetraceRising) {
         when(retraceCounter >= capturedInterval) {
-          io.cmd.ready := True
           swapCountReg := swapCountReg + 1
           swapCompleted := True
           state := State.Idle
@@ -93,11 +91,7 @@ case class SwapBuffer(formalStrong: Boolean = false) extends Component {
     val formalReset = ClockDomain.current.isResetActive
 
     when(!formalReset) {
-      when(state === State.Idle) {
-        assert(!io.cmd.ready)
-      }
-
-      assert(io.cmd.ready === swapCompleted)
+      assert(io.cmd.ready === (state === State.Idle))
       assert(io.waiting === (state =/= State.Idle))
       assert(io.swapCount === swapCountReg)
       assert(io.swapsPending === swapsPendingReg)

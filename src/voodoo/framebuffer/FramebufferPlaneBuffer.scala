@@ -542,7 +542,7 @@ object FramebufferPlaneBuffer {
   }
 
   case class ReadRsp() extends Bundle {
-    val data = Bits(32 bits)
+    val data = Bits(16 bits)
   }
 
   case class WriteReq(c: Config) extends Bundle {

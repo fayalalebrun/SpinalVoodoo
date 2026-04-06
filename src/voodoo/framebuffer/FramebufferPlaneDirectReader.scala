@@ -14,6 +14,7 @@ case class FramebufferPlaneDirectReader(c: Config) extends Component {
   }
 
   val outstanding = RegInit(False)
+  val pendingLaneHi = RegInit(False)
   val rspInput = Stream(FramebufferPlaneBuffer.ReadRsp())
   val rspQueue = rspInput.queue(1)
   val busyNow = outstanding || rspQueue.valid
@@ -31,10 +32,12 @@ case class FramebufferPlaneDirectReader(c: Config) extends Component {
 
   when(io.mem.cmd.fire) {
     outstanding := True
+    pendingLaneHi := io.readReq.address(1)
   }
 
   rspInput.valid := io.mem.rsp.valid && outstanding
-  rspInput.data := io.mem.rsp.fragment.data
+  rspInput.data := pendingLaneHi ? io.mem.rsp.fragment.data(31 downto 16) | io.mem.rsp.fragment
+    .data(15 downto 0)
   io.mem.rsp.ready := rspInput.ready && outstanding
   io.readRsp << rspQueue
 

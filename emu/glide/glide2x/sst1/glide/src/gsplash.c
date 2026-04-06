@@ -55,7 +55,9 @@
 #include <glide.h>
 
 #include "fxglide.h"
+#ifdef GLIDE_SPLASH
 #include "fxinline.h"
+#endif
 
 #include <math.h>
 

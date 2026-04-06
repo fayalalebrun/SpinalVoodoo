@@ -93,7 +93,6 @@ static uint64_t tex_model_read_reject_count = 0;
 static uint64_t tex_model_rvalid_count = 0;
 static uint32_t tex_model_last_launch_burst = 0;
 static uint64_t tex_bridge_launch_count = 0;
-static bool tex_read_level_seen = false;
 static uint32_t prev_tex_outstanding = 0;
 static uint64_t last_tex_read_cycle = 0;
 static uint32_t last_tex_read_addr = 0;
@@ -115,6 +114,42 @@ static uint32_t tex_trace_min_addr = 0;
 static uint64_t fb_trace_after_cycle = 0;
 static uint32_t fb_trace_min_addr = 0;
 
+struct ProgressSnapshot {
+    uint32_t pixels_in;
+    uint32_t pixels_out;
+    uint64_t color_writes;
+    uint64_t aux_writes;
+    uint64_t tex_launches;
+    uint64_t tex_rvalids;
+    uint64_t tex_read_cycle;
+    uint64_t tex_rvalid_cycle;
+};
+
+static inline ProgressSnapshot capture_progress_snapshot(void) {
+    auto* root = top->rootp;
+    return {
+        (uint32_t)root->CoreDe10__DOT__core_1__DOT__regBank__DOT__io_statistics_pixelsIn,
+        (uint32_t)root->CoreDe10__DOT__core_1__DOT__regBank__DOT__io_statistics_pixelsOut,
+        snoop_color_write_count,
+        snoop_aux_write_count,
+        tex_model_read_launch_count,
+        tex_model_rvalid_count,
+        last_tex_read_cycle,
+        last_tex_rvalid_cycle,
+    };
+}
+
+static inline bool progress_changed(const ProgressSnapshot& a, const ProgressSnapshot& b) {
+    return a.pixels_in != b.pixels_in ||
+           a.pixels_out != b.pixels_out ||
+           a.color_writes != b.color_writes ||
+           a.aux_writes != b.aux_writes ||
+           a.tex_launches != b.tex_launches ||
+           a.tex_rvalids != b.tex_rvalids ||
+           a.tex_read_cycle != b.tex_read_cycle ||
+           a.tex_rvalid_cycle != b.tex_rvalid_cycle;
+}
+
 static void log_stalled_bus_state(const char* kind, const char* phase, uint32_t addr, uint64_t iter);
 
 static inline bool tex_trace_enabled_now(uint32_t addr) {
@@ -123,6 +158,42 @@ static inline bool tex_trace_enabled_now(uint32_t addr) {
 
 static inline bool fb_trace_enabled_now(uint32_t addr) {
     return fb_trace && ((sim_time / 2) >= fb_trace_after_cycle) && (addr >= fb_trace_min_addr);
+}
+
+static void dump_timeout_debug(const char* kind, uint32_t addr) {
+    auto* r = top->rootp;
+    fprintf(stderr,
+            "[sim_harness_de10] %s addr=0x%06x pipeBusy=%u tri=%u rast=%u tmuIn=%u tmuBusy=%u fbAcc=%u fbInReady=%u fbOutValid=%u fbFetchedOcc=%u fbColorRspOcc=%u fbAuxRspOcc=%u wColorV=%u wColorR=%u wAuxV=%u wAuxR=%u fbColorBusy=%u fbAuxBusy=%u texRead=%u texRvalid=%u texOut=%u texPending=%u texCanLaunch=%u colorRead=%u auxRead=%u fbWrite=%u fbWriteWaitN=%u colorWaitN=%u auxWaitN=%u\n",
+            kind,
+            addr,
+            (unsigned)r->CoreDe10__DOT__core_1__DOT__pixelPipeline_1_io_debug_pipelineBusy,
+            (unsigned)r->CoreDe10__DOT__core_1__DOT__pixelPipeline_1_io_debug_busy_triangleSetupValid,
+            (unsigned)r->CoreDe10__DOT__core_1__DOT__pixelPipeline_1_io_debug_busy_rasterizerRunning,
+            (unsigned)r->CoreDe10__DOT__core_1__DOT__pixelPipeline_1_io_debug_busy_tmuInputValid,
+            (unsigned)r->CoreDe10__DOT__core_1__DOT__pixelPipeline_1_io_debug_busy_tmuBusy,
+            (unsigned)r->CoreDe10__DOT__core_1__DOT__pixelPipeline_1_io_debug_busy_fbAccessBusy,
+            (unsigned)r->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__fbAccess_io_input_ready,
+            (unsigned)r->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__fbAccess_io_output_valid,
+            (unsigned)r->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__fbAccess__DOT__fetchedRaw_fifo_io_occupancy,
+            (unsigned)r->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__fbAccess__DOT__io_fbReadColorRsp_fifo_io_occupancy,
+            (unsigned)r->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__fbAccess__DOT__io_fbReadAuxRsp_fifo_io_occupancy,
+            (unsigned)r->CoreDe10__DOT__core_1__DOT__pixelPipeline_1_io_debug_busy_writeColorInputValid,
+            (unsigned)r->CoreDe10__DOT__core_1__DOT__pixelPipeline_1_io_debug_busy_writeColorReady,
+            (unsigned)r->CoreDe10__DOT__core_1__DOT__pixelPipeline_1_io_debug_busy_writeAuxInputValid,
+            (unsigned)r->CoreDe10__DOT__core_1__DOT__pixelPipeline_1_io_debug_busy_writeAuxReady,
+            (unsigned)r->CoreDe10__DOT__core_1__DOT__framebufferMem_io_status_colorBusy,
+            (unsigned)r->CoreDe10__DOT__core_1__DOT__framebufferMem_io_status_auxBusy,
+            (unsigned)top->io_memTex_read,
+            (unsigned)top->io_memTex_readDataValid,
+            (unsigned)r->CoreDe10__DOT__memBackend__DOT__texBridgeInst__DOT__outstandingReadBeats,
+            (unsigned)r->CoreDe10__DOT__memBackend__DOT__texBridgeInst__DOT__queuedReadCmdValid,
+            (unsigned)r->CoreDe10__DOT__memBackend__DOT__texBridgeInst__DOT__canLaunchRead,
+            (unsigned)top->io_memFbColorRead_read,
+            (unsigned)top->io_memFbAuxRead_read,
+            (unsigned)top->io_memFbWrite_write,
+            (unsigned)top->io_memFbWrite_waitRequestn,
+            (unsigned)top->io_memFbColorRead_waitRequestn,
+            (unsigned)top->io_memFbAuxRead_waitRequestn);
 }
 
 static void signal_handler(int sig) {
@@ -214,8 +285,7 @@ static inline void latch_mem_cmd_sample(AvalonMemCmdSample& dst, uint8_t read, u
 
 static inline void observe_memory_outputs(void) {
     auto *root = top->rootp;
-    const bool tex_read_level = top->io_memTex_read;
-    const bool tex_read_fire = tex_read_level && !tex_read_level_seen;
+    const bool tex_read_fire = top->io_memTex_read && top->io_memTex_waitRequestn;
     if (tex_read_fire) {
         tex_bridge_launch_count++;
         if (tex_trace && tex_trace_count < 256) {
@@ -246,7 +316,6 @@ static inline void observe_memory_outputs(void) {
                          top->io_memTex_writeData,
                          top->io_memTex_byteEnable,
                          top->io_memTex_burstCount);
-    tex_read_level_seen = tex_read_level;
     const uint32_t tex_outstanding = root->CoreDe10__DOT__memBackend__DOT__texBridgeInst__DOT__outstandingReadBeats;
     if (tex_trace && tex_outstanding != prev_tex_outstanding && tex_trace_count < 256) {
         fprintf(stderr,
@@ -541,18 +610,18 @@ static void log_stalled_bus_state(const char* kind, const char* phase,
             (unsigned)root->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__fbAccess__DOT__inFlightCount,
             (unsigned)root->CoreDe10__DOT__core_1__DOT__framebufferMem_io_status_colorBusy,
             (unsigned)root->CoreDe10__DOT__core_1__DOT__framebufferMem_io_status_auxBusy,
-            (unsigned)root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__io_writeReq_valid,
-            (unsigned)root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__directState_1,
-            (unsigned)root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__drainState_1,
-            (unsigned)root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__writeReqPipe_valid,
-            (unsigned)root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__writeReqPipe_ready,
-            (unsigned)root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__activeValid,
-            (unsigned)root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__io_writeReq_valid,
-            (unsigned)root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__directState_1,
-            (unsigned)root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__drainState_1,
-            (unsigned)root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__writeReqPipe_valid,
-            (unsigned)root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__writeReqPipe_ready,
-            (unsigned)root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__activeValid,
+            0u,
+            0u,
+            0u,
+            0u,
+            0u,
+            0u,
+            0u,
+            0u,
+            0u,
+            0u,
+            0u,
+            0u,
             (unsigned)last_tex_read_addr,
             (unsigned long)last_tex_read_cycle,
             (unsigned)last_tex_rvalid_data,
@@ -569,8 +638,9 @@ static void bus_write(uint32_t addr, uint32_t data) {
     mmio_begin(addr, true, data);
     maybe_log_mmio("WRITE", "begin", addr, data, 0);
 
-    int timeout = (int)mmio_timeout_cycles;
+    uint32_t idle_cycles = 0;
     uint64_t iter = 0;
+    ProgressSnapshot last_progress = capture_progress_snapshot();
     uint64_t fb_write_cycles = 0;
     uint64_t fb_cmd_ready_cycles = 0;
     uint64_t fb_cmd_valid_cycles = 0;
@@ -603,9 +673,14 @@ static void bus_write(uint32_t addr, uint32_t data) {
     uint32_t last_fb_addr = 0;
     bool have_last_fb_addr = false;
     const uint64_t stall_log_period = stall_debug ? 1000 : ((addr == 0x000000) ? 10000 : 100000);
-    while (timeout > 0) {
+    while (idle_cycles < mmio_timeout_cycles) {
         eval_inputs();
         auto *root = top->rootp;
+        ProgressSnapshot current_progress = capture_progress_snapshot();
+        if (progress_changed(current_progress, last_progress)) {
+            last_progress = current_progress;
+            idle_cycles = 0;
+        }
         if (top->io_memFbWrite_write) {
             fb_write_cycles++;
             uint32_t cur = top->io_memFbWrite_address;
@@ -616,10 +691,10 @@ static void bus_write(uint32_t addr, uint32_t data) {
         if (root->CoreDe10__DOT__memBackend__DOT__fbWriteBridge__DOT__io_bmb_cmd_valid) fb_cmd_valid_cycles++;
         if (root->CoreDe10__DOT__memBackend__DOT__fbWriteBridge__DOT__io_bmb_cmd_ready) fb_cmd_ready_cycles++;
         if (top->io_memFbWrite_waitRequestn) fb_waitrequestn_cycles++;
-        if (root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__io_writeReq_valid) color_req_cycles++;
-        if (root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__io_writeReq_valid) aux_req_cycles++;
-        if (root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__writeReqPipe_valid) color_pipe_cycles++;
-        if (root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__writeReqPipe_valid) aux_pipe_cycles++;
+        color_req_cycles += 0;
+        aux_req_cycles += 0;
+        color_pipe_cycles += 0;
+        aux_pipe_cycles += 0;
         if (root->CoreDe10__DOT__core_1__DOT__framebufferMem_io_status_colorBusy) color_busy_cycles++;
         if (root->CoreDe10__DOT__core_1__DOT__framebufferMem_io_status_auxBusy) aux_busy_cycles++;
         if (root->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__rasterizer_1__DOT__o_valid) rast_out_cycles++;
@@ -656,14 +731,15 @@ static void bus_write(uint32_t addr, uint32_t data) {
         }
         tick_one();
         if (cycle_limit_hit) break;
-        timeout--;
+        idle_cycles++;
         iter++;
     }
-    if (timeout == 0 && !cycle_limit_hit) {
+    if (idle_cycles >= mmio_timeout_cycles && !cycle_limit_hit) {
         auto *root = top->rootp;
         if (stall_debug) log_stalled_bus_state("WRITE", "timeout", addr, iter);
         fprintf(stderr, "[sim_harness_de10] ERROR: bus_write(0x%06x) cmd timeout after %u cycles @ cycle %lu\n",
                 addr, mmio_timeout_cycles, (unsigned long)(sim_time / 2));
+        dump_timeout_debug("write-cmd-timeout", addr);
         fprintf(stderr,
                 "[sim_harness_de10] WRITE timeout stats: fb_write_cycles=%lu/%lu fb_cmd_valid=%lu fb_cmd_ready=%lu fb_waitrequestn=%lu colorReq=%lu auxReq=%lu colorPipe=%lu auxPipe=%lu colorBusy=%lu auxBusy=%lu rastOut=%lu tmuIn=%lu tmuOut=%lu ccIn=%lu fogIn=%lu fbIn=%lu wcIn=%lu texCmdValid=%lu texCmdReady=%lu texAccept=%lu texSlotAvail=%lu texStorageOk=%lu texPending=%lu texRead=%lu texRvalid=%lu texModel=%lu/%lu/%lu/%u texBridge=%lu texState=%u/%u/%u/0x%08x texWriteActive=%u texWriteRsp=%u texOutReadBeats=%u texQueuedRead=%u texCanLaunch=%u texAddrChanges=%lu lastTex=0x%08x fb_addr_changes=%lu last_fb_addr=0x%08x\n",
                 (unsigned long)fb_write_cycles, (unsigned long)iter,
@@ -709,8 +785,9 @@ static void bus_write_masked(uint32_t addr, uint32_t data, uint8_t byteenable) {
     mmio_begin(addr, true, data, byteenable);
     maybe_log_mmio("WRITE", "begin", addr, data, 0);
 
-    int timeout = (int)mmio_timeout_cycles;
+    uint32_t idle_cycles = 0;
     uint64_t iter = 0;
+    ProgressSnapshot last_progress = capture_progress_snapshot();
     uint64_t fb_write_cycles = 0;
     uint64_t fb_cmd_ready_cycles = 0;
     uint64_t fb_cmd_valid_cycles = 0;
@@ -743,9 +820,14 @@ static void bus_write_masked(uint32_t addr, uint32_t data, uint8_t byteenable) {
     uint32_t last_fb_addr = 0;
     bool have_last_fb_addr = false;
     const uint64_t stall_log_period = stall_debug ? 1000 : ((addr == 0x000000) ? 10000 : 100000);
-    while (timeout > 0) {
+    while (idle_cycles < mmio_timeout_cycles) {
         eval_inputs();
         auto *root = top->rootp;
+        ProgressSnapshot current_progress = capture_progress_snapshot();
+        if (progress_changed(current_progress, last_progress)) {
+            last_progress = current_progress;
+            idle_cycles = 0;
+        }
         if (top->io_memFbWrite_write) {
             fb_write_cycles++;
             uint32_t cur = top->io_memFbWrite_address;
@@ -756,10 +838,10 @@ static void bus_write_masked(uint32_t addr, uint32_t data, uint8_t byteenable) {
         if (root->CoreDe10__DOT__memBackend__DOT__fbWriteBridge__DOT__io_bmb_cmd_valid) fb_cmd_valid_cycles++;
         if (root->CoreDe10__DOT__memBackend__DOT__fbWriteBridge__DOT__io_bmb_cmd_ready) fb_cmd_ready_cycles++;
         if (top->io_memFbWrite_waitRequestn) fb_waitrequestn_cycles++;
-        if (root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__io_writeReq_valid) color_req_cycles++;
-        if (root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__io_writeReq_valid) aux_req_cycles++;
-        if (root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__writeReqPipe_valid) color_pipe_cycles++;
-        if (root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__writeReqPipe_valid) aux_pipe_cycles++;
+        color_req_cycles += 0;
+        aux_req_cycles += 0;
+        color_pipe_cycles += 0;
+        aux_pipe_cycles += 0;
         if (root->CoreDe10__DOT__core_1__DOT__framebufferMem_io_status_colorBusy) color_busy_cycles++;
         if (root->CoreDe10__DOT__core_1__DOT__framebufferMem_io_status_auxBusy) aux_busy_cycles++;
         if (root->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__rasterizer_1__DOT__o_valid) rast_out_cycles++;
@@ -796,14 +878,15 @@ static void bus_write_masked(uint32_t addr, uint32_t data, uint8_t byteenable) {
         }
         tick_one();
         if (cycle_limit_hit) break;
-        timeout--;
+        idle_cycles++;
         iter++;
     }
-    if (timeout == 0 && !cycle_limit_hit) {
+    if (idle_cycles >= mmio_timeout_cycles && !cycle_limit_hit) {
         auto *root = top->rootp;
         if (stall_debug) log_stalled_bus_state("WRITE", "timeout", addr, iter);
         fprintf(stderr, "[sim_harness_de10] ERROR: bus_write_masked(0x%06x) cmd timeout after %u cycles @ cycle %lu\n",
                 addr, mmio_timeout_cycles, (unsigned long)(sim_time / 2));
+        dump_timeout_debug("write-masked-cmd-timeout", addr);
         fprintf(stderr,
                 "[sim_harness_de10] WRITE timeout stats: fb_write_cycles=%lu/%lu fb_cmd_valid=%lu fb_cmd_ready=%lu fb_waitrequestn=%lu colorReq=%lu auxReq=%lu colorPipe=%lu auxPipe=%lu colorBusy=%lu auxBusy=%lu rastOut=%lu tmuIn=%lu tmuOut=%lu ccIn=%lu fogIn=%lu fbIn=%lu wcIn=%lu texCmdValid=%lu texCmdReady=%lu texAccept=%lu texSlotAvail=%lu texStorageOk=%lu texPending=%lu texRead=%lu texRvalid=%lu texModel=%lu/%lu/%lu/%u texBridge=%lu texState=%u/%u/%u/0x%08x texWriteActive=%u texWriteRsp=%u texOutReadBeats=%u texQueuedRead=%u texCanLaunch=%u texAddrChanges=%lu lastTex=0x%08x fb_addr_changes=%lu last_fb_addr=0x%08x\n",
                 (unsigned long)fb_write_cycles, (unsigned long)iter,
@@ -849,11 +932,17 @@ static uint32_t bus_read(uint32_t addr) {
     mmio_begin(addr, false, 0);
     maybe_log_mmio("READ", "begin", addr, 0, 0);
 
-    int timeout = (int)mmio_timeout_cycles;
+    uint32_t idle_cycles = 0;
     uint64_t iter = 0;
+    ProgressSnapshot last_progress = capture_progress_snapshot();
     const uint64_t stall_log_period = (addr == 0x000000) ? 10000 : 100000;
-    while (timeout > 0) {
+    while (idle_cycles < mmio_timeout_cycles) {
         eval_inputs();
+        ProgressSnapshot current_progress = capture_progress_snapshot();
+        if (progress_changed(current_progress, last_progress)) {
+            last_progress = current_progress;
+            idle_cycles = 0;
+        }
         if (!top->io_h2fLw_waitrequest) {
             maybe_log_mmio("READ", "accept", addr, 0, iter);
             tick_one();
@@ -867,10 +956,10 @@ static uint32_t bus_read(uint32_t addr) {
         }
         tick_one();
         if (cycle_limit_hit) break;
-        timeout--;
+        idle_cycles++;
         iter++;
     }
-    if (timeout == 0 && !cycle_limit_hit) {
+    if (idle_cycles >= mmio_timeout_cycles && !cycle_limit_hit) {
         fprintf(stderr, "[sim_harness_de10] ERROR: bus_read(0x%06x) cmd timeout after %u cycles @ cycle %lu\n",
                 addr, mmio_timeout_cycles, (unsigned long)(sim_time / 2));
         cycle_limit_hit = true;
@@ -880,10 +969,16 @@ static uint32_t bus_read(uint32_t addr) {
     mmio_end();
     if (!cycle_limit_hit) tick_one();
 
-    timeout = (int)mmio_timeout_cycles;
+    idle_cycles = 0;
     iter = 0;
-    while (timeout > 0) {
+    last_progress = capture_progress_snapshot();
+    while (idle_cycles < mmio_timeout_cycles) {
         eval_inputs();
+        ProgressSnapshot current_progress = capture_progress_snapshot();
+        if (progress_changed(current_progress, last_progress)) {
+            last_progress = current_progress;
+            idle_cycles = 0;
+        }
         if (top->io_h2fLw_readdatavalid) {
             const uint32_t data = top->io_h2fLw_readdata;
             maybe_log_mmio("READ", "rsp", addr, data, iter);
@@ -901,12 +996,12 @@ static uint32_t bus_read(uint32_t addr) {
         }
         tick_one();
         if (cycle_limit_hit) break;
-        timeout--;
+        idle_cycles++;
         iter++;
     }
 
     const uint64_t ticks = (sim_time - t0) / 2;
-    if (!cycle_limit_hit) {
+    if (!cycle_limit_hit && idle_cycles >= mmio_timeout_cycles) {
         fprintf(stderr, "[sim_harness_de10] ERROR: bus_read(0x%06x) rsp timeout after %u cycles @ cycle %lu\n",
                 addr, mmio_timeout_cycles, (unsigned long)(sim_time / 2));
         cycle_limit_hit = true;
@@ -946,7 +1041,6 @@ int sim_init(void) {
     tex_model_rvalid_count = 0;
     tex_model_last_launch_burst = 0;
     tex_bridge_launch_count = 0;
-    tex_read_level_seen = false;
     prev_tex_outstanding = 0;
     last_tex_read_cycle = 0;
     last_tex_read_addr = 0;
@@ -1126,142 +1220,11 @@ void sim_flush_fb_cache(void) {
 
 void sim_invalidate_fb_cache(void) {
     if (!top) return;
-
-    auto* root = top->rootp;
-
-    auto clear_fb_buffer = [&](bool aux) {
-        auto& slotValid0 = aux
-            ? root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__slotValid_0
-            : root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__slotValid_0;
-        auto& slotValid1 = aux
-            ? root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__slotValid_1
-            : root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__slotValid_1;
-        auto& slotDraining0 = aux
-            ? root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__slotDraining_0
-            : root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__slotDraining_0;
-        auto& slotDraining1 = aux
-            ? root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__slotDraining_1
-            : root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__slotDraining_1;
-        auto& slotWordCount0 = aux
-            ? root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__slotWordCount_0
-            : root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__slotWordCount_0;
-        auto& slotWordCount1 = aux
-            ? root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__slotWordCount_1
-            : root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__slotWordCount_1;
-        auto& slotPendingMask0 = aux
-            ? root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__slotPendingMask_0
-            : root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__slotPendingMask_0;
-        auto& slotPendingMask1 = aux
-            ? root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__slotPendingMask_1
-            : root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__slotPendingMask_1;
-        auto& activeSlot = aux
-            ? root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__activeSlot
-            : root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__activeSlot;
-        auto& directState = aux
-            ? root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__directState_1
-            : root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__directState_1;
-        auto& directWriteMask = aux
-            ? root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__directWriteMask
-            : root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__directWriteMask;
-        auto& drainState = aux
-            ? root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__drainState_1
-            : root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__drainState_1;
-        auto& drainSlot = aux
-            ? root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__drainSlot
-            : root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__drainSlot;
-        auto& drainIndex = aux
-            ? root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__drainIndex
-            : root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__drainIndex;
-        auto& drainLastIndex = aux
-            ? root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__drainLastIndex
-            : root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__drainLastIndex;
-        auto& drainLength = aux
-            ? root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__drainLength
-            : root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__drainLength;
-        auto& writeReqPipeValid = aux
-            ? root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__writeReqPipe_valid
-            : root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__writeReqPipe_valid;
-        auto& writeReqPipeMask = aux
-            ? root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__writeReqPipe_payload_mask
-            : root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__writeReqPipe_payload_mask;
-        auto& writeReqPipeAddress = aux
-            ? root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__writeReqPipe_payload_address
-            : root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__writeReqPipe_payload_address;
-        auto& writeReqPipeData = aux
-            ? root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__writeReqPipe_payload_data
-            : root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__writeReqPipe_payload_data;
-        auto& writeReqRValid = aux
-            ? root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__io_writeReq_rValid
-            : root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__io_writeReq_rValid;
-        auto& writeReqRMask = aux
-            ? root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__io_writeReq_rData_mask
-            : root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__io_writeReq_rData_mask;
-        auto& writeReqRAddress = aux
-            ? root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__io_writeReq_rData_address
-            : root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__io_writeReq_rData_address;
-        auto& writeReqRData = aux
-            ? root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__io_writeReq_rData_data
-            : root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__io_writeReq_rData_data;
-        auto& slotStartAddr0 = aux
-            ? root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__slotStartAddr_0
-            : root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__slotStartAddr_0;
-        auto& slotStartAddr1 = aux
-            ? root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__slotStartAddr_1
-            : root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__slotStartAddr_1;
-        auto& slotPendingAddress0 = aux
-            ? root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__slotPendingAddress_0
-            : root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__slotPendingAddress_0;
-        auto& slotPendingAddress1 = aux
-            ? root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__slotPendingAddress_1
-            : root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__slotPendingAddress_1;
-        auto& slotPendingData0 = aux
-            ? root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__slotPendingData_0
-            : root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__slotPendingData_0;
-        auto& slotPendingData1 = aux
-            ? root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__slotPendingData_1
-            : root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__slotPendingData_1;
-        auto& activeNextAddr = aux
-            ? root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__activeNextAddr
-            : root->CoreDe10__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__activeNextAddr;
-
-        slotValid0 = 0;
-        slotValid1 = 0;
-        slotDraining0 = 0;
-        slotDraining1 = 0;
-        slotWordCount0 = 0;
-        slotWordCount1 = 0;
-        slotPendingMask0 = 0;
-        slotPendingMask1 = 0;
-        activeSlot = 0;
-        directState = 0;
-        directWriteMask = 0;
-        drainState = 0;
-        drainSlot = 0;
-        drainIndex = 0;
-        drainLastIndex = 0;
-        drainLength = 0;
-        writeReqPipeValid = 0;
-        writeReqPipeMask = 0;
-        writeReqPipeAddress = 0;
-        writeReqPipeData = 0;
-        writeReqRValid = 0;
-        writeReqRMask = 0;
-        writeReqRAddress = 0;
-        writeReqRData = 0;
-        slotStartAddr0 = 0;
-        slotStartAddr1 = 0;
-        slotPendingAddress0 = 0;
-        slotPendingAddress1 = 0;
-        slotPendingData0 = 0;
-        slotPendingData1 = 0;
-        activeNextAddr = 0;
-    };
-
-    clear_fb_buffer(false);
-    clear_fb_buffer(true);
-
+    top->rootp->CoreDe10__DOT__core_1__DOT__io_flushFbCaches = 1;
+    sim_idle_wait();
+    top->rootp->CoreDe10__DOT__core_1__DOT__io_flushFbCaches = 0;
     fprintf(stderr,
-            "[sim_harness_de10] Invalidated host framebuffer image\n");
+            "[sim_harness_de10] Flushed framebuffer caches\n");
     tick_one();
 }
 

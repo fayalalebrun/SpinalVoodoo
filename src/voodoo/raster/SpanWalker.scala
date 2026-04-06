@@ -11,6 +11,8 @@ case class SpanWalker(c: Config, formalStrong: Boolean = false) extends Componen
   val enableClipping = in Bool ()
   val clipLeft = in UInt (10 bits)
   val clipRight = in UInt (10 bits)
+  val clipLowY = in UInt (10 bits)
+  val clipHighY = in UInt (10 bits)
   val running = out(Bool())
 
   object WalkerState extends SpinalEnum {
@@ -32,8 +34,6 @@ case class SpanWalker(c: Config, formalStrong: Boolean = false) extends Componen
 
   running := state =/= WalkerState.Idle
   i.ready := state === WalkerState.Idle
-  o.valid := state === WalkerState.EmitSpan
-
   val one = AFix(c.vertexFormat)
   one := 1.0
   val negOne = AFix(c.vertexFormat)
@@ -100,10 +100,18 @@ case class SpanWalker(c: Config, formalStrong: Boolean = false) extends Componen
   val triangleXEndPix = triangleConst.xrange(1).floor(0).asSInt
   val clipLeftPix = clipLeft.resize(c.vertexFormat.nonFraction bits).asSInt
   val clipRightPix = clipRight.resize(c.vertexFormat.nonFraction bits).asSInt
+  val clipLowYPix = clipLowY.resize(c.vertexFormat.nonFraction bits).asSInt
+  val clipHighYPix = clipHighY.resize(c.vertexFormat.nonFraction bits).asSInt
   val visibleStartPix =
     Mux(enableClipping && clipLeftPix > triangleXStartPix, clipLeftPix, triangleXStartPix)
   val visibleEndPix =
     Mux(enableClipping && clipRightPix < triangleXEndPix, clipRightPix, triangleXEndPix)
+  val emitVisibleY = !enableClipping || {
+    val emitYPix = leftEdge.coords(1).floor(0).asSInt
+    emitYPix >= clipLowYPix && emitYPix < clipHighYPix
+  }
+
+  o.valid := state === WalkerState.EmitSpan && emitVisibleY
 
   def stepHorizontal(dst: SpanWalker.Cursor, src: SpanWalker.Cursor, moveRight: Boolean): Unit = {
     val xDelta = if (moveRight) one else negOne
@@ -315,6 +323,11 @@ case class SpanWalker(c: Config, formalStrong: Boolean = false) extends Componen
   }
 
   when(state === WalkerState.EmitSpan && o.ready) {
+    firstSpanPending := False
+    prepareNextRow(leftEdge, leftBiasedGuess = true)
+  }
+
+  when(state === WalkerState.EmitSpan && !emitVisibleY) {
     firstSpanPending := False
     prepareNextRow(leftEdge, leftBiasedGuess = true)
   }

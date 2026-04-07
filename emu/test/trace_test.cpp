@@ -270,6 +270,8 @@ int main(int argc, char **argv) {
     bool ref_only = false;
     bool sim_replay_only = false;
     int max_mismatches = 0;
+    int max_sim_black_mismatches = -1;
+    int max_parity_mismatch_skew = -1;
     int color_tolerance = 0;
     int disp_width  = 640;
     int disp_height = 480;
@@ -287,6 +289,10 @@ int main(int argc, char **argv) {
             ref_trace_jsonl = argv[++i];
         } else if (strcmp(argv[i], "--max-mismatches") == 0 && i + 1 < argc) {
             max_mismatches = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--max-sim-black-mismatches") == 0 && i + 1 < argc) {
+            max_sim_black_mismatches = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--max-parity-mismatch-skew") == 0 && i + 1 < argc) {
+            max_parity_mismatch_skew = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--color-tolerance") == 0 && i + 1 < argc) {
             color_tolerance = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--width") == 0 && i + 1 < argc) {
@@ -303,7 +309,7 @@ int main(int argc, char **argv) {
 
     if (!trace_path) {
         fprintf(stderr, "Usage: trace_test <path> [--ref-only] [--sim-replay-only] [--output-dir DIR] [--profile-json PATH] [--ref-trace-jsonl PATH] "
-                "[--max-mismatches N] [--color-tolerance N] [--width W] [--height H]\n");
+                "[--max-mismatches N] [--max-sim-black-mismatches N] [--max-parity-mismatch-skew N] [--color-tolerance N] [--width W] [--height H]\n");
         return 1;
     }
 
@@ -1261,6 +1267,10 @@ int main(int argc, char **argv) {
     std::vector<uint8_t> ref_rgb(disp_width * disp_height * 3);
     std::vector<uint8_t> sim_rgb;
     std::vector<uint8_t> diff_rgb;
+    int sim_black_mismatches = 0;
+    int parity_mismatches[2] = {0, 0};
+    std::vector<int> mismatch_by_column(disp_width, 0);
+    std::vector<int> sim_black_mismatch_by_column(disp_width, 0);
 
     if (!ref_only) {
         sim_rgb.resize(disp_width * disp_height * 3);
@@ -1289,6 +1299,8 @@ int main(int argc, char **argv) {
 
                     if (dr > color_tolerance || dg > color_tolerance || db > color_tolerance) {
                         mismatches++;
+                        mismatch_by_column[x]++;
+                        parity_mismatches[x & 1]++;
                         /* Mark in diff image: red channel = ref, green = sim, blue = 0 */
                         int idx = (y * disp_width + x) * 3;
                         diff_rgb[idx + 0] = 255;  /* red = mismatch */
@@ -1301,6 +1313,8 @@ int main(int argc, char **argv) {
                         }
                         /* Count sim-black pixels where ref has visible color */
                         if (sp == 0x0000 && rp > 0x0000) {
+                            sim_black_mismatches++;
+                            sim_black_mismatch_by_column[x]++;
                             static int black_count = 0;
                             if (black_count < 20) {
                                 fprintf(stderr, "  SIM-BLACK at (%d,%d): ref=0x%04x\n", x, y, rp);
@@ -1386,10 +1400,47 @@ int main(int argc, char **argv) {
     if (ref_only) {
         fprintf(stderr, "[trace_test] Reference-only mode: %d pixels rendered\n", total_pixels);
     } else {
+        int max_column_mismatches = 0;
+        int max_column_x = 0;
+        int max_black_column_mismatches = 0;
+        int max_black_column_x = 0;
+        for (int x = 0; x < disp_width; x++) {
+            if (mismatch_by_column[x] > max_column_mismatches) {
+                max_column_mismatches = mismatch_by_column[x];
+                max_column_x = x;
+            }
+            if (sim_black_mismatch_by_column[x] > max_black_column_mismatches) {
+                max_black_column_mismatches = sim_black_mismatch_by_column[x];
+                max_black_column_x = x;
+            }
+        }
+        int parity_mismatch_skew = abs(parity_mismatches[0] - parity_mismatches[1]);
         fprintf(stderr, "[trace_test] %d/%d pixels mismatched", mismatches, total_pixels);
         if (color_tolerance > 0)
             fprintf(stderr, " (tolerance=%d)", color_tolerance);
         fprintf(stderr, "\n");
+        fprintf(stderr,
+                "[trace_test] Artifact stats: simBlackMismatches=%d parity(even=%d odd=%d skew=%d) maxMismatchColumn=x%d count=%d maxBlackColumn=x%d count=%d\n",
+                sim_black_mismatches,
+                parity_mismatches[0],
+                parity_mismatches[1],
+                parity_mismatch_skew,
+                max_column_x,
+                max_column_mismatches,
+                max_black_column_x,
+                max_black_column_mismatches);
+        if (max_sim_black_mismatches >= 0 && sim_black_mismatches > max_sim_black_mismatches) {
+            fprintf(stderr,
+                    "[trace_test] ERROR: simBlackMismatches=%d exceeded threshold %d\n",
+                    sim_black_mismatches,
+                    max_sim_black_mismatches);
+        }
+        if (max_parity_mismatch_skew >= 0 && parity_mismatch_skew > max_parity_mismatch_skew) {
+            fprintf(stderr,
+                    "[trace_test] ERROR: parity mismatch skew=%d exceeded threshold %d\n",
+                    parity_mismatch_skew,
+                    max_parity_mismatch_skew);
+        }
         if (stale_frame_risk) {
             fprintf(stderr, "[trace_test] ERROR: selected framebuffer appears worse than alternate framebuffer\n");
         }
@@ -1402,7 +1453,12 @@ int main(int argc, char **argv) {
     if (!ref_only) sim_shutdown();
 
     /* Use _exit to avoid hanging in Verilator's static destructors */
+    int parity_mismatch_skew = abs(parity_mismatches[0] - parity_mismatches[1]);
     int ok = (ref_only || mismatches <= max_mismatches) ? 1 : 0;
+    if (!ref_only && max_sim_black_mismatches >= 0 && sim_black_mismatches > max_sim_black_mismatches)
+        ok = 0;
+    if (!ref_only && max_parity_mismatch_skew >= 0 && parity_mismatch_skew > max_parity_mismatch_skew)
+        ok = 0;
     if (!ref_only && stale_frame_risk)
         ok = 0;
     _exit(ok ? 0 : 1);

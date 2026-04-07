@@ -64,6 +64,8 @@ SCALA_SRCS := $(shell find $(PROJ_ROOT)/src -name '*.scala') $(PROJ_ROOT)/projec
 # Stamps
 VERILATE_STAMP = $(OBJ_DIR)/.verilate.stamp
 
+-include $(OBJ_DIR)/V$(SIM_MODEL)_classes.mk
+
 # Trace mode sentinel: forces rebuild when TRACE= setting changes.
 TRACE_MODE_FILE = $(OBJ_DIR)/.trace_mode
 TRACE_MODE_VAL  = $(if $(filter 1,$(TRACE)),trace,notrace)
@@ -157,8 +159,14 @@ OBJS = $(OBJ_DIR)/trace_test.o \
        $(OBJ_DIR)/voodoo_trace_writer.o \
        $(OBJ_DIR)/sim_harness.o
 
-$(OBJ_DIR)/trace_test: $(OBJS) $(OBJ_DIR)/V$(SIM_MODEL)__ALL.a $(OBJ_DIR)/libverilated.a
-	$(CXX) -o $@ $(OBJS) $(OBJ_DIR)/V$(SIM_MODEL)__ALL.a $(OBJ_DIR)/libverilated.a -lm -lz -lpthread
+VERILATED_RUNTIME_OBJS = $(OBJ_DIR)/verilated.o $(OBJ_DIR)/verilated_dpi.o $(OBJ_DIR)/verilated_threads.o
+ifeq ($(TRACE),1)
+VERILATED_RUNTIME_OBJS += $(OBJ_DIR)/verilated_fst_c.o
+endif
+VERILATED_MODEL_OBJS = $(addprefix $(OBJ_DIR)/,$(addsuffix .o,$(VM_CLASSES_FAST) $(VM_CLASSES_SLOW) $(VM_SUPPORT_FAST) $(VM_SUPPORT_SLOW)))
+
+$(OBJ_DIR)/trace_test: $(OBJS) $(OBJ_DIR)/V$(SIM_MODEL)__ALL.a $(VERILATED_RUNTIME_OBJS)
+	$(CXX) -o $@ $(OBJS) $(OBJ_DIR)/V$(SIM_MODEL)__ALL.a $(VERILATED_RUNTIME_OBJS) -lm -lz -lpthread
 
 ROUNDTRIP_OBJS = $(OBJ_DIR)/state_roundtrip_test.o \
                  $(OBJ_DIR)/ref_model.o \

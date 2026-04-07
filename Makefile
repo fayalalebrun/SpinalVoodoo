@@ -6,7 +6,7 @@
 #   tomb/<runtime>/<action>
 #   de10/<action>
 
-.PHONY: all clean clean-sim clean-glide clean-tests native/help native/sim/build native/trace/build native/sim/run-all native/sim/check-all native/de10sim/check-all dos/help dos/sim/build dos/trace/build dos/dosbox tomb/help tomb/prepare tomb/sim/run tomb/sim/headless tomb/sim/capture tomb/sim/trace tomb/sim/trace/check tomb/trace/run tomb/trace/headless tomb/trace/check tomb/trace/profile de10/help de10/setup/program de10/setup/deploy de10/check/mmio de10/check/ddr-stress de10/report/ddr de10/run/tomb de10/run/tomb/vnc de10/trace/build de10/trace/run de10/plan de10/rtl de10/qsys de10/bitstream de10/ddrbench/rtl de10/ddrbench/bitstream de10/sync-sysroot de10/glide de10/glide-tests de10/glide-cross de10/glide-tests-cross FORCE
+.PHONY: all clean clean-sim clean-glide clean-tests native/help native/sim/build native/trace/build native/sim/run-all native/sim/check-all native/de10sim/check-all native/de10sim/check-image dos/help dos/sim/build dos/trace/build dos/dosbox tomb/help tomb/prepare tomb/sim/run tomb/sim/headless tomb/sim/capture tomb/sim/trace tomb/sim/trace/check tomb/trace/run tomb/trace/headless tomb/trace/check tomb/trace/profile de10/help de10/setup/program de10/setup/deploy de10/check/mmio de10/check/ddr-stress de10/report/ddr de10/run/tomb de10/run/tomb/vnc de10/trace/build de10/trace/run de10/plan de10/rtl de10/qsys de10/bitstream de10/ddrbench/rtl de10/ddrbench/bitstream de10/sync-sysroot de10/glide de10/glide-tests de10/glide-cross de10/glide-tests-cross FORCE
 .PRECIOUS: dos/sim/build/% dos/trace/build/%
 
 # Derive CXX32 from CC32 for sub-makefiles that need it
@@ -128,7 +128,7 @@ tomb/sim/trace:
 
 tomb/sim/trace/check: $(TRACE_TEST_BIN)
 	@mkdir -p output/tomb/trace_replay_live
-	$(TRACE_TEST_BIN) traces/tomb_live/trace.bin --output-dir output/tomb/trace_replay_live
+	$(TRACE_TEST_BIN) traces/tomb_live/trace.bin --output-dir output/tomb/trace_replay_live $(TRACE_TEST_ARGS)
 
 tomb/trace/run: native/trace/build
 	@mkdir -p traces/tomb
@@ -142,7 +142,7 @@ tomb/trace/headless: native/trace/build
 
 tomb/trace/check: $(TRACE_TEST_BIN)
 	@mkdir -p output/tomb/trace_replay
-	$(TRACE_TEST_BIN) traces/tomb --output-dir output/tomb/trace_replay
+	$(TRACE_TEST_BIN) traces/tomb --output-dir output/tomb/trace_replay $(TRACE_TEST_ARGS)
 
 native/de10sim/check/%: FORCE
 	$(MAKE) -C emu/test SIM_INTERFACE=de10
@@ -154,7 +154,10 @@ native/de10sim/check/%: FORCE
 	else \
 	  echo "ERROR: neither traces/$*.bin nor traces/$*/ found. Run a trace capture first."; exit 1; \
 	fi; \
-	emu/test/obj_dir/trace_test "$$src" --output-dir test-output/$*-de10sim
+	emu/test/obj_dir/trace_test "$$src" --output-dir test-output/$*-de10sim $(TRACE_TEST_ARGS)
+
+native/de10sim/check-image/%: FORCE
+	$(MAKE) native/de10sim/check/$* TRACE_TEST_ARGS='$(TRACE_TEST_STRICT_ARGS)'
 
 native/de10sim/check-all: FORCE
 	@for f in traces/*.bin; do \
@@ -360,6 +363,8 @@ native/sim/run-all: $(patsubst %,native/sim/run/%,test00 test01 test02 test03 te
 # --------------------------------------------------------------------------
 
 TRACE_TEST_BIN = emu/test/obj_dir/trace_test
+TRACE_TEST_ARGS ?=
+TRACE_TEST_STRICT_ARGS ?= --max-mismatches 0 --max-sim-black-mismatches 0 --max-parity-mismatch-skew 0
 STATE_ROUNDTRIP_BIN = emu/test/obj_dir/state_roundtrip_test
 
 # Build trace_test binary (64-bit, independent of 32-bit Glide build).

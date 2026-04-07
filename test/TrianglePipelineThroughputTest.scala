@@ -37,6 +37,7 @@ private object TrianglePipelineThroughputTest {
 
     val io = new Bundle {
       val triangle = slave(Stream(TrianglePipelineThroughputTest.TriangleCmd(c)))
+      val pointSample = in Bool ()
       val fbMemWrite = master(Bmb(Core.fbMemBmbParams(c)))
       val fbColorReadMem = master(Bmb(Core.fbMemBmbParams(c)))
       val fbAuxReadMem = master(Bmb(Core.fbMemBmbParams(c)))
@@ -101,10 +102,13 @@ private object TrianglePipelineThroughputTest {
     triangleConfig.alphaMode.aDstFact := 5
     triangleConfig.alphaMode.alphaRef := 0
 
-    triangleConfig.tmuTextureMode := B(
-      (1 << 6) | (1 << 7) | (Tmu.TextureFormat.RGB565 << 8),
-      32 bits
-    )
+    val textureMode = Bits(32 bits)
+    textureMode := B(Tmu.TextureFormat.RGB565 << 8, 32 bits)
+    when(!io.pointSample) {
+      textureMode(6) := True
+      textureMode(7) := True
+    }
+    triangleConfig.tmuTextureMode := textureMode
     triangleConfig.tmuTexBaseAddr := 0
     triangleConfig.tmuTLOD := B(0x00200, 27 bits)
     triangleConfig.tmudSdX := 0.0
@@ -259,7 +263,7 @@ private object TrianglePipelineThroughputTest {
 class TrianglePipelineThroughputTest extends AnyFunSuite {
   import TrianglePipelineThroughputTest._
 
-  private def mkConfig =
+  private def mkConfig(useFbWriteBuffer: Boolean = true, useFbReadCache: Boolean = false) =
     Config
       .voodoo1()
       .copy(
@@ -268,7 +272,8 @@ class TrianglePipelineThroughputTest extends AnyFunSuite {
         fbWriteBufferLineWords = 64,
         fbWriteBufferCount = 2,
         texFillLineWords = 8,
-        useFbWriteBuffer = true,
+        useFbWriteBuffer = useFbWriteBuffer,
+        useFbReadCache = useFbReadCache,
         useTexFillCache = true,
         texFillCacheSlots = 16,
         texFillRequestWindow = 16,
@@ -287,6 +292,7 @@ class TrianglePipelineThroughputTest extends AnyFunSuite {
   private def initDut(dut: Harness): Unit = {
     dut.clockDomain.forkStimulus(10)
     dut.io.triangle.valid #= false
+    dut.io.pointSample #= false
     dut.io.triangle.payload.ax #= 0
     dut.io.triangle.payload.ay #= 0
     dut.io.triangle.payload.bx #= 0
@@ -545,11 +551,14 @@ class TrianglePipelineThroughputTest extends AnyFunSuite {
     )
   }
 
-  test("triangle pipeline reaches near-full throughput with full feature path enabled") {
-    val config = mkConfig
-
-    SimConfig.withIVerilog.compile(Harness(config, rectWidth, rectHeight)).doSim { dut =>
+  private def runThroughputTest(
+      config: Config,
+      maxCyclesPerPixel: Double,
+      pointSample: Boolean = false
+  ): Unit = {
+    SimConfig.withVerilator.compile(Harness(config, rectWidth, rectHeight)).doSim { dut =>
       initDut(dut)
+      dut.io.pointSample #= pointSample
       attachFramebufferMemory(dut)
       attachTextureMemory(dut)
 
@@ -564,10 +573,34 @@ class TrianglePipelineThroughputTest extends AnyFunSuite {
         s"Framebuffer stats: fillHits=${dut.io.fbStats.fillHits.toLong} fillMisses=${dut.io.fbStats.fillMisses.toLong} fillBurstCount=${dut.io.fbStats.fillBurstCount.toLong} fillBurstBeats=${dut.io.fbStats.fillBurstBeats.toLong} fillStallCycles=${dut.io.fbStats.fillStallCycles.toLong} writeStallCycles=${dut.io.fbStats.writeStallCycles.toLong} writeDrainCount=${dut.io.fbStats.writeDrainCount.toLong} writeFullDrainCount=${dut.io.fbStats.writeFullDrainCount.toLong} writePartialDrainCount=${dut.io.fbStats.writePartialDrainCount.toLong} writeDrainDirtyWordTotal=${dut.io.fbStats.writeDrainDirtyWordTotal.toLong} memColorWriteCmdCount=${dut.io.fbStats.memColorWriteCmdCount.toLong} memAuxWriteCmdCount=${dut.io.fbStats.memAuxWriteCmdCount.toLong} memColorReadCmdCount=${dut.io.fbStats.memColorReadCmdCount.toLong} memAuxReadCmdCount=${dut.io.fbStats.memAuxReadCmdCount.toLong} memColorWriteBlockedCycles=${dut.io.fbStats.memColorWriteBlockedCycles.toLong} memAuxWriteBlockedCycles=${dut.io.fbStats.memAuxWriteBlockedCycles.toLong} memColorReadBlockedCycles=${dut.io.fbStats.memColorReadBlockedCycles.toLong} memAuxReadBlockedCycles=${dut.io.fbStats.memAuxReadBlockedCycles.toLong} readReqCount=${dut.io.fbStats.readReqCount.toLong} readReqSameWordCount=${dut.io.fbStats.readReqSameWordCount.toLong} readReqSameLineCount=${dut.io.fbStats.readReqSameLineCount.toLong} readReqOtherCount=${dut.io.fbStats.readReqOtherCount.toLong} readSingleBeatBurstCount=${dut.io.fbStats.readSingleBeatBurstCount.toLong} readMultiBeatBurstCount=${dut.io.fbStats.readMultiBeatBurstCount.toLong} readMaxQueueOccupancy=${dut.io.fbStats.readMaxQueueOccupancy.toLong}"
       )
       assert(
-        measured.cyclesPerPixel <= 5.0,
-        f"expected the warmed output-side throughput to stay below 5.0 cycles/pixel, got ${measured.cyclesPerPixel}%.3f"
+        measured.cyclesPerPixel <= maxCyclesPerPixel,
+        f"expected the warmed output-side throughput to stay below $maxCyclesPerPixel%.1f cycles/pixel, got ${measured.cyclesPerPixel}%.3f"
       )
     }
+  }
+
+  test("triangle pipeline reaches near-full throughput with full feature path enabled") {
+    val config = mkConfig()
+
+    runThroughputTest(config, maxCyclesPerPixel = 5.0)
+  }
+
+  test("triangle pipeline throughput without framebuffer write buffer") {
+    val config = mkConfig(useFbWriteBuffer = false)
+
+    runThroughputTest(config, maxCyclesPerPixel = 20.0)
+  }
+
+  test("triangle pipeline throughput with point sampling") {
+    val config = mkConfig()
+
+    runThroughputTest(config, maxCyclesPerPixel = 5.0, pointSample = true)
+  }
+
+  test("triangle pipeline throughput with framebuffer read cache and write buffer") {
+    val config = mkConfig(useFbWriteBuffer = true, useFbReadCache = true)
+
+    runThroughputTest(config, maxCyclesPerPixel = 5.0)
   }
 }
 

@@ -177,14 +177,6 @@ case class FramebufferPlaneBuffer(c: Config, formalStrong: Boolean = true) exten
   io.writeRotateSameLineGapCount := writeRotateSameLineGapCount
   io.writeRotateOtherLineCount := writeRotateOtherLineCount
 
-  object DirectState extends SpinalEnum {
-    val Idle, Cmd, Rsp = newElement()
-  }
-  val directState = RegInit(DirectState.Idle)
-  val directWriteAddress = Reg(UInt(addrWidth bits)) init (0)
-  val directWriteData = Reg(Bits(32 bits)) init (0)
-  val directWriteMask = Reg(Bits(4 bits)) init (0)
-
   object DrainState extends SpinalEnum {
     val Idle, Send, Rsp = newElement()
   }
@@ -195,6 +187,7 @@ case class FramebufferPlaneBuffer(c: Config, formalStrong: Boolean = true) exten
   val drainLength = Reg(UInt(c.memBurstLengthWidth bits)) init (3)
 
   val writeReqPipe = io.writeReq.m2sPipe()
+  val directWriteQueue = StreamFifo(WriteReq(c), 8)
 
   def clearSlotMeta(slot: UInt): Unit = {
     slotFlush(slot) := True
@@ -286,16 +279,18 @@ case class FramebufferPlaneBuffer(c: Config, formalStrong: Boolean = true) exten
   slotPendingData.foreach(v => v := v)
   slotPendingMask.foreach(v => v := v)
   activeSlot := activeSlot
-  directState := directState
-  directWriteAddress := directWriteAddress
-  directWriteData := directWriteData
-  directWriteMask := directWriteMask
   drainState := drainState
   drainSlot := drainSlot
   drainIndex := drainIndex
   drainLastIndex := drainLastIndex
   drainLength := drainLength
   writeReqPipe.ready := False
+  directWriteQueue.io.push.valid := False
+  directWriteQueue.io.push.payload.assignDontCare()
+  directWriteQueue.io.pop.ready := False
+  directWriteQueue.io.push.valid.allowOverride()
+  directWriteQueue.io.push.payload.allowOverride()
+  directWriteQueue.io.pop.ready.allowOverride()
 
   val otherSlot = activeSlot ^ U(1, slotIndexWidth bits)
   val activeValid = slotValid(activeSlot)
@@ -304,6 +299,7 @@ case class FramebufferPlaneBuffer(c: Config, formalStrong: Boolean = true) exten
   val activePendingAddr = slotPendingAddress(activeSlot)
   val activePendingData = slotPendingData(activeSlot)
   val activePendingMask = slotPendingMask(activeSlot)
+  val activePendingWordComplete = activePendingMask.andR
   val activeNextAddr = addrPlusWords(activeStartAddr, activeCount.resized)
   val sameWordMerge = activeValid && writeReqPipe.payload.address === activePendingAddr
   val sequentialAppend = activeValid && activeCount =/= U(
@@ -372,7 +368,7 @@ case class FramebufferPlaneBuffer(c: Config, formalStrong: Boolean = true) exten
       drainState === DrainState.Idle && activeValid && activeCount === U(
         runDepth,
         countWidth bits
-      ) && !slotValid(otherSlot) && !writeReqPipe.valid
+      ) && activePendingWordComplete && !slotValid(otherSlot) && !writeReqPipe.valid
     ) {
       clearSlotMeta(otherSlot)
       startDrain(activeSlot, U(0, 2 bits))
@@ -389,7 +385,7 @@ case class FramebufferPlaneBuffer(c: Config, formalStrong: Boolean = true) exten
       activeSlot := otherSlot
     }
 
-    when(directState === DirectState.Idle && writeReqPipe.valid) {
+    when(writeReqPipe.valid) {
       when(!activeValid) {
         writeReqPipe.ready := True
       }.elsewhen(sameWordMerge) {
@@ -425,17 +421,6 @@ case class FramebufferPlaneBuffer(c: Config, formalStrong: Boolean = true) exten
           slotPendingAddress(activeSlot) := writeReqPipe.payload.address
           slotPendingData(activeSlot) := writeReqPipe.payload.data
           slotPendingMask(activeSlot) := writeReqPipe.payload.mask
-
-          when(
-            newCount === U(
-              runDepth,
-              countWidth bits
-            ) && drainState === DrainState.Idle && !slotValid(otherSlot)
-          ) {
-            clearSlotMeta(otherSlot)
-            startDrain(activeSlot, U(0, 2 bits))
-            activeSlot := otherSlot
-          }
         }.otherwise {
           val adjacentPhysicalLine = physicalWordIndex(
             activePendingAddr
@@ -466,7 +451,7 @@ case class FramebufferPlaneBuffer(c: Config, formalStrong: Boolean = true) exten
     GenerationFlags.formal {
       val formalReset = ClockDomain.current.isResetActive
       when(
-        !formalReset && directState === DirectState.Idle && writeReqPipe.valid && (!activeValid || sameWordMerge || (sequentialAppend && activePushReady) || (needsRotate && canRotate))
+        !formalReset && writeReqPipe.valid && (!activeValid || sameWordMerge || (sequentialAppend && activePushReady) || (needsRotate && canRotate))
       ) {
         assert(writeReqPipe.ready)
       }
@@ -483,15 +468,17 @@ case class FramebufferPlaneBuffer(c: Config, formalStrong: Boolean = true) exten
     writeReqPipe.ready.allowOverride()
     io.mem.rsp.ready.allowOverride()
 
-    io.mem.cmd.valid := writeReqPipe.valid
-    io.mem.cmd.fragment.address := writeReqPipe.payload.address
+    directWriteQueue.io.push << writeReqPipe
+
+    io.mem.cmd.valid := directWriteQueue.io.pop.valid
+    io.mem.cmd.fragment.address := directWriteQueue.io.pop.payload.address
     io.mem.cmd.fragment.opcode := Bmb.Cmd.Opcode.WRITE
     io.mem.cmd.fragment.length := 3
     io.mem.cmd.fragment.source := 0
-    io.mem.cmd.fragment.data := writeReqPipe.payload.data
-    io.mem.cmd.fragment.mask := writeReqPipe.payload.mask
+    io.mem.cmd.fragment.data := directWriteQueue.io.pop.payload.data
+    io.mem.cmd.fragment.mask := directWriteQueue.io.pop.payload.mask
     io.mem.cmd.last := True
-    writeReqPipe.ready := io.mem.cmd.ready
+    directWriteQueue.io.pop.ready := io.mem.cmd.ready
     io.mem.rsp.ready := True
   }
 
@@ -522,7 +509,7 @@ case class FramebufferPlaneBuffer(c: Config, formalStrong: Boolean = true) exten
     }
   }
 
-  io.busy := directState =/= DirectState.Idle || drainState =/= DrainState.Idle || writeReqPipe.valid || (io.flush && activeValid)
+  io.busy := drainState =/= DrainState.Idle || writeReqPipe.valid || directWriteQueue.io.occupancy =/= 0 || (io.flush && activeValid)
 }
 
 object FramebufferPlaneBuffer {

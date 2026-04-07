@@ -300,7 +300,8 @@ case class Lfb(c: Config) extends Component {
   // Bypass mode: output Write.PreDither (dithering done by shared instance in Core)
   // ========================================================================
   val writePixelActive = (state === statePixel1) || (state === statePixel2)
-  val currentX = (state === statePixel2) ? pixel2X | pixelX
+  val pixel1X = (isHalfWordWrite && useHiHalfForPixel1) ? pixel2X | pixelX
+  val currentX = (state === statePixel2) ? pixel2X | pixel1X
 
   io.writeOutput.valid := writePixelActive && !io.regs.lfbMode.pixelPipelineEnable
   io.writeOutput.payload := buildWritePreDither(currentX, pixelY)

@@ -457,6 +457,11 @@ object TriangleSetup {
     val fbzColorPath = FbzColorPath() // Color path control (FBI + TREX)
     val fogMode = FogMode() // Fog mode control (FBI)
     val alphaMode = AlphaMode() // Alpha mode control (FBI)
+    val enableClipping = Bool()
+    val clipLeft = UInt(10 bits)
+    val clipRight = UInt(10 bits)
+    val clipLowY = UInt(10 bits)
+    val clipHighY = UInt(10 bits)
 
     // TMU registers (single TMU support - Voodoo 1 level functionality)
     val tmuTextureMode = Bits(32 bits) // Texture mode (format, filtering, clamp/wrap)

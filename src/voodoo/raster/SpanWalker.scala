@@ -68,6 +68,11 @@ case class SpanWalker(c: Config, formalStrong: Boolean = false) extends Componen
     dst.alphaDy := input.hiAlpha.dAdY
     dst.tmuConfig := TriangleSetup.TmuConfig.fromPerTriangle(c, input.config)
     dst.pixelConfig := TriangleSetup.PixelPipelineConfig.fromPerTriangle(c, input.config)
+    dst.enableClipping := input.config.enableClipping
+    dst.clipLeft := input.config.clipLeft
+    dst.clipRight := input.config.clipRight
+    dst.clipLowY := input.config.clipLowY
+    dst.clipHighY := input.config.clipHighY
     if (c.trace.enabled) {
       dst.trace := input.trace
     }
@@ -98,15 +103,23 @@ case class SpanWalker(c: Config, formalStrong: Boolean = false) extends Componen
 
   val triangleXStartPix = triangleConst.xrange(0).floor(0).asSInt
   val triangleXEndPix = triangleConst.xrange(1).floor(0).asSInt
-  val clipLeftPix = clipLeft.resize(c.vertexFormat.nonFraction bits).asSInt
-  val clipRightPix = clipRight.resize(c.vertexFormat.nonFraction bits).asSInt
-  val clipLowYPix = clipLowY.resize(c.vertexFormat.nonFraction bits).asSInt
-  val clipHighYPix = clipHighY.resize(c.vertexFormat.nonFraction bits).asSInt
+  val clipLeftPix = triangleConst.clipLeft.resize(c.vertexFormat.nonFraction bits).asSInt
+  val clipRightPix = triangleConst.clipRight.resize(c.vertexFormat.nonFraction bits).asSInt
+  val clipLowYPix = triangleConst.clipLowY.resize(c.vertexFormat.nonFraction bits).asSInt
+  val clipHighYPix = triangleConst.clipHighY.resize(c.vertexFormat.nonFraction bits).asSInt
   val visibleStartPix =
-    Mux(enableClipping && clipLeftPix > triangleXStartPix, clipLeftPix, triangleXStartPix)
+    Mux(
+      triangleConst.enableClipping && clipLeftPix > triangleXStartPix,
+      clipLeftPix,
+      triangleXStartPix
+    )
   val visibleEndPix =
-    Mux(enableClipping && clipRightPix < triangleXEndPix, clipRightPix, triangleXEndPix)
-  val emitVisibleY = !enableClipping || {
+    Mux(
+      triangleConst.enableClipping && clipRightPix < triangleXEndPix,
+      clipRightPix,
+      triangleXEndPix
+    )
+  val emitVisibleY = !triangleConst.enableClipping || {
     val emitYPix = leftEdge.coords(1).floor(0).asSInt
     emitYPix >= clipLowYPix && emitYPix < clipHighYPix
   }
@@ -272,9 +285,9 @@ case class SpanWalker(c: Config, formalStrong: Boolean = false) extends Componen
       bookmark := probe
       state := WalkerState.SearchRightToExit
     }.elsewhen(
-      (!enableClipping && probe.coords(0) >= triangleConst.xrange(1)) || (enableClipping && xPix(
-        probe
-      ) >= visibleEndPix)
+      (!triangleConst.enableClipping && probe.coords(0) >= triangleConst.xrange(1)) || (
+        triangleConst.enableClipping && xPix(probe) >= visibleEndPix
+      )
     ) {
       when(firstSpanPending) {
         prepareNextRow(rowGuess, leftBiasedGuess = false)
@@ -305,11 +318,15 @@ case class SpanWalker(c: Config, formalStrong: Boolean = false) extends Componen
   when(state === WalkerState.SearchRightToExit) {
     when(insideTriangle(probe)) {
       when(
-        (!enableClipping && probe.coords(0) >= triangleConst.xrange(1)) || (enableClipping && xPix(
-          probe
-        ) >= visibleEndPix)
+        (!triangleConst.enableClipping && probe.coords(0) >= triangleConst.xrange(1)) || (
+          triangleConst.enableClipping && xPix(probe) >= visibleEndPix
+        )
       ) {
-        emitRight := Mux(enableClipping, pixelToVertex(visibleEndPix - 1), probe.coords(0))
+        emitRight := Mux(
+          triangleConst.enableClipping,
+          pixelToVertex(visibleEndPix - 1),
+          probe.coords(0)
+        )
         emitFirstSpan := firstSpanPending
         state := WalkerState.EmitSpan
       }.otherwise {
@@ -364,6 +381,11 @@ object SpanWalker {
     val alphaDy = AFix(c.texCoordsHiFormat)
     val tmuConfig = TriangleSetup.TmuConfig(c)
     val pixelConfig = TriangleSetup.PixelPipelineConfig(c)
+    val enableClipping = Bool()
+    val clipLeft = UInt(10 bits)
+    val clipRight = UInt(10 bits)
+    val clipLowY = UInt(10 bits)
+    val clipHighY = UInt(10 bits)
     val trace = if (c.trace.enabled) Trace.PrimitiveKey() else null
   }
 

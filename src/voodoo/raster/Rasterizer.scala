@@ -133,6 +133,12 @@ object Rasterizer {
     val pixelSeqCounter = if (c.trace.enabled) Reg(UInt(24 bits)) init (0) else null
     val currentPixelSeq = if (c.trace.enabled) pixelSeqCounter else null
 
+    def toPixelCoord(value: AFix): SInt = {
+      // Span state carries 12.4 fixed-point positions; downstream coords are integer pixels.
+      // Use an arithmetic shift on the full fixed-point encoding so x>=128 does not wrap.
+      (value.asBits.asSInt >> c.vertexFormat.fraction).resize(c.vertexFormat.nonFraction bits)
+    }
+
     val streamWhileResult = StreamWhile(
       i,
       stateType = HardType(SpanState(c)),
@@ -156,8 +162,8 @@ object Rasterizer {
         state
       },
       step = (idx: UInt, state: SpanState, output: Output) => {
-        output.coords(0) := state.x.floor(0).asSInt
-        output.coords(1) := state.y.floor(0).asSInt
+        output.coords(0) := toPixelCoord(state.x)
+        output.coords(1) := toPixelCoord(state.y)
         output.grads.redGrad := state.linear.red
         output.grads.greenGrad := state.linear.green
         output.grads.blueGrad := state.linear.blue
@@ -206,7 +212,7 @@ object Rasterizer {
         next.hiT := (state.hiT + state.stepX.tex(1)).fixTo(c.texCoordsHiFormat)
         next.hiAlpha := (state.hiAlpha + state.stepX.alpha).fixTo(c.texCoordsHiFormat)
 
-        val isLast = state.x >= state.xEnd
+        val isLast = toPixelCoord(state.x) >= toPixelCoord(state.xEnd)
         (next, isLast)
       }
     )

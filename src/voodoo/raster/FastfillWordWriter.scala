@@ -32,8 +32,29 @@ case class FastfillWordWriter(c: Config) extends Component {
   val regs = FastfillWrite.Regs(c)
   when(active) { regs := regsCapture }.otherwise { regs := io.regs }
 
-  val alignedClipLeft = ((io.clipLeft >> 1) ## False).asUInt.resize(10 bits)
-  val emptyRect = (io.clipRight <= io.clipLeft) || (io.clipHighY <= io.clipLowY)
+  val clipLeftCapture = RegNextWhen(io.clipLeft, io.cmd.fire)
+  val clipRightCapture = RegNextWhen(io.clipRight, io.cmd.fire)
+  val clipLowYCapture = RegNextWhen(io.clipLowY, io.cmd.fire)
+  val clipHighYCapture = RegNextWhen(io.clipHighY, io.cmd.fire)
+
+  val clipLeft = UInt(10 bits)
+  val clipRight = UInt(10 bits)
+  val clipLowY = UInt(10 bits)
+  val clipHighY = UInt(10 bits)
+  when(active) {
+    clipLeft := clipLeftCapture
+    clipRight := clipRightCapture
+    clipLowY := clipLowYCapture
+    clipHighY := clipHighYCapture
+  } otherwise {
+    clipLeft := io.clipLeft
+    clipRight := io.clipRight
+    clipLowY := io.clipLowY
+    clipHighY := io.clipHighY
+  }
+
+  val alignedClipLeft = ((clipLeft >> 1) ## False).asUInt.resize(10 bits)
+  val emptyRect = (clipRight <= clipLeft) || (clipHighY <= clipLowY)
 
   val curWordX = Reg(UInt(10 bits)) init (0)
   val curY = Reg(UInt(10 bits)) init (0)
@@ -42,7 +63,7 @@ case class FastfillWordWriter(c: Config) extends Component {
   when(io.cmd.fire) {
     active := !emptyRect
     curWordX := alignedClipLeft
-    curY := io.clipLowY
+    curY := clipLowY
   }
 
   val wordStream = Stream(WordReq(c))
@@ -50,8 +71,8 @@ case class FastfillWordWriter(c: Config) extends Component {
   wordStream.valid := active
   wordStream.payload.baseX := curWordX
   wordStream.payload.y := curY
-  wordStream.payload.lane0Enable := curWordX >= io.clipLeft && curWordX < io.clipRight
-  wordStream.payload.lane1Enable := lane1X >= io.clipLeft && lane1X < io.clipRight
+  wordStream.payload.lane0Enable := curWordX >= clipLeft && curWordX < clipRight
+  wordStream.payload.lane1Enable := lane1X >= clipLeft && lane1X < clipRight
   wordStream.payload.rgbWrite := regs.fbzMode.rgbBufferMask
   wordStream.payload.auxWrite := regs.fbzMode.auxBufferMask
   wordStream.payload.enableDithering := regs.fbzMode.enableDithering
@@ -63,9 +84,9 @@ case class FastfillWordWriter(c: Config) extends Component {
   wordStream.payload.yOriginSwapValue := regs.yOriginSwapValue
 
   val nextWordX = (curWordX + 2).resize(10 bits)
-  val atRowEnd = nextWordX >= io.clipRight
+  val atRowEnd = nextWordX >= clipRight
   val nextY = (curY + 1).resize(10 bits)
-  val isLastWord = atRowEnd && nextY >= io.clipHighY
+  val isLastWord = atRowEnd && nextY >= clipHighY
 
   when(wordStream.fire) {
     when(isLastWord) {

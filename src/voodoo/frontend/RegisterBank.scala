@@ -524,6 +524,11 @@ case class RegisterBank(config: Config) extends Component {
     cfg.fbzColorPath := renderConfig.fbzColorPathBundle
     cfg.fogMode := renderConfig.fogModeBundle
     cfg.alphaMode := renderConfig.alphaModeBundle
+    cfg.enableClipping := renderConfig.fbzMode.enableClipping
+    cfg.clipLeft := renderConfig.clipLeftX
+    cfg.clipRight := renderConfig.clipRightX
+    cfg.clipLowY := renderConfig.clipLowY
+    cfg.clipHighY := renderConfig.clipHighY
 
     cfg.tmuTextureMode := tmuConfig.textureMode
     cfg.tmuTexBaseAddr := tmuConfig.texBaseAddr

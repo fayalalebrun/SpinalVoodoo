@@ -45,7 +45,7 @@ object Config {
     wAccumFormat = SQ(48, 30),
     maxFbDims = (800, 600),
     addressWidth = 26 bits,
-    memBurstLengthWidth = 6,
+    memBurstLengthWidth = 11,
     fbWriteBufferLineWords = 16,
     fbWriteBufferCount = 2,
     texFillLineWords = 8,

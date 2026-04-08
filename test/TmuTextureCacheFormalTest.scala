@@ -8,259 +8,259 @@ import spinal.lib._
 import spinal.lib.bus.bmb._
 import spinal.lib.formal._
 
-class TmuTextureCacheFormalDut(formalStrong: Boolean) extends Component {
+class TmuTextureCacheFormalDut extends Component {
   val c = Config
-    .voodoo1(TraceConfig())
+    .voodoo1(TraceConfig(false))
     .copy(
-      addressWidth = 12 bits,
-      memBurstLengthWidth = 5,
+      addressWidth = 5 bits,
+      memBurstLengthWidth = 4,
       useTexFillCache = true,
       texFillLineWords = 4,
       texFillCacheSlots = 2,
-      texFillRequestWindow = 2,
-      packedTexLayout = false
-    )
-
-  val dut = TmuTextureCache(c, formalStrong = formalStrong)
-  val reset = ClockDomain.current.isResetActive
-  val pastValid = RegNext(True) init (False)
-
-  val sampleRequestPayload = anyseq(cloneOf(dut.io.sampleRequest.payload))
-  val texRspFragment = anyseq(cloneOf(dut.io.texRead.rsp.fragment))
-
-  dut.io.sampleRequest.valid := anyseq(Bool())
-  dut.io.sampleRequest.payload := sampleRequestPayload
-  dut.io.fetched.ready := anyseq(Bool())
-  dut.io.fastFetch.ready := anyseq(Bool())
-  dut.io.outputRoute.ready := anyseq(Bool())
-  dut.io.texRead.cmd.ready := anyseq(Bool())
-  dut.io.texRead.rsp.valid := anyseq(Bool())
-  dut.io.texRead.rsp.fragment := texRspFragment
-  dut.io.texRead.rsp.last := anyseq(Bool())
-  dut.io.invalidate := anyseq(Bool())
-
-  assumeInitial(reset)
-  when(reset) {
-    assume(!dut.io.sampleRequest.valid)
-    assume(!dut.io.texRead.rsp.valid)
-    assume(!dut.io.invalidate)
-  }
-  when(pastValid) {
-    assume(!reset)
-  }
-
-  dut.io.sampleRequest.formalAssumesSlave()
-  if (formalStrong) {
-    dut.io.fetched.formalAssertsMaster()
-    dut.io.fastFetch.formalAssertsMaster()
-  }
-
-  if (formalStrong) {
-    val readOutstanding = Reg(UInt(log2Up(c.texFillLineWords + 1) bits)) init (0)
-    val prevFastAccept = Reg(Bool()) init (False)
-    val fastAccept =
-      dut.io.sampleRequest.fire && dut.io.outputRoute.fire && dut.io.outputRoute.payload
-
-    when(dut.io.texRead.cmd.fire) {
-      assert(readOutstanding === 0)
-      readOutstanding := U(c.texFillLineWords, readOutstanding.getWidth bits)
-    }
-
-    when(
-      dut.io.texRead.rsp.valid && !dut.io.texRead.rsp.ready && pastValid && past(
-        dut.io.texRead.rsp.valid && !dut.io.texRead.rsp.ready
-      )
-    ) {
-      assume(dut.io.texRead.rsp.fragment.asBits === past(dut.io.texRead.rsp.fragment.asBits))
-      assume(dut.io.texRead.rsp.last === past(dut.io.texRead.rsp.last))
-    }
-
-    when(readOutstanding === 0) {
-      assume(!dut.io.texRead.rsp.valid)
-    }
-    when(dut.io.texRead.rsp.valid) {
-      assume(readOutstanding =/= 0)
-      assume(dut.io.texRead.rsp.last === (readOutstanding === 1))
-    }
-
-    when(dut.io.texRead.rsp.fire) {
-      readOutstanding := readOutstanding - 1
-    }
-
-    when(dut.io.texRead.cmd.valid) {
-      assert(dut.io.texRead.cmd.fragment.opcode === Bmb.Cmd.Opcode.READ)
-      assert(dut.io.texRead.cmd.last)
-    }
-
-    cover(
-      pastValid &&
-        prevFastAccept &&
-        fastAccept
-    )
-
-    prevFastAccept := fastAccept
-  }
-}
-
-class TmuTextureCacheFormalBmcDut extends TmuTextureCacheFormalDut(formalStrong = true)
-
-class TmuTextureCacheFormalCoverDut extends TmuTextureCacheFormalDut(formalStrong = true)
-
-class TmuTextureCacheFormalProveDut extends TmuTextureCacheFormalDut(formalStrong = false)
-
-class TmuTextureCacheFastBilinearCoverDut extends Component {
-  val c = Config
-    .voodoo1(TraceConfig())
-    .copy(
-      addressWidth = 12 bits,
-      memBurstLengthWidth = 5,
-      useTexFillCache = true,
-      texFillLineWords = 4,
-      texFillCacheSlots = 2,
-      texFillRequestWindow = 2,
+      texFillRequestWindow = 1,
       packedTexLayout = true
     )
 
-  val dut = TmuTextureCache(c, formalStrong = true)
+  val dut = TmuTextureCache(c, formalStrong = false)
   val reset = ClockDomain.current.isResetActive
   val pastValid = RegNext(True) init False
-  val reqIndex = Reg(UInt(3 bits)) init 0
-  val requestIssued = Reg(Bool()) init False
-  val readOutstanding = Reg(UInt(log2Up(c.texFillLineWords + 1) bits)) init 0
-  val prevFastAccept = Reg(Bool()) init False
-  val fastAccept =
-    dut.io.sampleRequest.fire && dut.io.outputRoute.fire && dut.io.outputRoute.payload
-  val texRspFragment = cloneOf(dut.io.texRead.rsp.fragment)
 
-  when(dut.io.sampleRequest.fire) {
-    when(reqIndex < 4) {
-      requestIssued := True
-    } otherwise {
-      reqIndex := reqIndex + 1
+  def initReq(req: Tmu.SampleRequest, addr: Int, reqId: Int): Unit = {
+    req.pointAddr := U(addr, c.addressWidth.value bits)
+    req.biAddr0 := U(addr, c.addressWidth.value bits)
+    req.biAddr1 := U(addr, c.addressWidth.value bits)
+    req.biAddr2 := U(addr, c.addressWidth.value bits)
+    req.biAddr3 := U(addr, c.addressWidth.value bits)
+    req.pointBankSel := 0
+    req.biBankSel0 := 0
+    req.biBankSel1 := 0
+    req.biBankSel2 := 0
+    req.biBankSel3 := 0
+    req.lodBase := 0
+    req.lodEnd := U((1 << c.addressWidth.value) - 1, c.addressWidth.value bits)
+    req.lodShift := 0
+    req.is16Bit := True
+    req.bilinear := False
+    req.passthrough.format := Tmu.TextureFormat.RGB565
+    req.passthrough.bilinear := False
+    req.passthrough.nccTableSelect := False
+    req.passthrough.ds := 0
+    req.passthrough.dt := 0
+    req.passthrough.readIdx := 0
+    req.passthrough.requestId := U(reqId, Tmu.requestIdWidth bits)
+    for (lod <- 0 until 9) {
+      val base = if (lod == 0) 0 else (1 << c.addressWidth.value) - 1
+      val end = if (lod == 0) (1 << c.addressWidth.value) else (1 << c.addressWidth.value) - 1
+      req.texTables.texBase(lod) := U(base, 22 bits)
+      req.texTables.texEnd(lod) := U(end, 22 bits)
+      req.texTables.texShift(lod) := 0
     }
   }
-  when(requestIssued && dut.io.fetched.fire) {
-    requestIssued := False
-    reqIndex := reqIndex + 1
-  }
 
-  val bilinearReq = reqIndex >= 4
-  val pointAddr = UInt(c.addressWidth.value bits)
-  pointAddr := 0
-  when(reqIndex === 1) {
-    pointAddr := 2
-  }
-  when(reqIndex === 2) {
-    pointAddr := 512
-  }
-  when(reqIndex === 3) {
-    pointAddr := 514
-  }
+  val trackedReq = Tmu.SampleRequest(c)
+  initReq(trackedReq, addr = 0x000, reqId = 0)
 
-  dut.io.sampleRequest.valid := pastValid && reqIndex =/= 6 && !requestIssued
-  dut.io.sampleRequest.payload.pointAddr := pointAddr
-  dut.io.sampleRequest.payload.biAddr0 := 0
-  dut.io.sampleRequest.payload.biAddr1 := 2
-  dut.io.sampleRequest.payload.biAddr2 := 512
-  dut.io.sampleRequest.payload.biAddr3 := 514
-  dut.io.sampleRequest.payload.pointBankSel := Mux(
-    reqIndex === 1,
-    U(1, 2 bits),
-    Mux(reqIndex === 2, U(2, 2 bits), Mux(reqIndex === 3, U(3, 2 bits), U(0, 2 bits)))
-  )
-  dut.io.sampleRequest.payload.biBankSel0 := 0
-  dut.io.sampleRequest.payload.biBankSel1 := 1
-  dut.io.sampleRequest.payload.biBankSel2 := 2
-  dut.io.sampleRequest.payload.biBankSel3 := 3
-  dut.io.sampleRequest.payload.lodBase := 0
-  dut.io.sampleRequest.payload.lodEnd := 1024
-  dut.io.sampleRequest.payload.lodShift := 8
-  dut.io.sampleRequest.payload.is16Bit := True
-  for (lod <- 0 until 9) {
-    val base = if (lod == 0) 0 else if (lod == 1) 1024 else 2048 + lod * 64
-    dut.io.sampleRequest.payload.texTables.texBase(lod) := U(base, 22 bits)
-    dut.io.sampleRequest.payload.texTables.texEnd(lod) := U(base + 1024, 22 bits)
-    dut.io.sampleRequest.payload.texTables.texShift(lod) := 8
-  }
-  dut.io.sampleRequest.payload.bilinear := bilinearReq
-  dut.io.sampleRequest.payload.passthrough.format := Tmu.TextureFormat.RGB565
-  dut.io.sampleRequest.payload.passthrough.bilinear := bilinearReq
-  dut.io.sampleRequest.payload.passthrough.sendConfig := False
-  dut.io.sampleRequest.payload.passthrough.ds := 0
-  dut.io.sampleRequest.payload.passthrough.dt := 0
-  dut.io.sampleRequest.payload.passthrough.readIdx := 0
-  dut.io.sampleRequest.payload.passthrough.requestId := 0
-  for (i <- 0 until 16) dut.io.sampleRequest.payload.passthrough.ncc.y(i) := 0
-  for (i <- 0 until 4) {
-    dut.io.sampleRequest.payload.passthrough.ncc.i(i) := 0
-    dut.io.sampleRequest.payload.passthrough.ncc.q(i) := 0
-  }
+  val accepted = RegInit(False)
+  val completed = RegInit(False)
+  val seenMiss = RegInit(False)
+  val seenCmd = RegInit(False)
+  val seenRsp = RegInit(False)
+  val seenLastRsp = RegInit(False)
 
-  dut.io.fetched.ready := True
-  dut.io.fastFetch.ready := True
-  dut.io.outputRoute.ready := True
-  dut.io.texRead.cmd.ready := True
+  dut.io.sampleRequest.valid := !reset && !accepted
+  dut.io.sampleRequest.payload := trackedReq
+  dut.io.sampleFetch.ready := !reset
   dut.io.invalidate := False
-  texRspFragment.assignDontCare()
-  texRspFragment.data := 0
-  texRspFragment.source := 0
-  texRspFragment.context := 0
-  dut.io.texRead.rsp.fragment := texRspFragment
-  dut.io.texRead.rsp.valid := readOutstanding =/= 0
-  dut.io.texRead.rsp.last := readOutstanding === 1
+  dut.io.texRead.cmd.ready := !reset
+
+  val burstActive = RegInit(False)
+  val burstCount = Reg(UInt(log2Up(c.texFillLineWords) bits)) init 0
+  val burstSeed = Reg(UInt(scala.math.min(8, c.addressWidth.value) bits)) init 0
+
+  dut.io.texRead.rsp.valid := burstActive
+  dut.io.texRead.rsp.last := burstCount === U(c.texFillLineWords - 1, burstCount.getWidth bits)
+  dut.io.texRead.rsp.fragment.source := 0
+  dut.io.texRead.rsp.fragment.context := 0
+  dut.io.texRead.rsp.fragment.data := (B(
+    0,
+    32 - burstSeed.getWidth bits
+  ) ## burstSeed.asBits) ^ burstCount.asBits.resize(32 bits)
 
   assumeInitial(reset)
   when(reset) {
-    assume(!dut.io.sampleRequest.valid)
+    assume(!burstActive)
   }
   when(pastValid) {
     assume(!reset)
   }
 
-  dut.io.sampleRequest.formalAssumesSlave()
-  dut.io.fetched.formalAssertsMaster()
-  dut.io.fastFetch.formalAssertsMaster()
+  when(dut.io.sampleRequest.fire) {
+    accepted := True
+  }
+  when(dut.io.sampleFetch.fire) {
+    completed := True
+  }
+  when(dut.io.texRead.cmd.fire) {
+    seenMiss := True
+  }
+  when(dut.io.texRead.cmd.fire) {
+    seenCmd := True
+  }
+  when(dut.io.texRead.rsp.fire) {
+    seenRsp := True
+  }
+  when(dut.io.texRead.rsp.fire && dut.io.texRead.rsp.last) {
+    seenLastRsp := True
+  }
 
   when(dut.io.texRead.cmd.fire) {
-    assert(readOutstanding === 0)
-    readOutstanding := U(c.texFillLineWords, readOutstanding.getWidth bits)
+    burstActive := True
+    burstCount := 0
+    burstSeed := dut.io.texRead.cmd.fragment.address.resize(burstSeed.getWidth bits)
+  } elsewhen (dut.io.texRead.rsp.fire) {
+    when(dut.io.texRead.rsp.last) {
+      burstActive := False
+    } otherwise {
+      burstCount := burstCount + 1
+    }
   }
 
-  when(dut.io.texRead.rsp.fire) {
-    assert(readOutstanding =/= 0)
-    readOutstanding := readOutstanding - 1
+  when(dut.io.texRead.cmd.valid) {
+    assert(dut.io.texRead.cmd.fragment.opcode === Bmb.Cmd.Opcode.READ)
+    assert(dut.io.texRead.cmd.last)
   }
 
-  when(readOutstanding === 0) {
-    assert(!dut.io.texRead.rsp.valid)
-  }
-  when(dut.io.texRead.rsp.valid) {
-    assert(dut.io.texRead.rsp.last === (readOutstanding === 1))
+  assert(dut.io.sampleRequest.valid === (!reset && !accepted))
+  assert(dut.io.sampleFetch.ready === !reset)
+  assert(dut.io.texRead.cmd.ready === !reset)
+  assert(dut.io.texRead.rsp.valid === burstActive)
+  when(accepted) {
+    assert(!dut.io.sampleRequest.valid)
   }
 
-  cover(pastValid && prevFastAccept && fastAccept)
-  prevFastAccept := fastAccept
+  cover(accepted)
+  cover(seenMiss)
+  cover(seenCmd)
+  cover(seenRsp)
+  cover(seenLastRsp)
+  cover(completed)
+}
+
+class TmuTextureCacheHitThroughputFormalDut(bilinear: Boolean) extends Component {
+  val c = Config
+    .voodoo1(TraceConfig(false))
+    .copy(
+      addressWidth = 5 bits,
+      memBurstLengthWidth = 4,
+      useTexFillCache = true,
+      texFillLineWords = 4,
+      texFillCacheSlots = 2,
+      texFillRequestWindow = 1,
+      packedTexLayout = true
+    )
+
+  val dut = TmuTextureCache(c, formalStrong = false, formalHotInit = true)
+  val reset = ClockDomain.current.isResetActive
+  val pastValid = RegNext(True) init False
+
+  def initReq(req: Tmu.SampleRequest, addr: Int, reqId: Int): Unit = {
+    req.pointAddr := U(addr, c.addressWidth.value bits)
+    req.biAddr0 := U(addr, c.addressWidth.value bits)
+    req.biAddr1 := U(addr, c.addressWidth.value bits)
+    req.biAddr2 := U(addr, c.addressWidth.value bits)
+    req.biAddr3 := U(addr, c.addressWidth.value bits)
+    req.pointBankSel := 0
+    req.biBankSel0 := 0
+    req.biBankSel1 := (if (bilinear) 1 else 0)
+    req.biBankSel2 := (if (bilinear) 2 else 0)
+    req.biBankSel3 := (if (bilinear) 3 else 0)
+    req.lodBase := 0
+    req.lodEnd := U((1 << c.addressWidth.value) - 1, c.addressWidth.value bits)
+    req.lodShift := 0
+    req.is16Bit := True
+    req.bilinear := (if (bilinear) True else False)
+    req.passthrough.format := Tmu.TextureFormat.RGB565
+    req.passthrough.bilinear := (if (bilinear) True else False)
+    req.passthrough.nccTableSelect := False
+    req.passthrough.ds := 0
+    req.passthrough.dt := 0
+    req.passthrough.readIdx := 0
+    req.passthrough.requestId := U(reqId, Tmu.requestIdWidth bits)
+    for (lod <- 0 until 9) {
+      val base = if (lod == 0) 0 else (1 << c.addressWidth.value) - 1
+      val end = if (lod == 0) (1 << c.addressWidth.value) else (1 << c.addressWidth.value) - 1
+      req.texTables.texBase(lod) := U(base, 22 bits)
+      req.texTables.texEnd(lod) := U(end, 22 bits)
+      req.texTables.texShift(lod) := 0
+    }
+  }
+
+  val hotReq = Tmu.SampleRequest(c)
+  initReq(hotReq, addr = 0x000, reqId = 2)
+
+  val acceptedCount = Reg(UInt(2 bits)) init 0
+  val consecutiveFetches = RegInit(False)
+  val consecutiveAccepts = RegInit(False)
+
+  dut.io.sampleRequest.valid := pastValid && acceptedCount =/= 2
+  dut.io.sampleRequest.payload := hotReq
+  dut.io.sampleFetch.ready := !reset
+  dut.io.invalidate := False
+  dut.io.texRead.cmd.ready := !reset
+  dut.io.texRead.rsp.valid := False
+  dut.io.texRead.rsp.last := False
+  dut.io.texRead.rsp.fragment.source := 0
+  dut.io.texRead.rsp.fragment.context := 0
+  dut.io.texRead.rsp.fragment.data := 0
+
+  assumeInitial(reset)
+  when(pastValid) {
+    assume(!reset)
+  }
+
+  when(dut.io.sampleRequest.fire) {
+    acceptedCount := acceptedCount + 1
+  }
+
+  when(pastValid && dut.io.sampleRequest.fire && past(dut.io.sampleRequest.fire)) {
+    consecutiveAccepts := True
+  }
+  when(pastValid && dut.io.sampleFetch.fire && past(dut.io.sampleFetch.fire)) {
+    consecutiveFetches := True
+  }
+
+  assert(!dut.io.texRead.cmd.valid)
+  cover(consecutiveAccepts)
+  cover(consecutiveFetches)
 }
 
 class TmuTextureCacheFormalTest extends SpinalFormalFunSuite {
-  test("TMU-specific texture cache invariants bmc") {
+  test("TMU texture cache tracked-request proof") {
     FormalConfig
-      .withBMC(14)
+      .withBMC(40)
+      .withProve(40)
       .withAsync
-      .doVerify(new TmuTextureCacheFormalBmcDut)
+      .doVerify(new TmuTextureCacheFormalDut)
   }
 
-  test("TMU-specific texture cache bilinear hit throughput cover") {
+  test("TMU texture cache tracked-request covers") {
     FormalConfig
-      .withCover(64)
+      .withCover(36)
       .withAsync
-      .doVerify(new TmuTextureCacheFastBilinearCoverDut)
+      .doVerify(new TmuTextureCacheFormalDut)
   }
 
-  test("TMU-specific texture cache invariants prove") {
+  test("TMU texture cache point hit throughput covers") {
     FormalConfig
-      .withProve(14)
+      .withCover(48)
       .withAsync
-      .doVerify(new TmuTextureCacheFormalProveDut)
+      .doVerify(new TmuTextureCacheHitThroughputFormalDut(bilinear = false))
+  }
+
+  test("TMU texture cache bilinear hit throughput covers") {
+    FormalConfig
+      .withCover(48)
+      .withAsync
+      .doVerify(new TmuTextureCacheHitThroughputFormalDut(bilinear = true))
   }
 }

@@ -196,8 +196,6 @@ package object voodoo {
 
   type Tmu = voodoo.texture.Tmu
   val Tmu = voodoo.texture.Tmu
-  type TmuCollector = voodoo.texture.TmuCollector
-  val TmuCollector = voodoo.texture.TmuCollector
   type TmuTexelDecoder = voodoo.texture.TmuTexelDecoder
   val TmuTexelDecoder = voodoo.texture.TmuTexelDecoder
   type TmuTextureCache = voodoo.texture.TmuTextureCache

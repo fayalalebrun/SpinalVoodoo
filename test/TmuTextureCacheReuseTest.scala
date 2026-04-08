@@ -7,7 +7,14 @@ import spinal.core._
 import spinal.core.sim._
 
 class TmuTextureCacheReuseTest extends AnyFunSuite {
-  val c = Config.voodoo1().copy(texFillCacheSlots = 2, texFillRequestWindow = 4)
+  val c = Config
+    .voodoo1()
+    .copy(
+      useTexFillCache = true,
+      packedTexLayout = true,
+      texFillCacheSlots = 2,
+      texFillRequestWindow = 4
+    )
 
   def zeroNcc(dut: TmuTextureCache): Unit = {
     for (i <- 0 until 16) dut.io.sampleRequest.payload.passthrough.ncc.y(i) #= 0
@@ -54,9 +61,7 @@ class TmuTextureCacheReuseTest extends AnyFunSuite {
     SimConfig.withWave.compile(TmuTextureCache(c)).doSim { dut =>
       dut.clockDomain.forkStimulus(10)
       dut.io.sampleRequest.valid #= false
-      dut.io.fetched.ready #= true
-      dut.io.fastFetch.ready #= true
-      dut.io.outputRoute.ready #= true
+      dut.io.sampleFetch.ready #= true
       dut.io.texRead.cmd.ready #= true
       dut.io.texRead.rsp.valid #= false
       dut.io.texRead.rsp.last #= false
@@ -88,25 +93,23 @@ class TmuTextureCacheReuseTest extends AnyFunSuite {
       dut.io.sampleRequest.valid #= true
       dut.clockDomain.waitSamplingWhere(dut.io.sampleRequest.ready.toBoolean)
       dut.io.sampleRequest.valid #= false
-      dut.clockDomain.waitSamplingWhere(dut.io.fetched.valid.toBoolean)
+      dut.clockDomain.waitSamplingWhere(dut.io.sampleFetch.valid.toBoolean)
       assert(cmdCount == 1)
 
       setReq(dut, addr = 0, bank = 0)
       dut.io.sampleRequest.valid #= true
       dut.clockDomain.waitSamplingWhere(dut.io.sampleRequest.ready.toBoolean)
       dut.io.sampleRequest.valid #= false
-      dut.clockDomain.waitSamplingWhere(dut.io.fetched.valid.toBoolean)
+      dut.clockDomain.waitSamplingWhere(dut.io.sampleFetch.valid.toBoolean)
       assert(cmdCount == 1, s"expected second request to hit cache, saw $cmdCount fills")
     }
   }
 
-  test("packed cache uses fast bilinear hit path") {
+  test("packed cache returns bilinear sample in one response on hit") {
     SimConfig.compile(TmuTextureCache(c)).doSim { dut =>
       dut.clockDomain.forkStimulus(10)
       dut.io.sampleRequest.valid #= false
-      dut.io.fetched.ready #= true
-      dut.io.fastFetch.ready #= true
-      dut.io.outputRoute.ready #= true
+      dut.io.sampleFetch.ready #= true
       dut.io.texRead.cmd.ready #= true
       dut.io.texRead.rsp.valid #= false
       dut.io.texRead.rsp.last #= false
@@ -139,7 +142,7 @@ class TmuTextureCacheReuseTest extends AnyFunSuite {
         dut.io.sampleRequest.valid #= true
         dut.clockDomain.waitSamplingWhere(dut.io.sampleRequest.ready.toBoolean)
         dut.io.sampleRequest.valid #= false
-        dut.clockDomain.waitSamplingWhere(dut.io.fetched.valid.toBoolean)
+        dut.clockDomain.waitSamplingWhere(dut.io.sampleFetch.valid.toBoolean)
       }
       assert(cmdCount == 2)
 
@@ -147,18 +150,17 @@ class TmuTextureCacheReuseTest extends AnyFunSuite {
       dut.io.sampleRequest.valid #= true
       dut.clockDomain.waitSamplingWhere(dut.io.sampleRequest.ready.toBoolean)
       dut.io.sampleRequest.valid #= false
-      dut.clockDomain.waitSamplingWhere(dut.io.fastFetch.valid.toBoolean)
+      dut.clockDomain.waitSamplingWhere(dut.io.sampleFetch.valid.toBoolean)
+      assert(dut.io.sampleFetch.payload.bilinear.toBoolean)
       assert(cmdCount == 2, s"expected bilinear hit to avoid extra fill, saw $cmdCount fills")
     }
   }
 
-  test("packed cache accepts fast bilinear hits back to back") {
+  test("packed cache keeps bilinear hit path ready across consecutive cycles") {
     SimConfig.compile(TmuTextureCache(c)).doSim { dut =>
       dut.clockDomain.forkStimulus(10)
       dut.io.sampleRequest.valid #= false
-      dut.io.fetched.ready #= true
-      dut.io.fastFetch.ready #= true
-      dut.io.outputRoute.ready #= true
+      dut.io.sampleFetch.ready #= true
       dut.io.texRead.cmd.ready #= true
       dut.io.texRead.rsp.valid #= false
       dut.io.texRead.rsp.last #= false
@@ -191,7 +193,7 @@ class TmuTextureCacheReuseTest extends AnyFunSuite {
         dut.io.sampleRequest.valid #= true
         dut.clockDomain.waitSamplingWhere(dut.io.sampleRequest.ready.toBoolean)
         dut.io.sampleRequest.valid #= false
-        dut.clockDomain.waitSamplingWhere(dut.io.fetched.valid.toBoolean)
+        dut.clockDomain.waitSamplingWhere(dut.io.sampleFetch.valid.toBoolean)
       }
       assert(cmdCount == 2)
 
@@ -199,24 +201,14 @@ class TmuTextureCacheReuseTest extends AnyFunSuite {
       dut.io.sampleRequest.valid #= true
       dut.clockDomain.waitSampling()
       val firstReady = dut.io.sampleRequest.ready.toBoolean
-      val firstFast = dut.io.outputRoute.valid.toBoolean && dut.io.outputRoute.payload.toBoolean
       dut.clockDomain.waitSampling()
       val secondReady = dut.io.sampleRequest.ready.toBoolean
-      val secondFast = dut.io.outputRoute.valid.toBoolean && dut.io.outputRoute.payload.toBoolean
       dut.io.sampleRequest.valid #= false
-      assert(
-        firstReady && firstFast,
-        s"expected first fast bilinear accept, got ready=$firstReady fast=$firstFast"
-      )
-      assert(
-        secondReady && secondFast,
-        s"expected second fast bilinear accept, got ready=$secondReady fast=$secondFast"
-      )
-      dut.clockDomain.waitSamplingWhere(dut.io.fastFetch.valid.toBoolean)
-      dut.clockDomain.waitSamplingWhere(dut.io.fastFetch.valid.toBoolean)
+      assert(firstReady, s"expected first bilinear accept, got ready=$firstReady")
+      assert(secondReady, s"expected second bilinear accept, got ready=$secondReady")
       assert(
         cmdCount == 2,
-        s"expected back-to-back fast hits without extra fill, saw $cmdCount fills"
+        s"expected back-to-back bilinear hits without extra fill, saw $cmdCount fills"
       )
     }
   }

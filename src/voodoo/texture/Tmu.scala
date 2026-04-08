@@ -554,38 +554,29 @@ case class Tmu(c: voodoo.Config) extends Component {
 
   val textureCache = TmuTextureCache(c)
   sampleRequest >/-> textureCache.io.sampleRequest
-  io.texRead <> textureCache.io.texRead
   textureCache.io.invalidate := io.invalidate
+  io.texRead <> textureCache.io.texRead
 
   val texelDecoder = TmuTexelDecoder(c)
-  textureCache.io.fetched >/-> texelDecoder.io.fetched
-  textureCache.io.fastFetch >/-> texelDecoder.io.fastFetch
+  textureCache.io.sampleFetch >/-> texelDecoder.io.sampleFetch
   texelDecoder.io.paletteWrite <> io.paletteWrite
   texelDecoder.io.sendConfig := io.sendConfig
   texelDecoder.io.nccTables := io.nccTables
 
-  val collector = TmuCollector(c)
-  texelDecoder.io.decoded >/-> collector.io.decoded
-
-  val fastOutput = texelDecoder.io.fastOutput
-  val normalOutput = collector.io.output.m2sPipe()
-  textureCache.io.outputRoute.ready := True
-
   val retireValid = Vec(Reg(Bool()) init False, 1 << requestIdWidth)
   val retireData = Vec.fill(1 << requestIdWidth)(Reg(Tmu.Output(c)))
   val retireHead = Reg(UInt(requestIdWidth bits)) init 0
+  val dbgRetireHead = retireHead.setName("dbgRetireHead")
+  dbgRetireHead.simPublic()
+  val dbgRetireHeadValid = retireValid(retireHead).setName("dbgRetireHeadValid")
+  dbgRetireHeadValid.simPublic()
 
-  fastOutput.ready := !retireValid(fastOutput.payload.requestId)
-  normalOutput.ready := !retireValid(normalOutput.payload.requestId)
+  texelDecoder.io.output.ready := !retireValid(texelDecoder.io.output.payload.requestId)
   bypassOutput.ready := !retireValid(requestIdAlloc)
 
-  when(fastOutput.fire) {
-    retireValid(fastOutput.payload.requestId) := True
-    retireData(fastOutput.payload.requestId) := fastOutput.payload
-  }
-  when(normalOutput.fire) {
-    retireValid(normalOutput.payload.requestId) := True
-    retireData(normalOutput.payload.requestId) := normalOutput.payload
+  when(texelDecoder.io.output.fire) {
+    retireValid(texelDecoder.io.output.payload.requestId) := True
+    retireData(texelDecoder.io.output.payload.requestId) := texelDecoder.io.output.payload
   }
   when(bypassOutput.fire) {
     retireValid(bypassOutput.payload.requestId) := True
@@ -862,17 +853,6 @@ object Tmu {
     val trace = if (c.trace.enabled) Trace.PixelKey() else null
   }
 
-  case class TmuExpanded(c: voodoo.Config) extends Bundle {
-    val address = UInt(c.addressWidth.value bits)
-    val bankSel = UInt(2 bits)
-    val lodBase = UInt(c.addressWidth.value bits)
-    val lodEnd = UInt(c.addressWidth.value bits)
-    val lodShift = UInt(4 bits)
-    val is16Bit = Bool()
-    val texTables = if (c.packedTexLayout) TexLayoutTables.Tables() else null
-    val passthrough = TmuPassthrough(c)
-  }
-
   case class SampleRequest(c: voodoo.Config) extends Bundle {
     val pointAddr = UInt(c.addressWidth.value bits)
     val biAddr0 = UInt(c.addressWidth.value bits)
@@ -893,61 +873,20 @@ object Tmu {
     val passthrough = TmuPassthrough(c)
   }
 
-  case class QueuedData(c: voodoo.Config) extends Bundle {
-    val passthrough = TmuPassthrough(c)
-    val fullAddress = UInt(c.addressWidth.value bits)
-    val addrHalf = Bool()
-    val addrByte = Bool()
-  }
-
   case class CachedReq(c: voodoo.Config, bankEntryWidth: Int) extends Bundle {
     val lineBase = UInt(c.addressWidth.value bits)
     val lodBase = UInt(c.addressWidth.value bits)
-    val lodEnd = UInt(c.addressWidth.value bits)
     val lodShift = UInt(4 bits)
     val is16Bit = Bool()
     val texTables = if (c.packedTexLayout) TexLayoutTables.Tables() else null
     val bankSel = UInt(2 bits)
     val bankEntry = UInt(bankEntryWidth bits)
-    val queued = QueuedData(c)
   }
 
-  case class FetchResult(c: voodoo.Config) extends Bundle {
-    val rspData32 = Bits(32 bits)
-    val queued = QueuedData(c)
-  }
-
-  case class TexelWordRef() extends Bundle {
-    val rspData32 = Bits(32 bits)
-    val addrHalf = Bool()
-    val addrByte = Bool()
-  }
-
-  case class FastFetch(c: voodoo.Config) extends Bundle {
-    val texels = Vec.fill(4)(TexelWordRef())
-    val passthrough = TmuPassthrough(c)
-  }
-
-  case class DecodedMeta(c: voodoo.Config) extends Bundle {
+  case class SampleFetch(c: voodoo.Config) extends Bundle {
     val bilinear = Bool()
-    val ds = UInt(4 bits)
-    val dt = UInt(4 bits)
-    val readIdx = UInt(2 bits)
-    val requestId = UInt(Tmu.requestIdWidth bits)
-    val trace = if (c.trace.enabled) Trace.PixelKey() else null
-  }
-
-  case class FastOutputMeta(c: voodoo.Config) extends Bundle {
-    val requestId = UInt(Tmu.requestIdWidth bits)
-    val trace = if (c.trace.enabled) Trace.PixelKey() else null
-  }
-
-  case class DecodedTexel(c: voodoo.Config) extends Bundle {
-    val r = UInt(8 bits)
-    val g = UInt(8 bits)
-    val b = UInt(8 bits)
-    val a = UInt(8 bits)
-    val meta = DecodedMeta(c)
+    val texels = Vec.fill(4)(Bits(16 bits))
+    val passthrough = TmuPassthrough(c)
   }
 
   /** Decoded textureMode register fields */

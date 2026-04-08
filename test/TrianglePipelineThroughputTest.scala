@@ -156,6 +156,14 @@ private object TrianglePipelineThroughputTest {
     controls.syncRender.routing.pixelStride := rectWidth
     controls.syncRender.tmuSendConfig := False
     controls.fastfill.fbzMode.enableClipping := True
+    controls.fastfill.fbzMode.enableDithering := True
+    controls.fastfill.fbzMode.rgbBufferMask := True
+    controls.fastfill.fbzMode.auxBufferMask := True
+    controls.fastfill.fbzMode.ditherAlgorithm := False
+    controls.fastfill.fbzMode.enableAlphaPlanes := True
+    controls.fastfill.fbzMode.enableDitherSubtract := True
+    controls.fastfill.color1 := B(0xc0907040L, 32 bits)
+    controls.fastfill.zaColor := B(0x00004080L, 32 bits)
     controls.fastfill.routing.colorBaseAddr := colorBase
     controls.fastfill.routing.auxBaseAddr := auxBase
     controls.fastfill.routing.pixelStride := rectWidth

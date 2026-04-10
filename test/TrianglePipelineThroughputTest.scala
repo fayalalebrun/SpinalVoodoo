@@ -276,14 +276,16 @@ class TrianglePipelineThroughputTest extends AnyFunSuite {
       .voodoo1()
       .copy(
         addressWidth = 20 bits,
-        memBurstLengthWidth = 6,
+        memBurstLengthWidth = 7,
         fbWriteBufferLineWords = 64,
         fbWriteBufferCount = 2,
-        texFillLineWords = 8,
+        texFillLineWords = 32,
         useFbWriteBuffer = useFbWriteBuffer,
         useFbReadCache = useFbReadCache,
         useTexFillCache = true,
-        texFillCacheSlots = 16,
+        texFillCacheSlots = 64,
+        texFillWayCount = 2,
+        texFillXorIndex = true,
         texFillRequestWindow = 16,
         trace = TraceConfig()
       )

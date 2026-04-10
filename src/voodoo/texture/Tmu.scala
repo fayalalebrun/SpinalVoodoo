@@ -552,13 +552,14 @@ case class Tmu(c: voodoo.Config) extends Component {
     sampleRequest.ready && canAllocate
   )
 
-  val textureCache = TmuTextureCache(c)
-  sampleRequest >/-> textureCache.io.sampleRequest
-  textureCache.io.invalidate := io.invalidate
-  io.texRead <> textureCache.io.texRead
+  val texturePath: TmuTexturePathBase =
+    if (c.useTexFillCache) TmuTextureCache(c) else TmuNoTextureCache(c)
+  sampleRequest >/-> texturePath.io.sampleRequest
+  texturePath.io.invalidate := io.invalidate
+  io.texRead <> texturePath.io.texRead
 
   val texelDecoder = TmuTexelDecoder(c)
-  textureCache.io.sampleFetch >/-> texelDecoder.io.sampleFetch
+  texturePath.io.sampleFetch >/-> texelDecoder.io.sampleFetch
   texelDecoder.io.paletteWrite <> io.paletteWrite
   texelDecoder.io.sendConfig := io.sendConfig
   texelDecoder.io.nccTables := io.nccTables

@@ -33,6 +33,9 @@ object CoreSimGen extends App {
       useTexFillCache = useTexFillCache,
       texFillCacheSlots =
         argIntValue("--tex-fill-cache-slots").getOrElse(Config.voodoo1().texFillCacheSlots),
+      texFillWayCount =
+        argIntValue("--tex-fill-way-count").getOrElse(Config.voodoo1().texFillWayCount),
+      texFillXorIndex = args.contains("--tex-fill-xor-index"),
       texFillRequestWindow =
         argIntValue("--tex-fill-request-window").getOrElse(Config.voodoo1().texFillRequestWindow)
     )

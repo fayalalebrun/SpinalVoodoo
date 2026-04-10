@@ -23,6 +23,8 @@ case class Config(
     useFbReadCache: Boolean,
     useTexFillCache: Boolean,
     texFillCacheSlots: Int = 16,
+    texFillWayCount: Int = 2,
+    texFillXorIndex: Boolean = false,
     texFillRequestWindow: Int = 16,
     packedTexLayout: Boolean = true,
     trace: TraceConfig = TraceConfig()

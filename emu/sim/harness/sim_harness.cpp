@@ -143,67 +143,20 @@ static void dump_fb_debug(const char *tag) {
 }
 
 static void dump_timeout_debug(const char *tag, uint32_t addr) {
+    if (debug_fb_addr < 0)
+        return;
+    fprintf(stderr, "[sim_harness] ==== FB debug %s ====\n", tag);
+    dump_fb_word((uint32_t)debug_fb_addr & ~0x3u, tag);
     auto r = top->rootp;
     fprintf(stderr,
-            "[sim_harness] %s addr=0x%06x cpuReady=%u frontdoorReady=%u pciFree=%u syncDrained=%u pipeBusy=%u issuedValid=%u issuedAddr=0x%03x issuedSync=%u tri=%u rast=%u tmu=%u fbAcc=%u wColorV=%u wColorR=%u wAuxV=%u wAuxR=%u fbColorBusy=%u fbAuxBusy=%u ffRun=%u ffOutV=%u pixInNZ=%u pixOutNZ=%u cSlotV=%u/%u cWords=%u/%u cDrain=%u cAct=%u cMem=%u/%u aSlotV=%u/%u aWords=%u/%u aDrain=%u aAct=%u aMem=%u/%u arbW=%u arbCR=%u arbAR=%u arbOut=%u/%u op=%u rspV=%u rspR=%u topRspW=%u topRspCR=%u topRspAR=%u cReadRspV=%u fbAccColorRspR=%u colorReaderRspV=%u aReadRspV=%u fbAccAuxRspR=%u auxReaderRspV=%u fbInFlight=%u\n",
+            "[sim_harness] %s addr=0x%06x cpuReady=%u frontdoorReady=%u pciFree=%u syncDrained=%u pipeBusy=%u\n",
             tag,
             addr,
             (unsigned)r->CoreSim__DOT__core_1__DOT__pciFifo_1_io_cpuSide_cmd_ready,
             (unsigned)r->CoreSim__DOT__core_1__DOT__frontdoor_io_cpuBus_cmd_ready,
             (unsigned)r->CoreSim__DOT__core_1__DOT__pciFifo_1_io_pciFifoFree,
             (unsigned)r->CoreSim__DOT__core_1__DOT__pciFifo_1_io_syncDrained,
-            (unsigned)r->CoreSim__DOT__core_1__DOT__pixelPipeline_1_io_debug_pipelineBusy,
-            (unsigned)r->CoreSim__DOT__core_1__DOT__pciFifo_1__DOT__drainControl_issuedWrite_valid,
-            (unsigned)r->CoreSim__DOT__core_1__DOT__pciFifo_1__DOT__drainControl_issuedWrite_payload_address,
-            (unsigned)r->CoreSim__DOT__core_1__DOT__pciFifo_1__DOT__drainControl_issuedWrite_payload_syncRequired,
-            (unsigned)r->CoreSim__DOT__core_1__DOT__pixelPipeline_1_io_debug_busy_triangleSetupValid,
-            (unsigned)r->CoreSim__DOT__core_1__DOT__pixelPipeline_1_io_debug_busy_rasterizerRunning,
-            (unsigned)r->CoreSim__DOT__core_1__DOT__pixelPipeline_1_io_debug_busy_tmuBusy,
-            (unsigned)r->CoreSim__DOT__core_1__DOT__pixelPipeline_1_io_debug_busy_fbAccessBusy,
-            (unsigned)r->CoreSim__DOT__core_1__DOT__pixelPipeline_1_io_debug_busy_writeColorInputValid,
-            (unsigned)r->CoreSim__DOT__core_1__DOT__pixelPipeline_1_io_debug_busy_writeColorReady,
-            (unsigned)r->CoreSim__DOT__core_1__DOT__pixelPipeline_1_io_debug_busy_writeAuxInputValid,
-            (unsigned)r->CoreSim__DOT__core_1__DOT__pixelPipeline_1_io_debug_busy_writeAuxReady,
-            (unsigned)r->CoreSim__DOT__core_1__DOT__pixelPipeline_1_io_debug_writePath_fbColorBusy,
-            (unsigned)r->CoreSim__DOT__core_1__DOT__pixelPipeline_1_io_debug_writePath_fbAuxBusy,
-            (unsigned)r->CoreSim__DOT__core_1__DOT__pixelPipeline_1_io_debug_busy_fastfillRunning,
-            (unsigned)r->CoreSim__DOT__core_1__DOT__pixelPipeline_1_io_debug_busy_fastfillOutputValid,
-            (unsigned)r->CoreSim__DOT__core_1__DOT__pixelPipeline_1_io_debug_writePath_pixelsInNonZero,
-            (unsigned)r->CoreSim__DOT__core_1__DOT__pixelPipeline_1_io_debug_writePath_pixelsOutNonZero,
-            (unsigned)r->CoreSim__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__slotValid_0,
-            (unsigned)r->CoreSim__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__slotValid_1,
-            (unsigned)r->CoreSim__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__slotWordCount_0,
-            (unsigned)r->CoreSim__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__slotWordCount_1,
-            (unsigned)r->CoreSim__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__drainState_1,
-            (unsigned)r->CoreSim__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__activeSlot,
-            (unsigned)r->CoreSim__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__io_mem_cmd_valid,
-            (unsigned)r->CoreSim__DOT__core_1__DOT__framebufferMem__DOT__fbColorBuffer__DOT__io_mem_cmd_ready,
-            (unsigned)r->CoreSim__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__slotValid_0,
-            (unsigned)r->CoreSim__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__slotValid_1,
-            (unsigned)r->CoreSim__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__slotWordCount_0,
-            (unsigned)r->CoreSim__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__slotWordCount_1,
-            (unsigned)r->CoreSim__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__drainState_1,
-            (unsigned)r->CoreSim__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__activeSlot,
-            (unsigned)r->CoreSim__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__io_mem_cmd_valid,
-            (unsigned)r->CoreSim__DOT__core_1__DOT__framebufferMem__DOT__fbAuxBuffer__DOT__io_mem_cmd_ready,
-            (unsigned)r->CoreSim__DOT__fbArbiter_io_inputs_0_cmd_ready,
-            (unsigned)r->CoreSim__DOT__fbArbiter_io_inputs_1_cmd_ready,
-            (unsigned)r->CoreSim__DOT__fbArbiter_io_inputs_2_cmd_ready,
-            (unsigned)r->CoreSim__DOT__fbArbiter_io_output_cmd_valid,
-            (unsigned)r->CoreSim__DOT__fbWriteRam_io_bus_cmd_ready,
-            (unsigned)r->CoreSim__DOT__fbArbiter_io_output_cmd_payload_fragment_opcode,
-            (unsigned)r->CoreSim__DOT__fbWriteRam_io_bus_rsp_valid,
-            (unsigned)r->CoreSim__DOT__fbArbiter_io_output_rsp_ready,
-            (unsigned)r->CoreSim__DOT__core_1_io_fbMemWrite_rsp_ready,
-            (unsigned)r->CoreSim__DOT__core_1_io_fbColorReadMem_rsp_ready,
-            (unsigned)r->CoreSim__DOT__core_1_io_fbAuxReadMem_rsp_ready,
-            (unsigned)r->CoreSim__DOT__core_1__DOT__framebufferMem_io_colorReadRsp_valid,
-            (unsigned)r->CoreSim__DOT__core_1__DOT__pixelPipeline_1__DOT__fbAccess_io_fbReadColorRsp_ready,
-            (unsigned)r->CoreSim__DOT__core_1__DOT__framebufferMem__DOT__fbColorReader_io_readRsp_valid,
-            (unsigned)r->CoreSim__DOT__core_1__DOT__framebufferMem_io_auxReadRsp_valid,
-            (unsigned)r->CoreSim__DOT__core_1__DOT__pixelPipeline_1__DOT__fbAccess_io_fbReadAuxRsp_ready,
-            (unsigned)r->CoreSim__DOT__core_1__DOT__framebufferMem__DOT__fbAuxReader_io_readRsp_valid,
-            (unsigned)r->CoreSim__DOT__core_1__DOT__pixelPipeline_1__DOT__fbAccess__DOT__inFlightCount);
+            (unsigned)r->CoreSim__DOT__core_1__DOT__pixelPipeline_1_io_debug_pipelineBusy);
 }
 
 static void signal_handler(int sig) {
@@ -862,6 +815,9 @@ int sim_init(void) {
     return 0;
 }
 
+void sim_tex_access_dump(const char *path) {}
+void sim_tex_access_close(void) {}
+
 void sim_shutdown(void) {
     if (trace_writer_active) {
         trace_writer_close(&trace_writer);
@@ -1098,3 +1054,37 @@ uint32_t sim_get_fb_read_req_other_count(void) { return 0; }
 uint32_t sim_get_fb_read_single_beat_burst_count(void) { return 0; }
 uint32_t sim_get_fb_read_multi_beat_burst_count(void) { return 0; }
 uint32_t sim_get_fb_read_max_queue_occupancy(void) { return 0; }
+
+uint32_t sim_get_tex_fill_hits(void) {
+    if (!top) return 0;
+    return (uint32_t)top->rootp->CoreSim__DOT__core_1__DOT__pixelPipeline_1__DOT__tmu_1__DOT__textureCache__DOT__texFillHits;
+}
+uint32_t sim_get_tex_fill_misses(void) {
+    if (!top) return 0;
+    return (uint32_t)top->rootp->CoreSim__DOT__core_1__DOT__pixelPipeline_1__DOT__tmu_1__DOT__textureCache__DOT__texFillMisses;
+}
+uint32_t sim_get_tex_fill_burst_count(void) {
+    if (!top) return 0;
+    return (uint32_t)top->rootp->CoreSim__DOT__core_1__DOT__pixelPipeline_1__DOT__tmu_1__DOT__textureCache__DOT__texFillBurstCount;
+}
+uint32_t sim_get_tex_fill_burst_beats(void) {
+    if (!top) return 0;
+    return (uint32_t)top->rootp->CoreSim__DOT__core_1__DOT__pixelPipeline_1__DOT__tmu_1__DOT__textureCache__DOT__texFillBurstBeats;
+}
+uint32_t sim_get_tex_fill_stall_cycles(void) {
+    if (!top) return 0;
+    return (uint32_t)top->rootp->CoreSim__DOT__core_1__DOT__pixelPipeline_1__DOT__tmu_1__DOT__textureCache__DOT__texFillStallCycles;
+}
+uint32_t sim_get_tex_fast_bilinear_hits(void) {
+    if (!top) return 0;
+    return (uint32_t)top->rootp->CoreSim__DOT__core_1__DOT__pixelPipeline_1__DOT__tmu_1__DOT__textureCache__DOT__texFastBilinearHits;
+}
+uint32_t sim_get_tex_compare_miss_samples(void) { return 0; }
+uint32_t sim_get_tex_lookup_blocked_cycles(void) { return 0; }
+uint32_t sim_get_tex_lookup_blocked_by_owner_cycles(void) { return 0; }
+uint32_t sim_get_tex_lookup_blocked_by_fill_cycles(void) { return 0; }
+uint32_t sim_get_tex_lookup_blocked_by_hold_cycles(void) { return 0; }
+uint32_t sim_get_tex_lookup_blocked_by_live_cycles(void) { return 0; }
+uint32_t sim_get_tex_fill_evict_valid(void) { return 0; }
+uint32_t sim_get_tex_fill_evict_ready(void) { return 0; }
+uint32_t sim_get_tex_fill_evict_inflight(void) { return 0; }

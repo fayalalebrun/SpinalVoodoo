@@ -128,8 +128,30 @@ uint32_t sim_get_fb_read_single_beat_burst_count(void);
 uint32_t sim_get_fb_read_multi_beat_burst_count(void);
 uint32_t sim_get_fb_read_max_queue_occupancy(void);
 
+/* Texture cache metrics */
+uint32_t sim_get_tex_fill_hits(void);
+uint32_t sim_get_tex_fill_misses(void);
+uint32_t sim_get_tex_fill_burst_count(void);
+uint32_t sim_get_tex_fill_burst_beats(void);
+uint32_t sim_get_tex_fill_stall_cycles(void);
+uint32_t sim_get_tex_fast_bilinear_hits(void);
+uint32_t sim_get_tex_compare_miss_samples(void);
+uint32_t sim_get_tex_lookup_blocked_cycles(void);
+uint32_t sim_get_tex_lookup_blocked_by_owner_cycles(void);
+uint32_t sim_get_tex_lookup_blocked_by_fill_cycles(void);
+uint32_t sim_get_tex_lookup_blocked_by_hold_cycles(void);
+uint32_t sim_get_tex_lookup_blocked_by_live_cycles(void);
+uint32_t sim_get_tex_fill_evict_valid(void);
+uint32_t sim_get_tex_fill_evict_ready(void);
+uint32_t sim_get_tex_fill_evict_inflight(void);
+
 /* Return non-zero once the harness has hit a fatal stall/abort condition. */
 int sim_stalled(void);
+
+/* Open a binary log of texture cache sample requests.
+   Set path=NULL or "" to disable. Call before sim replay, close after. */
+void sim_tex_access_dump(const char *path);
+void sim_tex_access_close(void);
 
 #ifdef __cplusplus
 }

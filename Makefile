@@ -145,7 +145,7 @@ tomb/trace/check: $(TRACE_TEST_BIN)
 	$(TRACE_TEST_BIN) traces/tomb --output-dir output/tomb/trace_replay $(TRACE_TEST_ARGS)
 
 native/de10sim/check/%: FORCE
-	$(MAKE) -C emu/test SIM_INTERFACE=de10
+	$(MAKE) -C emu/test SIM_INTERFACE=de10 CORE_SIM_GEN_ARGS="$(CORE_SIM_GEN_ARGS)"
 	@mkdir -p test-output/$*-de10sim
 	@if [ -f traces/$*.bin ]; then \
 	  src=traces/$*.bin; \

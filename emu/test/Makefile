@@ -165,7 +165,7 @@ VERILATED_RUNTIME_OBJS += $(OBJ_DIR)/verilated_fst_c.o
 endif
 VERILATED_MODEL_OBJS = $(addprefix $(OBJ_DIR)/,$(addsuffix .o,$(VM_CLASSES_FAST) $(VM_CLASSES_SLOW) $(VM_SUPPORT_FAST) $(VM_SUPPORT_SLOW)))
 
-$(OBJ_DIR)/trace_test: $(OBJS) $(OBJ_DIR)/V$(SIM_MODEL)__ALL.a $(VERILATED_RUNTIME_OBJS)
+$(OBJ_DIR)/trace_test: $(OBJS) $(OBJ_DIR)/V$(SIM_MODEL)__ALL.a $(VERILATED_RUNTIME_OBJS) $(SIM_INTERFACE_FILE)
 	$(CXX) -o $@ $(OBJS) $(OBJ_DIR)/V$(SIM_MODEL)__ALL.a $(VERILATED_RUNTIME_OBJS) -lm -lz -lpthread
 
 ROUNDTRIP_OBJS = $(OBJ_DIR)/state_roundtrip_test.o \

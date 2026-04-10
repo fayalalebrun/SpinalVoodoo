@@ -249,6 +249,12 @@ int main(int argc, char **argv) {
     uint32_t sim_fb_read_single_beat_burst_count_final = 0;
     uint32_t sim_fb_read_multi_beat_burst_count_final = 0;
     uint32_t sim_fb_read_max_queue_occupancy_final = 0;
+    uint32_t sim_tex_fill_hits_final = 0;
+    uint32_t sim_tex_fill_misses_final = 0;
+    uint32_t sim_tex_fill_burst_count_final = 0;
+    uint32_t sim_tex_fill_burst_beats_final = 0;
+    uint32_t sim_tex_fill_stall_cycles_final = 0;
+    uint32_t sim_tex_fast_bilinear_hits_final = 0;
     uint64_t worst_write_cycles = 0;
     uint32_t worst_write_entry = 0;
     uint32_t worst_write_addr = 0;
@@ -299,6 +305,8 @@ int main(int argc, char **argv) {
             disp_width = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--height") == 0 && i + 1 < argc) {
             disp_height = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--tex-access-dump") == 0 && i + 1 < argc) {
+            sim_tex_access_dump(argv[++i]);
         } else if (!trace_path) {
             trace_path = argv[i];
         } else {
@@ -922,6 +930,46 @@ int main(int argc, char **argv) {
 #endif
     }
 
+    if (!ref_only) {
+        sim_tex_fill_hits_final = sim_get_tex_fill_hits();
+        sim_tex_fill_misses_final = sim_get_tex_fill_misses();
+        sim_tex_fill_burst_count_final = sim_get_tex_fill_burst_count();
+        sim_tex_fill_burst_beats_final = sim_get_tex_fill_burst_beats();
+        sim_tex_fill_stall_cycles_final = sim_get_tex_fill_stall_cycles();
+        sim_tex_fast_bilinear_hits_final = sim_get_tex_fast_bilinear_hits();
+        const uint32_t sim_tex_compare_miss_samples_final = sim_get_tex_compare_miss_samples();
+        const uint32_t sim_tex_lookup_blocked_cycles_final = sim_get_tex_lookup_blocked_cycles();
+        const uint32_t sim_tex_lookup_blocked_by_owner_cycles_final = sim_get_tex_lookup_blocked_by_owner_cycles();
+        const uint32_t sim_tex_lookup_blocked_by_fill_cycles_final = sim_get_tex_lookup_blocked_by_fill_cycles();
+        const uint32_t sim_tex_lookup_blocked_by_hold_cycles_final = sim_get_tex_lookup_blocked_by_hold_cycles();
+        const uint32_t sim_tex_lookup_blocked_by_live_cycles_final = sim_get_tex_lookup_blocked_by_live_cycles();
+        const uint32_t sim_tex_fill_evict_valid_final = sim_get_tex_fill_evict_valid();
+        const uint32_t sim_tex_fill_evict_ready_final = sim_get_tex_fill_evict_ready();
+        const uint32_t sim_tex_fill_evict_inflight_final = sim_get_tex_fill_evict_inflight();
+        fprintf(stderr,
+                "[trace_test] Sim tex cache stats: hits=%u misses=%u hitRate=%.4f burstCount=%u burstBeats=%u stallCycles=%u fastBilinearHits=%u\n",
+                sim_tex_fill_hits_final,
+                sim_tex_fill_misses_final,
+                (sim_tex_fill_hits_final + sim_tex_fill_misses_final)
+                    ? ((double)sim_tex_fill_hits_final / (double)(sim_tex_fill_hits_final + sim_tex_fill_misses_final))
+                    : 0.0,
+                sim_tex_fill_burst_count_final,
+                sim_tex_fill_burst_beats_final,
+                sim_tex_fill_stall_cycles_final,
+                sim_tex_fast_bilinear_hits_final);
+        fprintf(stderr,
+                "[trace_test] Sim tex cache detail: compareMissSamples=%u lookupBlocked=%u (owner=%u fill=%u hold=%u live=%u) evictValid=%u evictReady=%u evictInflight=%u\n",
+                sim_tex_compare_miss_samples_final,
+                sim_tex_lookup_blocked_cycles_final,
+                sim_tex_lookup_blocked_by_owner_cycles_final,
+                sim_tex_lookup_blocked_by_fill_cycles_final,
+                sim_tex_lookup_blocked_by_hold_cycles_final,
+                sim_tex_lookup_blocked_by_live_cycles_final,
+                sim_tex_fill_evict_valid_final,
+                sim_tex_fill_evict_ready_final,
+                sim_tex_fill_evict_inflight_final);
+    }
+
     if (!profile_json_path.empty()) {
         size_t slash = profile_json_path.find_last_of('/');
         if (slash != std::string::npos) {
@@ -1083,6 +1131,16 @@ int main(int argc, char **argv) {
                         (idx + 1 == sim_write_hotspots.size()) ? "" : ",");
             }
             fprintf(profile_fp, "    ],\n");
+            fprintf(profile_fp, "    \"tex_fill_hits\": %u,\n", sim_tex_fill_hits_final);
+            fprintf(profile_fp, "    \"tex_fill_misses\": %u,\n", sim_tex_fill_misses_final);
+            fprintf(profile_fp, "    \"tex_fill_hit_rate\": %.6f,\n",
+                    (sim_tex_fill_hits_final + sim_tex_fill_misses_final)
+                        ? ((double)sim_tex_fill_hits_final / (double)(sim_tex_fill_hits_final + sim_tex_fill_misses_final))
+                        : 0.0);
+            fprintf(profile_fp, "    \"tex_fill_burst_count\": %u,\n", sim_tex_fill_burst_count_final);
+            fprintf(profile_fp, "    \"tex_fill_burst_beats\": %u,\n", sim_tex_fill_burst_beats_final);
+            fprintf(profile_fp, "    \"tex_fill_stall_cycles\": %u,\n", sim_tex_fill_stall_cycles_final);
+            fprintf(profile_fp, "    \"tex_fast_bilinear_hits\": %u,\n", sim_tex_fast_bilinear_hits_final);
             fprintf(profile_fp, "    \"progress\": [\n");
             for (size_t idx = 0; idx < progress_snapshots.size(); ++idx) {
                 const ProgressSnapshot &snap = progress_snapshots[idx];
@@ -1113,7 +1171,7 @@ int main(int argc, char **argv) {
     }
 
     if (sim_replay_only) {
-        if (!ref_only) sim_shutdown();
+        if (!ref_only) { sim_tex_access_close(); sim_shutdown(); }
         ref_shutdown();
         return 0;
     }
@@ -1450,7 +1508,7 @@ int main(int argc, char **argv) {
     free(loaded_trace.traceData);
     ref_trace_close();
     ref_shutdown();
-    if (!ref_only) sim_shutdown();
+    if (!ref_only) { sim_tex_access_close(); sim_shutdown(); }
 
     /* Use _exit to avoid hanging in Verilator's static destructors */
     int parity_mismatch_skew = abs(parity_mismatches[0] - parity_mismatches[1]);

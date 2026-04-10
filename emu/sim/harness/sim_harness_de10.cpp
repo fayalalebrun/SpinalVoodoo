@@ -48,6 +48,54 @@ static bool mmio_timeout_hit = false;
 static volatile sig_atomic_t quit_requested = 0;
 
 static constexpr uint32_t FB_WORD_COUNT = (4u * 1024u * 1024u) / 4u;
+
+static FILE *tex_access_file = nullptr;
+static bool prev_tex_read_fire = false;
+static uint64_t tex_access_dump_writes = 0;
+static uint64_t compare_pop_count = 0;
+static uint64_t compare_pop_all_hits_count = 0;
+static uint64_t compare_pop_any_miss_count = 0;
+static uint64_t compare_pop_issue_needed_sum = 0;
+static uint64_t compare_pop_tap_hit_sum = 0;
+static uint64_t compare_pop_nonfast_zero_issue = 0;
+
+struct TexSampleDumpHeader {
+    char magic[4];
+    uint32_t version;
+};
+
+struct TexSampleDumpRecord {
+    uint64_t cycle;
+    uint32_t flags;
+    uint32_t addrs[5];
+    uint32_t banks;
+    uint32_t reserved;
+};
+
+static void dump_tex_sample(const TexSampleDumpRecord& rec) {
+    if (!tex_access_file) return;
+    fwrite(&rec, sizeof(rec), 1, tex_access_file);
+    tex_access_dump_writes++;
+}
+
+static inline void dump_texture_cache_lookup(VCoreDe10___024root* root) {
+    (void)root;
+}
+
+static void open_tex_access_dump(const char *path) {
+    if (!path || !path[0]) return;
+    tex_access_file = fopen(path, "wb");
+    if (!tex_access_file) fprintf(stderr, "[sim_harness] could not open tex_access_dump %s\n", path);
+    if (tex_access_file) {
+        TexSampleDumpHeader hdr = {{'T', 'X', 'S', '1'}, 1};
+        fwrite(&hdr, sizeof(hdr), 1, tex_access_file);
+    }
+}
+
+static void close_tex_access_dump(void) {
+    if (tex_access_file) { fclose(tex_access_file); tex_access_file = nullptr; }
+}
+
 static constexpr uint32_t TEX_WORD_COUNT = (8u * 1024u * 1024u) / 4u;
 static constexpr uint32_t TEX_BASE_BYTES = 4u * 1024u * 1024u;
 
@@ -268,6 +316,7 @@ static inline void clear_mem_cmd_samples(void) {
     fb_color_cmd = {0, 0, 0, 0, 0, 0};
     fb_aux_cmd = {0, 0, 0, 0, 0, 0};
     tex_cmd = {0, 0, 0, 0, 0, 0};
+    prev_tex_read_fire = top ? (top->io_memTex_read && top->io_memTex_waitRequestn) : false;
 }
 
 static inline void latch_mem_cmd_sample(AvalonMemCmdSample& dst, uint8_t read, uint8_t write,
@@ -286,7 +335,7 @@ static inline void latch_mem_cmd_sample(AvalonMemCmdSample& dst, uint8_t read, u
 static inline void observe_memory_outputs(void) {
     auto *root = top->rootp;
     const bool tex_read_fire = top->io_memTex_read && top->io_memTex_waitRequestn;
-    if (tex_read_fire) {
+    if (tex_read_fire && !prev_tex_read_fire) {
         tex_bridge_launch_count++;
         if (tex_trace && tex_trace_count < 256) {
             fprintf(stderr,
@@ -363,6 +412,8 @@ static void drive_memory_inputs(void) {
 
 static void capture_memory_outputs(void) {
     auto* root = top->rootp;
+
+    dump_texture_cache_lookup(root);
 
     service_read_state(fb_write_state, fb_mem, false);
     service_read_state(fb_color_state, fb_mem, false);
@@ -570,15 +621,9 @@ static void log_stalled_bus_state(const char* kind, const char* phase,
             (unsigned)root->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__tmu_1__DOT__canAllocate,
             (unsigned)root->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__tmu_1__DOT__bypassOutput_valid,
             (unsigned)root->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__tmu_1__DOT__sampleRequest_valid,
-            (unsigned)root->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__tmu_1__DOT__textureCache__DOT__io_sampleRequest_valid,
-            (unsigned)root->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__tmu_1__DOT__textureCache__DOT__io_sampleRequest_ready,
-            (unsigned)root->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__tmu_1__DOT__textureCache__DOT__io_outputRoute_valid,
-            (unsigned)root->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__tmu_1__DOT__textureCache__DOT__io_outputRoute_ready,
-            (unsigned)root->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__tmu_1__DOT__textureCache__DOT__expanded_stream_valid,
-            (unsigned)root->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__tmu_1__DOT__textureCache__DOT__expanded_stream_ready,
-            (unsigned)root->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__tmu_1__DOT__textureCache__DOT__io_texRead_cmd_valid,
-            (unsigned)root->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__tmu_1__DOT__textureCache__DOT__io_texRead_cmd_ready,
-            (unsigned)root->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__tmu_1__DOT__textureCache__DOT__io_texRead_rsp_valid,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__tmu_1__DOT__texturePath__DOT__io_sampleRequest_valid,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__tmu_1__DOT__texturePath__DOT__io_sampleRequest_ready,
+            (unsigned)root->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__tmu_1__DOT__texturePath_io_texRead_cmd_valid,
             (unsigned)root->CoreDe10__DOT__memBackend__DOT__texBridgeInst__DOT__readRspBurstActive,
             (unsigned)root->CoreDe10__DOT__memBackend__DOT__texBridgeInst__DOT__readRspBurstBeatsLeft,
             (unsigned)root->CoreDe10__DOT__memBackend__DOT__texBridgeInst__DOT__readRspFifo_io_pop_valid,
@@ -1039,6 +1084,13 @@ int sim_init(void) {
     tex_model_read_launch_count = 0;
     tex_model_read_reject_count = 0;
     tex_model_rvalid_count = 0;
+    tex_access_dump_writes = 0;
+    compare_pop_count = 0;
+    compare_pop_all_hits_count = 0;
+    compare_pop_any_miss_count = 0;
+    compare_pop_issue_needed_sum = 0;
+    compare_pop_tap_hit_sum = 0;
+    compare_pop_nonfast_zero_issue = 0;
     tex_model_last_launch_burst = 0;
     tex_bridge_launch_count = 0;
     prev_tex_outstanding = 0;
@@ -1140,7 +1192,29 @@ int sim_init(void) {
     return 0;
 }
 
+void sim_tex_access_dump(const char *path) {
+    close_tex_access_dump();
+    open_tex_access_dump(path);
+}
+
+void sim_tex_access_close(void) {
+    close_tex_access_dump();
+}
+
 void sim_shutdown(void) {
+    fprintf(stderr,
+            "[sim_harness_de10] compare pop stats: count=%lu allHits=%lu anyMiss=%lu issueNeededSum=%lu tapHitSum=%lu nonfastZeroIssue=%lu\n",
+            (unsigned long)compare_pop_count,
+            (unsigned long)compare_pop_all_hits_count,
+            (unsigned long)compare_pop_any_miss_count,
+            (unsigned long)compare_pop_issue_needed_sum,
+            (unsigned long)compare_pop_tap_hit_sum,
+            (unsigned long)compare_pop_nonfast_zero_issue);
+    if (tex_access_file) {
+        fprintf(stderr, "[sim_harness_de10] tex access dump writes=%lu\n",
+                (unsigned long)tex_access_dump_writes);
+    }
+    close_tex_access_dump();
 #ifdef VM_TRACE_FST
     if (tfp) {
         tfp->close();
@@ -1494,6 +1568,67 @@ uint32_t sim_get_fb_read_multi_beat_burst_count(void) {
 uint32_t sim_get_fb_read_max_queue_occupancy(void) {
     if (!top) return 0;
     return top->rootp->CoreDe10__DOT__core_1__DOT__framebufferMem_io_stats_readMaxQueueOccupancy;
+}
+
+uint32_t sim_get_tex_fill_hits(void) {
+    if (!top) return 0;
+    return (uint32_t)top->rootp->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__tmu_1__DOT__texturePath__DOT__texFillHits;
+}
+uint32_t sim_get_tex_fill_misses(void) {
+    if (!top) return 0;
+    return (uint32_t)top->rootp->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__tmu_1__DOT__texturePath__DOT__texFillMisses;
+}
+uint32_t sim_get_tex_fill_burst_count(void) {
+    if (!top) return 0;
+    return (uint32_t)top->rootp->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__tmu_1__DOT__texturePath__DOT__texFillBurstCount;
+}
+uint32_t sim_get_tex_fill_burst_beats(void) {
+    if (!top) return 0;
+    return (uint32_t)top->rootp->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__tmu_1__DOT__texturePath__DOT__texFillBurstBeats;
+}
+uint32_t sim_get_tex_fill_stall_cycles(void) {
+    if (!top) return 0;
+    return (uint32_t)top->rootp->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__tmu_1__DOT__texturePath__DOT__texFillStallCycles;
+}
+uint32_t sim_get_tex_fast_bilinear_hits(void) {
+    if (!top) return 0;
+    return (uint32_t)top->rootp->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__tmu_1__DOT__texturePath__DOT__texFastBilinearHits;
+}
+uint32_t sim_get_tex_compare_miss_samples(void) {
+    if (!top) return 0;
+    return (uint32_t)top->rootp->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__tmu_1__DOT__texturePath__DOT__texCompareMissSamples;
+}
+uint32_t sim_get_tex_lookup_blocked_cycles(void) {
+    if (!top) return 0;
+    return (uint32_t)top->rootp->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__tmu_1__DOT__texturePath__DOT__texLookupBlockedCycles;
+}
+uint32_t sim_get_tex_lookup_blocked_by_owner_cycles(void) {
+    if (!top) return 0;
+    return (uint32_t)top->rootp->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__tmu_1__DOT__texturePath__DOT__texLookupBlockedByOwnerCycles;
+}
+uint32_t sim_get_tex_lookup_blocked_by_fill_cycles(void) {
+    if (!top) return 0;
+    return (uint32_t)top->rootp->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__tmu_1__DOT__texturePath__DOT__texLookupBlockedByFillCycles;
+}
+uint32_t sim_get_tex_lookup_blocked_by_hold_cycles(void) {
+    if (!top) return 0;
+    return (uint32_t)top->rootp->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__tmu_1__DOT__texturePath__DOT__texLookupBlockedByHoldCycles;
+}
+uint32_t sim_get_tex_lookup_blocked_by_live_cycles(void) {
+    if (!top) return 0;
+    return (uint32_t)top->rootp->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__tmu_1__DOT__texturePath__DOT__texLookupBlockedByLiveCycles;
+}
+uint32_t sim_get_tex_fill_evict_valid(void) {
+    if (!top) return 0;
+    return (uint32_t)top->rootp->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__tmu_1__DOT__texturePath__DOT__texFillEvictValid;
+}
+uint32_t sim_get_tex_fill_evict_ready(void) {
+    if (!top) return 0;
+    return (uint32_t)top->rootp->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__tmu_1__DOT__texturePath__DOT__texFillEvictReady;
+}
+uint32_t sim_get_tex_fill_evict_inflight(void) {
+    if (!top) return 0;
+    return (uint32_t)top->rootp->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__tmu_1__DOT__texturePath__DOT__texFillEvictInflight;
 }
 
 int sim_stalled(void) {

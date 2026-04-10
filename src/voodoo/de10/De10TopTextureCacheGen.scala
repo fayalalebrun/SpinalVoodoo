@@ -7,8 +7,10 @@ object De10TopTextureCacheGen extends App {
     .voodoo1()
     .copy(
       useTexFillCache = true,
-      texFillLineWords = 8,
-      texFillCacheSlots = 16,
+      texFillLineWords = 32,
+      texFillCacheSlots = 64,
+      texFillWayCount = 2,
+      texFillXorIndex = true,
       texFillRequestWindow = 16
     )
 

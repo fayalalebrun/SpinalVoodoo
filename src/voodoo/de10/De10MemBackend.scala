@@ -418,10 +418,18 @@ case class De10BmbToAvalonMm(
 case class De10MemBackend(c: Config) extends Component {
   val io = new Bundle {
     val fbMemWrite = slave(Bmb(Core.fbMemBmbParams(c)))
+    val fbColorWriteMem = slave(Bmb(Core.fbMemBmbParams(c)))
+    val fbAuxWriteMem = slave(Bmb(Core.fbMemBmbParams(c)))
     val fbColorReadMem = slave(Bmb(Core.fbMemBmbParams(c)))
     val fbAuxReadMem = slave(Bmb(Core.fbMemBmbParams(c)))
     val texMem = slave(Bmb(Core.texMemBmbParams(c)))
     val memFbWrite = master(
+      AvalonMM(De10MemBackend.avalonConfig(De10MemBackend.physicalAddressWidth))
+    )
+    val memFbColorWrite = master(
+      AvalonMM(De10MemBackend.avalonConfig(De10MemBackend.physicalAddressWidth))
+    )
+    val memFbAuxWrite = master(
       AvalonMM(De10MemBackend.avalonConfig(De10MemBackend.physicalAddressWidth))
     )
     val memFbColorRead = master(
@@ -458,16 +466,22 @@ case class De10MemBackend(c: Config) extends Component {
   }
 
   val (fbWriteSourceRemover, fbWriteBridge) = fbBridge()
+  val (fbColorWriteSourceRemover, fbColorWriteBridge) = fbBridge()
+  val (fbAuxWriteSourceRemover, fbAuxWriteBridge) = fbBridge()
   val (fbColorReadSourceRemover, fbColorReadBridge) = fbBridge()
   val (fbAuxReadSourceRemover, fbAuxReadBridge) = fbBridge()
   val (texSourceRemover, texBridgeInst) = texBridge()
 
   Seq(
     io.fbMemWrite <> fbWriteSourceRemover.io.input,
+    io.fbColorWriteMem <> fbColorWriteSourceRemover.io.input,
+    io.fbAuxWriteMem <> fbAuxWriteSourceRemover.io.input,
     io.fbColorReadMem <> fbColorReadSourceRemover.io.input,
     io.fbAuxReadMem <> fbAuxReadSourceRemover.io.input,
     io.texMem <> texSourceRemover.io.input,
     io.memFbWrite <> fbWriteBridge.io.mem,
+    io.memFbColorWrite <> fbColorWriteBridge.io.mem,
+    io.memFbAuxWrite <> fbAuxWriteBridge.io.mem,
     io.memFbColorRead <> fbColorReadBridge.io.mem,
     io.memFbAuxRead <> fbAuxReadBridge.io.mem,
     io.memTex <> texBridgeInst.io.mem
@@ -495,12 +509,29 @@ case class De10MemBackend(c: Config) extends Component {
         io.memFbAuxRead.address < U(De10AddressMap.fbMemBase + De10AddressMap.fbMemBytes, 32 bits)
       )
     }
+    when(io.memFbColorWrite.read || io.memFbColorWrite.write) {
+      assert(io.memFbColorWrite.address >= U(De10AddressMap.fbMemBase, 32 bits))
+      assert(
+        io.memFbColorWrite.address < U(
+          De10AddressMap.fbMemBase + De10AddressMap.fbMemBytes,
+          32 bits
+        )
+      )
+    }
+    when(io.memFbAuxWrite.read || io.memFbAuxWrite.write) {
+      assert(io.memFbAuxWrite.address >= U(De10AddressMap.fbMemBase, 32 bits))
+      assert(
+        io.memFbAuxWrite.address < U(De10AddressMap.fbMemBase + De10AddressMap.fbMemBytes, 32 bits)
+      )
+    }
     when(io.memTex.read || io.memTex.write) {
       assert(io.memTex.address >= U(De10AddressMap.texMemBase, 32 bits))
       assert(io.memTex.address < U(De10AddressMap.texMemBase + De10AddressMap.texMemBytes, 32 bits))
     }
 
     assert(!(io.memFbWrite.read && io.memFbWrite.write))
+    assert(!(io.memFbColorWrite.read && io.memFbColorWrite.write))
+    assert(!(io.memFbAuxWrite.read && io.memFbAuxWrite.write))
     assert(!(io.memFbColorRead.read && io.memFbColorRead.write))
     assert(!(io.memFbAuxRead.read && io.memFbAuxRead.write))
     assert(!(io.memTex.read && io.memTex.write))

@@ -51,7 +51,7 @@ object Config {
     fbWriteBufferLineWords = 16,
     fbWriteBufferCount = 2,
     texFillLineWords = 8,
-    useFbWriteBuffer = true,
+    useFbWriteBuffer = false,
     useFbReadCache = true,
     useTexFillCache = true,
     texFillCacheSlots = 16,

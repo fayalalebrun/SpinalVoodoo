@@ -63,6 +63,7 @@ case class FramebufferPlaneReader(c: Config) extends Component {
 
   val issueQueueDepth = 64
   val spanIssueQueue = StreamFifo(HardType(SpanCmd()), issueQueueDepth)
+  val issuedSpanQueue = StreamFifo(HardType(SpanCmd()), 4)
   val laneFifo = StreamFifo(Bits(16 bits), lineBufferLanes)
   val readRspFifo = StreamFifo(ReadRsp(), 16)
 
@@ -154,10 +155,9 @@ case class FramebufferPlaneReader(c: Config) extends Component {
     fillMisses := fillMisses + 1
   }
 
-  val activeFillValid = RegInit(False)
-  val activeFillSpan = Reg(SpanCmd())
+  val activeFillValid = issuedSpanQueue.io.pop.valid
+  val activeFillSpan = issuedSpanQueue.io.pop.payload
   val activeFillWordIndex = Reg(UInt(spanLaneCountWidth bits)) init (0)
-  val activeFillCmdPending = RegInit(False)
   activeFillValid.simPublic()
   activeFillSpan.wordCount.simPublic()
   activeFillWordIndex.simPublic()
@@ -166,21 +166,20 @@ case class FramebufferPlaneReader(c: Config) extends Component {
   val pendingLaneData = Reg(Bits(16 bits)) init (0)
   pendingLaneValid.simPublic()
 
-  internalMem.cmd.valid := activeFillValid && activeFillCmdPending
-  internalMem.cmd.fragment.address := activeFillSpan.firstWordAddress
+  internalMem.cmd.valid := spanIssueQueue.io.pop.valid && issuedSpanQueue.io.push.ready
+  internalMem.cmd.fragment.address := spanIssueQueue.io.pop.payload.firstWordAddress
   internalMem.cmd.fragment.opcode := Bmb.Cmd.Opcode.READ
   internalMem.cmd.fragment.length :=
-    (activeFillSpan.lastWordAddress - activeFillSpan.firstWordAddress + 3).resized
+    (spanIssueQueue.io.pop.payload.lastWordAddress - spanIssueQueue.io.pop.payload.firstWordAddress + 3).resized
   internalMem.cmd.fragment.source := 0
   internalMem.cmd.fragment.data := 0
   internalMem.cmd.fragment.mask := 0
   internalMem.cmd.last := True
-  spanIssueQueue.io.pop.ready := !activeFillValid
-  when(spanIssueQueue.io.pop.fire) {
-    activeFillValid := True
-    activeFillSpan := spanIssueQueue.io.pop.payload
-    activeFillWordIndex := 0
-    activeFillCmdPending := True
+  spanIssueQueue.io.pop.ready := internalMem.cmd.ready && issuedSpanQueue.io.push.ready
+  issuedSpanQueue.io.push.valid := internalMem.cmd.fire
+  issuedSpanQueue.io.push.payload := spanIssueQueue.io.pop.payload
+  issuedSpanQueue.io.pop.ready := False
+  when(internalMem.cmd.fire) {
     fillBurstCount := fillBurstCount + 1
     fillBurstBeats := fillBurstBeats + spanIssueQueue.io.pop.payload.wordCount.resize(32 bits)
     when(spanIssueQueue.io.pop.payload.wordCount === 1) {
@@ -188,9 +187,6 @@ case class FramebufferPlaneReader(c: Config) extends Component {
     }.otherwise {
       multiBeatBurstCount := multiBeatBurstCount + 1
     }
-  }
-  when(internalMem.cmd.fire) {
-    activeFillCmdPending := False
   }
 
   val currentFillWordAddress =
@@ -223,8 +219,7 @@ case class FramebufferPlaneReader(c: Config) extends Component {
     // `rsp.last` may mark the end of a splitter fragment rather than the end
     // of the original fill span. Retire only after all requested words return.
     when(activeFillWordIndex === activeFillSpan.wordCount - 1) {
-      activeFillValid := False
-      activeFillCmdPending := False
+      issuedSpanQueue.io.pop.ready := True
       activeFillWordIndex := 0
     }.otherwise {
       activeFillWordIndex := activeFillWordIndex + 1
@@ -290,7 +285,7 @@ case class FramebufferPlaneReader(c: Config) extends Component {
 
   io.readRsp << readRspFifo.io.pop
 
-  io.busy := spanIssueQueue.io.occupancy =/= 0 || activeFillValid ||
+  io.busy := spanIssueQueue.io.occupancy =/= 0 || issuedSpanQueue.io.occupancy =/= 0 ||
     pendingLaneValid || laneFifo.io.occupancy =/= 0 || readRspFifo.io.occupancy =/= 0
 
   io.fillHits := fillHits

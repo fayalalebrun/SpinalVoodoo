@@ -120,10 +120,14 @@ struct AvalonMemCmdSample {
 };
 
 static AvalonMemState fb_write_state = {0, 0, 0, 0, 0};
+static AvalonMemState fb_color_write_state = {0, 0, 0, 0, 0};
+static AvalonMemState fb_aux_write_state = {0, 0, 0, 0, 0};
 static AvalonMemState fb_color_state = {0, 0, 0, 0, 0};
 static AvalonMemState fb_aux_state = {0, 0, 0, 0, 0};
 static AvalonMemState tex_state = {0, 0, 0, 0, 0};
 static AvalonMemCmdSample fb_write_cmd = {0, 0, 0, 0, 0, 0};
+static AvalonMemCmdSample fb_color_write_cmd = {0, 0, 0, 0, 0, 0};
+static AvalonMemCmdSample fb_aux_write_cmd = {0, 0, 0, 0, 0, 0};
 static AvalonMemCmdSample fb_color_cmd = {0, 0, 0, 0, 0, 0};
 static AvalonMemCmdSample fb_aux_cmd = {0, 0, 0, 0, 0, 0};
 static AvalonMemCmdSample tex_cmd = {0, 0, 0, 0, 0, 0};
@@ -239,7 +243,11 @@ static void dump_timeout_debug(const char* kind, uint32_t addr) {
             (unsigned)top->io_memFbColorRead_read,
             (unsigned)top->io_memFbAuxRead_read,
             (unsigned)top->io_memFbWrite_write,
+            (unsigned)top->io_memFbColorWrite_write,
+            (unsigned)top->io_memFbAuxWrite_write,
             (unsigned)top->io_memFbWrite_waitRequestn,
+            (unsigned)top->io_memFbColorWrite_waitRequestn,
+            (unsigned)top->io_memFbAuxWrite_waitRequestn,
             (unsigned)top->io_memFbColorRead_waitRequestn,
             (unsigned)top->io_memFbAuxRead_waitRequestn);
 }
@@ -313,6 +321,8 @@ static inline bool start_read_burst(AvalonMemState& state, uint32_t addr, uint32
 
 static inline void clear_mem_cmd_samples(void) {
     fb_write_cmd = {0, 0, 0, 0, 0, 0};
+    fb_color_write_cmd = {0, 0, 0, 0, 0, 0};
+    fb_aux_write_cmd = {0, 0, 0, 0, 0, 0};
     fb_color_cmd = {0, 0, 0, 0, 0, 0};
     fb_aux_cmd = {0, 0, 0, 0, 0, 0};
     tex_cmd = {0, 0, 0, 0, 0, 0};
@@ -352,6 +362,12 @@ static inline void observe_memory_outputs(void) {
     latch_mem_cmd_sample(fb_write_cmd, top->io_memFbWrite_read, top->io_memFbWrite_write,
                          top->io_memFbWrite_address, top->io_memFbWrite_writeData,
                          top->io_memFbWrite_byteEnable, top->io_memFbWrite_burstCount);
+    latch_mem_cmd_sample(fb_color_write_cmd, top->io_memFbColorWrite_read, top->io_memFbColorWrite_write,
+                         top->io_memFbColorWrite_address, top->io_memFbColorWrite_writeData,
+                         top->io_memFbColorWrite_byteEnable, top->io_memFbColorWrite_burstCount);
+    latch_mem_cmd_sample(fb_aux_write_cmd, top->io_memFbAuxWrite_read, top->io_memFbAuxWrite_write,
+                         top->io_memFbAuxWrite_address, top->io_memFbAuxWrite_writeData,
+                         top->io_memFbAuxWrite_byteEnable, top->io_memFbAuxWrite_burstCount);
     latch_mem_cmd_sample(fb_color_cmd, top->io_memFbColorRead_read, top->io_memFbColorRead_write,
                          top->io_memFbColorRead_address, top->io_memFbColorRead_writeData,
                          top->io_memFbColorRead_byteEnable, top->io_memFbColorRead_burstCount);
@@ -389,6 +405,14 @@ static void drive_memory_inputs(void) {
     top->io_memFbWrite_readDataValid = fb_write_state.read_valid;
     top->io_memFbWrite_readData = fb_write_state.read_data;
 
+    top->io_memFbColorWrite_waitRequestn = 1;
+    top->io_memFbColorWrite_readDataValid = fb_color_write_state.read_valid;
+    top->io_memFbColorWrite_readData = fb_color_write_state.read_data;
+
+    top->io_memFbAuxWrite_waitRequestn = 1;
+    top->io_memFbAuxWrite_readDataValid = fb_aux_write_state.read_valid;
+    top->io_memFbAuxWrite_readData = fb_aux_write_state.read_data;
+
     top->io_memFbColorRead_waitRequestn = 1;
     top->io_memFbColorRead_readDataValid = fb_color_state.read_valid;
     top->io_memFbColorRead_readData = fb_color_state.read_data;
@@ -416,6 +440,8 @@ static void capture_memory_outputs(void) {
     dump_texture_cache_lookup(root);
 
     service_read_state(fb_write_state, fb_mem, false);
+    service_read_state(fb_color_write_state, fb_mem, false);
+    service_read_state(fb_aux_write_state, fb_mem, false);
     service_read_state(fb_color_state, fb_mem, false);
     service_read_state(fb_aux_state, fb_mem, false);
 
@@ -437,8 +463,24 @@ static void capture_memory_outputs(void) {
         fb_mem[idx] = apply_byteenable(fb_mem[idx], fb_write_cmd.write_data,
                                        fb_write_cmd.byte_enable);
     }
+    if (fb_color_write_cmd.write) {
+        const uint32_t idx = fb_index_from_addr(fb_color_write_cmd.address);
+        fb_mem[idx] = apply_byteenable(fb_mem[idx], fb_color_write_cmd.write_data,
+                                       fb_color_write_cmd.byte_enable);
+    }
+    if (fb_aux_write_cmd.write) {
+        const uint32_t idx = fb_index_from_addr(fb_aux_write_cmd.address);
+        fb_mem[idx] = apply_byteenable(fb_mem[idx], fb_aux_write_cmd.write_data,
+                                       fb_aux_write_cmd.byte_enable);
+    }
     if (fb_write_cmd.read) {
         start_read_burst(fb_write_state, fb_write_cmd.address, fb_write_cmd.burst_count);
+    }
+    if (fb_color_write_cmd.read) {
+        start_read_burst(fb_color_write_state, fb_color_write_cmd.address, fb_color_write_cmd.burst_count);
+    }
+    if (fb_aux_write_cmd.read) {
+        start_read_burst(fb_aux_write_state, fb_aux_write_cmd.address, fb_aux_write_cmd.burst_count);
     }
     if (fb_color_cmd.read) {
         start_read_burst(fb_color_state, fb_color_cmd.address, fb_color_cmd.burst_count);
@@ -1073,6 +1115,8 @@ int sim_init(void) {
     fb_mem.assign(FB_WORD_COUNT, 0);
     tex_mem.assign(TEX_WORD_COUNT, 0);
     fb_write_state = {0, 0, 0, 0, 0};
+    fb_color_write_state = {0, 0, 0, 0, 0};
+    fb_aux_write_state = {0, 0, 0, 0, 0};
     fb_color_state = {0, 0, 0, 0, 0};
     fb_aux_state = {0, 0, 0, 0, 0};
     tex_state = {0, 0, 0, 0, 0};

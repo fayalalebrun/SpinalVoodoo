@@ -21,6 +21,8 @@ case class FramebufferMemSubsystem(c: Config) extends Component {
     val flush = in Bool ()
 
     val fbMemWrite = master(Bmb(voodoo.Core.fbMemBmbParams(c)))
+    val fbColorWriteMem = master(Bmb(voodoo.Core.fbMemBmbParams(c)))
+    val fbAuxWriteMem = master(Bmb(voodoo.Core.fbMemBmbParams(c)))
     val fbColorReadMem = master(Bmb(voodoo.Core.fbMemBmbParams(c)))
     val fbAuxReadMem = master(Bmb(voodoo.Core.fbMemBmbParams(c)))
 
@@ -32,6 +34,13 @@ case class FramebufferMemSubsystem(c: Config) extends Component {
     BmbArbiter(
       inputsParameter =
         Seq(FramebufferPlaneBuffer.bmbParams(c), FramebufferPlaneBuffer.bmbParams(c)),
+      outputParameter = voodoo.Core.fbMemBmbParams(c),
+      lowerFirstPriority = true
+    )
+
+  private def makeFbSingleWriteBridge() =
+    BmbArbiter(
+      inputsParameter = Seq(FramebufferPlaneBuffer.bmbParams(c)),
       outputParameter = voodoo.Core.fbMemBmbParams(c),
       lowerFirstPriority = true
     )
@@ -98,32 +107,91 @@ case class FramebufferMemSubsystem(c: Config) extends Component {
   colorWritePort.io.writeReq << io.colorWrite.s2mPipe()
   auxWritePort.io.writeReq << io.auxWrite.s2mPipe()
 
-  val fbWriteArbiter = makeFbWriteArbiter()
+  val fbWriteArbiter = if (c.useFbWriteBuffer) makeFbWriteArbiter() else null
+  val fbColorWriteBridge = if (!c.useFbWriteBuffer) makeFbSingleWriteBridge() else null
+  val fbAuxWriteBridge = if (!c.useFbWriteBuffer) makeFbSingleWriteBridge() else null
   val fbColorReadArbiter = makeFbColorReadArbiter()
   val fbAuxReadArbiter = makeFbAuxReadArbiter()
 
-  fbWriteArbiter.io.inputs(0).cmd << colorWritePort.io.mem.cmd.s2mPipe()
-  colorWritePort.io.mem.rsp << fbWriteArbiter.io.inputs(0).rsp.s2mPipe()
-  fbWriteArbiter.io.inputs(1).cmd << auxWritePort.io.mem.cmd.s2mPipe()
-  auxWritePort.io.mem.rsp << fbWriteArbiter.io.inputs(1).rsp.s2mPipe()
+  if (c.useFbWriteBuffer) {
+    fbWriteArbiter.io.inputs(0).cmd << colorWritePort.io.mem.cmd.s2mPipe()
+    colorWritePort.io.mem.rsp << fbWriteArbiter.io.inputs(0).rsp.s2mPipe()
+    fbWriteArbiter.io.inputs(1).cmd << auxWritePort.io.mem.cmd.s2mPipe()
+    auxWritePort.io.mem.rsp << fbWriteArbiter.io.inputs(1).rsp.s2mPipe()
 
-  if (useCachedReaders) {
-    fbColorReadArbiter.io.inputs(0).cmd << colorReaderCached.io.mem.cmd.s2mPipe()
-    colorReaderCached.io.mem.rsp << fbColorReadArbiter.io.inputs(0).rsp.s2mPipe()
-    fbAuxReadArbiter.io.inputs(0).cmd << auxReaderCached.io.mem.cmd.s2mPipe()
-    auxReaderCached.io.mem.rsp << fbAuxReadArbiter.io.inputs(0).rsp.s2mPipe()
+    if (useCachedReaders) {
+      fbColorReadArbiter.io.inputs(0).cmd << colorReaderCached.io.mem.cmd.s2mPipe()
+      colorReaderCached.io.mem.rsp << fbColorReadArbiter.io.inputs(0).rsp.s2mPipe()
+      fbAuxReadArbiter.io.inputs(0).cmd << auxReaderCached.io.mem.cmd.s2mPipe()
+      auxReaderCached.io.mem.rsp << fbAuxReadArbiter.io.inputs(0).rsp.s2mPipe()
+    } else {
+      fbColorReadArbiter.io.inputs(0).cmd << colorReaderDirect.io.mem.cmd
+      colorReaderDirect.io.mem.rsp << fbColorReadArbiter.io.inputs(0).rsp
+      fbAuxReadArbiter.io.inputs(0).cmd << auxReaderDirect.io.mem.cmd
+      auxReaderDirect.io.mem.rsp << fbAuxReadArbiter.io.inputs(0).rsp
+    }
+    fbColorReadArbiter.io.inputs(1).cmd << io.lfbReadBus.cmd
+    io.lfbReadBus.rsp << fbColorReadArbiter.io.inputs(1).rsp.s2mPipe()
+
+    fbWriteArbiter.io.output <> io.fbMemWrite
+    fbColorReadArbiter.io.output <> io.fbColorReadMem
+    fbAuxReadArbiter.io.output <> io.fbAuxReadMem
+
+    io.fbColorWriteMem.cmd.valid := False
+    io.fbColorWriteMem.cmd.address := 0
+    io.fbColorWriteMem.cmd.opcode := Bmb.Cmd.Opcode.WRITE
+    io.fbColorWriteMem.cmd.length := 0
+    io.fbColorWriteMem.cmd.data := 0
+    io.fbColorWriteMem.cmd.mask := 0
+    io.fbColorWriteMem.cmd.last := True
+    io.fbColorWriteMem.cmd.source := 0
+    io.fbColorWriteMem.rsp.ready := True
+
+    io.fbAuxWriteMem.cmd.valid := False
+    io.fbAuxWriteMem.cmd.address := 0
+    io.fbAuxWriteMem.cmd.opcode := Bmb.Cmd.Opcode.WRITE
+    io.fbAuxWriteMem.cmd.length := 0
+    io.fbAuxWriteMem.cmd.data := 0
+    io.fbAuxWriteMem.cmd.mask := 0
+    io.fbAuxWriteMem.cmd.last := True
+    io.fbAuxWriteMem.cmd.source := 0
+    io.fbAuxWriteMem.rsp.ready := True
   } else {
-    fbColorReadArbiter.io.inputs(0).cmd << colorReaderDirect.io.mem.cmd
-    colorReaderDirect.io.mem.rsp << fbColorReadArbiter.io.inputs(0).rsp
-    fbAuxReadArbiter.io.inputs(0).cmd << auxReaderDirect.io.mem.cmd
-    auxReaderDirect.io.mem.rsp << fbAuxReadArbiter.io.inputs(0).rsp
-  }
-  fbColorReadArbiter.io.inputs(1).cmd << io.lfbReadBus.cmd
-  io.lfbReadBus.rsp << fbColorReadArbiter.io.inputs(1).rsp.s2mPipe()
+    io.fbMemWrite.cmd.valid := False
+    io.fbMemWrite.cmd.address := 0
+    io.fbMemWrite.cmd.opcode := Bmb.Cmd.Opcode.WRITE
+    io.fbMemWrite.cmd.length := 0
+    io.fbMemWrite.cmd.data := 0
+    io.fbMemWrite.cmd.mask := 0
+    io.fbMemWrite.cmd.last := True
+    io.fbMemWrite.cmd.source := 0
+    io.fbMemWrite.rsp.ready := True
 
-  fbWriteArbiter.io.output <> io.fbMemWrite
-  fbColorReadArbiter.io.output <> io.fbColorReadMem
-  fbAuxReadArbiter.io.output <> io.fbAuxReadMem
+    fbColorWriteBridge.io.inputs(0).cmd << colorWritePort.io.mem.cmd.s2mPipe()
+    colorWritePort.io.mem.rsp << fbColorWriteBridge.io.inputs(0).rsp.s2mPipe()
+    fbAuxWriteBridge.io.inputs(0).cmd << auxWritePort.io.mem.cmd.s2mPipe()
+    auxWritePort.io.mem.rsp << fbAuxWriteBridge.io.inputs(0).rsp.s2mPipe()
+
+    fbColorWriteBridge.io.output <> io.fbColorWriteMem
+    fbAuxWriteBridge.io.output <> io.fbAuxWriteMem
+
+    if (useCachedReaders) {
+      fbColorReadArbiter.io.inputs(0).cmd << colorReaderCached.io.mem.cmd.s2mPipe()
+      colorReaderCached.io.mem.rsp << fbColorReadArbiter.io.inputs(0).rsp.s2mPipe()
+      fbAuxReadArbiter.io.inputs(0).cmd << auxReaderCached.io.mem.cmd.s2mPipe()
+      auxReaderCached.io.mem.rsp << fbAuxReadArbiter.io.inputs(0).rsp.s2mPipe()
+    } else {
+      fbColorReadArbiter.io.inputs(0).cmd << colorReaderDirect.io.mem.cmd
+      colorReaderDirect.io.mem.rsp << fbColorReadArbiter.io.inputs(0).rsp
+      fbAuxReadArbiter.io.inputs(0).cmd << auxReaderDirect.io.mem.cmd
+      auxReaderDirect.io.mem.rsp << fbAuxReadArbiter.io.inputs(0).rsp
+    }
+    fbColorReadArbiter.io.inputs(1).cmd << io.lfbReadBus.cmd
+    io.lfbReadBus.rsp << fbColorReadArbiter.io.inputs(1).rsp.s2mPipe()
+
+    fbColorReadArbiter.io.output <> io.fbColorReadMem
+    fbAuxReadArbiter.io.output <> io.fbAuxReadMem
+  }
 
   val memColorWriteCmdCount = Reg(UInt(32 bits)) init (0)
   val memAuxWriteCmdCount = Reg(UInt(32 bits)) init (0)
@@ -155,19 +223,69 @@ case class FramebufferMemSubsystem(c: Config) extends Component {
     when(io.lfbReadBus.cmd.fire) {
       memLfbReadCmdCount := memLfbReadCmdCount + 1
     }
+  } else {
+    when(colorWritePort.io.mem.cmd.valid && !fbColorWriteBridge.io.inputs(0).cmd.ready) {
+      memColorWriteBlockedCycles := memColorWriteBlockedCycles + 1
+    }
+    when(auxWritePort.io.mem.cmd.valid && !fbAuxWriteBridge.io.inputs(0).cmd.ready) {
+      memAuxWriteBlockedCycles := memAuxWriteBlockedCycles + 1
+    }
+    when(colorWritePort.io.mem.cmd.fire) {
+      memColorWriteCmdCount := memColorWriteCmdCount + 1
+    }
+    when(auxWritePort.io.mem.cmd.fire) {
+      memAuxWriteCmdCount := memAuxWriteCmdCount + 1
+    }
+    when(io.lfbReadBus.cmd.valid && !fbColorReadArbiter.io.inputs(1).cmd.ready) {
+      memLfbReadBlockedCycles := memLfbReadBlockedCycles + 1
+    }
+    when(io.lfbReadBus.cmd.fire) {
+      memLfbReadCmdCount := memLfbReadCmdCount + 1
+    }
   }
 
   if (useCachedReaders) {
-    when(colorReaderCached.io.mem.cmd.valid && !fbColorReadArbiter.io.inputs(0).cmd.ready) {
-      memColorReadBlockedCycles := memColorReadBlockedCycles + 1
-    }
-    when(auxReaderCached.io.mem.cmd.valid && !fbAuxReadArbiter.io.inputs(0).cmd.ready) {
-      memAuxReadBlockedCycles := memAuxReadBlockedCycles + 1
+    if (c.useFbWriteBuffer) {
+      when(colorReaderCached.io.mem.cmd.valid && !fbColorReadArbiter.io.inputs(0).cmd.ready) {
+        memColorReadBlockedCycles := memColorReadBlockedCycles + 1
+      }
+      when(auxReaderCached.io.mem.cmd.valid && !fbAuxReadArbiter.io.inputs(0).cmd.ready) {
+        memAuxReadBlockedCycles := memAuxReadBlockedCycles + 1
+      }
+    } else {
+      when(colorReaderCached.io.mem.cmd.valid && !fbColorReadArbiter.io.inputs(0).cmd.ready) {
+        memColorReadBlockedCycles := memColorReadBlockedCycles + 1
+      }
+      when(auxReaderCached.io.mem.cmd.valid && !fbAuxReadArbiter.io.inputs(0).cmd.ready) {
+        memAuxReadBlockedCycles := memAuxReadBlockedCycles + 1
+      }
     }
     when(colorReaderCached.io.mem.cmd.fire) {
       memColorReadCmdCount := memColorReadCmdCount + 1
     }
     when(auxReaderCached.io.mem.cmd.fire) {
+      memAuxReadCmdCount := memAuxReadCmdCount + 1
+    }
+  } else {
+    if (c.useFbWriteBuffer) {
+      when(colorReaderDirect.io.mem.cmd.valid && !fbColorReadArbiter.io.inputs(0).cmd.ready) {
+        memColorReadBlockedCycles := memColorReadBlockedCycles + 1
+      }
+      when(auxReaderDirect.io.mem.cmd.valid && !fbAuxReadArbiter.io.inputs(0).cmd.ready) {
+        memAuxReadBlockedCycles := memAuxReadBlockedCycles + 1
+      }
+    } else {
+      when(colorReaderDirect.io.mem.cmd.valid && !fbColorReadArbiter.io.inputs(0).cmd.ready) {
+        memColorReadBlockedCycles := memColorReadBlockedCycles + 1
+      }
+      when(auxReaderDirect.io.mem.cmd.valid && !fbAuxReadArbiter.io.inputs(0).cmd.ready) {
+        memAuxReadBlockedCycles := memAuxReadBlockedCycles + 1
+      }
+    }
+    when(colorReaderDirect.io.mem.cmd.fire) {
+      memColorReadCmdCount := memColorReadCmdCount + 1
+    }
+    when(auxReaderDirect.io.mem.cmd.fire) {
       memAuxReadCmdCount := memAuxReadCmdCount + 1
     }
   }
@@ -190,9 +308,8 @@ case class FramebufferMemSubsystem(c: Config) extends Component {
   io.stats.fillStallCycles := (if (useCachedReaders)
                                  (colorReaderCached.io.fillStallCycles + auxReaderCached.io.fillStallCycles).resized
                                else U(0, 32 bits))
-  io.stats.writeStallCycles := (if (c.useFbWriteBuffer)
-                                  (colorWritePort.io.writeStallCycles + auxWritePort.io.writeStallCycles).resized
-                                else U(0, 32 bits))
+  io.stats.writeStallCycles :=
+    (colorWritePort.io.writeStallCycles + auxWritePort.io.writeStallCycles).resized
   io.stats.writeDrainCount := (if (c.useFbWriteBuffer)
                                  (colorWritePort.io.writeDrainCount + auxWritePort.io.writeDrainCount).resized
                                else U(0, 32 bits))
@@ -235,22 +352,18 @@ case class FramebufferMemSubsystem(c: Config) extends Component {
   io.stats.writeRotateOtherLineCount := (if (c.useFbWriteBuffer)
                                            (colorWritePort.io.writeRotateOtherLineCount + auxWritePort.io.writeRotateOtherLineCount).resized
                                          else U(0, 32 bits))
-  io.stats.memColorWriteCmdCount := (if (c.useFbWriteBuffer) memColorWriteCmdCount
-                                     else U(0, 32 bits))
-  io.stats.memAuxWriteCmdCount := (if (c.useFbWriteBuffer) memAuxWriteCmdCount else U(0, 32 bits))
+  io.stats.memColorWriteCmdCount := memColorWriteCmdCount
+  io.stats.memAuxWriteCmdCount := memAuxWriteCmdCount
   io.stats.memColorReadCmdCount := (if (useCachedReaders) memColorReadCmdCount else U(0, 32 bits))
   io.stats.memAuxReadCmdCount := (if (useCachedReaders) memAuxReadCmdCount else U(0, 32 bits))
-  io.stats.memLfbReadCmdCount := (if (c.useFbWriteBuffer) memLfbReadCmdCount else U(0, 32 bits))
-  io.stats.memColorWriteBlockedCycles := (if (c.useFbWriteBuffer) memColorWriteBlockedCycles
-                                          else U(0, 32 bits))
-  io.stats.memAuxWriteBlockedCycles := (if (c.useFbWriteBuffer) memAuxWriteBlockedCycles
-                                        else U(0, 32 bits))
+  io.stats.memLfbReadCmdCount := memLfbReadCmdCount
+  io.stats.memColorWriteBlockedCycles := memColorWriteBlockedCycles
+  io.stats.memAuxWriteBlockedCycles := memAuxWriteBlockedCycles
   io.stats.memColorReadBlockedCycles := (if (useCachedReaders) memColorReadBlockedCycles
                                          else U(0, 32 bits))
   io.stats.memAuxReadBlockedCycles := (if (useCachedReaders) memAuxReadBlockedCycles
                                        else U(0, 32 bits))
-  io.stats.memLfbReadBlockedCycles := (if (c.useFbWriteBuffer) memLfbReadBlockedCycles
-                                       else U(0, 32 bits))
+  io.stats.memLfbReadBlockedCycles := memLfbReadBlockedCycles
   io.stats.readReqCount := (if (useCachedReaders)
                               (colorReaderCached.io.reqCount + auxReaderCached.io.reqCount).resized
                             else U(0, 32 bits))

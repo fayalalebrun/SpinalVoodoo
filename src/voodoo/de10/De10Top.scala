@@ -13,6 +13,12 @@ case class De10Top(c: Config) extends Component {
     val memFbWrite = master(
       AvalonMM(De10MemBackend.avalonConfig(De10MemBackend.physicalAddressWidth))
     )
+    val memFbColorWrite = master(
+      AvalonMM(De10MemBackend.avalonConfig(De10MemBackend.physicalAddressWidth))
+    )
+    val memFbAuxWrite = master(
+      AvalonMM(De10MemBackend.avalonConfig(De10MemBackend.physicalAddressWidth))
+    )
     val memFbColorRead = master(
       AvalonMM(De10MemBackend.avalonConfig(De10MemBackend.physicalAddressWidth))
     )
@@ -27,6 +33,8 @@ case class De10Top(c: Config) extends Component {
   core.io.h2fLw <> io.h2fLw
   Seq(
     io.memFbWrite <> core.io.memFbWrite,
+    io.memFbColorWrite <> core.io.memFbColorWrite,
+    io.memFbAuxWrite <> core.io.memFbAuxWrite,
     io.memFbColorRead <> core.io.memFbColorRead,
     io.memFbAuxRead <> core.io.memFbAuxRead,
     io.memTex <> core.io.memTex

@@ -32,14 +32,16 @@ case class CoreSim(c: Config, memTiming: SimMemoryTiming = SimMemoryTiming()) ex
   val texRam = simRam(Core.texMemBmbParams(c), 8 * 1024 * 1024)
 
   val fbArbiter = BmbArbiter(
-    inputsParameter = Seq.fill(3)(Core.fbMemBmbParams(c)),
+    inputsParameter = Seq.fill(5)(Core.fbMemBmbParams(c)),
     outputParameter = Core.fbMemBmbParams(c),
     lowerFirstPriority = true
   )
 
   fbArbiter.io.inputs(0) <> core.io.fbMemWrite
-  fbArbiter.io.inputs(1) <> core.io.fbColorReadMem
-  fbArbiter.io.inputs(2) <> core.io.fbAuxReadMem
+  fbArbiter.io.inputs(1) <> core.io.fbColorWriteMem
+  fbArbiter.io.inputs(2) <> core.io.fbAuxWriteMem
+  fbArbiter.io.inputs(3) <> core.io.fbColorReadMem
+  fbArbiter.io.inputs(4) <> core.io.fbAuxReadMem
   fbArbiter.io.output <> fbWriteRam.io.bus
   core.io.texMem <> texRam.io.bus
 

@@ -66,6 +66,8 @@ case class Core(c: Config) extends Component {
 
     // Framebuffer memory buses
     val fbMemWrite = master(Bmb(Core.fbMemBmbParams(c)))
+    val fbColorWriteMem = master(Bmb(Core.fbMemBmbParams(c)))
+    val fbAuxWriteMem = master(Bmb(Core.fbMemBmbParams(c)))
     val fbColorReadMem = master(Bmb(Core.fbMemBmbParams(c)))
     val fbAuxReadMem = master(Bmb(Core.fbMemBmbParams(c)))
 
@@ -164,6 +166,8 @@ case class Core(c: Config) extends Component {
   framebufferMem.io.lfbReadBus <> pixelPipeline.io.lfbReadBus
   framebufferMem.io.flush := io.flushFbCaches
   framebufferMem.io.fbMemWrite <> io.fbMemWrite
+  framebufferMem.io.fbColorWriteMem <> io.fbColorWriteMem
+  framebufferMem.io.fbAuxWriteMem <> io.fbAuxWriteMem
   framebufferMem.io.fbColorReadMem <> io.fbColorReadMem
   framebufferMem.io.fbAuxReadMem <> io.fbAuxReadMem
 

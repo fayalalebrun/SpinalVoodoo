@@ -20,7 +20,6 @@ case class CoreCpuFrontdoor(c: Config) extends Component {
   private val cpuCmd = io.cpuBus.cmd
   private val cpuRsp = io.cpuBus.rsp
   private val target = cpuCmd.address(23 downto 22)
-  private val rspTarget = RegNextWhen(target, cpuCmd.fire) init (0)
   private val isReg = target === 0
   private val isLfb = target === 1
   private val isTex = target >= 2
@@ -74,10 +73,6 @@ case class CoreCpuFrontdoor(c: Config) extends Component {
   cpuRsp.opcode := Bmb.Rsp.Opcode.SUCCESS
   cpuRsp.source := 0
 
-  private val regRspSelected = rspTarget === 0
-  private val lfbRspSelected = rspTarget === 1
-  private val texRspSelected = rspTarget >= 2
-
   io.regBus.rsp.ready := False
   io.lfbBus.rsp.ready := False
   io.texReadBus.rsp.ready := False
@@ -85,9 +80,13 @@ case class CoreCpuFrontdoor(c: Config) extends Component {
   when(texWriteRspPending) {
     cpuRsp.valid := True
     cpuRsp.source := texWriteRspSource.resize(cpuRsp.p.access.sourceWidth bits)
+  } elsewhen (io.regBus.rsp.valid) {
+    routeRsp(True, io.regBus)
+  } elsewhen (io.lfbBus.rsp.valid) {
+    routeRsp(True, io.lfbBus)
+  } elsewhen (io.texReadBus.rsp.valid) {
+    routeRsp(True, io.texReadBus)
   } otherwise {
-    routeRsp(regRspSelected, io.regBus)
-    routeRsp(lfbRspSelected, io.lfbBus)
-    routeRsp(texRspSelected, io.texReadBus)
+    // No downstream response is currently pending.
   }
 }

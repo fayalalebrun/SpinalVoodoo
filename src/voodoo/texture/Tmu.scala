@@ -502,6 +502,21 @@ case class Tmu(c: voodoo.Config) extends Component {
   val sampleRequestBase = stageB
     .translateWith {
       val req = Tmu.SampleRequest(c)
+      val startupTexBase = (0 until 9).map(stageB.payload.meta.config.texTables.texBase(_))
+      val startupTexEnd = Tmu.correctedTexEnd(
+        startupTexBase,
+        (0 until 9).map(stageB.payload.meta.config.texTables.texEnd(_)),
+        is16BitFormat
+      )
+      val startupTexShift = (0 until 9).map(stageB.payload.meta.config.texTables.texShift(_))
+      val tapLineBase = Vec(UInt(22 bits), 4)
+      tapLineBase(0) := bilinearEnable ? Tmu.lineBase22Of(
+        biAddr0,
+        log2Up(c.texFillLineWords * 4)
+      ) | Tmu.lineBase22Of(pointAddr, log2Up(c.texFillLineWords * 4))
+      tapLineBase(1) := Tmu.lineBase22Of(biAddr1, log2Up(c.texFillLineWords * 4))
+      tapLineBase(2) := Tmu.lineBase22Of(biAddr2, log2Up(c.texFillLineWords * 4))
+      tapLineBase(3) := Tmu.lineBase22Of(biAddr3, log2Up(c.texFillLineWords * 4))
       req.pointAddr := pointAddr
       req.biAddr0 := biAddr0
       req.biAddr1 := biAddr1
@@ -518,6 +533,17 @@ case class Tmu(c: voodoo.Config) extends Component {
       req.is16Bit := is16BitFormat
       if (c.packedTexLayout) {
         req.texTables := stageB.payload.meta.config.texTables
+      }
+      for (i <- 0 until 4) {
+        req.tapStartupDecode(i) := Tmu.packedStartupDecode4(
+          tapLineBase(i),
+          is16BitFormat,
+          packedLodBase,
+          packedLodShift,
+          startupTexBase,
+          startupTexEnd,
+          startupTexShift
+        )
       }
       req.bilinear := bilinearEnable
       req.passthrough := inputPassthrough
@@ -615,6 +641,95 @@ case class Tmu(c: voodoo.Config) extends Component {
 }
 
 object Tmu {
+
+  case class PackedStartupDecode() extends Bundle {
+    val valid = Bits(4 bits)
+    val bank = Vec(UInt(2 bits), 4)
+    val pair = Bits(4 bits)
+  }
+  val packedStartupOffsetLowWidth = 10
+
+  def lineBase22Of(addr: UInt, lineByteShift: Int): UInt =
+    ((addr.resize(22 bits) >> lineByteShift) << lineByteShift).resize(22 bits)
+
+  def correctedTexEnd(texBase: Seq[UInt], texEndRaw: Seq[UInt], is16Bit: Bool): Vec[UInt] = {
+    val out = Vec(UInt(22 bits), texBase.length)
+    for (lod <- texBase.indices) {
+      val base = texBase(lod)
+      val rawEnd = texEndRaw(lod)
+      val fallback =
+        if (lod < texBase.length - 1) texBase(lod + 1)
+        else (base + (is16Bit ? U(2, 22 bits) | U(1, 22 bits))).resized
+      out(lod) := (rawEnd > base) ? rawEnd | fallback
+    }
+    out
+  }
+
+  def packedLocation22(
+      addr: UInt,
+      is16Bit: Bool,
+      lodBase: UInt,
+      lodShift: UInt,
+      texBase: Seq[UInt],
+      texEnd: Seq[UInt],
+      texShift: Seq[UInt]
+  ): (Bool, UInt, Bool) = {
+    val addr22 = addr.resize(22 bits)
+    val in = Bool()
+    val base = UInt(22 bits)
+    val shift = UInt(4 bits)
+    val byteOffsLow = UInt(packedStartupOffsetLowWidth bits)
+    val bankMsb = Bool()
+    val bankLsb = Bool()
+    in := False
+    base := lodBase.resize(22 bits)
+    shift := lodShift
+    for (lod <- texBase.indices) {
+      when(addr22 >= texBase(lod) && addr22 < texEnd(lod)) {
+        in := True
+        base := texBase(lod)
+        shift := texShift(lod)
+      }
+    }
+    byteOffsLow :=
+      (addr22(packedStartupOffsetLowWidth - 1 downto 0) - base(
+        packedStartupOffsetLowWidth - 1 downto 0
+      )).resized
+    bankMsb := byteOffsLow(shift)
+    bankLsb := byteOffsLow(0)
+    when(is16Bit) {
+      bankMsb := byteOffsLow(shift) | byteOffsLow((shift + 1).resized)
+      bankLsb := byteOffsLow(0) | byteOffsLow(1)
+    }
+    (in, (bankMsb ## bankLsb).asUInt, !is16Bit && byteOffsLow(1))
+  }
+
+  def packedStartupDecode4(
+      lineBase: UInt,
+      is16Bit: Bool,
+      lodBase: UInt,
+      lodShift: UInt,
+      texBase: Seq[UInt],
+      texEnd: Seq[UInt],
+      texShift: Seq[UInt]
+  ): PackedStartupDecode = {
+    val out = PackedStartupDecode()
+    for (byteIdx <- 0 until 4) {
+      val loc = packedLocation22(
+        (lineBase + U(byteIdx, 22 bits)).resize(22 bits),
+        is16Bit,
+        lodBase,
+        lodShift,
+        texBase,
+        texEnd,
+        texShift
+      )
+      out.valid(byteIdx) := loc._1
+      out.bank(byteIdx) := loc._2
+      out.pair(byteIdx) := loc._3
+    }
+    out
+  }
   val requestIdWidth = 8
 
   case class BilinearWeights() extends Bundle {
@@ -730,6 +845,13 @@ object Tmu {
     dst.lodShift := src.lodShift
     dst.is16Bit := src.is16Bit
     if (c.packedTexLayout) dst.texTables := src.texTables
+    for (i <- 0 until 4) {
+      dst.tapStartupDecode(i).valid := src.tapStartupDecode(i).valid
+      dst.tapStartupDecode(i).pair := src.tapStartupDecode(i).pair
+      for (byteIdx <- 0 until 4) {
+        dst.tapStartupDecode(i).bank(byteIdx) := src.tapStartupDecode(i).bank(byteIdx)
+      }
+    }
     dst.bilinear := src.bilinear
     dst.passthrough.format := src.passthrough.format
     dst.passthrough.bilinear := src.passthrough.bilinear
@@ -870,6 +992,7 @@ object Tmu {
     val lodShift = UInt(4 bits)
     val is16Bit = Bool()
     val texTables = if (c.packedTexLayout) TexLayoutTables.Tables() else null
+    val tapStartupDecode = Vec(PackedStartupDecode(), 4)
     val bilinear = Bool()
     val passthrough = TmuPassthrough(c)
   }
@@ -880,6 +1003,7 @@ object Tmu {
     val lodShift = UInt(4 bits)
     val is16Bit = Bool()
     val texTables = if (c.packedTexLayout) TexLayoutTables.Tables() else null
+    val startupDecode = PackedStartupDecode()
     val bankSel = UInt(2 bits)
     val bankEntry = UInt(bankEntryWidth bits)
   }

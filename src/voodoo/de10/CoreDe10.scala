@@ -57,10 +57,16 @@ case class H2fLwToBmbBridge(addressWidth: Int, bmbParams: BmbParameter) extends 
   val readDataValid = RegInit(False)
   val readDataPending = RegInit(False)
   val reqSeen = RegInit(False)
+  val cmdIssued = RegInit(False)
+  val cmdAccepted = RegInit(False)
 
   val cmdBlocked = cmdInFlight || readRspPending || readDataPending || readDataValid
-  val canIssueReq = hasReq && !illegalReq && !reqSeen && !cmdBlocked
+  val canIssueReq = hasReq && !illegalReq && !cmdBlocked && (
+    !reqSeen ||
+      (cmdIssued && !cmdAccepted)
+  )
   val acceptWindow = canIssueReq && io.cpuBus.cmd.ready
+  val cmdValid = canIssueReq || cmdIssued
   val rspCompletesCurrent = io.cpuBus.rsp.valid && (cmdInFlight || acceptWindow)
   val rspIsRead = (cmdInFlight && readRspPending) || acceptWindow && selectedReadReq
 
@@ -72,9 +78,20 @@ case class H2fLwToBmbBridge(addressWidth: Int, bmbParams: BmbParameter) extends 
 
   when(!hasReq) {
     reqSeen := False
+    cmdAccepted := False
   }
 
-  io.cpuBus.cmd.valid := canIssueReq
+  when(cmdIssued && io.cpuBus.cmd.ready) {
+    cmdAccepted := True
+  }
+
+  when(cmdAccepted && rspCompletesCurrent) {
+    reqSeen := False
+    cmdIssued := False
+    cmdAccepted := False
+  }
+
+  io.cpuBus.cmd.valid := cmdValid
   when(writeReq) {
     io.cpuBus.cmd.opcode := Bmb.Cmd.Opcode.WRITE
   } otherwise {
@@ -83,6 +100,7 @@ case class H2fLwToBmbBridge(addressWidth: Int, bmbParams: BmbParameter) extends 
 
   when(acceptWindow) {
     reqSeen := True
+    cmdIssued := True
   }
 
   when(acceptWindow && !rspCompletesCurrent) {
@@ -165,6 +183,12 @@ case class CoreDe10(c: Config) extends Component {
     val memFbWrite = master(
       AvalonMM(De10MemBackend.avalonConfig(De10MemBackend.physicalAddressWidth))
     )
+    val memFbColorWrite = master(
+      AvalonMM(De10MemBackend.avalonConfig(De10MemBackend.physicalAddressWidth))
+    )
+    val memFbAuxWrite = master(
+      AvalonMM(De10MemBackend.avalonConfig(De10MemBackend.physicalAddressWidth))
+    )
     val memFbColorRead = master(
       AvalonMM(De10MemBackend.avalonConfig(De10MemBackend.physicalAddressWidth))
     )
@@ -183,10 +207,14 @@ case class CoreDe10(c: Config) extends Component {
 
   Seq(
     core.io.fbMemWrite <> memBackend.io.fbMemWrite,
+    core.io.fbColorWriteMem <> memBackend.io.fbColorWriteMem,
+    core.io.fbAuxWriteMem <> memBackend.io.fbAuxWriteMem,
     core.io.fbColorReadMem <> memBackend.io.fbColorReadMem,
     core.io.fbAuxReadMem <> memBackend.io.fbAuxReadMem,
     core.io.texMem <> memBackend.io.texMem,
     io.memFbWrite <> memBackend.io.memFbWrite,
+    io.memFbColorWrite <> memBackend.io.memFbColorWrite,
+    io.memFbAuxWrite <> memBackend.io.memFbAuxWrite,
     io.memFbColorRead <> memBackend.io.memFbColorRead,
     io.memFbAuxRead <> memBackend.io.memFbAuxRead,
     io.memTex <> memBackend.io.memTex

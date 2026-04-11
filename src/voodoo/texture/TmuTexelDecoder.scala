@@ -22,6 +22,13 @@ case class TmuTexelDecoder(c: voodoo.Config) extends Component {
     val r, g, b, a = UInt(8 bits)
   }
 
+  case class DecodedFetch() extends Bundle {
+    val passthrough = Tmu.TmuPassthrough(c)
+    val bilinear = Bool()
+    val weights = Tmu.BilinearWeights()
+    val texels = Vec.fill(4)(DecodedRgba())
+  }
+
   def decodeTexelWord(
       texelData: Bits,
       format: UInt,
@@ -137,22 +144,37 @@ case class TmuTexelDecoder(c: voodoo.Config) extends Component {
     )
   }
   val fetchPipe = io.sampleFetch.m2sPipe()
-
-  io.output << fetchPipe
+  val decodedPipe = fetchPipe
     .translateWith {
       val pass = fetchPipe.payload.passthrough
       val ncc = pass.nccTableSelect ? io.nccTables.table1 | io.nccTables.table0
-      val weights = Tmu.bilinearWeights(pass.ds, pass.dt)
-      val decoded = Seq.tabulate(4) { idx =>
-        decodeTexelWord(fetchPipe.payload.texels(idx), pass.format, ncc, paletteColors(idx))
+      val decodedFetch = DecodedFetch()
+      decodedFetch.passthrough := pass
+      decodedFetch.bilinear := fetchPipe.payload.bilinear
+      decodedFetch.weights := Tmu.bilinearWeights(pass.ds, pass.dt)
+      for (idx <- 0 until 4) {
+        decodedFetch.texels(idx) := decodeTexelWord(
+          fetchPipe.payload.texels(idx),
+          pass.format,
+          ncc,
+          paletteColors(idx)
+        )
       }
+      decodedFetch
+    }
+    .m2sPipe()
 
-      def channel(idx: Int, sel: DecodedRgba => UInt): UInt = sel(decoded(idx))
+  io.output << decodedPipe
+    .translateWith {
+      val pass = decodedPipe.payload.passthrough
+      val weights = decodedPipe.payload.weights
+
+      def channel(idx: Int, sel: DecodedRgba => UInt): UInt = sel(decodedPipe.payload.texels(idx))
 
       val result = Tmu.Output(c)
       result.requestId := pass.requestId
       result.texture.r := Mux(
-        fetchPipe.payload.bilinear,
+        decodedPipe.payload.bilinear,
         Tmu.blendChannel(
           weights,
           channel(0, _.r),
@@ -163,7 +185,7 @@ case class TmuTexelDecoder(c: voodoo.Config) extends Component {
         channel(0, _.r)
       )
       result.texture.g := Mux(
-        fetchPipe.payload.bilinear,
+        decodedPipe.payload.bilinear,
         Tmu.blendChannel(
           weights,
           channel(0, _.g),
@@ -174,7 +196,7 @@ case class TmuTexelDecoder(c: voodoo.Config) extends Component {
         channel(0, _.g)
       )
       result.texture.b := Mux(
-        fetchPipe.payload.bilinear,
+        decodedPipe.payload.bilinear,
         Tmu.blendChannel(
           weights,
           channel(0, _.b),
@@ -185,7 +207,7 @@ case class TmuTexelDecoder(c: voodoo.Config) extends Component {
         channel(0, _.b)
       )
       result.textureAlpha := Mux(
-        fetchPipe.payload.bilinear,
+        decodedPipe.payload.bilinear,
         Tmu.blendChannel(
           weights,
           channel(0, _.a),

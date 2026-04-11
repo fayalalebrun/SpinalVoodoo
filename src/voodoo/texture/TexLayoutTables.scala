@@ -46,40 +46,38 @@ object TexLayoutTables {
     val base2 = (cfg.texBaseAddr2 << 3).resize(22 bits)
     val base38 = (cfg.texBaseAddr38 << 3).resize(22 bits)
 
-    // Starting dimension bits: 256x256 base (8 bits each)
-    // Aspect ratio reduces the narrower dimension
-    val wBitsStart = UInt(4 bits)
-    val hBitsStart = UInt(4 bits)
-    wBitsStart := 8
-    hBitsStart := 8
-    when(cfg.tLOD_sIsWider) {
-      hBitsStart := (U(8, 4 bits) - cfg.tLOD_aspect.resize(4 bits)).resized
-    } otherwise {
-      wBitsStart := (U(8, 4 bits) - cfg.tLOD_aspect.resize(4 bits)).resized
-    }
-
     // Unrolled loop: compute per-LOD base and shift
     // We track offset as a UInt and accumulate (1 << (wBits + hBits + is16bit))
     var offsetExpr: UInt = U(0, 22 bits)
     var multibaseTailOffset: UInt = U(0, 22 bits)
     for (lod <- 0 until 9) {
-      // wBits and hBits at this LOD level (clamped to >= 0)
+      // Dimensions are powers of two. Aspect selects the narrower side reduction,
+      // while tLOD_sIsWider chooses whether S or T is the wider dimension.
+      val wideBits = U(scala.math.max(8 - lod, 0), 4 bits)
+      val narrowBits = UInt(4 bits)
+      switch(cfg.tLOD_aspect) {
+        is(U(0, 2 bits)) {
+          narrowBits := wideBits
+        }
+        is(U(1, 2 bits)) {
+          narrowBits := U(scala.math.max(7 - lod, 0), 4 bits)
+        }
+        is(U(2, 2 bits)) {
+          narrowBits := U(scala.math.max(6 - lod, 0), 4 bits)
+        }
+        default {
+          narrowBits := U(scala.math.max(5 - lod, 0), 4 bits)
+        }
+      }
+
       val wBits = UInt(4 bits)
       val hBits = UInt(4 bits)
-      if (lod == 0) {
-        wBits := wBitsStart
-        hBits := hBitsStart
-      } else {
-        when(wBitsStart > U(lod, 4 bits)) {
-          wBits := (wBitsStart - U(lod, 4 bits)).resized
-        } otherwise {
-          wBits := 0
-        }
-        when(hBitsStart > U(lod, 4 bits)) {
-          hBits := (hBitsStart - U(lod, 4 bits)).resized
-        } otherwise {
-          hBits := 0
-        }
+      when(cfg.tLOD_sIsWider) {
+        wBits := wideBits
+        hBits := narrowBits
+      } otherwise {
+        wBits := narrowBits
+        hBits := wideBits
       }
 
       val lodBase = UInt(22 bits)
@@ -100,7 +98,7 @@ object TexLayoutTables {
         }
       }
       tables.texBase(lod) := lodBase
-      tables.texShift(lod) := wBits
+      tables.texShift(lod) := cfg.tLOD_sIsWider ? wideBits | narrowBits
 
       // LOD area in bytes = 1 << (wBits + hBits + is16bit)
       // We compute this as a shift amount and add to offset for next LOD

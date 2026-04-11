@@ -73,6 +73,7 @@ case class RegisterBank(config: Config) extends Component {
 
   var texTablesRegOpt: Option[TexLayoutTables.Tables] = None
   var triangleTexTablesRegOpt: Option[TexLayoutTables.Tables] = None
+  private val texCoordsHiWidth = AFix(config.texCoordsHiFormat).raw.getWidth
 
   // Create BMB bus interface for RegIf - shared across all Areas
   // Address remapping (for bit 21 set) is handled by AddressRemapper before this
@@ -85,32 +86,32 @@ case class RegisterBank(config: Config) extends Component {
   private val trianglePrimitiveTraceId =
     if (config.trace.enabled) Reg(UInt(32 bits)) init (0) else null
 
-  private val floatShadowStartS = Reg(SInt(60 bits)) init (0)
-  private val floatShadowStartT = Reg(SInt(60 bits)) init (0)
+  private val floatShadowStartS = Reg(SInt(texCoordsHiWidth bits)) init (0)
+  private val floatShadowStartT = Reg(SInt(texCoordsHiWidth bits)) init (0)
   private val floatShadowStartW = Reg(SInt(60 bits)) init (0)
-  private val floatShadowDSdX = Reg(SInt(60 bits)) init (0)
-  private val floatShadowDTdX = Reg(SInt(60 bits)) init (0)
+  private val floatShadowDSdX = Reg(SInt(texCoordsHiWidth bits)) init (0)
+  private val floatShadowDTdX = Reg(SInt(texCoordsHiWidth bits)) init (0)
   private val floatShadowDWdX = Reg(SInt(60 bits)) init (0)
-  private val floatShadowDSdY = Reg(SInt(60 bits)) init (0)
-  private val floatShadowDTdY = Reg(SInt(60 bits)) init (0)
+  private val floatShadowDSdY = Reg(SInt(texCoordsHiWidth bits)) init (0)
+  private val floatShadowDTdY = Reg(SInt(texCoordsHiWidth bits)) init (0)
   private val floatShadowDWdY = Reg(SInt(60 bits)) init (0)
-  private val floatShadowStartA = Reg(SInt(60 bits)) init (0)
-  private val floatShadowDAdX = Reg(SInt(60 bits)) init (0)
-  private val floatShadowDAdY = Reg(SInt(60 bits)) init (0)
+  private val floatShadowStartA = Reg(SInt(texCoordsHiWidth bits)) init (0)
+  private val floatShadowDAdX = Reg(SInt(texCoordsHiWidth bits)) init (0)
+  private val floatShadowDAdY = Reg(SInt(texCoordsHiWidth bits)) init (0)
 
   private def setFloatShadowRaw(address: UInt, raw: SInt): Unit = {
     switch(address) {
-      is(U(0x030, 12 bits)) { floatShadowStartA := raw.resize(60 bits) }
-      is(U(0x034, 12 bits)) { floatShadowStartS := raw.resize(60 bits) }
-      is(U(0x038, 12 bits)) { floatShadowStartT := raw.resize(60 bits) }
+      is(U(0x030, 12 bits)) { floatShadowStartA := raw.resize(texCoordsHiWidth bits) }
+      is(U(0x034, 12 bits)) { floatShadowStartS := raw.resize(texCoordsHiWidth bits) }
+      is(U(0x038, 12 bits)) { floatShadowStartT := raw.resize(texCoordsHiWidth bits) }
       is(U(0x03c, 12 bits)) { floatShadowStartW := raw.resize(60 bits) }
-      is(U(0x050, 12 bits)) { floatShadowDAdX := raw.resize(60 bits) }
-      is(U(0x054, 12 bits)) { floatShadowDSdX := raw.resize(60 bits) }
-      is(U(0x058, 12 bits)) { floatShadowDTdX := raw.resize(60 bits) }
+      is(U(0x050, 12 bits)) { floatShadowDAdX := raw.resize(texCoordsHiWidth bits) }
+      is(U(0x054, 12 bits)) { floatShadowDSdX := raw.resize(texCoordsHiWidth bits) }
+      is(U(0x058, 12 bits)) { floatShadowDTdX := raw.resize(texCoordsHiWidth bits) }
       is(U(0x05c, 12 bits)) { floatShadowDWdX := raw.resize(60 bits) }
-      is(U(0x070, 12 bits)) { floatShadowDAdY := raw.resize(60 bits) }
-      is(U(0x074, 12 bits)) { floatShadowDSdY := raw.resize(60 bits) }
-      is(U(0x078, 12 bits)) { floatShadowDTdY := raw.resize(60 bits) }
+      is(U(0x070, 12 bits)) { floatShadowDAdY := raw.resize(texCoordsHiWidth bits) }
+      is(U(0x074, 12 bits)) { floatShadowDSdY := raw.resize(texCoordsHiWidth bits) }
+      is(U(0x078, 12 bits)) { floatShadowDTdY := raw.resize(texCoordsHiWidth bits) }
       is(U(0x07c, 12 bits)) { floatShadowDWdY := raw.resize(60 bits) }
     }
   }
@@ -140,17 +141,35 @@ case class RegisterBank(config: Config) extends Component {
       io.paletteWrite.payload.data := io.bus.cmd.data(23 downto 0)
     }
     switch(io.bus.cmd.address) {
-      is(U(0x030, 12 bits)) { floatShadowStartA := (io.bus.cmd.data.asSInt.resize(60 bits) |<< 18) }
-      is(U(0x034, 12 bits)) { floatShadowStartS := (io.bus.cmd.data.asSInt.resize(60 bits) |<< 12) }
-      is(U(0x038, 12 bits)) { floatShadowStartT := (io.bus.cmd.data.asSInt.resize(60 bits) |<< 12) }
+      is(U(0x030, 12 bits)) {
+        floatShadowStartA := (io.bus.cmd.data.asSInt.resize(texCoordsHiWidth bits) |<< 18)
+      }
+      is(U(0x034, 12 bits)) {
+        floatShadowStartS := (io.bus.cmd.data.asSInt.resize(texCoordsHiWidth bits) |<< 12)
+      }
+      is(U(0x038, 12 bits)) {
+        floatShadowStartT := (io.bus.cmd.data.asSInt.resize(texCoordsHiWidth bits) |<< 12)
+      }
       is(U(0x03c, 12 bits)) { floatShadowStartW := io.bus.cmd.data.asSInt.resize(60 bits) }
-      is(U(0x050, 12 bits)) { floatShadowDAdX := (io.bus.cmd.data.asSInt.resize(60 bits) |<< 18) }
-      is(U(0x054, 12 bits)) { floatShadowDSdX := (io.bus.cmd.data.asSInt.resize(60 bits) |<< 12) }
-      is(U(0x058, 12 bits)) { floatShadowDTdX := (io.bus.cmd.data.asSInt.resize(60 bits) |<< 12) }
+      is(U(0x050, 12 bits)) {
+        floatShadowDAdX := (io.bus.cmd.data.asSInt.resize(texCoordsHiWidth bits) |<< 18)
+      }
+      is(U(0x054, 12 bits)) {
+        floatShadowDSdX := (io.bus.cmd.data.asSInt.resize(texCoordsHiWidth bits) |<< 12)
+      }
+      is(U(0x058, 12 bits)) {
+        floatShadowDTdX := (io.bus.cmd.data.asSInt.resize(texCoordsHiWidth bits) |<< 12)
+      }
       is(U(0x05c, 12 bits)) { floatShadowDWdX := io.bus.cmd.data.asSInt.resize(60 bits) }
-      is(U(0x070, 12 bits)) { floatShadowDAdY := (io.bus.cmd.data.asSInt.resize(60 bits) |<< 18) }
-      is(U(0x074, 12 bits)) { floatShadowDSdY := (io.bus.cmd.data.asSInt.resize(60 bits) |<< 12) }
-      is(U(0x078, 12 bits)) { floatShadowDTdY := (io.bus.cmd.data.asSInt.resize(60 bits) |<< 12) }
+      is(U(0x070, 12 bits)) {
+        floatShadowDAdY := (io.bus.cmd.data.asSInt.resize(texCoordsHiWidth bits) |<< 18)
+      }
+      is(U(0x074, 12 bits)) {
+        floatShadowDSdY := (io.bus.cmd.data.asSInt.resize(texCoordsHiWidth bits) |<< 12)
+      }
+      is(U(0x078, 12 bits)) {
+        floatShadowDTdY := (io.bus.cmd.data.asSInt.resize(texCoordsHiWidth bits) |<< 12)
+      }
       is(U(0x07c, 12 bits)) { floatShadowDWdY := io.bus.cmd.data.asSInt.resize(60 bits) }
     }
   }
@@ -443,12 +462,12 @@ case class RegisterBank(config: Config) extends Component {
 
   private def captureTriangleHiTexCoords(useFloatShadow: Bool): TriangleSetup.HiTexCoords = {
     val hi = TriangleSetup.HiTexCoords(config)
-    val startSInt = triangleGeometry.startS.raw.asSInt.resize(60) |<< 12
-    val startTInt = triangleGeometry.startT.raw.asSInt.resize(60) |<< 12
-    val dSdXInt = triangleGeometry.dSdX.raw.asSInt.resize(60) |<< 12
-    val dTdXInt = triangleGeometry.dTdX.raw.asSInt.resize(60) |<< 12
-    val dSdYInt = triangleGeometry.dSdY.raw.asSInt.resize(60) |<< 12
-    val dTdYInt = triangleGeometry.dTdY.raw.asSInt.resize(60) |<< 12
+    val startSInt = triangleGeometry.startS.raw.asSInt.resize(texCoordsHiWidth) |<< 12
+    val startTInt = triangleGeometry.startT.raw.asSInt.resize(texCoordsHiWidth) |<< 12
+    val dSdXInt = triangleGeometry.dSdX.raw.asSInt.resize(texCoordsHiWidth) |<< 12
+    val dTdXInt = triangleGeometry.dTdX.raw.asSInt.resize(texCoordsHiWidth) |<< 12
+    val dSdYInt = triangleGeometry.dSdY.raw.asSInt.resize(texCoordsHiWidth) |<< 12
+    val dTdYInt = triangleGeometry.dTdY.raw.asSInt.resize(texCoordsHiWidth) |<< 12
 
     hi.sStart.raw := Mux(
       useFloatShadow,
@@ -469,9 +488,9 @@ case class RegisterBank(config: Config) extends Component {
 
   private def captureTriangleHiAlpha(useFloatShadow: Bool): TriangleSetup.HiAlpha = {
     val hi = TriangleSetup.HiAlpha(config)
-    val startAInt = triangleGeometry.startA.raw.asSInt.resize(60) |<< 18
-    val dAdXInt = triangleGeometry.dAdX.raw.asSInt.resize(60) |<< 18
-    val dAdYInt = triangleGeometry.dAdY.raw.asSInt.resize(60) |<< 18
+    val startAInt = triangleGeometry.startA.raw.asSInt.resize(texCoordsHiWidth) |<< 18
+    val dAdXInt = triangleGeometry.dAdX.raw.asSInt.resize(texCoordsHiWidth) |<< 18
+    val dAdYInt = triangleGeometry.dAdY.raw.asSInt.resize(texCoordsHiWidth) |<< 18
 
     hi.start.raw := Mux(
       useFloatShadow,
@@ -1047,11 +1066,13 @@ case class RegisterBank(config: Config) extends Component {
       .field(Bits(32 bits), AccessType.WO, 0, "Max RGB difference for video filtering")
       .asOutput()
 
-    // debugBusy (0x240) - Internal busy-source debug bitfield
-    val debugBusy = busif
-      .newRegAt(0x240, "debugBusy")
-      .field(Bits(32 bits), AccessType.RO, 0, "Internal pipeline busy-source debug bitfield")
-    debugBusy := io.debug.busy.bitsValue
+    GenerationFlags.simulation {
+      // debugBusy (0x240) - Internal busy-source debug bitfield
+      val debugBusy = busif
+        .newRegAt(0x240, "debugBusy")
+        .field(Bits(32 bits), AccessType.RO, 0, "Internal pipeline busy-source debug bitfield")
+      debugBusy := io.debug.busy.bitsValue
+    }
 
     // fbiInit5 (0x244) - Multi-chip config
     val fbiInit5Reg = busif.newRegAtWithCategory(0x244, "fbiInit5", RegisterCategory.bypassFifo)
@@ -1070,16 +1091,18 @@ case class RegisterBank(config: Config) extends Component {
     val fbiInit7_cmdFifoEnable =
       fbiInit7Reg.fieldAt(8, Bool(), AccessType.RW, 0, "Enable command FIFO mode [V2+]").asOutput()
 
-    // writePathDebug (0x250) - Write-side pipeline and arbiter handshake debug
-    val writePathDebugReg = busif
-      .newRegAt(0x250, "writePathDebug")
-      .field(
-        Bits(32 bits),
-        AccessType.RO,
-        0,
-        "Write-side pipeline and arbiter handshake debug bitfield"
-      )
-    writePathDebugReg := io.debug.writePath.bitsValue
+    GenerationFlags.simulation {
+      // writePathDebug (0x250) - Write-side pipeline and arbiter handshake debug
+      val writePathDebugReg = busif
+        .newRegAt(0x250, "writePathDebug")
+        .field(
+          Bits(32 bits),
+          AccessType.RO,
+          0,
+          "Write-side pipeline and arbiter handshake debug bitfield"
+        )
+      writePathDebugReg := io.debug.writePath.bitsValue
+    }
   }
 
   // ========================================================================

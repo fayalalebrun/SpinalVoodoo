@@ -157,6 +157,13 @@ case class FramebufferAccess(c: Config) extends Component {
     val passthrough = Passthrough()
   }
 
+  case class BlendPrep() extends Bundle {
+    val passthrough = Passthrough()
+    val blendDestColor = Color.u8()
+    val srcScale = Color.u8()
+    val dstScale = Color.u8()
+  }
+
   val requestStream = io.input.translateWith(request)
   requestStream.valid.simPublic()
   requestStream.ready.simPublic()
@@ -362,8 +369,20 @@ case class FramebufferAccess(c: Config) extends Component {
     isSrc = false,
     colorBeforeFog
   )
-  val srcFactor = applyBlendScale(srcColor, srcScale)
-  val dstFactor = applyBlendScale(blendDestColor, dstScale)
+  val blendPrep = afterDepthTestPiped
+    .translateWith {
+      val prep = BlendPrep()
+      prep.passthrough := afterPdata
+      prep.blendDestColor := blendDestColor
+      prep.srcScale := srcScale
+      prep.dstScale := dstScale
+      prep
+    }
+    .m2sPipe()
+
+  val blendPdata = blendPrep.payload.passthrough
+  val srcFactor = applyBlendScale(blendPdata.color, blendPrep.payload.srcScale)
+  val dstFactor = applyBlendScale(blendPrep.payload.blendDestColor, blendPrep.payload.dstScale)
 
   // Sum and clamp to [0, 255]
   def clampAdd(a: UInt, b: UInt): UInt = {
@@ -378,7 +397,7 @@ case class FramebufferAccess(c: Config) extends Component {
   // Step 5: Output
   // ========================================================================
 
-  io.output.translateFrom(afterDepthTestPiped) { (out, in) =>
+  io.output.translateFrom(blendPrep) { (out, in) =>
     val pd = in.passthrough
     out.coords := pd.coords
     when(pd.alphaMode.alphaBlendEnable) {

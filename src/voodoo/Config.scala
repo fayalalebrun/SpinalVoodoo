@@ -39,7 +39,7 @@ object Config {
     vColorFormat = SQ(24, 12), // Datasheet: 12.12 format = 12 integer + 12 frac = SQ(24, 12)
     vDepthFormat = SQ(32, 12), // Datasheet: 20.12 format = 20 integer + 12 frac = SQ(32, 12)
     texCoordsFormat = SQ(32, 18), // Datasheet: 14.18 format = 14 integer + 18 frac = SQ(32, 18)
-    texCoordsHiFormat = SQ(60, 30),
+    texCoordsHiFormat = SQ(46, 30),
     wFormat = SQ(32, 30), // Datasheet: 2.30 format = 2 integer + 30 frac = SQ(32, 30)
     // Internal interpolation accumulators use a wider range than register width to avoid wrap
     // in long spans. Fractional precision remains unchanged.

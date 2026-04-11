@@ -16,6 +16,9 @@ case class TriangleSetup(c: Config, formalStrong: Boolean = false) extends Compo
   val state = RegInit(SetupState.Idle)
   val pending = Reg(TriangleSetup.Input(c))
   val outputReg = Reg(TriangleSetup.Output(c))
+  val edgeStartReg = Reg(Vec.fill(3)(AFix(c.coefficientFormat)))
+  val xCenterReg = Reg(AFix(c.vertexFormat))
+  val yCenterReg = Reg(AFix(c.vertexFormat))
   val iterIndex = Reg(UInt(3 bits)) init (0)
   val dxMagWork = Reg(UInt(16 bits)) init (0)
   val dyMagWork = Reg(UInt(16 bits)) init (0)
@@ -43,7 +46,6 @@ case class TriangleSetup(c: Config, formalStrong: Boolean = false) extends Compo
 
   def copySetupOutput(dst: TriangleSetup.Output, src: TriangleSetup.Output): Unit = {
     dst.coeffs := src.coeffs
-    dst.edgeStart := src.edgeStart
     dst.xrange := src.xrange
     dst.yrange := src.yrange
     dst.grads.all.zip(src.grads.all).foreach { case (d, s) =>
@@ -212,6 +214,7 @@ case class TriangleSetup(c: Config, formalStrong: Boolean = false) extends Compo
   o.payload.texHi.sStart.raw := hiSStart.resultBits
   o.payload.texHi.tStart.raw := hiTStart.resultBits
   o.payload.hiAlpha.start.raw := hiAlphaStart.resultBits
+  o.payload.edgeStart := edgeStartReg
 
   when(state === SetupState.Idle && i.fire) {
     copySetupInput(pending, i.payload)
@@ -264,10 +267,6 @@ case class TriangleSetup(c: Config, formalStrong: Boolean = false) extends Compo
     halfPixel := 0.5
     val xCenter = (xrange0 + halfPixel).fixTo(c.vertexFormat)
     val yCenter = (yrange0 + halfPixel).fixTo(c.vertexFormat)
-    val edgeStartVec = Vec(AFix(c.coefficientFormat), 3)
-    coeffsVec.zipWithIndex.foreach { case (coeff, idx) =>
-      edgeStartVec(idx) := (coeff.a * xCenter + coeff.b * yCenter + coeff.c).truncated
-    }
 
     val paramAdjust = input.config.fbzColorPath.paramAdjust
     val fracAx = tri(0)(0).raw(3 downto 0).asUInt
@@ -283,7 +282,6 @@ case class TriangleSetup(c: Config, formalStrong: Boolean = false) extends Compo
     val dyPix = (startYPix - aYPix).resize(16 bits)
 
     outputReg.coeffs := coeffsVec
-    outputReg.edgeStart := edgeStartVec
     outputReg.xrange(0) := xrange0
     outputReg.xrange(1) := xrange1
     outputReg.yrange(0) := yrange0
@@ -292,15 +290,10 @@ case class TriangleSetup(c: Config, formalStrong: Boolean = false) extends Compo
       outG.start.raw := inG.start.raw
       outG.d := inG.d
     }
-    outputReg.texHi.sStart.raw := input.texHi.sStart.raw
-    outputReg.texHi.tStart.raw := input.texHi.tStart.raw
-    outputReg.texHi.dSdX := input.texHi.dSdX
-    outputReg.texHi.dTdX := input.texHi.dTdX
-    outputReg.texHi.dSdY := input.texHi.dSdY
-    outputReg.texHi.dTdY := input.texHi.dTdY
-    outputReg.hiAlpha.start.raw := input.hiAlpha.start.raw
-    outputReg.hiAlpha.dAdX := input.hiAlpha.dAdX
-    outputReg.hiAlpha.dAdY := input.hiAlpha.dAdY
+    outputReg.texHi := input.texHi
+    outputReg.hiAlpha := input.hiAlpha
+    xCenterReg := xCenter
+    yCenterReg := yCenter
     outputReg.config := input.config
     if (c.trace.enabled) copyTrace(outputReg.trace, input.trace)
 
@@ -314,6 +307,14 @@ case class TriangleSetup(c: Config, formalStrong: Boolean = false) extends Compo
   }
 
   when(state === SetupState.Iterate) {
+    when(iterIndex === 0) {
+      val edgeStartVec = Vec(AFix(c.coefficientFormat), 3)
+      outputReg.coeffs.zipWithIndex.foreach { case (coeff, idx) =>
+        edgeStartVec(idx) := (coeff.a * xCenterReg + coeff.b * yCenterReg + coeff.c).truncated
+      }
+      edgeStartReg := edgeStartVec
+    }
+
     val dxChunk = dxMagWork(1 downto 0)
     val dyChunk = dyMagWork(1 downto 0)
     allStarts.foreach(_.step(dxChunk, dyChunk))

@@ -50,10 +50,10 @@ case class Tmu(c: voodoo.Config) extends Component {
   import Tmu._
 
   val lookupTables = new Area {
-    val recipTable = Vec(UInt(17 bits), 257)
-    for (i <- 0 to 256) {
-      recipTable(i) := U(scala.math.round((1 << 24).toDouble / (256.0 + i)).toLong, 17 bits)
+    val recipTableValues = Array.tabulate(257) { i =>
+      U(scala.math.round((1 << 24).toDouble / (256.0 + i)).toLong, 17 bits)
     }
+    val recipTable = Mem(UInt(17 bits), recipTableValues)
 
     val logTableValues: Array[Int] = Array(
       0x00, 0x01, 0x02, 0x04, 0x05, 0x07, 0x08, 0x09, 0x0b, 0x0c, 0x0e, 0x0f, 0x10, 0x12, 0x13,
@@ -74,10 +74,7 @@ case class Tmu(c: voodoo.Config) extends Component {
       0xe8, 0xe9, 0xea, 0xeb, 0xeb, 0xec, 0xed, 0xee, 0xef, 0xef, 0xf0, 0xf1, 0xf2, 0xf2, 0xf3,
       0xf4, 0xf5, 0xf5, 0xf6, 0xf7, 0xf7, 0xf8, 0xf9, 0xfa, 0xfa, 0xfb, 0xfc, 0xfd, 0xfd, 0xfe, 0xff
     )
-    val logTable = Vec(UInt(8 bits), 256)
-    for (i <- 0 until 256) {
-      logTable(i) := U(logTableValues(i), 8 bits)
-    }
+    val logTable = Mem(UInt(8 bits), logTableValues.map(v => U(v, 8 bits)))
   }
   val recipTable = lookupTables.recipTable
   val logTable = lookupTables.logTable
@@ -101,8 +98,8 @@ case class Tmu(c: voodoo.Config) extends Component {
         val norm = (absOow |<< clz).resize(64 bits)
         val index = norm(62 downto 55)
         val frac = norm(54 downto 47)
-        val base = recipTable(index.resize(9 bits))
-        val next = recipTable((index +^ U(1)).resize(9 bits))
+        val base = recipTable.readAsync(index.resize(9 bits))
+        val next = recipTable.readAsync((index +^ U(1)).resize(9 bits))
         val out = Tmu.FrontRecipPrep(c)
         out.s := sow
         out.t := tow
@@ -110,7 +107,7 @@ case class Tmu(c: voodoo.Config) extends Component {
         out.base := base
         out.diff := base - next
         out.frac := frac
-        out.logFrac := logTable(index)
+        out.logFrac := logTable.readAsync(index)
         out.msbPos := msbPos
         out.validOow := !oowRaw.msb && (absOow =/= 0)
         out.perspectiveEnable := texMode.perspectiveEnable
@@ -238,7 +235,7 @@ case class Tmu(c: voodoo.Config) extends Component {
       val shifted = (stageGrad.payload.tempLOD >> shiftAmt).resize(16 bits)
       val lodIndex = shifted(7 downto 0)
       val rawLod = ((False ## msbPos64).asSInt.resize(16 bits) << 8).resize(16 bits) +
-        (False ## U(0, 8 bits) ## logTable(lodIndex)).asSInt.resize(16 bits) -
+        (False ## U(0, 8 bits) ## logTable.readAsync(lodIndex)).asSInt.resize(16 bits) -
         S(36 * 256, 16 bits)
       baseLod_8_8 := (rawLod >> 2).resize(16 bits)
     }

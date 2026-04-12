@@ -16,9 +16,6 @@ case class TriangleSetup(c: Config, formalStrong: Boolean = false) extends Compo
   val state = RegInit(SetupState.Idle)
   val pending = Reg(TriangleSetup.Input(c))
   val outputReg = Reg(TriangleSetup.Output(c))
-  val edgeStartReg = Reg(Vec.fill(3)(AFix(c.coefficientFormat)))
-  val xCenterReg = Reg(AFix(c.vertexFormat))
-  val yCenterReg = Reg(AFix(c.vertexFormat))
   val iterIndex = Reg(UInt(3 bits)) init (0)
   val dxMagWork = Reg(UInt(16 bits)) init (0)
   val dyMagWork = Reg(UInt(16 bits)) init (0)
@@ -46,6 +43,7 @@ case class TriangleSetup(c: Config, formalStrong: Boolean = false) extends Compo
 
   def copySetupOutput(dst: TriangleSetup.Output, src: TriangleSetup.Output): Unit = {
     dst.coeffs := src.coeffs
+    dst.edgeStart := src.edgeStart
     dst.xrange := src.xrange
     dst.yrange := src.yrange
     dst.grads.all.zip(src.grads.all).foreach { case (d, s) =>
@@ -214,7 +212,6 @@ case class TriangleSetup(c: Config, formalStrong: Boolean = false) extends Compo
   o.payload.texHi.sStart.raw := hiSStart.resultBits
   o.payload.texHi.tStart.raw := hiTStart.resultBits
   o.payload.hiAlpha.start.raw := hiAlphaStart.resultBits
-  o.payload.edgeStart := edgeStartReg
 
   when(state === SetupState.Idle && i.fire) {
     copySetupInput(pending, i.payload)
@@ -267,6 +264,10 @@ case class TriangleSetup(c: Config, formalStrong: Boolean = false) extends Compo
     halfPixel := 0.5
     val xCenter = (xrange0 + halfPixel).fixTo(c.vertexFormat)
     val yCenter = (yrange0 + halfPixel).fixTo(c.vertexFormat)
+    val edgeStartVec = Vec(AFix(c.coefficientFormat), 3)
+    coeffsVec.zipWithIndex.foreach { case (coeff, idx) =>
+      edgeStartVec(idx) := (coeff.a * xCenter + coeff.b * yCenter + coeff.c).truncated
+    }
 
     val paramAdjust = input.config.fbzColorPath.paramAdjust
     val fracAx = tri(0)(0).raw(3 downto 0).asUInt
@@ -292,8 +293,7 @@ case class TriangleSetup(c: Config, formalStrong: Boolean = false) extends Compo
     }
     outputReg.texHi := input.texHi
     outputReg.hiAlpha := input.hiAlpha
-    xCenterReg := xCenter
-    yCenterReg := yCenter
+    outputReg.edgeStart := edgeStartVec
     outputReg.config := input.config
     if (c.trace.enabled) copyTrace(outputReg.trace, input.trace)
 
@@ -307,14 +307,6 @@ case class TriangleSetup(c: Config, formalStrong: Boolean = false) extends Compo
   }
 
   when(state === SetupState.Iterate) {
-    when(iterIndex === 0) {
-      val edgeStartVec = Vec(AFix(c.coefficientFormat), 3)
-      outputReg.coeffs.zipWithIndex.foreach { case (coeff, idx) =>
-        edgeStartVec(idx) := (coeff.a * xCenterReg + coeff.b * yCenterReg + coeff.c).truncated
-      }
-      edgeStartReg := edgeStartVec
-    }
-
     val dxChunk = dxMagWork(1 downto 0)
     val dyChunk = dyMagWork(1 downto 0)
     allStarts.foreach(_.step(dxChunk, dyChunk))
@@ -417,7 +409,7 @@ object TriangleSetup {
 
   case class TmuConfig(c: Config) extends Bundle {
     val textureEnable = Bool()
-    val textureMode = Bits(32 bits)
+    val textureMode = Bits(12 bits)
     val texBaseAddr = UInt(24 bits)
     val texBaseAddr1 = UInt(24 bits)
     val texBaseAddr2 = UInt(24 bits)
@@ -465,12 +457,12 @@ object TriangleSetup {
     val clipHighY = UInt(10 bits)
 
     // TMU registers (single TMU support - Voodoo 1 level functionality)
-    val tmuTextureMode = Bits(32 bits) // Texture mode (format, filtering, clamp/wrap)
+    val tmuTextureMode = Bits(12 bits) // Texture mode bits used by the pixel/TMU path
     val tmuTexBaseAddr = UInt(24 bits)
     val tmuTexBaseAddr1 = UInt(24 bits)
     val tmuTexBaseAddr2 = UInt(24 bits)
     val tmuTexBaseAddr38 = UInt(24 bits)
-    val tmuTLOD = Bits(27 bits) // tLOD register for mipmapping
+    val tmuTLOD = Bits(27 bits)
     // TMU texture coordinate gradients for LOD calculation
     val tmudSdX = AFix(c.texCoordsFormat)
     val tmudTdX = AFix(c.texCoordsFormat)

@@ -172,7 +172,6 @@ case class TmuTexelDecoder(c: voodoo.Config) extends Component {
       def channel(idx: Int, sel: DecodedRgba => UInt): UInt = sel(decodedPipe.payload.texels(idx))
 
       val result = Tmu.Output(c)
-      result.requestId := pass.requestId
       result.texture.r := Mux(
         decodedPipe.payload.bilinear,
         Tmu.blendChannel(

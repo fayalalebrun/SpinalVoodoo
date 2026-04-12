@@ -549,12 +549,12 @@ case class RegisterBank(config: Config) extends Component {
     cfg.clipLowY := renderConfig.clipLowY
     cfg.clipHighY := renderConfig.clipHighY
 
-    cfg.tmuTextureMode := tmuConfig.textureMode
+    cfg.tmuTextureMode := tmuConfig.textureMode(11 downto 0)
     cfg.tmuTexBaseAddr := tmuConfig.texBaseAddr
     cfg.tmuTexBaseAddr1 := tmuConfig.texBaseAddr1
     cfg.tmuTexBaseAddr2 := tmuConfig.texBaseAddr2
     cfg.tmuTexBaseAddr38 := tmuConfig.texBaseAddr38
-    cfg.tmuTLOD := tmuConfig.tLOD.resized
+    cfg.tmuTLOD := tmuConfig.tLOD(26 downto 0)
     cfg.tmudSdX.raw := g.dSdX.asBits
     cfg.tmudTdX.raw := g.dTdX.asBits
     cfg.tmudSdY.raw := g.dSdY.asBits
@@ -1171,11 +1171,9 @@ case class RegisterBank(config: Config) extends Component {
     texCfg.tLOD_aspect := tmuConfig.tLOD(22 downto 21).asUInt
     texCfg.tLOD_sIsWider := tmuConfig.tLOD(20)
     texCfg.tLOD_multibase := tmuConfig.tLOD(24)
-    val texTablesReg = Reg(TexLayoutTables.Tables())
     val triangleTexTablesReg = Reg(TexLayoutTables.Tables())
-    texTablesReg := TexLayoutTables.compute(texCfg)
-    triangleTexTablesReg := texTablesReg
-    texTablesRegOpt = Some(texTablesReg)
+    triangleTexTablesReg := TexLayoutTables.compute(texCfg)
+    texTablesRegOpt = Some(triangleTexTablesReg)
     triangleTexTablesRegOpt = Some(triangleTexTablesReg)
   }
 

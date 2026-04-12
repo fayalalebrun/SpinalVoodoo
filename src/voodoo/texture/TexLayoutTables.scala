@@ -70,16 +70,6 @@ object TexLayoutTables {
         }
       }
 
-      val wBits = UInt(4 bits)
-      val hBits = UInt(4 bits)
-      when(cfg.tLOD_sIsWider) {
-        wBits := wideBits
-        hBits := narrowBits
-      } otherwise {
-        wBits := narrowBits
-        hBits := wideBits
-      }
-
       val lodBase = UInt(22 bits)
       lodBase := base0 + offsetExpr
       if (lod == 1) {
@@ -102,7 +92,7 @@ object TexLayoutTables {
 
       // LOD area in bytes = 1 << (wBits + hBits + is16bit)
       // We compute this as a shift amount and add to offset for next LOD
-      val shiftAmount = (wBits +^ hBits +^ is16bit.asUInt.resize(5 bits)).resize(5 bits)
+      val shiftAmount = (wideBits +^ narrowBits +^ is16bit.asUInt.resize(5 bits)).resize(5 bits)
       val lodSize = (U(1, 22 bits) |<< shiftAmount).resize(22 bits)
       tables.texEnd(lod) := (lodBase + lodSize).resize(22 bits)
       offsetExpr = (offsetExpr + lodSize).resize(22 bits)

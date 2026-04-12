@@ -492,16 +492,9 @@ case class Tmu(c: voodoo.Config) extends Component {
     if (c.trace.enabled) stageB.payload.meta.trace else null
   )
 
-  val sampleRequestBase = stageB
+  val sampleRequestPrep = stageB
     .translateWith {
-      val req = Tmu.SampleRequest(c)
-      val startupTexBase = (0 until 9).map(stageB.payload.meta.config.texTables.texBase(_))
-      val startupTexEnd = Tmu.correctedTexEnd(
-        startupTexBase,
-        (0 until 9).map(stageB.payload.meta.config.texTables.texEnd(_)),
-        is16BitFormat
-      )
-      val startupTexShift = (0 until 9).map(stageB.payload.meta.config.texTables.texShift(_))
+      val req = Tmu.SampleRequestPrep(c)
       val tapLineBase = Vec(UInt(22 bits), 4)
       tapLineBase(0) := bilinearEnable ? Tmu.lineBase22Of(
         biAddr0,
@@ -527,18 +520,52 @@ case class Tmu(c: voodoo.Config) extends Component {
         req.texTables := stageB.payload.meta.config.texTables
       }
       for (i <- 0 until 4) {
+        req.tapLineBase(i) := tapLineBase(i)
+      }
+      req.bilinear := bilinearEnable
+      req.passthrough := inputPassthrough
+      req
+    }
+    .stage()
+  val sampleRequestBase = sampleRequestPrep
+    .translateWith {
+      val req = Tmu.SampleRequest(c)
+      val startupTexBase = (0 until 9).map(sampleRequestPrep.payload.texTables.texBase(_))
+      val startupTexEnd = Tmu.correctedTexEnd(
+        startupTexBase,
+        (0 until 9).map(sampleRequestPrep.payload.texTables.texEnd(_)),
+        sampleRequestPrep.payload.is16Bit
+      )
+      val startupTexShift = (0 until 9).map(sampleRequestPrep.payload.texTables.texShift(_))
+      req.pointAddr := sampleRequestPrep.payload.pointAddr
+      req.biAddr0 := sampleRequestPrep.payload.biAddr0
+      req.biAddr1 := sampleRequestPrep.payload.biAddr1
+      req.biAddr2 := sampleRequestPrep.payload.biAddr2
+      req.biAddr3 := sampleRequestPrep.payload.biAddr3
+      req.pointBankSel := sampleRequestPrep.payload.pointBankSel
+      req.biBankSel0 := sampleRequestPrep.payload.biBankSel0
+      req.biBankSel1 := sampleRequestPrep.payload.biBankSel1
+      req.biBankSel2 := sampleRequestPrep.payload.biBankSel2
+      req.biBankSel3 := sampleRequestPrep.payload.biBankSel3
+      req.lodBase := sampleRequestPrep.payload.lodBase
+      req.lodShift := sampleRequestPrep.payload.lodShift
+      req.is16Bit := sampleRequestPrep.payload.is16Bit
+      if (c.packedTexLayout) {
+        req.texTables := sampleRequestPrep.payload.texTables
+      }
+      for (i <- 0 until 4) {
         req.tapStartupDecode(i) := Tmu.packedStartupDecode4(
-          tapLineBase(i),
-          is16BitFormat,
-          packedLodBase,
-          packedLodShift,
+          sampleRequestPrep.payload.tapLineBase(i),
+          sampleRequestPrep.payload.is16Bit,
+          sampleRequestPrep.payload.lodBase,
+          sampleRequestPrep.payload.lodShift,
           startupTexBase,
           startupTexEnd,
           startupTexShift
         )
       }
-      req.bilinear := bilinearEnable
-      req.passthrough := inputPassthrough
+      req.bilinear := sampleRequestPrep.payload.bilinear
+      req.passthrough := sampleRequestPrep.payload.passthrough
       req
     }
     .m2sPipe()
@@ -955,6 +982,26 @@ object Tmu {
     val is16Bit = Bool()
     val texTables = if (c.packedTexLayout) TexLayoutTables.Tables() else null
     val tapStartupDecode = Vec(PackedStartupDecode(), 4)
+    val bilinear = Bool()
+    val passthrough = TmuPassthrough(c)
+  }
+
+  case class SampleRequestPrep(c: voodoo.Config) extends Bundle {
+    val pointAddr = UInt(c.addressWidth.value bits)
+    val biAddr0 = UInt(c.addressWidth.value bits)
+    val biAddr1 = UInt(c.addressWidth.value bits)
+    val biAddr2 = UInt(c.addressWidth.value bits)
+    val biAddr3 = UInt(c.addressWidth.value bits)
+    val pointBankSel = UInt(2 bits)
+    val biBankSel0 = UInt(2 bits)
+    val biBankSel1 = UInt(2 bits)
+    val biBankSel2 = UInt(2 bits)
+    val biBankSel3 = UInt(2 bits)
+    val lodBase = UInt(c.addressWidth.value bits)
+    val lodShift = UInt(4 bits)
+    val is16Bit = Bool()
+    val texTables = if (c.packedTexLayout) TexLayoutTables.Tables() else null
+    val tapLineBase = Vec(UInt(22 bits), 4)
     val bilinear = Bool()
     val passthrough = TmuPassthrough(c)
   }

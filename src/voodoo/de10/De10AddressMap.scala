@@ -22,7 +22,11 @@ object De10AddressMap {
   // offsets; the DE10 memory backend expands them to 32-bit physical
   // addresses in this carveout.
   val hpsDdrBytes = 0x40000000
-  val ddrCarveoutBytes = 16 * 1024 * 1024
+  // The current board software still boots Linux with `mem=1008M`, leaving the
+  // top 16 MiB out of general RAM. Keep the active FPGA window to the minimum
+  // footprint the design needs (4 MiB framebuffer + 8 MiB texture) so we can
+  // test whether the remaining resets are sensitive to the exact DDR region.
+  val ddrCarveoutBytes = 12 * 1024 * 1024
   val ddrBase = hpsDdrBytes - ddrCarveoutBytes
   val fbMemBase = ddrBase
   val texMemBase = fbMemBase + fbMemBytes

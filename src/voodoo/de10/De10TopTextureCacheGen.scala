@@ -6,6 +6,7 @@ object De10TopTextureCacheGen extends App {
   val config = Config
     .voodoo1()
     .copy(
+      useFbWriteBuffer = true,
       useTexFillCache = true,
       texFillLineWords = 32,
       texFillCacheSlots = 64,

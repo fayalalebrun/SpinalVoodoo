@@ -122,6 +122,16 @@ static int env_int(const char* name, int fallback) {
   return (int)parsed;
 }
 
+static int clamp_int(int value, int min_value, int max_value) {
+  if (value < min_value) {
+    return min_value;
+  }
+  if (value > max_value) {
+    return max_value;
+  }
+  return value;
+}
+
 static void print_case_begin(const char* group, const char* label) {
   printf("case-begin group=%s shape=%s\n", group, label);
 }
@@ -578,7 +588,8 @@ int main(void) {
   const double clear_seconds = env_seconds("SST1PERF_CLEAR_SECONDS", DEFAULT_CLEAR_TARGET_SECONDS);
   const int max_cases = env_int("SST1PERF_MAX_CASES", 4);
   const int mode_mask = env_int("SST1PERF_MODE_MASK", 0x0f);
-  const int shape_count = (max_cases < 4) ? max_cases : 4;
+  const int case_start = clamp_int(env_int("SST1PERF_CASE_START", 1) - 1, 0, 3);
+  const int shape_count = clamp_int(max_cases, 0, 4 - case_start);
 
   setvbuf(stdout, NULL, _IONBF, 0);
   setvbuf(stderr, NULL, _IONBF, 0);
@@ -611,10 +622,10 @@ int main(void) {
   printf("board_count=%d type=%d\n", hwconfig.num_sst, hwconfig.SSTs[0].type);
   printf("resolution=640x480 refresh=60Hz target_seconds=%.2f clear_seconds=%.2f\n",
          target_seconds, clear_seconds);
-  printf("mode_mask=0x%x shape_count=%d\n", mode_mask, shape_count);
+  printf("mode_mask=0x%x case_start=%d shape_count=%d\n", mode_mask, case_start + 1, shape_count);
   printf("\nTriangles\n");
   if (mode_mask & 0x1) {
-    for (i = 0; i < shape_count; ++i) {
+    for (i = case_start; i < case_start + shape_count; ++i) {
       BenchResult result;
       print_case_begin("flat", shapes[i].label);
       result = run_triangle_bench(shapes[i].label,
@@ -627,7 +638,7 @@ int main(void) {
     }
   }
   if (mode_mask & 0x2) {
-    for (i = 0; i < shape_count; ++i) {
+    for (i = case_start; i < case_start + shape_count; ++i) {
       BenchResult result;
       print_case_begin("gouraud_fog_alpha_z", random_shapes[i].label);
       result = run_triangle_bench(random_shapes[i].label,
@@ -640,7 +651,7 @@ int main(void) {
     }
   }
   if (mode_mask & 0x4) {
-    for (i = 0; i < shape_count; ++i) {
+    for (i = case_start; i < case_start + shape_count; ++i) {
       BenchResult result;
       print_case_begin("textured_fog", random_shapes[i].label);
       result = run_triangle_bench(random_shapes[i].label,
@@ -653,7 +664,7 @@ int main(void) {
     }
   }
   if (mode_mask & 0x8) {
-    for (i = 0; i < shape_count; ++i) {
+    for (i = case_start; i < case_start + shape_count; ++i) {
       BenchResult result;
       print_case_begin("textured_fog_alpha_z", random_shapes[i].label);
       result = run_triangle_bench(random_shapes[i].label,

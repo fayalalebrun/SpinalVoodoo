@@ -386,40 +386,22 @@ FX_EXPORT FxBool FX_CSTYLE sst1InitRegisters(FxU32 *sstbase)
     if(envp && (SSCANF(envp, "%i", &i) == 1))
       ft_clk_del = i;
     INIT_PRINTF(("sst1InitRegisters(): Setting PRELIM FT-CLK delay to 0x%x...\n", ft_clk_del));
-#if defined(DE10_BACKEND) || defined(SIM_BACKEND)
-    INIT_PRINTF(("[backend] sst1InitRegisters: before prelim fbiInit3 write\n"));
-#endif
     ISET(sst->fbiInit3,
         (SST_FBIINIT3_DEFAULT & ~(SST_FT_CLK_DEL_ADJ | SST_TF_FIFO_THRESH)) |
         (ft_clk_del << SST_FT_CLK_DEL_ADJ_SHIFT) |
         (tf_fifo_thresh << SST_TF_FIFO_THRESH_SHIFT));
-#if defined(DE10_BACKEND) || defined(SIM_BACKEND)
-    INIT_PRINTF(("[backend] sst1InitRegisters: after prelim fbiInit3 write\n"));
-#endif
 
     /* Wait for Fbi-to-Trex clock delay value to propogate */
-#if defined(DE10_BACKEND) || defined(SIM_BACKEND)
-    INIT_PRINTF(("[backend] sst1InitRegisters: before prelim status reads\n"));
-#endif
     sst1InitReturnStatus(sstbase); /* Stall - can't call IdleFbi because */
                                    /* FBI could be hung at this stage */
 
     sst1InitReturnStatus(sstbase);
     sst1InitReturnStatus(sstbase);
-#if defined(DE10_BACKEND) || defined(SIM_BACKEND)
-    INIT_PRINTF(("[backend] sst1InitRegisters: after prelim status reads\n"));
-#endif
 
     /* Reset graphics and video units */
     /* Must reset video unit before graphics unit, otherwise video unit could */
     /* potentially hang waiting for the graphics unit to respond */
-#if defined(DE10_BACKEND) || defined(SIM_BACKEND)
-    INIT_PRINTF(("[backend] sst1InitRegisters: before video reset write\n"));
-#endif
     ISET(sst->fbiInit1, IGET(sst->fbiInit1) | SST_VIDEO_RESET);
-#if defined(DE10_BACKEND) || defined(SIM_BACKEND)
-    INIT_PRINTF(("[backend] sst1InitRegisters: after video reset write\n"));
-#endif
 
     /* don't wait for idle b/c grx could be hung */
     sst1InitReturnStatus(sstbase);

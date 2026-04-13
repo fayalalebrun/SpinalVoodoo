@@ -134,8 +134,15 @@ find_tool() {
 
 CLANG_BIN="$(find_tool DE10_CLANG /nix/store/*-clang-*/bin/clang)"
 LLVM_AR_BIN="$(find_tool DE10_LLVM_AR /nix/store/*-llvm-*/bin/llvm-ar /nix/store/*-clang-*/bin/llvm-ar)"
-LD_LLD_BIN="$(find_tool DE10_LD_LLD /nix/store/*-lld-*/bin/ld.lld /nix/store/*-llvm-binutils-wrapper-*/bin/ld.lld)"
+LD_LLD_BIN="$(find_tool DE10_LD_LLD /nix/store/*-lld-*/bin/ld.lld /nix/store/*-llvm-binutils-wrapper-*/bin/ld.lld /nix/store/*-*/bin/lld)"
 GCC_DIRS=("$SYSROOT_DIR"/usr/lib/gcc/arm-linux-gnueabihf/*)
+
+if [[ "$(basename "$LD_LLD_BIN")" == "lld" ]]; then
+  TOOL_WRAPPER_DIR="$ROOT_DIR/output/de10/toolchain-bin"
+  mkdir -p "$TOOL_WRAPPER_DIR"
+  ln -sfn "$LD_LLD_BIN" "$TOOL_WRAPPER_DIR/ld.lld"
+  LD_LLD_BIN="$TOOL_WRAPPER_DIR/ld.lld"
+fi
 
 if [[ ${#GCC_DIRS[@]} -eq 0 ]]; then
   echo "Could not locate gcc support files under $SYSROOT_DIR/usr/lib/gcc/arm-linux-gnueabihf" >&2

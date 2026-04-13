@@ -102,8 +102,16 @@ GLIDE_OBJECTS += \
 
 all: $(GLIDE_LIBDIR) $(GLIDE_LIBDIR)/$(GLIDE_LIB) $(GLIDE_LIBDIR)/$(GLIDE_SO)
 
+$(GLIDE_OBJECTS): fxinline.h fxgasm.h
+
 .c.o:
 	$(CC) -o $@ $(CFLAGS) -c $<
+
+fxinline.h:
+	printf '%s\n' '#ifndef __FX_INLINE_H__' '#define __FX_INLINE_H__' '' '/* The # of 2-byte entries in the hw fog table */' '#define kInternalFogTableEntryCount 0x40' '' '#endif /* __FX_INLINE_H__ */' > $@
+
+fxgasm.h:
+	: > $@
 
 cpuid.o: cpudetect_sim.c
 	$(CC) -o $@ $(CFLAGS) -c $<
@@ -121,4 +129,5 @@ $(GLIDE_LIBDIR)/$(GLIDE_SO): $(GLIDE_OBJECTS)
 
 clean:
 	rm -f $(GLIDE_OBJECTS)
+	rm -f fxinline.h fxgasm.h
 	rm -f $(GLIDE_LIBDIR)/$(GLIDE_LIB) $(GLIDE_LIBDIR)/$(GLIDE_SHARED) $(GLIDE_LIBDIR)/$(GLIDE_SO)

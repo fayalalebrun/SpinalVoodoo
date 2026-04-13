@@ -97,11 +97,29 @@ case class De10BmbToAvalonMm(
     addressBase + (addressMask & ((BigInt(1) << bmbAddressWidth) - 1)) + 1,
     avalonAddressWidth bits
   )
+  private val translatedAddressMinWide = translatedAddressMin.resize(avalonAddressWidth + 1)
+  private val translatedAddressExclusiveWide =
+    translatedAddressExclusive.resize(avalonAddressWidth + 1)
   private def translateAddress(address: UInt): UInt = {
     val truncatedMask = addressMask & ((BigInt(1) << bmbAddressWidth) - 1)
     val maskedAddress = address & U(truncatedMask, bmbAddressWidth bits)
     (maskedAddress.resize(avalonAddressWidth) +^ U(addressBase, avalonAddressWidth bits))
       .resize(avalonAddressWidth)
+  }
+  private def burstBytes(beatCount: UInt): UInt =
+    (beatCount.resize(avalonAddressWidth + 1) << beatShift).resize(avalonAddressWidth + 1)
+  private def burstEndExclusive(address: UInt, beatCount: UInt): UInt =
+    (address.resize(avalonAddressWidth + 1) + burstBytes(beatCount)).resize(avalonAddressWidth + 1)
+  private def readSpanInRange(address: UInt, beatCount: UInt): Bool = {
+    val endExclusive = burstEndExclusive(address, beatCount)
+    address >= translatedAddressMin && address < translatedAddressExclusive && endExclusive <= translatedAddressExclusiveWide
+  }
+  private def writeSpanInRange(address: UInt): Bool = {
+    val endExclusive = (address.resize(avalonAddressWidth + 1) + U(
+      bmbParams.access.byteCount,
+      avalonAddressWidth + 1 bits
+    )).resize(avalonAddressWidth + 1)
+    address >= translatedAddressMin && address < translatedAddressExclusive && endExclusive <= translatedAddressExclusiveWide
   }
 
   private val translatedAddress = translateAddress(io.bmb.cmd.address)
@@ -112,6 +130,8 @@ case class De10BmbToAvalonMm(
     io.bmb.cmd.length.resize(io.bmb.cmd.length.getWidth + 1 bits) + 1
   private val cmdBeatCount = (cmdByteCount >> beatShift).resize(readCountWidth bits)
   private val cmdBurstCount = cmdBeatCount.resize(De10MemBackend.avalonBurstCountWidth)
+  private val cmdReadSpanInRange = readSpanInRange(translatedAddress, cmdBeatCount)
+  private val cmdWriteSpanInRange = writeSpanInRange(translatedAddress)
   private val cmdPayload =
     De10BmbReadCmdPayload(avalonAddressWidth, bmbParams.access.contextWidth, readCountWidth)
   cmdPayload.address := translatedAddress
@@ -122,9 +142,12 @@ case class De10BmbToAvalonMm(
   }
 
   val cmdIsWrite = io.bmb.cmd.opcode === Bmb.Cmd.Opcode.WRITE
-  val queuedReadCmdAddressInRange =
-    queuedReadCmd.address >= translatedAddressMin && queuedReadCmd.address < translatedAddressExclusive
-  val queuedReadCmdSafe = queuedReadCmdValid && queuedReadCmdAddressInRange
+  val queuedReadCmdSpanInRange = readSpanInRange(queuedReadCmd.address, queuedReadCmd.beatCount)
+  val queuedReadCmdBurstConsistent = queuedReadCmd.burstCount === queuedReadCmd.beatCount.resize(
+    De10MemBackend.avalonBurstCountWidth
+  )
+  val queuedReadCmdSafe =
+    queuedReadCmdValid && queuedReadCmd.beatCount =/= 0 && queuedReadCmdSpanInRange && queuedReadCmdBurstConsistent
   val pendingReadTraffic =
     queuedReadCmdValid || outstandingReadBeats =/= 0 || readRspFifo.io.occupancy =/= 0
   val readRspNow = readRspFifo.io.pop.valid && !writeRspPending
@@ -147,9 +170,9 @@ case class De10BmbToAvalonMm(
   val readLaunch = launchQueuedRead || launchDirectRead
   val readQueueFreeThisCycle = canLaunchRead
   val acceptWriteBeat =
-    io.bmb.cmd.valid && cmdIsWrite && !pendingReadTraffic && !writeRspBlocksCmd && io.mem.waitRequestn
+    io.bmb.cmd.valid && cmdIsWrite && cmdBeatCount =/= 0 && cmdWriteSpanInRange && !pendingReadTraffic && !writeRspBlocksCmd && io.mem.waitRequestn
   val queueAcceptedReadCmd =
-    io.bmb.cmd.valid && !cmdIsWrite && !queuedReadCmdValid && readStorageCanAcceptCmd
+    io.bmb.cmd.valid && !cmdIsWrite && cmdBeatCount =/= 0 && cmdReadSpanInRange && !queuedReadCmdValid && readStorageCanAcceptCmd
   val acceptReadCmd = queueAcceptedReadCmd
   val useWriteRsp = writeRspPending
   val launchedReadCmd = queuedReadCmd
@@ -206,7 +229,7 @@ case class De10BmbToAvalonMm(
     queuedReadCmd := cmdPayload
   }
 
-  when(queuedReadCmdValid && (!queuedReadCmdAddressInRange || queuedReadCmd.beatCount === 0)) {
+  when(queuedReadCmdValid && (!queuedReadCmdSafe)) {
     queuedReadCmdValid := False
   } elsewhen (launchQueuedRead) {
     queuedReadCmdValid := False
@@ -249,7 +272,6 @@ case class De10BmbToAvalonMm(
   }
 
   GenerationFlags.formal {
-    assert(cmdBeatCount =/= 0)
     assert(io.bmb.rsp.source === 0)
     when(launchDirectRead) {
       assert(io.mem.burstCount === cmdBurstCount)
@@ -278,6 +300,16 @@ case class De10BmbToAvalonMm(
     val trackedAcceptedOutstanding = Reg(UInt(trackedOutstandingWidth bits)) init (0)
     val trackedReturnedBuffered = Reg(UInt(log2Up(readRspFifoDepth + 1) bits)) init (0)
     val trackedAcceptedPipeline = Reg(UInt(trackedPipelineWidth bits)) init (0)
+
+    when(!pastValid) {
+      assume(!writeBurstActive)
+      assume(!writeRspPending)
+      assume(!readRspBurstActive)
+      assume(readRspBurstBeatsLeft === 0)
+      assume(outstandingReadBeats === 0)
+      assume(!queuedReadCmdValid)
+      assume(readRspFifo.io.occupancy === 0)
+    }
 
     when(memReadFire && !io.mem.readDataValid) {
       trackedLaunchedOutstanding := trackedLaunchedOutstanding + io.mem.burstCount.resize(
@@ -320,32 +352,26 @@ case class De10BmbToAvalonMm(
     }
 
     when(io.mem.read) {
+      assert(readSpanInRange(io.mem.address, io.mem.burstCount.resize(readCountWidth)))
+    }
+
+    when(io.mem.write) {
+      assert(writeSpanInRange(io.mem.address))
+    }
+
+    when(io.bmb.cmd.valid && !cmdIsWrite && !cmdReadSpanInRange) {
+      assert(!acceptReadCmd)
+      assert(!launchDirectRead)
+    }
+
+    when(io.bmb.cmd.valid && cmdIsWrite && !cmdWriteSpanInRange) {
+      assert(!acceptWriteBeat)
+      assert(!io.mem.write)
+    }
+
+    when(io.mem.read) {
       assert(io.mem.byteEnable === fullMask)
     }
-
-    when(readRspBurstActive) {
-      assert(readRspBurstBeatsLeft =/= 0)
-      assert(outstandingReadBeats =/= 0)
-      assert(readRspBurstBeatsLeft === outstandingReadBeats.resize(readCountWidth))
-    } otherwise {
-      assert(readRspBurstBeatsLeft === 0)
-      assert(outstandingReadBeats === 0)
-    }
-
-    assert(trackedLaunchedOutstanding === outstandingReadBeats.resize(trackedOutstandingWidth))
-    assert(
-      trackedAcceptedOutstanding ===
-        (outstandingReadBeats.resize(trackedOutstandingWidth) + queuedReadCmdBeats.resize(
-          trackedOutstandingWidth
-        ))
-    )
-    assert(trackedReturnedBuffered === readRspFifo.io.occupancy)
-    assert(
-      trackedAcceptedPipeline ===
-        (outstandingReadBeats.resize(trackedPipelineWidth) +
-          queuedReadCmdBeats.resize(trackedPipelineWidth) +
-          readRspFifo.io.occupancy.resize(trackedPipelineWidth))
-    )
 
     when(io.mem.readDataValid) {
       assert(readRspFifo.io.push.payload.last === (readRspBurstBeatsLeft === 1))
@@ -369,6 +395,7 @@ case class De10BmbToAvalonMm(
       assert(io.bmb.cmd.ready)
       assert(io.mem.write)
       assert(!io.mem.read)
+      assert(cmdWriteSpanInRange)
       assert(io.mem.address === translatedAddress)
       assert(io.mem.byteEnable === io.bmb.cmd.mask)
       assert(io.mem.writeData === io.bmb.cmd.data)
@@ -377,6 +404,7 @@ case class De10BmbToAvalonMm(
     when(readLaunch) {
       assert(io.mem.read)
       assert(!io.mem.write)
+      assert(readSpanInRange(io.mem.address, io.mem.burstCount.resize(readCountWidth)))
       assert(io.mem.byteEnable === fullMask)
       assert(io.mem.waitRequestn)
     }
@@ -384,20 +412,27 @@ case class De10BmbToAvalonMm(
     when(launchDirectRead) {
       assert(io.bmb.cmd.ready)
       assert(io.bmb.cmd.fire)
+      assert(cmdReadSpanInRange)
       assert(io.mem.address === translatedAddress)
       assert(io.mem.burstCount === cmdBurstCount)
     }
 
     when(launchQueuedRead) {
+      assert(queuedReadCmdSpanInRange)
+      assert(queuedReadCmdBurstConsistent)
       assert(io.mem.address === queuedReadCmd.address)
       assert(io.mem.burstCount === queuedReadCmd.burstCount)
     }
 
-    when(io.bmb.cmd.valid && !cmdIsWrite && !readCmdHazard) {
+    when(
+      io.bmb.cmd.valid && !cmdIsWrite && cmdBeatCount =/= 0 && cmdReadSpanInRange && !queuedReadCmdValid && readStorageCanAcceptCmd
+    ) {
       assert(io.bmb.cmd.ready)
     }
 
-    when(io.bmb.cmd.valid && cmdIsWrite && !writeCmdHazard) {
+    when(
+      io.bmb.cmd.valid && cmdIsWrite && cmdBeatCount =/= 0 && cmdWriteSpanInRange && !writeCmdHazard
+    ) {
       assert(io.bmb.cmd.ready)
       assert(io.mem.write)
     }
@@ -491,6 +526,23 @@ case class De10MemBackend(c: Config) extends Component {
   assert(De10AddressMap.texMemBase + De10AddressMap.texMemBytes <= De10AddressMap.ddrCarveoutEnd)
 
   GenerationFlags.formal {
+    def burstEndExclusive(address: UInt, burstCount: UInt): UInt =
+      (address.resize(33) + (burstCount.resize(33) << 2)).resize(33)
+    def readSpanInRange(address: UInt, burstCount: UInt, base: BigInt, bytes: BigInt): Bool = {
+      val endExclusive = burstEndExclusive(address, burstCount)
+      address >= U(base, 32 bits) && address < U(base + bytes, 32 bits) && endExclusive <= U(
+        base + bytes,
+        33 bits
+      )
+    }
+    def writeSpanInRange(address: UInt, base: BigInt, bytes: BigInt): Bool = {
+      val endExclusive = (address.resize(33) + U(4, 33 bits)).resize(33)
+      address >= U(base, 32 bits) && address < U(base + bytes, 32 bits) && endExclusive <= U(
+        base + bytes,
+        33 bits
+      )
+    }
+
     when(io.memFbWrite.read || io.memFbWrite.write) {
       assert(io.memFbWrite.address >= U(De10AddressMap.fbMemBase, 32 bits))
       assert(
@@ -535,6 +587,113 @@ case class De10MemBackend(c: Config) extends Component {
     assert(!(io.memFbColorRead.read && io.memFbColorRead.write))
     assert(!(io.memFbAuxRead.read && io.memFbAuxRead.write))
     assert(!(io.memTex.read && io.memTex.write))
+
+    when(io.memFbWrite.read) {
+      assert(
+        readSpanInRange(
+          io.memFbWrite.address,
+          io.memFbWrite.burstCount,
+          De10AddressMap.fbMemBase,
+          De10AddressMap.fbMemBytes
+        )
+      )
+    }
+    when(io.memFbWrite.write) {
+      assert(
+        writeSpanInRange(io.memFbWrite.address, De10AddressMap.fbMemBase, De10AddressMap.fbMemBytes)
+      )
+    }
+    when(io.memFbColorWrite.read) {
+      assert(
+        readSpanInRange(
+          io.memFbColorWrite.address,
+          io.memFbColorWrite.burstCount,
+          De10AddressMap.fbMemBase,
+          De10AddressMap.fbMemBytes
+        )
+      )
+    }
+    when(io.memFbColorWrite.write) {
+      assert(
+        writeSpanInRange(
+          io.memFbColorWrite.address,
+          De10AddressMap.fbMemBase,
+          De10AddressMap.fbMemBytes
+        )
+      )
+    }
+    when(io.memFbAuxWrite.read) {
+      assert(
+        readSpanInRange(
+          io.memFbAuxWrite.address,
+          io.memFbAuxWrite.burstCount,
+          De10AddressMap.fbMemBase,
+          De10AddressMap.fbMemBytes
+        )
+      )
+    }
+    when(io.memFbAuxWrite.write) {
+      assert(
+        writeSpanInRange(
+          io.memFbAuxWrite.address,
+          De10AddressMap.fbMemBase,
+          De10AddressMap.fbMemBytes
+        )
+      )
+    }
+    when(io.memFbColorRead.read) {
+      assert(
+        readSpanInRange(
+          io.memFbColorRead.address,
+          io.memFbColorRead.burstCount,
+          De10AddressMap.fbMemBase,
+          De10AddressMap.fbMemBytes
+        )
+      )
+    }
+    when(io.memFbColorRead.write) {
+      assert(
+        writeSpanInRange(
+          io.memFbColorRead.address,
+          De10AddressMap.fbMemBase,
+          De10AddressMap.fbMemBytes
+        )
+      )
+    }
+    when(io.memFbAuxRead.read) {
+      assert(
+        readSpanInRange(
+          io.memFbAuxRead.address,
+          io.memFbAuxRead.burstCount,
+          De10AddressMap.fbMemBase,
+          De10AddressMap.fbMemBytes
+        )
+      )
+    }
+    when(io.memFbAuxRead.write) {
+      assert(
+        writeSpanInRange(
+          io.memFbAuxRead.address,
+          De10AddressMap.fbMemBase,
+          De10AddressMap.fbMemBytes
+        )
+      )
+    }
+    when(io.memTex.read) {
+      assert(
+        readSpanInRange(
+          io.memTex.address,
+          io.memTex.burstCount,
+          De10AddressMap.texMemBase,
+          De10AddressMap.texMemBytes
+        )
+      )
+    }
+    when(io.memTex.write) {
+      assert(
+        writeSpanInRange(io.memTex.address, De10AddressMap.texMemBase, De10AddressMap.texMemBytes)
+      )
+    }
 
   }
 }

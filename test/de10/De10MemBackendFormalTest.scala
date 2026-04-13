@@ -244,6 +244,16 @@ class De10MemBackendFormalDut(formalStrong: Boolean) extends Component {
   dut.io.fbColorReadMem.cmd.last := True
   dut.io.fbColorReadMem.rsp.ready := True
 
+  dut.io.fbColorWriteMem.cmd.valid := False
+  dut.io.fbColorWriteMem.cmd.fragment.assignDontCare()
+  dut.io.fbColorWriteMem.cmd.last := True
+  dut.io.fbColorWriteMem.rsp.ready := True
+
+  dut.io.fbAuxWriteMem.cmd.valid := False
+  dut.io.fbAuxWriteMem.cmd.fragment.assignDontCare()
+  dut.io.fbAuxWriteMem.cmd.last := True
+  dut.io.fbAuxWriteMem.rsp.ready := True
+
   dut.io.fbAuxReadMem.cmd.valid := False
   dut.io.fbAuxReadMem.cmd.fragment.assignDontCare()
   dut.io.fbAuxReadMem.cmd.last := True
@@ -252,6 +262,12 @@ class De10MemBackendFormalDut(formalStrong: Boolean) extends Component {
   dut.io.memFbWrite.waitRequestn := anyseq(Bool())
   dut.io.memFbWrite.readDataValid := anyseq(Bool())
   dut.io.memFbWrite.readData := anyseq(Bits(32 bits))
+  dut.io.memFbColorWrite.waitRequestn := True
+  dut.io.memFbColorWrite.readDataValid := False
+  dut.io.memFbColorWrite.readData := 0
+  dut.io.memFbAuxWrite.waitRequestn := True
+  dut.io.memFbAuxWrite.readDataValid := False
+  dut.io.memFbAuxWrite.readData := 0
   dut.io.memFbColorRead.waitRequestn := True
   dut.io.memFbColorRead.readDataValid := False
   dut.io.memFbColorRead.readData := 0
@@ -376,6 +392,149 @@ class De10MemBackendFormalBmcDut extends De10MemBackendFormalDut(formalStrong = 
 class De10MemBackendFormalProveDut extends De10MemBackendFormalDut(formalStrong = false)
 class De10MemBackendFormalCoverDut extends De10MemBackendFormalDut(formalStrong = true)
 
+class De10MemBackendAuxReadFormalDut(formalStrong: Boolean) extends Component {
+  val c = Config
+    .voodoo1(TraceConfig())
+    .copy(
+      addressWidth = 10 bits,
+      memBurstLengthWidth = 4,
+      useFbWriteBuffer = true,
+      useTexFillCache = false
+    )
+
+  val dut = De10MemBackend(c)
+  val reset = ClockDomain.current.isResetActive
+  val pastValid = RegNext(True) init False
+
+  val auxCmdPayload = anyseq(cloneOf(dut.io.fbAuxReadMem.cmd.fragment))
+
+  dut.io.fbAuxReadMem.cmd.valid := anyseq(Bool())
+  dut.io.fbAuxReadMem.cmd.fragment := auxCmdPayload
+  dut.io.fbAuxReadMem.cmd.last := anyseq(Bool())
+  dut.io.fbAuxReadMem.rsp.ready := anyseq(Bool())
+
+  dut.io.fbMemWrite.cmd.valid := False
+  dut.io.fbMemWrite.cmd.fragment.assignDontCare()
+  dut.io.fbMemWrite.cmd.last := True
+  dut.io.fbMemWrite.rsp.ready := True
+
+  dut.io.fbColorWriteMem.cmd.valid := False
+  dut.io.fbColorWriteMem.cmd.fragment.assignDontCare()
+  dut.io.fbColorWriteMem.cmd.last := True
+  dut.io.fbColorWriteMem.rsp.ready := True
+
+  dut.io.fbAuxWriteMem.cmd.valid := False
+  dut.io.fbAuxWriteMem.cmd.fragment.assignDontCare()
+  dut.io.fbAuxWriteMem.cmd.last := True
+  dut.io.fbAuxWriteMem.rsp.ready := True
+
+  dut.io.fbColorReadMem.cmd.valid := False
+  dut.io.fbColorReadMem.cmd.fragment.assignDontCare()
+  dut.io.fbColorReadMem.cmd.last := True
+  dut.io.fbColorReadMem.rsp.ready := True
+
+  dut.io.texMem.cmd.valid := False
+  dut.io.texMem.cmd.fragment.assignDontCare()
+  dut.io.texMem.cmd.last := True
+  dut.io.texMem.rsp.ready := True
+
+  dut.io.memFbWrite.waitRequestn := True
+  dut.io.memFbWrite.readDataValid := False
+  dut.io.memFbWrite.readData := 0
+  dut.io.memFbColorWrite.waitRequestn := True
+  dut.io.memFbColorWrite.readDataValid := False
+  dut.io.memFbColorWrite.readData := 0
+  dut.io.memFbAuxWrite.waitRequestn := True
+  dut.io.memFbAuxWrite.readDataValid := False
+  dut.io.memFbAuxWrite.readData := 0
+  dut.io.memFbColorRead.waitRequestn := True
+  dut.io.memFbColorRead.readDataValid := False
+  dut.io.memFbColorRead.readData := 0
+  dut.io.memFbAuxRead.waitRequestn := anyseq(Bool())
+  dut.io.memFbAuxRead.readDataValid := anyseq(Bool())
+  dut.io.memFbAuxRead.readData := anyseq(Bits(32 bits))
+  dut.io.memTex.waitRequestn := True
+  dut.io.memTex.readDataValid := False
+  dut.io.memTex.readData := 0
+
+  assumeInitial(reset)
+  when(reset) {
+    assume(!dut.io.fbAuxReadMem.cmd.valid)
+    assume(!dut.io.memFbAuxRead.readDataValid)
+  }
+  when(pastValid) {
+    assume(!reset)
+  }
+
+  dut.io.fbAuxReadMem.cmd.formalAssumesSlave()
+  if (formalStrong) {
+    dut.io.fbAuxReadMem.rsp.formalAssertsMaster()
+  }
+
+  when(
+    dut.io.fbAuxReadMem.cmd.valid && !dut.io.fbAuxReadMem.cmd.ready && pastValid && past(
+      dut.io.fbAuxReadMem.cmd.valid && !dut.io.fbAuxReadMem.cmd.ready
+    )
+  ) {
+    assume(
+      dut.io.fbAuxReadMem.cmd.fragment.asBits === past(dut.io.fbAuxReadMem.cmd.fragment.asBits)
+    )
+    assume(dut.io.fbAuxReadMem.cmd.last === past(dut.io.fbAuxReadMem.cmd.last))
+  }
+
+  val auxPendingReadBeats = Reg(UInt(7 bits)) init (0)
+  when(dut.io.memFbAuxRead.read && dut.io.memFbAuxRead.waitRequestn) {
+    assume(!dut.io.memFbAuxRead.readDataValid)
+    assume(auxPendingReadBeats === 0)
+    auxPendingReadBeats := auxPendingReadBeats + dut.io.memFbAuxRead.burstCount.resize(7)
+  }
+  when(dut.io.memFbAuxRead.readDataValid) {
+    assume(auxPendingReadBeats =/= 0)
+    auxPendingReadBeats := auxPendingReadBeats - 1
+  }
+  when(
+    auxPendingReadBeats === 0 && !(dut.io.memFbAuxRead.read && dut.io.memFbAuxRead.waitRequestn)
+  ) {
+    assume(!dut.io.memFbAuxRead.readDataValid)
+  }
+
+  assert(!(dut.io.memFbAuxRead.read && dut.io.memFbAuxRead.write))
+  when(dut.io.memFbAuxRead.read) {
+    assert(dut.io.memFbAuxRead.waitRequestn)
+  }
+
+  val sawAuxBurstRead = RegInit(False)
+  val sawAuxBurstRead4 = RegInit(False)
+  val sawAuxRsp = RegInit(False)
+  val sawAuxRspStall = RegInit(False)
+  when(
+    dut.io.memFbAuxRead.read && dut.io.memFbAuxRead.waitRequestn && dut.io.memFbAuxRead.burstCount > 1
+  ) {
+    sawAuxBurstRead := True
+    when(dut.io.memFbAuxRead.burstCount === 4) {
+      sawAuxBurstRead4 := True
+    }
+  }
+  when(dut.io.memFbAuxRead.readDataValid && auxPendingReadBeats === 1) {
+    sawAuxRsp := True
+  }
+  when(dut.io.fbAuxReadMem.rsp.valid && !dut.io.fbAuxReadMem.rsp.ready) {
+    sawAuxRspStall := True
+  }
+
+  cover(sawAuxBurstRead)
+  cover(sawAuxBurstRead4 && sawAuxRsp)
+  cover(
+    sawAuxBurstRead4 && sawAuxRspStall && dut.io.fbAuxReadMem.rsp.fire && dut.io.fbAuxReadMem.rsp.last
+  )
+}
+
+class De10MemBackendAuxReadFormalBmcDut extends De10MemBackendAuxReadFormalDut(formalStrong = true)
+class De10MemBackendAuxReadFormalProveDut
+    extends De10MemBackendAuxReadFormalDut(formalStrong = false)
+class De10MemBackendAuxReadFormalCoverDut
+    extends De10MemBackendAuxReadFormalDut(formalStrong = true)
+
 class De10MemBackendFormalTest extends SpinalFormalFunSuite {
   test("DE10 H2F MMIO bridge invariants bmc") {
     FormalConfig
@@ -438,5 +597,26 @@ class De10MemBackendFormalTest extends SpinalFormalFunSuite {
       .withCover(24)
       .withAsync
       .doVerify(new De10MemBackendFormalCoverDut)
+  }
+
+  test("DE10 memory backend aux-read invariants bmc") {
+    FormalConfig
+      .withBMC(20)
+      .withAsync
+      .doVerify(new De10MemBackendAuxReadFormalBmcDut)
+  }
+
+  test("DE10 memory backend aux-read invariants k-induction") {
+    FormalConfig
+      .withProve(20)
+      .withAsync
+      .doVerify(new De10MemBackendAuxReadFormalProveDut)
+  }
+
+  test("DE10 memory backend aux-read cover") {
+    FormalConfig
+      .withCover(24)
+      .withAsync
+      .doVerify(new De10MemBackendAuxReadFormalCoverDut)
   }
 }

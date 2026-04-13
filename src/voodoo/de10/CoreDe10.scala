@@ -35,12 +35,17 @@ case class H2fLwToBmbBridge(addressWidth: Int, bmbParams: BmbParameter) extends 
     val cpuBus = master(Bmb(bmbParams))
   }
 
+  private val stallLimitLog2 = 20
+  private val stalledWriteLimit = 1 << stallLimitLog2
+  private val wedgedStatusAddr = U(0x254, addressWidth bits)
+
   val cmdAddress = (io.h2fLw.address.resize(addressWidth) |<< 2)
   val writeReq = io.h2fLw.write
   val readReq = io.h2fLw.read
   val illegalReq = writeReq && readReq
   val selectedReadReq = !writeReq && readReq
   val hasReq = writeReq || readReq
+  val statusReadReq = selectedReadReq && cmdAddress === wedgedStatusAddr
 
   io.cpuBus.cmd.last := True
   io.cpuBus.cmd.source := 0
@@ -56,51 +61,69 @@ case class H2fLwToBmbBridge(addressWidth: Int, bmbParams: BmbParameter) extends 
   val readData = Reg(Bits(32 bits)) init (0)
   val readDataValid = RegInit(False)
   val readDataPending = RegInit(False)
-  val reqSeen = RegInit(False)
-  val cmdIssued = RegInit(False)
-  val cmdAccepted = RegInit(False)
+  val wedged = RegInit(False)
+  val stalledWriteCycles = Reg(UInt((stallLimitLog2 + 1) bits)) init (0)
+  val wedgedWriteStallCycles = Reg(UInt((stallLimitLog2 + 1) bits)) init (0)
+  val droppedWrites = Reg(UInt(8 bits)) init (0)
+
+  val statusReadData = B(32 bits, default -> False)
+  statusReadData(0) := wedged
+  statusReadData(8, 8 bits) := droppedWrites.asBits
+  statusReadData(16, 16 bits) := wedgedWriteStallCycles(15 downto 0).asBits
 
   val cmdBlocked = cmdInFlight || readRspPending || readDataPending || readDataValid
-  val canIssueReq = hasReq && !illegalReq && !cmdBlocked && (
-    !reqSeen ||
-      (cmdIssued && !cmdAccepted)
-  )
+  val dropWriteReq = writeReq && wedged
+  val locallyHandledReq = statusReadReq || dropWriteReq
+  val canIssueReq = hasReq && !illegalReq && !cmdBlocked && !locallyHandledReq
   val acceptWindow = canIssueReq && io.cpuBus.cmd.ready
-  val cmdValid = canIssueReq || cmdIssued
+  val localAccept = hasReq && !illegalReq && !cmdBlocked && locallyHandledReq
   val rspCompletesCurrent = io.cpuBus.rsp.valid && (cmdInFlight || acceptWindow)
   val rspIsRead = (cmdInFlight && readRspPending) || acceptWindow && selectedReadReq
+  val stalledWrite =
+    writeReq && !illegalReq && !wedged && !localAccept && (cmdBlocked || !io.cpuBus.cmd.ready)
+  val stallWouldTimeout = stalledWrite && stalledWriteCycles === U(
+    stalledWriteLimit - 1,
+    stalledWriteCycles.getWidth bits
+  )
 
-  io.h2fLw.waitrequest := hasReq && (!canIssueReq || !io.cpuBus.cmd.ready)
+  io.h2fLw.waitrequest := hasReq && !(localAccept || stallWouldTimeout) && (illegalReq || cmdBlocked || !io.cpuBus.cmd.ready)
   io.h2fLw.readdata := readData
   io.h2fLw.readdatavalid := readDataValid
 
   readDataValid := False
 
-  when(!hasReq) {
-    reqSeen := False
-    cmdAccepted := False
+  when(stalledWrite) {
+    when(!stallWouldTimeout) {
+      stalledWriteCycles := stalledWriteCycles + 1
+    }
+  } otherwise {
+    stalledWriteCycles := 0
   }
 
-  when(cmdIssued && io.cpuBus.cmd.ready) {
-    cmdAccepted := True
+  when(stallWouldTimeout) {
+    wedged := True
+    wedgedWriteStallCycles := U(stalledWriteLimit, wedgedWriteStallCycles.getWidth bits)
+    when(droppedWrites =/= droppedWrites.maxValue) {
+      droppedWrites := droppedWrites + 1
+    }
   }
 
-  when(cmdAccepted && rspCompletesCurrent) {
-    reqSeen := False
-    cmdIssued := False
-    cmdAccepted := False
-  }
-
-  io.cpuBus.cmd.valid := cmdValid
+  io.cpuBus.cmd.valid := canIssueReq
   when(writeReq) {
     io.cpuBus.cmd.opcode := Bmb.Cmd.Opcode.WRITE
   } otherwise {
     io.cpuBus.cmd.opcode := Bmb.Cmd.Opcode.READ
   }
 
-  when(acceptWindow) {
-    reqSeen := True
-    cmdIssued := True
+  when(localAccept && statusReadReq) {
+    readData := statusReadData
+    readDataPending := True
+  }
+
+  when(localAccept && dropWriteReq) {
+    when(droppedWrites =/= droppedWrites.maxValue) {
+      droppedWrites := droppedWrites + 1
+    }
   }
 
   when(acceptWindow && !rspCompletesCurrent) {
@@ -123,8 +146,6 @@ case class H2fLwToBmbBridge(addressWidth: Int, bmbParams: BmbParameter) extends 
   }
 
   GenerationFlags.formal {
-    val pastValid = RegNext(True) init False
-
     when(acceptWindow) {
       assert(io.cpuBus.cmd.valid)
       assert(io.cpuBus.cmd.address === cmdAddress)
@@ -145,13 +166,23 @@ case class H2fLwToBmbBridge(addressWidth: Int, bmbParams: BmbParameter) extends 
       assert(!io.cpuBus.cmd.valid)
     }
 
-    when(cmdBlocked && hasReq) {
+    when(cmdBlocked && hasReq && !locallyHandledReq && !stallWouldTimeout) {
       assert(io.h2fLw.waitrequest)
     }
 
-    when(canIssueReq && !io.cpuBus.cmd.ready) {
+    when(canIssueReq && !io.cpuBus.cmd.ready && !stallWouldTimeout) {
       assert(io.h2fLw.waitrequest)
       assert(io.cpuBus.cmd.valid)
+    }
+
+    when(localAccept && statusReadReq) {
+      assert(!io.h2fLw.waitrequest)
+      assert(!io.cpuBus.cmd.valid)
+    }
+
+    when(localAccept && dropWriteReq) {
+      assert(!io.h2fLw.waitrequest)
+      assert(!io.cpuBus.cmd.valid)
     }
 
     when(acceptWindow && selectedReadReq && io.cpuBus.rsp.valid) {

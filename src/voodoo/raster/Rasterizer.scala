@@ -24,13 +24,13 @@ case class Rasterizer(c: Config, formalStrong: Boolean = false) extends Componen
   val queuedSpan = walkerSpanFork._1.queue(4)
   val queuedPrefetchSpan = walkerSpanFork._2.queue(16)
 
-  spanWalker.i << queuedInput
+  spanWalker.i <-< queuedInput
   spanWalker.enableClipping := enableClipping
   spanWalker.clipLeft := clipLeft
   spanWalker.clipRight := clipRight
   spanWalker.clipLowY := clipLowY
   spanWalker.clipHighY := clipHighY
-  spanRasterizer.i << queuedSpan
+  spanRasterizer.i <-< queuedSpan
   prefetchSpan.translateFrom(queuedPrefetchSpan) { (out, in) =>
     out := Rasterizer.PrefetchSpan.fromSpanWalker(c, in)
   }

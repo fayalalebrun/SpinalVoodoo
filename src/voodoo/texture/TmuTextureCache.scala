@@ -115,9 +115,18 @@ abstract class TmuTexturePathBase(val c: voodoo.Config) extends Component {
     if (i == 0) (req.bilinear ? req.biAddr0 | req.pointAddr)
     else Seq(req.biAddr1, req.biAddr2, req.biAddr3)(i - 1)
 
-  protected def pointOrBilinearBank(req: Tmu.SampleRequest, i: Int): UInt =
-    if (i == 0) (req.bilinear ? req.biBankSel0 | req.pointBankSel)
-    else Seq(req.biBankSel1, req.biBankSel2, req.biBankSel3)(i - 1)
+  protected def pointOrBilinearBank(req: Tmu.SampleRequest, i: Int): UInt = {
+    val loc = Tmu.packedLocation22(
+      pointOrBilinearAddr(req, i),
+      req.is16Bit,
+      req.lodBase,
+      req.lodShift,
+      (0 until 9).map(req.texTables.texBase(_)),
+      (0 until 9).map(req.texTables.texEnd(_)),
+      (0 until 9).map(req.texTables.texShift(_))
+    )
+    loc._2
+  }
 
   protected def texel16(word: Bits, half: Bool, byte: Bool, is16Bit: Bool): Bits = {
     val out = Bits(16 bits)
@@ -128,9 +137,16 @@ abstract class TmuTexturePathBase(val c: voodoo.Config) extends Component {
   }
 
   protected def packedPairSel(req: Tmu.SampleRequest, i: Int): Bool = {
-    val addr = pointOrBilinearAddr(req, i)
-    val byteOffs = (addr.resize(22 bits) - req.lodBase.resize(22 bits)).resize(22 bits)
-    !req.is16Bit && byteOffs(1)
+    val loc = Tmu.packedLocation22(
+      pointOrBilinearAddr(req, i),
+      req.is16Bit,
+      req.lodBase,
+      req.lodShift,
+      (0 until 9).map(req.texTables.texBase(_)),
+      (0 until 9).map(req.texTables.texEnd(_)),
+      (0 until 9).map(req.texTables.texShift(_))
+    )
+    loc._3
   }
 
   protected def bankTexel(word: Bits, pairSel: Bool): Bits =

@@ -12,9 +12,10 @@ usage() {
 Usage: scripts/program-de10 --host <host> [--user <user>] [--rbf <file>] [--remote-tmp-dir <dir>] [--state-file <path>]
 
 Programming strategy:
-  1) If /dev/fpga0 exists, stream RBF into /dev/fpga0.
+  1) If fpga-region configfs overlays are available, program through fpga-region0.
+     This lets the kernel manage any bridges attached to the region.
   2) Else if fpga_manager firmware sysfs is present, install firmware and request load.
-  3) Else if dtbocfg configfs overlays are present, apply a temporary fpga-region overlay.
+  3) Else if /dev/fpga0 exists, stream RBF into /dev/fpga0.
 
 Notes:
   - Remote user must be root or have passwordless sudo.
@@ -96,13 +97,8 @@ remove_existing_overlay() {
   fi
 }
 
-if [[ -e /dev/fpga0 ]]; then
-  run_root dd if="$remote_rbf" of=/dev/fpga0 bs=1M conv=fsync status=none
-elif [[ -e /sys/class/fpga_manager/fpga0/firmware ]]; then
-  run_root mkdir -p /lib/firmware
-  run_root install -m 0644 "$remote_rbf" "/lib/firmware/$fw_name"
-  printf '%s' "$fw_name" | run_root tee /sys/class/fpga_manager/fpga0/firmware >/dev/null
-elif [[ -d /config/device-tree/overlays && -d /sys/firmware/devicetree/base/soc/fpga-region0 && -x /usr/bin/dtc ]]; then
+if [[ -d /config/device-tree/overlays && -d /sys/firmware/devicetree/base/soc/fpga-region0 && -x /usr/bin/dtc ]]; then
+  echo "[de10] Using fpga-region overlay programming path (kernel-managed bridge quiesce)"
   overlay_dts="$(dirname "$remote_rbf")/spinalvoodoo-load-overlay.dts"
   overlay_dtbo="$(dirname "$remote_rbf")/spinalvoodoo-load-overlay.dtbo"
 
@@ -129,6 +125,14 @@ EODTS
   run_root mkdir -p /config/device-tree/overlays/spinalvoodoo-load
   run_root bash -lc 'cat "$1" > /config/device-tree/overlays/spinalvoodoo-load/dtbo' _ "$overlay_dtbo"
   printf '1' | run_root tee /config/device-tree/overlays/spinalvoodoo-load/status >/dev/null
+elif [[ -e /sys/class/fpga_manager/fpga0/firmware ]]; then
+  echo "[de10] Using fpga_manager firmware path (no explicit bridge quiesce available here)"
+  run_root mkdir -p /lib/firmware
+  run_root install -m 0644 "$remote_rbf" "/lib/firmware/$fw_name"
+  printf '%s' "$fw_name" | run_root tee /sys/class/fpga_manager/fpga0/firmware >/dev/null
+elif [[ -e /dev/fpga0 ]]; then
+  echo "[de10] Using /dev/fpga0 direct path (no explicit bridge quiesce available here)"
+  run_root dd if="$remote_rbf" of=/dev/fpga0 bs=1M conv=fsync status=none
 else
   echo "No supported FPGA programming interface found on target" >&2
   exit 1

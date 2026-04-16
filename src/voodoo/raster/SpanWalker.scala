@@ -107,24 +107,19 @@ case class SpanWalker(c: Config, formalStrong: Boolean = false) extends Componen
   val clipRightPix = triangleConst.clipRight.resize(c.vertexFormat.nonFraction bits).asSInt
   val clipLowYPix = triangleConst.clipLowY.resize(c.vertexFormat.nonFraction bits).asSInt
   val clipHighYPix = triangleConst.clipHighY.resize(c.vertexFormat.nonFraction bits).asSInt
-  val visibleStartPix =
-    Mux(
-      triangleConst.enableClipping && clipLeftPix > triangleXStartPix,
-      clipLeftPix,
-      triangleXStartPix
-    )
-  val visibleEndPix =
-    Mux(
-      triangleConst.enableClipping && clipRightPix < triangleXEndPix,
-      clipRightPix,
-      triangleXEndPix
-    )
-  val emitVisibleY = !triangleConst.enableClipping || {
+  val visibleStartPix = Mux(clipLeftPix > triangleXStartPix, clipLeftPix, triangleXStartPix)
+  val visibleEndPix = Mux(clipRightPix < triangleXEndPix, clipRightPix, triangleXEndPix)
+  val emitStartPix = leftEdge.coords(0).floor(0).asSInt
+  val emitEndPix = emitRight.floor(0).asSInt
+  val emitVisibleX =
+    emitStartPix <= emitEndPix && emitEndPix >= clipLeftPix && emitStartPix < clipRightPix
+  val emitVisibleY = {
     val emitYPix = leftEdge.coords(1).floor(0).asSInt
     emitYPix >= clipLowYPix && emitYPix < clipHighYPix
   }
+  val emitVisible = emitVisibleX && emitVisibleY
 
-  o.valid := state === WalkerState.EmitSpan && emitVisibleY
+  o.valid := state === WalkerState.EmitSpan && emitVisible
 
   def stepHorizontal(dst: SpanWalker.Cursor, src: SpanWalker.Cursor, moveRight: Boolean): Unit = {
     val xDelta = if (moveRight) one else negOne
@@ -215,6 +210,16 @@ case class SpanWalker(c: Config, formalStrong: Boolean = false) extends Componen
     }
   }
 
+  def captureVisibleLeftEdgeFromProbe(): Unit = {
+    when(xPix(probe) < visibleStartPix) {
+      // Recover/search-left can overshoot by one pixel when walking clipped rows.
+      // Clamp that case back onto the first visible pixel instead of preserving -1.
+      stepHorizontal(leftEdge, probe, moveRight = true)
+    }.otherwise {
+      leftEdge := probe
+    }
+  }
+
   o.payload.xStart := leftEdge.coords(0)
   o.payload.xEnd := emitRight
   o.payload.y := leftEdge.coords(1)
@@ -257,7 +262,7 @@ case class SpanWalker(c: Config, formalStrong: Boolean = false) extends Componen
         recoverFoundInside := True
       }
       when(xPix(probe) <= visibleStartPix) {
-        leftEdge := probe
+        captureVisibleLeftEdgeFromProbe()
         probe := bookmark
         recoverFoundInside := False
         state := WalkerState.SearchRightToExit
@@ -284,11 +289,7 @@ case class SpanWalker(c: Config, formalStrong: Boolean = false) extends Componen
       leftEdge := probe
       bookmark := probe
       state := WalkerState.SearchRightToExit
-    }.elsewhen(
-      (!triangleConst.enableClipping && probe.coords(0) >= triangleConst.xrange(1)) || (
-        triangleConst.enableClipping && xPix(probe) >= visibleEndPix
-      )
-    ) {
+    }.elsewhen(xPix(probe) >= visibleEndPix) {
       when(firstSpanPending) {
         prepareNextRow(rowGuess, leftBiasedGuess = false)
       }.otherwise {
@@ -302,7 +303,7 @@ case class SpanWalker(c: Config, formalStrong: Boolean = false) extends Componen
   when(state === WalkerState.SearchLeftToExit) {
     when(insideTriangle(probe)) {
       when(xPix(probe) <= visibleStartPix) {
-        leftEdge := probe
+        captureVisibleLeftEdgeFromProbe()
         probe := bookmark
         state := WalkerState.SearchRightToExit
       }.otherwise {
@@ -317,16 +318,8 @@ case class SpanWalker(c: Config, formalStrong: Boolean = false) extends Componen
 
   when(state === WalkerState.SearchRightToExit) {
     when(insideTriangle(probe)) {
-      when(
-        (!triangleConst.enableClipping && probe.coords(0) >= triangleConst.xrange(1)) || (
-          triangleConst.enableClipping && xPix(probe) >= visibleEndPix
-        )
-      ) {
-        emitRight := Mux(
-          triangleConst.enableClipping,
-          pixelToVertex(visibleEndPix - 1),
-          probe.coords(0)
-        )
+      when(xPix(probe) >= visibleEndPix) {
+        emitRight := pixelToVertex(visibleEndPix - 1)
         emitFirstSpan := firstSpanPending
         state := WalkerState.EmitSpan
       }.otherwise {
@@ -339,12 +332,15 @@ case class SpanWalker(c: Config, formalStrong: Boolean = false) extends Componen
     }
   }
 
-  when(state === WalkerState.EmitSpan && o.ready) {
+  when(state === WalkerState.EmitSpan && emitVisible && o.ready) {
     firstSpanPending := False
     prepareNextRow(leftEdge, leftBiasedGuess = true)
   }
 
-  when(state === WalkerState.EmitSpan && !emitVisibleY) {
+  // Span discovery still reaches EmitSpan for some fully off-screen or reversed
+  // rows. Drop them here so negative or out-of-range coordinates do not wrap in
+  // later framebuffer address generation.
+  when(state === WalkerState.EmitSpan && !emitVisible) {
     firstSpanPending := False
     prepareNextRow(leftEdge, leftBiasedGuess = true)
   }

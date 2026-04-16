@@ -345,6 +345,20 @@ case class SpanWalker(c: Config, formalStrong: Boolean = false) extends Componen
     prepareNextRow(leftEdge, leftBiasedGuess = true)
   }
 
+  GenerationFlags.formal {
+    val outputStartPix = o.payload.xStart.floor(0).asSInt
+    val outputEndPix = o.payload.xEnd.floor(0).asSInt
+    val outputYPix = o.payload.y.floor(0).asSInt
+
+    when(o.fire) {
+      assert(outputStartPix <= outputEndPix)
+      assert(outputStartPix >= clipLeftPix)
+      assert(outputEndPix < clipRightPix)
+      assert(outputYPix >= clipLowYPix)
+      assert(outputYPix < clipHighYPix)
+    }
+  }
+
 }
 
 object SpanWalker {

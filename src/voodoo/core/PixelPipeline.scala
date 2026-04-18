@@ -324,8 +324,7 @@ case class PixelPipeline(c: Config) extends Component {
   )
   colorCombineInput >/-> colorCombine.io.input
 
-  val spanPrefetchQueue = rasterizer.prefetchSpan.queue(8)
-  val spanPrefetchFork = StreamFork2(spanPrefetchQueue, synchronous = true)
+  val spanPrefetchFork = StreamFork2(rasterizer.prefetchSpan, synchronous = true)
   val colorPrefetcher = SpanPrefetcher(c, colorPlane = true)
   val auxPrefetcher = SpanPrefetcher(c, colorPlane = false)
 

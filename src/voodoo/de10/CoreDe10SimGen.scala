@@ -11,7 +11,8 @@ object CoreDe10SimGen extends App {
   }
   def argIntValue(name: String): Option[Int] = argValue(name).map(_.toInt)
 
-  val defaultConfig = Config.voodoo1(trace = TraceConfig(enabled = enableTrace))
+  val defaultConfig =
+    Config.voodoo1(trace = TraceConfig(enabled = enableTrace)).copy(useFbWriteBuffer = true)
   val useFbWriteBuffer =
     if (args.contains("--no-fb-write-buffer")) false
     else defaultConfig.useFbWriteBuffer

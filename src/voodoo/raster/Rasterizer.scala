@@ -20,9 +20,10 @@ case class Rasterizer(c: Config, formalStrong: Boolean = false) extends Componen
   val queuedInput = i.queue(2)
   val spanWalker = SpanWalker(c, formalStrong = formalStrong)
   val spanRasterizer = Rasterizer.SpanRasterizer(c)
-  val walkerSpanFork = StreamFork2(spanWalker.o, synchronous = true)
-  val queuedSpan = walkerSpanFork._1.queue(4)
-  val queuedPrefetchSpan = walkerSpanFork._2.queue(16)
+  val queuedSpan = spanWalker.o.queue(4)
+  // Keep prefetch acceptance coupled to span launch so the cached framebuffer reader
+  // always sees span descriptors before the later per-pixel read stream catches up.
+  val spanLaunchFork = StreamFork2(queuedSpan, synchronous = true)
 
   spanWalker.i <-< queuedInput
   spanWalker.enableClipping := enableClipping
@@ -30,8 +31,8 @@ case class Rasterizer(c: Config, formalStrong: Boolean = false) extends Componen
   spanWalker.clipRight := clipRight
   spanWalker.clipLowY := clipLowY
   spanWalker.clipHighY := clipHighY
-  spanRasterizer.i <-< queuedSpan
-  prefetchSpan.translateFrom(queuedPrefetchSpan) { (out, in) =>
+  spanRasterizer.i <-< spanLaunchFork._1
+  prefetchSpan.translateFrom(spanLaunchFork._2) { (out, in) =>
     out := Rasterizer.PrefetchSpan.fromSpanWalker(c, in)
   }
   o << spanRasterizer.o

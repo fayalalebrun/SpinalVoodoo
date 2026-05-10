@@ -268,7 +268,7 @@ void wait_printf_queue()
 
 	debug_printf_output->master_lock = 1;
 	next_entry = (debug_printf_output->head + debug_printf_output->count) % PRINTF_READ_BUFFER_FIFO_WORDS;
-	strcpy((char*)(&(debug_printf_output->read_buffer[next_entry])), (char*)(debug_printf_output->active_word));
+	snprintf((char*)(&(debug_printf_output->read_buffer[next_entry])), PRINTF_READ_BUFFER_SIZE*4, "%s", (char*)(debug_printf_output->active_word));
 	debug_printf_output->count++;
 	debug_printf_output->master_lock = 0;
 }

@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+build="$root/xls/build"
+rtl="$root/xls/rtl"
+mkdir -p "$build" "$rtl"
+
+for tool in interpreter_main ir_converter_main opt_main codegen_main dslx_fmt; do
+  command -v "$tool" >/dev/null
+done
+
+sources=(pixel texture layout tmu raster)
+for source in "${sources[@]}"; do
+  dslx_fmt -i "$root/xls/dslx/$source.x"
+  interpreter_main "$root/xls/dslx/$source.x"
+done
+
+generate() {
+  local source="$1"
+  local top="$2"
+  local module="$3"
+  ir_converter_main --top="$top" "$root/xls/dslx/$source.x" >"$build/$module.ir"
+  opt_main "$build/$module.ir" >"$build/$module.opt.ir"
+  codegen_main \
+    --generator=combinational \
+    --use_system_verilog=false \
+    --module_name="$module" \
+    --top="$top" \
+    "$build/$module.opt.ir" >"$rtl/$module.v"
+}
+
+generate pixel framebuffer_address VoodooXlsFramebufferAddress
+generate pixel write_pack VoodooXlsWritePack
+generate pixel depth_compare VoodooXlsDepthCompare
+generate pixel alpha_blend VoodooXlsAlphaBlend
+generate pixel fog_w_depth VoodooXlsFogWDepth
+generate pixel fog_table_factor VoodooXlsFogTableFactor
+generate pixel fog_blend VoodooXlsFogBlend
+generate pixel color_combine VoodooXlsColorCombine
+generate pixel lfb_decode VoodooXlsLfbDecode
+generate pixel pixel_tests VoodooXlsPixelTests
+generate pixel data_swizzle VoodooXlsDataSwizzle
+generate texture texel_decode VoodooXlsTexelDecode
+generate texture texture_filter VoodooXlsTextureFilter
+generate layout texture_layout VoodooXlsTextureLayout
+generate tmu tmu_recip_meta VoodooXlsTmuRecipMeta
+generate tmu tmu_recip VoodooXlsTmuRecip
+generate tmu tmu_perspective_coords VoodooXlsTmuPerspectiveCoords
+generate tmu tmu_gradient VoodooXlsTmuGradient
+generate tmu tmu_lod_index VoodooXlsTmuLodIndex
+generate tmu tmu_base_lod VoodooXlsTmuBaseLod
+generate tmu tmu_lod_select VoodooXlsTmuLodSelect
+generate tmu tmu_coordinates VoodooXlsTmuCoordinates
+generate tmu tmu_addresses VoodooXlsTmuAddresses
+generate tmu tmu_packed_decode VoodooXlsTmuPackedDecode
+generate tmu texture_write_address VoodooXlsTextureWriteAddress
+generate raster triangle_iter_load VoodooXlsTriangleIterLoad
+generate raster triangle_iter_step VoodooXlsTriangleIterStep
+generate raster signed_magnitude_16 VoodooXlsSignedMagnitude16
+generate raster triangle_setup VoodooXlsTriangleSetup
+generate raster span_step VoodooXlsSpanStep
+
+touch "$rtl/.stamp"

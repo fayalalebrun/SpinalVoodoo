@@ -1,0 +1,134 @@
+diff --git a/MODULE.bazel b/MODULE.bazel
+index 690f088..55b7d5a 100644
+--- a/MODULE.bazel
++++ b/MODULE.bazel
+@@ -3,19 +3,6 @@ module(
+     repo_name = "com_google_xls",
+ )
+ 
+-# Compiler toolchain
+-bazel_dep(name = "toolchains_llvm", version = "1.4.0")
+-
+-# Configure and register the toolchain.
+-llvm = use_extension("@toolchains_llvm//toolchain/extensions:llvm.bzl", "llvm")
+-llvm.toolchain(
+-    cxx_standard = {"": "c++20"},
+-    llvm_version = "19.1.7",
+-)
+-use_repo(llvm, "llvm_toolchain")
+-
+-register_toolchains("@llvm_toolchain//:all")
+-
+ # Python toolchain
+ bazel_dep(name = "rules_python", version = "1.9.0")
+ 
+diff --git a/xls/build_rules/BUILD b/xls/build_rules/BUILD
+index 2ac8b73..5ba2288 100644
+--- a/xls/build_rules/BUILD
++++ b/xls/build_rules/BUILD
+@@ -25,6 +25,12 @@ package(
+     licenses = ["notice"],  # Apache 2.0
+ )
+ 
++sh_binary(
++    name = "clang-format",
++    srcs = ["clang-format.sh"],
++    visibility = ["//visibility:public"],
++)
++
+ filegroup(
+     name = "release_files",
+     srcs = glob(["*.bzl"]) + [
+diff --git a/xls/build_rules/clang-format.sh b/xls/build_rules/clang-format.sh
+new file mode 100755
+index 0000000..909294b
+--- /dev/null
++++ b/xls/build_rules/clang-format.sh
+@@ -0,0 +1,2 @@
++#!/usr/bin/env bash
++cat "$1"
+diff --git a/xls/build_rules/xls_ir_rules.bzl b/xls/build_rules/xls_ir_rules.bzl
+index daa3734..98a8073 100644
+--- a/xls/build_rules/xls_ir_rules.bzl
++++ b/xls/build_rules/xls_ir_rules.bzl
+@@ -1438,7 +1438,7 @@ xls_ir_cc_library = rule(
+                 executable = True,
+                 allow_files = True,
+                 cfg = "exec",
+-                default = Label("@llvm_toolchain//:clang-format"),
++                default = Label("//xls/build_rules:clang-format"),
+             ),
+         },
+     ),
+diff --git a/xls/tools/BUILD b/xls/tools/BUILD
+index ed5c93b..04187e6 100644
+--- a/xls/tools/BUILD
++++ b/xls/tools/BUILD
+@@ -30,6 +30,30 @@ package(
+     licenses = ["notice"],  # Apache 2.0
+ )
+ 
++cc_binary(
++    name = "voodoo_xls_runtime",
++    srcs = ["voodoo_xls_runtime.cc"],
++    linkopts = ["-ldl"],
++    visibility = ["//visibility:public"],
++    deps = [
++        "//xls/common/file:filesystem",
++        "//xls/common/status:status_macros",
++        "//xls/interpreter:channel_queue",
++        "//xls/interpreter:serial_proc_runtime",
++        "//xls/ir",
++        "//xls/ir:bits",
++        "//xls/ir:value",
++        "//xls/jit:aot_entrypoint_cc_proto",
++        "//xls/jit:function_base_jit",
++        "//xls/jit:jit_channel_queue",
++        "//xls/jit:jit_proc_runtime",
++        "//xls/jit:type_layout",
++        "//xls/public:ir_parser",
++        "@com_google_absl//absl/status",
++        "@com_google_absl//absl/status:statusor",
++    ],
++)
++
+ proto_library(
+     name = "node_coverage_stats_proto",
+     srcs = ["node_coverage_stats.proto"],
+diff --git a/xls/estimators/area_model/build_defs.bzl b/xls/estimators/area_model/build_defs.bzl
+index 67bfbb3..527ed98 100644
+--- a/xls/estimators/area_model/build_defs.bzl
++++ b/xls/estimators/area_model/build_defs.bzl
+@@ -43,11 +43,11 @@ def area_model(
+         outs = ["{}.cc".format(name)],
+         cmd = ("$(location //xls/estimators/area_model:generate_area_lookup) " +
+                "--model_name={model_name} $< " +
+-               "| $(location @llvm_toolchain//:clang-format)" +
++               "| $(location //xls/build_rules:clang-format)" +
+                " > $(OUTS)").format(model_name = model_name),
+         tools = [
+             "//xls/estimators/area_model:generate_area_lookup",
+-            "@llvm_toolchain//:clang-format",
++            "//xls/build_rules:clang-format",
+         ],
+         **kwargs
+     )
+diff --git a/xls/estimators/delay_model/build_defs.bzl b/xls/estimators/delay_model/build_defs.bzl
+index 321532c..8b4713d 100644
+--- a/xls/estimators/delay_model/build_defs.bzl
++++ b/xls/estimators/delay_model/build_defs.bzl
+@@ -48,11 +48,11 @@ def delay_model(
+         outs = ["{}.cc".format(name)],
+         cmd = ("$(location //xls/estimators/delay_model:generate_delay_lookup) " +
+                "--model_name={model_name} --precedence={precedence} $< " +
+-               "| $(location @llvm_toolchain//:clang-format)" +
++               "| $(location //xls/build_rules:clang-format)" +
+                " > $(OUTS)").format(model_name = model_name, precedence = precedence),
+         tools = [
+             "//xls/estimators/delay_model:generate_delay_lookup",
+-            "@llvm_toolchain//:clang-format",
++            "//xls/build_rules:clang-format",
+         ],
+         **kwargs
+     )
+

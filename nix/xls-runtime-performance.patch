@@ -1,0 +1,223 @@
+diff --git a/xls/jit/proc_jit.h b/xls/jit/proc_jit.h
+index 74bc1f3..a040444 100644
+--- a/xls/jit/proc_jit.h
++++ b/xls/jit/proc_jit.h
+@@ -15,6 +15,7 @@
+ #ifndef XLS_JIT_PROC_JIT_H_
+ #define XLS_JIT_PROC_JIT_H_
+ 
++#include <cstdint>
+ #include <memory>
+ #include <optional>
+ #include <utility>
+@@ -78,6 +79,7 @@ class ProcJit : public ProcEvaluator {
+   JitChannelQueueManager* queue_mgr_;
+   std::unique_ptr<OrcJit> orc_jit_;
+   JittedFunctionBase jitted_function_base_;
++  absl::flat_hash_map<int64_t, Node*> continuation_point_nodes_;
+   // We need to have compiled in the callbacks in order to support the
+   // Evaluation/RuntimeObserver apis.
+   bool has_observer_callbacks_;
+diff --git a/xls/jit/proc_jit.cc b/xls/jit/proc_jit.cc
+index da15a23..84125e5 100644
+--- a/xls/jit/proc_jit.cc
++++ b/xls/jit/proc_jit.cc
+@@ -310,6 +310,17 @@ absl::Status InitializeChannelQueues(
+   return absl::OkStatus();
+ }
+ 
++absl::Status InitializeContinuationPointNodes(
++    Proc* proc, const JittedFunctionBase& jitted_function_base,
++    absl::flat_hash_map<int64_t, Node*>& continuation_point_nodes) {
++  for (const auto& [continuation_point, node_id] :
++       jitted_function_base.continuation_points()) {
++    XLS_ASSIGN_OR_RETURN(Node * node, proc->GetNodeById(node_id));
++    continuation_point_nodes[continuation_point] = node;
++  }
++  return absl::OkStatus();
++}
++
+ }  // namespace
+ 
+ /* static */ absl::StatusOr<std::unique_ptr<ProcJit>> ProcJit::CreateFromAot(
+@@ -325,6 +337,8 @@ absl::Status InitializeChannelQueues(
+   XLS_RET_CHECK(jit->jitted_function_base_.InputsAndOutputsAreEquivalent());
+   XLS_RETURN_IF_ERROR(InitializeChannelQueues(
+       proc, queue_mgr, jit->jitted_function_base_, jit->channel_queues_));
++  XLS_RETURN_IF_ERROR(InitializeContinuationPointNodes(
++      proc, jit->jitted_function_base_, jit->continuation_point_nodes_));
+   return jit;
+ }
+ 
+@@ -347,5 +362,7 @@ absl::StatusOr<std::unique_ptr<ProcJit>> ProcJit::Create(
+   XLS_RETURN_IF_ERROR(InitializeChannelQueues(
+       proc, queue_mgr, jit->jitted_function_base_, jit->channel_queues_));
++  XLS_RETURN_IF_ERROR(InitializeContinuationPointNodes(
++      proc, jit->jitted_function_base_, jit->continuation_point_nodes_));
+ 
+   return jit;
+ }
+@@ -398,10 +416,10 @@ absl::StatusOr<TickResult> ProcJit::Tick(ProcContinuation& continuation) const {
+   cont->SetContinuationPoint(next_continuation_point);
+   XLS_RET_CHECK(jitted_function_base_.continuation_points().contains(
+       next_continuation_point));
+-  int64_t early_exit_node_id =
+-      jitted_function_base_.continuation_points().at(next_continuation_point);
+-  XLS_ASSIGN_OR_RETURN(Node * early_exit_node,
+-                       cont->proc()->GetNodeById(early_exit_node_id));
++  auto early_exit_node_it =
++      continuation_point_nodes_.find(next_continuation_point);
++  XLS_RET_CHECK(early_exit_node_it != continuation_point_nodes_.end());
++  Node* early_exit_node = early_exit_node_it->second;
+   if (early_exit_node->Is<Send>()) {
+     // Execution exited after sending data on a channel.
+     XLS_ASSIGN_OR_RETURN(
+
+diff --git a/xls/jit/jit_channel_queue.h b/xls/jit/jit_channel_queue.h
+index 51d1d0e..e3c391b 100644
+--- a/xls/jit/jit_channel_queue.h
++++ b/xls/jit/jit_channel_queue.h
+@@ -17,6 +17,7 @@
+ 
+ #include <cstdint>
+ #include <cstring>
++#include <functional>
+ #include <memory>
+ #include <optional>
+ #include <string_view>
+@@ -24,6 +25,7 @@
+ 
+ #include "absl/base/thread_annotations.h"
+ #include "absl/container/inlined_vector.h"
++#include "absl/status/status.h"
+ #include "absl/status/statusor.h"
+ #include "absl/synchronization/mutex.h"
+ #include "xls/interpreter/channel_queue.h"
+@@ -112,9 +114,23 @@ class JitChannelQueue : public ChannelQueue {
+       : ChannelQueue(channel), jit_runtime_(jit_runtime) {}
+   ~JitChannelQueue() override = default;
+ 
++  using RawGeneratorFn = std::function<bool(uint8_t*)>;
++
++  absl::Status AttachRawGenerator(RawGeneratorFn generator) {
++    absl::MutexLock lock(&mutex_);
++    if (generator_.has_value()) {
++      return absl::InternalError(
++          "Cannot attach raw generator because queue already has a generator");
++    }
++    raw_generator_ = std::move(generator);
++    generator_ = []() -> std::optional<Value> { return std::nullopt; };
++    return absl::OkStatus();
++  }
++
+   virtual void WriteRaw(const uint8_t* data) = 0;
+   virtual bool ReadRaw(uint8_t* buffer) = 0;
+ 
+  protected:
++  std::optional<RawGeneratorFn> raw_generator_;
+   JitRuntime* jit_runtime_;
+ };
+@@ -144,6 +161,13 @@ class ThreadSafeJitChannelQueue : public JitChannelQueue {
+   // true if queue was not empty and data was read.
+   bool ReadRaw(uint8_t* buffer) override {
+     absl::MutexLock lock(&mutex_);
++    if (byte_queue_.size() == 0 && raw_generator_.has_value() &&
++        (*raw_generator_)(buffer)) {
++      if (!callbacks_.empty()) {
++        CallReadCallbacks(jit_runtime_->UnpackBuffer(buffer, channel()->type()));
++      }
++      return true;
++    }
+     if (generator_.has_value()) {
+       std::optional<Value> generated_value = (*generator_)();
+       if (generated_value.has_value()) {
+@@ -185,6 +209,13 @@ class ThreadUnsafeJitChannelQueue : public JitChannelQueue {
+     }
+   }
+   bool ReadRaw(uint8_t* buffer) override {
++    if (byte_queue_.size() == 0 && raw_generator_.has_value() &&
++        (*raw_generator_)(buffer)) {
++      if (!callbacks_.empty()) {
++        CallReadCallbacks(jit_runtime_->UnpackBuffer(buffer, channel()->type()));
++      }
++      return true;
++    }
+     if (generator_.has_value()) {
+       std::optional<Value> generated_value = (*generator_)();
+       if (generated_value.has_value()) {
+
+diff --git a/xls/jit/jit_channel_queue_test.cc b/xls/jit/jit_channel_queue_test.cc
+index c612084..2569adf 100644
+--- a/xls/jit/jit_channel_queue_test.cc
++++ b/xls/jit/jit_channel_queue_test.cc
+@@ -197,5 +197,41 @@ TYPED_TEST(JitChannelQueueTest, IotaGeneratorWithRawApi) {
+                                  "a generator function")));
+ }
+ 
++TYPED_TEST(JitChannelQueueTest, RawGeneratorAvoidsValueConversion) {
++  Package package("test");
++  XLS_ASSERT_OK_AND_ASSIGN(
++      Channel * channel,
++      package.CreateStreamingChannel("my_channel", ChannelOps::kSendReceive,
++                                     package.GetBitsType(32)));
++  XLS_ASSERT_OK_AND_ASSIGN(ProcElaboration elaboration,
++                           ProcElaboration::ElaborateOldStylePackage(&package));
++
++  JitRuntimeInfo<TypeParam> info(
++      elaboration.GetUniqueInstance(channel).value());
++  TypeParam& queue = *info.jit_queue;
++
++  uint32_t counter = 42;
++  XLS_ASSERT_OK(queue.AttachRawGenerator([&](uint8_t* buffer) {
++    memcpy(buffer, &counter, sizeof(counter));
++    ++counter;
++    return true;
++  }));
++
++  auto read_u32 = [&]() {
++    std::vector<uint8_t> recv_buffer(4);
++    EXPECT_TRUE(queue.ReadRaw(recv_buffer.data()));
++    uint32_t result;
++    memcpy(&result, recv_buffer.data(), sizeof(result));
++    return result;
++  };
++
++  EXPECT_EQ(read_u32(), 42);
++  EXPECT_EQ(read_u32(), 43);
++  EXPECT_THAT(queue.Write(Value(UBits(22, 32))),
++              StatusIs(absl::StatusCode::kInternal,
++                       HasSubstr("Cannot write to ChannelQueue because it has "
++                                 "a generator function")));
++}
++
+ }  // namespace
+ }  // namespace xls
+
+diff --git a/xls/jit/BUILD b/xls/jit/BUILD
+index 71ca6a9..45aef2e 100644
+--- a/xls/jit/BUILD
++++ b/xls/jit/BUILD
+@@ -739,6 +739,7 @@ cc_library(
+         "@com_google_absl//absl/log:check",
+         "@com_google_absl//absl/memory",
++        "@com_google_absl//absl/status",
+         "@com_google_absl//absl/status:statusor",
+         "@com_google_absl//absl/synchronization",
+         "@com_google_absl//absl/types:span",
+
+diff --git a/xls/jit/jit_runtime.h b/xls/jit/jit_runtime.h
+index 5bd046a..6d3e02a 100644
+--- a/xls/jit/jit_runtime.h
++++ b/xls/jit/jit_runtime.h
+@@ -106,6 +106,11 @@ class JitRuntime {
+     return type_converter_->GetTypePreferredAlignment(xls_type);
+   }
+ 
++  TypeLayout GetTypeLayout(Type* xls_type) {
++    absl::MutexLock lock(&mutex_);
++    return type_converter_->CreateTypeLayout(xls_type);
++  }
++
+   const llvm::DataLayout& data_layout() const { return data_layout_; }
+ 
+  private:

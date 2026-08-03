@@ -23,6 +23,10 @@ target/
 # SpinalHDL simulation
 simWorkspace/
 
+# XLS generated build state
+xls/build/
+xls/rtl/.stamp
+
 # Verilator sim build artifacts
 emu/sim/obj_dir/
 emu/sim/output/

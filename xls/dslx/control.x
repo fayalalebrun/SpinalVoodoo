@@ -51,6 +51,7 @@ pub struct SwapState {
     phase: u2,
     retrace_counter: u8,
     swap_count: u2,
+    draw_count: u2,
     swaps_pending: u3,
     interval: u8,
     vsync_enable: u1,
@@ -62,6 +63,7 @@ pub fn initial_swap() -> SwapState {
         phase: u2:0,
         retrace_counter: u8:0,
         swap_count: u2:0,
+        draw_count: u2:0,
         swaps_pending: u3:0,
         interval: u8:0,
         vsync_enable: u1:0,
@@ -73,6 +75,7 @@ pub fn swap_enqueue(state: SwapState, command: u32) -> SwapState {
     let start = state.phase == u2:0;
     SwapState {
         phase: if start { u2:1 } else { state.phase },
+        draw_count: state.draw_count + u2:1,
         swaps_pending: state.swaps_pending + u3:1,
         interval: if start { command[1+:u8] } else { state.interval },
         vsync_enable: if start { command[0+:u1] } else { state.vsync_enable },
@@ -171,6 +174,7 @@ fn command_write_counts_work() {
 #[test]
 fn swap_without_vsync_completes_after_sampling() {
     let state = swap_enqueue(initial_swap(), u32:0);
+    assert_eq(state.draw_count, u2:1);
     assert_eq(state.swaps_pending, u3:1);
     let state = swap_tick(state, u1:0);
     assert_eq(state.swap_count, u2:1);

@@ -1,6 +1,7 @@
 package voodoo.texture
 
 import voodoo._
+import voodoo.xls._
 import spinal.core._
 import spinal.core.sim._
 import spinal.lib._
@@ -91,13 +92,12 @@ case class Tmu(c: voodoo.Config) extends Component {
   val frontEnd = new Area {
     val stageRecipPrep = inputForStage
       .translateWith {
-        val oowRaw = oow.raw.asSInt
-        val absOow = oowRaw.abs.resize(64 bits)
-        val clz = clz64(absOow)
-        val msbPos = U(63, 7 bits) - clz
-        val norm = (absOow |<< clz).resize(64 bits)
-        val index = norm(62 downto 55)
-        val frac = norm(54 downto 47)
+        val recipMeta = new XlsTmuRecipMeta
+        recipMeta.io.w := oow.raw.asSInt
+        recipMeta.io.clamp_w := texMode.clampW
+        val index = recipMeta.io.out(24 downto 17).asUInt
+        val frac = recipMeta.io.out(16 downto 9).asUInt
+        val msbPos = recipMeta.io.out(8 downto 2).asUInt
         val base = recipTable.readAsync(index.resize(9 bits))
         val next = recipTable.readAsync((index +^ U(1)).resize(9 bits))
         val out = Tmu.FrontRecipPrep(c)
@@ -109,9 +109,9 @@ case class Tmu(c: voodoo.Config) extends Component {
         out.frac := frac
         out.logFrac := logTable.readAsync(index)
         out.msbPos := msbPos
-        out.validOow := !oowRaw.msb && (absOow =/= 0)
+        out.validOow := recipMeta.io.out(1)
         out.perspectiveEnable := texMode.perspectiveEnable
-        out.clampToZero := texMode.clampW && oowRaw.msb
+        out.clampToZero := recipMeta.io.out(0)
         out.dSdX := inputForStage.payload.dSdX
         out.dTdX := inputForStage.payload.dTdX
         out.dSdY := inputForStage.payload.dSdY
@@ -124,26 +124,22 @@ case class Tmu(c: voodoo.Config) extends Component {
 
     val stageRecip = stageRecipPrep
       .translateWith {
-        val interp = stageRecipPrep.payload.base -
-          ((stageRecipPrep.payload.diff * stageRecipPrep.payload.frac) >> 8).resize(17 bits)
-        val perspLodAdjustPre = SInt(16 bits)
-        perspLodAdjustPre := S(0, 16 bits)
-        when(stageRecipPrep.payload.validOow) {
-          val adjSInt =
-            (S(27, 8 bits) - (False ## stageRecipPrep.payload.msbPos).asSInt.resize(8 bits))
-          perspLodAdjustPre := ((adjSInt << 8).resize(16 bits)
-            - (False ## U(0, 8 bits) ## stageRecipPrep.payload.logFrac).asSInt.resize(16 bits)
-            - S(1, 16 bits))
-        }
+        val recip = new XlsTmuRecip
+        recip.io.base := stageRecipPrep.payload.base
+        recip.io.difference := stageRecipPrep.payload.diff
+        recip.io.fraction := stageRecipPrep.payload.frac
+        recip.io.log_fraction := stageRecipPrep.payload.logFrac
+        recip.io.msb := stageRecipPrep.payload.msbPos
+        recip.io.valid := stageRecipPrep.payload.validOow
         val out = Tmu.FrontRecip(c)
         out.s := stageRecipPrep.payload.s
         out.t := stageRecipPrep.payload.t
         out.tLOD := stageRecipPrep.payload.tLOD
-        out.interp := stageRecipPrep.payload.validOow ? interp | U(0, 17 bits)
+        out.interp := recip.io.out(32 downto 16).asUInt
         out.msbPos := stageRecipPrep.payload.msbPos
         out.perspectiveEnable := stageRecipPrep.payload.perspectiveEnable
         out.clampToZero := stageRecipPrep.payload.clampToZero
-        out.perspLodAdjust := perspLodAdjustPre
+        out.perspLodAdjust := recip.io.out(15 downto 0).asSInt
         out.dSdX := stageRecipPrep.payload.dSdX
         out.dTdX := stageRecipPrep.payload.dTdX
         out.dSdY := stageRecipPrep.payload.dSdY
@@ -155,24 +151,15 @@ case class Tmu(c: voodoo.Config) extends Component {
 
     val stageA = stageRecip
       .translateWith {
-        val texS = SInt(18 bits)
-        val texT = SInt(18 bits)
-        when(!stageRecip.payload.perspectiveEnable) {
-          texS := (stageRecip.payload.s.raw.asSInt >> 14).resized
-          texT := (stageRecip.payload.t.raw.asSInt >> 14).resized
-        } otherwise {
-          val interpSigned = (False ## stageRecip.payload.interp).asSInt
-          val productS = stageRecip.payload.s.raw.asSInt * interpSigned
-          val productT = stageRecip.payload.t.raw.asSInt * interpSigned
-          val roundBias = (S(1, productS.getWidth bits) |<< (stageRecip.payload.msbPos - 1).resize(
-            log2Up(productS.getWidth) bits
-          ))
-          texS := ((productS + roundBias) >> stageRecip.payload.msbPos).resized
-          texT := ((productT + roundBias) >> stageRecip.payload.msbPos).resized
-        }
+        val coords = new XlsTmuPerspectiveCoords
+        coords.io.s := stageRecip.payload.s.raw.asSInt
+        coords.io.t := stageRecip.payload.t.raw.asSInt
+        coords.io.interpolated := stageRecip.payload.interp
+        coords.io.msb := stageRecip.payload.msbPos
+        coords.io.perspective := stageRecip.payload.perspectiveEnable
         val out = Tmu.FrontA(c)
-        out.texS := texS
-        out.texT := texT
+        out.texS := coords.io.out(35 downto 18).asSInt
+        out.texT := coords.io.out(17 downto 0).asSInt
         out.tLOD := stageRecip.payload.tLOD
         out.perspLodAdjust := stageRecip.payload.perspLodAdjust
         out.clampToZero := stageRecip.payload.clampToZero
@@ -195,16 +182,11 @@ case class Tmu(c: voodoo.Config) extends Component {
   texT.simPublic()
 
   val lodPipeline = new Area {
-    val dSdXRaw = stageA.payload.dSdX.raw.asSInt
-    val dTdXRaw = stageA.payload.dTdX.raw.asSInt
-    val dSdYRaw = stageA.payload.dSdY.raw.asSInt
-    val dTdYRaw = stageA.payload.dTdY.raw.asSInt
-
-    val tempdx =
-      (dSdXRaw * dSdXRaw).resize(64 bits).asUInt + (dTdXRaw * dTdXRaw).resize(64 bits).asUInt
-    val tempdy =
-      (dSdYRaw * dSdYRaw).resize(64 bits).asUInt + (dTdYRaw * dTdYRaw).resize(64 bits).asUInt
-    val tempLOD = Mux(tempdx > tempdy, tempdx, tempdy).resize(64 bits)
+    val gradient = new XlsTmuGradient
+    gradient.io.ds_dx := stageA.payload.dSdX.raw.asSInt
+    gradient.io.dt_dx := stageA.payload.dTdX.raw.asSInt
+    gradient.io.ds_dy := stageA.payload.dSdY.raw.asSInt
+    gradient.io.dt_dy := stageA.payload.dTdY.raw.asSInt
 
     val stageGrad = stageA
       .translateWith {
@@ -213,32 +195,19 @@ case class Tmu(c: voodoo.Config) extends Component {
         out.texT := stageA.payload.texT
         out.tLOD := stageA.payload.tLOD
         out.clampToZero := stageA.payload.clampToZero
-        out.tempLOD := tempLOD
+        out.tempLOD := gradient.io.out
         out.perspLodAdjust := stageA.payload.perspLodAdjust
         out.meta := stageA.payload.meta
         out
       }
       .stage()
 
-    val baseLod_8_8 = SInt(16 bits)
-    when(stageGrad.payload.tempLOD === 0) {
-      baseLod_8_8 := S(0, 16 bits)
-    }.otherwise {
-      val tempLOD32hi = stageGrad.payload.tempLOD(63 downto 32)
-      val tempLOD32lo = stageGrad.payload.tempLOD(31 downto 0)
-      val useHi = tempLOD32hi =/= 0
-      val clzInput = Mux(useHi, tempLOD32hi, tempLOD32lo)
-      val clz32val = clz32(clzInput)
-      val msbPos64 =
-        Mux(useHi, U(63, 7 bits) - clz32val.resize(7 bits), U(31, 7 bits) - clz32val.resize(7 bits))
-      val shiftAmt = Mux(msbPos64 >= 8, (msbPos64 - 8).resize(6 bits), U(0, 6 bits))
-      val shifted = (stageGrad.payload.tempLOD >> shiftAmt).resize(16 bits)
-      val lodIndex = shifted(7 downto 0)
-      val rawLod = ((False ## msbPos64).asSInt.resize(16 bits) << 8).resize(16 bits) +
-        (False ## U(0, 8 bits) ## logTable.readAsync(lodIndex)).asSInt.resize(16 bits) -
-        S(36 * 256, 16 bits)
-      baseLod_8_8 := (rawLod >> 2).resize(16 bits)
-    }
+    val lodIndex = new XlsTmuLodIndex
+    lodIndex.io.temp_lod := stageGrad.payload.tempLOD
+    val baseLod = new XlsTmuBaseLod
+    baseLod.io.temp_lod := stageGrad.payload.tempLOD
+    baseLod.io.msb := lodIndex.io.out(14 downto 8).asUInt
+    baseLod.io.log_fraction := logTable.readAsync(lodIndex.io.out(7 downto 0).asUInt)
 
     val stageLodPrep = stageGrad
       .translateWith {
@@ -247,7 +216,7 @@ case class Tmu(c: voodoo.Config) extends Component {
         out.texT := stageGrad.payload.texT
         out.tLOD := stageGrad.payload.tLOD
         out.clampToZero := stageGrad.payload.clampToZero
-        out.baseLod_8_8 := baseLod_8_8
+        out.baseLod_8_8 := baseLod.io.out
         out.perspLodAdjust := stageGrad.payload.perspLodAdjust
         out.meta := stageGrad.payload.meta
         out
@@ -255,52 +224,13 @@ case class Tmu(c: voodoo.Config) extends Component {
       .stage()
 
     val tLOD = Tmu.TLOD.decode(stageLodPrep.payload.tLOD)
-    val lodbias_8_8 = (tLOD.lodbias.asSInt << 6).resize(16 bits)
-    val lod_8_8 =
-      stageLodPrep.payload.baseLod_8_8 + stageLodPrep.payload.perspLodAdjust + lodbias_8_8
-    val lodMin_8_8 = (tLOD.lodmin << 6).resize(12 bits)
-    val lodMax_8_8_raw = (tLOD.lodmax << 6).resize(12 bits)
-    val lodMax_8_8 = Mux(lodMax_8_8_raw > U(0x800, 12 bits), U(0x800, 12 bits), lodMax_8_8_raw)
-
-    val lodClamped_8_8 = SInt(16 bits)
-    when(lod_8_8 < (False ## lodMin_8_8).asSInt.resize(16 bits)) {
-      lodClamped_8_8 := (False ## lodMin_8_8).asSInt.resize(16 bits)
-    }.elsewhen(lod_8_8 > (False ## lodMax_8_8).asSInt.resize(16 bits)) {
-      lodClamped_8_8 := (False ## lodMax_8_8).asSInt.resize(16 bits)
-    }.otherwise {
-      lodClamped_8_8 := lod_8_8
-    }
-
-    val lodInt = (lodClamped_8_8 >> 8).resize(16 bits)
-    val lodLevel = UInt(4 bits)
-    when(lodInt < 0) {
-      lodLevel := 0
-    }.elsewhen(lodInt > 8) {
-      lodLevel := 8
-    }.otherwise {
-      lodLevel := lodInt.asUInt.resize(4 bits)
-    }
-
-    val baseDimBits = U(8, 4 bits)
-    val lodDimBits = (baseDimBits - lodLevel).resize(4 bits)
-    val aspectRatio = tLOD.lodAspect
-    val sIsWider = tLOD.lodSIsWider
-    val texWidthBits = UInt(4 bits)
-    val texHeightBits = UInt(4 bits)
-    val narrowDimBits = UInt(4 bits)
-    when(lodDimBits >= aspectRatio) {
-      narrowDimBits := (lodDimBits - aspectRatio).resized
-    }.otherwise {
-      narrowDimBits := 0
-    }
-
-    texWidthBits := lodDimBits
-    texHeightBits := lodDimBits
-    when(sIsWider) {
-      texHeightBits := narrowDimBits
-    }.elsewhen(aspectRatio =/= 0) {
-      texWidthBits := narrowDimBits
-    }
+    val lodSelect = new XlsTmuLodSelect
+    lodSelect.io.base_lod := stageLodPrep.payload.baseLod_8_8
+    lodSelect.io.perspective_adjust := stageLodPrep.payload.perspLodAdjust
+    lodSelect.io.t_lod := stageLodPrep.payload.tLOD
+    val lodLevel = lodSelect.io.out(11 downto 8).asUInt
+    val texWidthBits = lodSelect.io.out(7 downto 4).asUInt
+    val texHeightBits = lodSelect.io.out(3 downto 0).asUInt
 
     val stageLod = stageLodPrep
       .translateWith {
@@ -328,37 +258,21 @@ case class Tmu(c: voodoo.Config) extends Component {
     val stageLodTexMode = Tmu.TextureMode.decode(stageLod.payload.meta.config.textureMode)
     val bilinearEnable = stageLodTexMode.minFilter || stageLodTexMode.magFilter
 
-    val sPoint = (stageLod.payload.texS >> (U(4) + stageLod.payload.lodLevel)).resize(14 bits)
-    val tPoint = (stageLod.payload.texT >> (U(4) + stageLod.payload.lodLevel)).resize(14 bits)
-    val adjS =
-      (stageLod.payload.texS - (S(1, 18 bits) |<< (U(3) + stageLod.payload.lodLevel)))
-        .resize(18 bits)
-    val adjT =
-      (stageLod.payload.texT - (S(1, 18 bits) |<< (U(3) + stageLod.payload.lodLevel)))
-        .resize(18 bits)
-    val sScaled = (adjS >> stageLod.payload.lodLevel).resize(18 bits)
-    val tScaled = (adjT >> stageLod.payload.lodLevel).resize(18 bits)
-    val ds = sScaled(3 downto 0).asUInt
-    val dt = tScaled(3 downto 0).asUInt
-    val si = (sScaled >> 4).resize(14 bits)
-    val ti = (tScaled >> 4).resize(14 bits)
-
-    val finalSPoint = stageLod.payload.clampToZero ? S(0, 14 bits) | sPoint
-    val finalTPoint = stageLod.payload.clampToZero ? S(0, 14 bits) | tPoint
-    val finalSi = stageLod.payload.clampToZero ? S(0, 14 bits) | si
-    val finalTi = stageLod.payload.clampToZero ? S(0, 14 bits) | ti
-    val finalDs = stageLod.payload.clampToZero ? U(0, 4 bits) | ds
-    val finalDt = stageLod.payload.clampToZero ? U(0, 4 bits) | dt
+    val coordinates = new XlsTmuCoordinates
+    coordinates.io.tex_s := stageLod.payload.texS
+    coordinates.io.tex_t := stageLod.payload.texT
+    coordinates.io.level := stageLod.payload.lodLevel
+    coordinates.io.clamp_zero := stageLod.payload.clampToZero
 
     val stageB = stageLod
       .translateWith {
         val out = Tmu.FrontB(c)
-        out.finalSPoint := finalSPoint
-        out.finalTPoint := finalTPoint
-        out.finalSi := finalSi
-        out.finalTi := finalTi
-        out.finalDs := finalDs
-        out.finalDt := finalDt
+        out.finalSPoint := coordinates.io.out(63 downto 50).asSInt
+        out.finalTPoint := coordinates.io.out(49 downto 36).asSInt
+        out.finalSi := coordinates.io.out(35 downto 22).asSInt
+        out.finalTi := coordinates.io.out(21 downto 8).asSInt
+        out.finalDs := coordinates.io.out(7 downto 4).asUInt
+        out.finalDt := coordinates.io.out(3 downto 0).asUInt
         out.lodLevel := stageLod.payload.lodLevel
         out.texWidthBits := stageLod.payload.texWidthBits
         out.texHeightBits := stageLod.payload.texHeightBits
@@ -374,7 +288,6 @@ case class Tmu(c: voodoo.Config) extends Component {
   val stageBTexMode = Tmu.TextureMode.decode(stageB.payload.meta.config.textureMode)
 
   val is16BitFormat = stageBTexMode.format >= Tmu.TextureFormat.ARGB8332
-  val bytesPerTexel = Mux(is16BitFormat, U(2), U(1))
   val addressGen = new Area {
     val packedTables = if (c.packedTexLayout) stageB.payload.meta.config.texTables else null
     val packedLodBase =
@@ -383,86 +296,32 @@ case class Tmu(c: voodoo.Config) extends Component {
       else U(0, c.addressWidth.value bits)
     val packedLodShift =
       if (c.packedTexLayout) packedTables.texShift(stageB.payload.lodLevel) else U(0, 4 bits)
-    val lodWidthBits = stageB.payload.texWidthBits.resize(5 bits)
-    val lodHeightBits = stageB.payload.texHeightBits.resize(5 bits)
-    val lodSizeShift =
-      (lodWidthBits +^ lodHeightBits +^ is16BitFormat.asUInt.resize(5 bits)).resize(6 bits)
-    val packedLodEnd = if (c.packedTexLayout) {
-      val lodSizeBytes =
-        (U(1, c.addressWidth.value bits) |<< lodSizeShift).resize(c.addressWidth.value bits)
-      (packedLodBase + lodSizeBytes).resized
-    } else {
-      U(0, c.addressWidth.value bits)
-    }
 
-    def texelAddr(x: UInt, y: UInt): UInt = {
-      if (c.packedTexLayout) {
-        val tables = stageB.payload.meta.config.texTables
-        val lodBase = tables.texBase(stageB.payload.lodLevel)
-        val lodShift = tables.texShift(stageB.payload.lodLevel)
-        Mux(
-          is16BitFormat,
-          lodBase + (x << 1).resize(22 bits) + (y.resize(22 bits) << (lodShift +^ U(1)).resize(
-            5 bits
-          )).resize(22 bits),
-          lodBase + x.resize(22 bits) + (y.resize(22 bits) << lodShift).resize(22 bits)
-        ).resize(c.addressWidth.value bits)
-      } else {
-        val baseReg = UInt(24 bits)
-        baseReg := stageB.payload.meta.config.texBaseAddr
-        when(tLOD.tmultibaseaddr) {
-          switch(stageB.payload.lodLevel) {
-            is(U(1, 4 bits)) {
-              baseReg := stageB.payload.meta.config.texBaseAddr1
-            }
-            is(U(2, 4 bits)) {
-              baseReg := stageB.payload.meta.config.texBaseAddr2
-            }
-            default {
-              when(stageB.payload.lodLevel >= U(3, 4 bits)) {
-                baseReg := stageB.payload.meta.config.texBaseAddr38
-              }
-            }
-          }
-        }
-        val texBaseByteAddr = (baseReg << 3).resize(c.addressWidth.value bits)
-        val lodField = stageB.payload.lodLevel.resize(4 bits)
-        val tField = y.resize(8 bits)
-        val x8 = x.resize(8 bits)
-        val colByteOffset = Mux(
-          is16BitFormat,
-          (x << 1).resize(9 bits),
-          (x8(7 downto 2) ## B"0" ## x8(1 downto 0)).asUInt
-        )
-        val pciOffset = (lodField ## tField ## colByteOffset).asUInt
-        texBaseByteAddr + pciOffset.resize(c.addressWidth.value bits)
-      }
-    }
+    val addresses = new XlsTmuAddresses
+    addresses.io.point_s := stageB.payload.finalSPoint
+    addresses.io.point_t := stageB.payload.finalTPoint
+    addresses.io.integer_s := stageB.payload.finalSi
+    addresses.io.integer_t := stageB.payload.finalTi
+    addresses.io.width_bits := stageB.payload.texWidthBits
+    addresses.io.height_bits := stageB.payload.texHeightBits
+    addresses.io.clamp_s := stageBTexMode.clampS
+    addresses.io.clamp_t := stageBTexMode.clampT
+    addresses.io.is_16_bit := is16BitFormat
+    addresses.io.packed_layout := (if (c.packedTexLayout) True else False)
+    addresses.io.lod_base := packedLodBase.resize(22 bits)
+    addresses.io.lod_shift := packedLodShift
+    addresses.io.base0 := stageB.payload.meta.config.texBaseAddr
+    addresses.io.base1 := stageB.payload.meta.config.texBaseAddr1
+    addresses.io.base2 := stageB.payload.meta.config.texBaseAddr2
+    addresses.io.base38 := stageB.payload.meta.config.texBaseAddr38
+    addresses.io.multibase := stageB.payload.meta.config.tLOD(24)
+    addresses.io.level := stageB.payload.lodLevel
 
-    val pointTexelX =
-      wrapOrClamp(stageB.payload.finalSPoint, stageB.payload.texWidthBits, stageBTexMode.clampS)
-    val pointTexelY =
-      wrapOrClamp(stageB.payload.finalTPoint, stageB.payload.texHeightBits, stageBTexMode.clampT)
-    val pointAddr = texelAddr(pointTexelX, pointTexelY)
-
-    val biX0 =
-      wrapOrClamp(stageB.payload.finalSi, stageB.payload.texWidthBits, stageBTexMode.clampS)
-    val biX1 = wrapOrClamp(
-      (stageB.payload.finalSi + 1).resize(14 bits),
-      stageB.payload.texWidthBits,
-      stageBTexMode.clampS
-    )
-    val biY0 =
-      wrapOrClamp(stageB.payload.finalTi, stageB.payload.texHeightBits, stageBTexMode.clampT)
-    val biY1 = wrapOrClamp(
-      (stageB.payload.finalTi + 1).resize(14 bits),
-      stageB.payload.texHeightBits,
-      stageBTexMode.clampT
-    )
-    val biAddr0 = texelAddr(biX0, biY0)
-    val biAddr1 = texelAddr(biX1, biY0)
-    val biAddr2 = texelAddr(biX0, biY1)
-    val biAddr3 = texelAddr(biX1, biY1)
+    val pointAddr = addresses.io.out(129 downto 104).asUInt.resize(c.addressWidth.value bits)
+    val biAddr0 = addresses.io.out(103 downto 78).asUInt.resize(c.addressWidth.value bits)
+    val biAddr1 = addresses.io.out(77 downto 52).asUInt.resize(c.addressWidth.value bits)
+    val biAddr2 = addresses.io.out(51 downto 26).asUInt.resize(c.addressWidth.value bits)
+    val biAddr3 = addresses.io.out(25 downto 0).asUInt.resize(c.addressWidth.value bits)
   }
   val packedLodBase = addressGen.packedLodBase
   val packedLodShift = addressGen.packedLodShift
@@ -516,13 +375,7 @@ case class Tmu(c: voodoo.Config) extends Component {
   val sampleRequestBase = sampleRequestPrep
     .translateWith {
       val req = Tmu.SampleRequest(c)
-      val startupTexBase = (0 until 9).map(sampleRequestPrep.payload.texTables.texBase(_))
-      val startupTexEnd = Tmu.correctedTexEnd(
-        startupTexBase,
-        (0 until 9).map(sampleRequestPrep.payload.texTables.texEnd(_)),
-        sampleRequestPrep.payload.is16Bit
-      )
-      val startupTexShift = (0 until 9).map(sampleRequestPrep.payload.texTables.texShift(_))
+      val packedDecode = new XlsTmuPackedDecode
       val tapAddr = Vec(UInt(c.addressWidth.value bits), 4)
       tapAddr(
         0
@@ -530,6 +383,26 @@ case class Tmu(c: voodoo.Config) extends Component {
       tapAddr(1) := sampleRequestPrep.payload.biAddr1
       tapAddr(2) := sampleRequestPrep.payload.biAddr2
       tapAddr(3) := sampleRequestPrep.payload.biAddr3
+      packedDecode.io.line0 := sampleRequestPrep.payload.tapLineBase(0)
+      packedDecode.io.line1 := sampleRequestPrep.payload.tapLineBase(1)
+      packedDecode.io.line2 := sampleRequestPrep.payload.tapLineBase(2)
+      packedDecode.io.line3 := sampleRequestPrep.payload.tapLineBase(3)
+      packedDecode.io.addr0 := tapAddr(0).resize(22 bits)
+      packedDecode.io.addr1 := tapAddr(1).resize(22 bits)
+      packedDecode.io.addr2 := tapAddr(2).resize(22 bits)
+      packedDecode.io.addr3 := tapAddr(3).resize(22 bits)
+      packedDecode.io.is_16_bit := sampleRequestPrep.payload.is16Bit
+      packedDecode.io.lod_base := sampleRequestPrep.payload.lodBase.resize(22 bits)
+      packedDecode.io.lod_shift := sampleRequestPrep.payload.lodShift
+      packedDecode.io.bases := sampleRequestPrep.payload.texTables.texBase
+        .map(_.asBits)
+        .reduce(_ ## _)
+      packedDecode.io.ends := sampleRequestPrep.payload.texTables.texEnd
+        .map(_.asBits)
+        .reduce(_ ## _)
+      packedDecode.io.shifts := sampleRequestPrep.payload.texTables.texShift
+        .map(_.asBits)
+        .reduce(_ ## _)
       req.pointAddr := sampleRequestPrep.payload.pointAddr
       req.biAddr0 := sampleRequestPrep.payload.biAddr0
       req.biAddr1 := sampleRequestPrep.payload.biAddr1
@@ -542,26 +415,16 @@ case class Tmu(c: voodoo.Config) extends Component {
         req.texTables := sampleRequestPrep.payload.texTables
       }
       for (i <- 0 until 4) {
-        req.tapStartupDecode(i) := Tmu.packedStartupDecode4(
-          sampleRequestPrep.payload.tapLineBase(i),
-          sampleRequestPrep.payload.is16Bit,
-          sampleRequestPrep.payload.lodBase,
-          sampleRequestPrep.payload.lodShift,
-          startupTexBase,
-          startupTexEnd,
-          startupTexShift
-        )
-        val loc = Tmu.packedLocation22(
-          tapAddr(i).resize(22 bits),
-          sampleRequestPrep.payload.is16Bit,
-          sampleRequestPrep.payload.lodBase.resize(22 bits),
-          sampleRequestPrep.payload.lodShift,
-          startupTexBase,
-          startupTexEnd,
-          startupTexShift
-        )
-        req.tapPackedBank(i) := loc._2
-        req.tapPackedPair(i) := loc._3
+        val startup = packedDecode.io.out(79 - i * 16 downto 64 - i * 16)
+        for (byte <- 0 until 4) {
+          val low = (3 - byte) * 4
+          req.tapStartupDecode(i).valid(byte) := startup(low + 3)
+          req.tapStartupDecode(i).bank(byte) := startup(low + 2 downto low + 1).asUInt
+          req.tapStartupDecode(i).pair(byte) := startup(low)
+        }
+        val location = packedDecode.io.out(15 - i * 4 downto 12 - i * 4)
+        req.tapPackedBank(i) := location(2 downto 1).asUInt
+        req.tapPackedPair(i) := location(0)
       }
       req.bilinear := sampleRequestPrep.payload.bilinear
       req.passthrough := sampleRequestPrep.payload.passthrough
@@ -643,167 +506,10 @@ object Tmu {
     val bank = Vec(UInt(2 bits), 4)
     val pair = Bits(4 bits)
   }
-  val packedStartupOffsetLowWidth = 10
+  val requestIdWidth = 3
 
   def lineBase22Of(addr: UInt, lineByteShift: Int): UInt =
     ((addr.resize(22 bits) >> lineByteShift) << lineByteShift).resize(22 bits)
-
-  def correctedTexEnd(texBase: Seq[UInt], texEndRaw: Seq[UInt], is16Bit: Bool): Vec[UInt] = {
-    val out = Vec(UInt(22 bits), texBase.length)
-    for (lod <- texBase.indices) {
-      val base = texBase(lod)
-      val rawEnd = texEndRaw(lod)
-      val fallback =
-        if (lod < texBase.length - 1) texBase(lod + 1)
-        else (base + (is16Bit ? U(2, 22 bits) | U(1, 22 bits))).resized
-      out(lod) := (rawEnd > base) ? rawEnd | fallback
-    }
-    out
-  }
-
-  def packedLocation22(
-      addr: UInt,
-      is16Bit: Bool,
-      lodBase: UInt,
-      lodShift: UInt,
-      texBase: Seq[UInt],
-      texEnd: Seq[UInt],
-      texShift: Seq[UInt]
-  ): (Bool, UInt, Bool) = {
-    val addr22 = addr.resize(22 bits)
-    val in = Bool()
-    val base = UInt(22 bits)
-    val shift = UInt(4 bits)
-    val byteOffsLow = UInt(packedStartupOffsetLowWidth bits)
-    val bankMsb = Bool()
-    val bankLsb = Bool()
-    in := False
-    base := lodBase.resize(22 bits)
-    shift := lodShift
-    for (lod <- texBase.indices) {
-      when(addr22 >= texBase(lod) && addr22 < texEnd(lod)) {
-        in := True
-        base := texBase(lod)
-        shift := texShift(lod)
-      }
-    }
-    byteOffsLow :=
-      (addr22(packedStartupOffsetLowWidth - 1 downto 0) - base(
-        packedStartupOffsetLowWidth - 1 downto 0
-      )).resized
-    bankMsb := byteOffsLow(shift)
-    bankLsb := byteOffsLow(0)
-    when(is16Bit) {
-      bankMsb := byteOffsLow(shift) | byteOffsLow((shift + 1).resized)
-      bankLsb := byteOffsLow(0) | byteOffsLow(1)
-    }
-    (in, (bankMsb ## bankLsb).asUInt, !is16Bit && byteOffsLow(1))
-  }
-
-  def packedStartupDecode4(
-      lineBase: UInt,
-      is16Bit: Bool,
-      lodBase: UInt,
-      lodShift: UInt,
-      texBase: Seq[UInt],
-      texEnd: Seq[UInt],
-      texShift: Seq[UInt]
-  ): PackedStartupDecode = {
-    val out = PackedStartupDecode()
-    for (byteIdx <- 0 until 4) {
-      val loc = packedLocation22(
-        (lineBase + U(byteIdx, 22 bits)).resize(22 bits),
-        is16Bit,
-        lodBase,
-        lodShift,
-        texBase,
-        texEnd,
-        texShift
-      )
-      out.valid(byteIdx) := loc._1
-      out.bank(byteIdx) := loc._2
-      out.pair(byteIdx) := loc._3
-    }
-    out
-  }
-
-  val requestIdWidth = 3
-
-  case class BilinearWeights() extends Bundle {
-    val w0 = UInt(10 bits)
-    val w1 = UInt(10 bits)
-    val w2 = UInt(10 bits)
-    val w3 = UInt(10 bits)
-  }
-
-  def bilinearWeights(ds: UInt, dt: UInt): BilinearWeights = {
-    val ds5 = ds.resize(5 bits)
-    val dt5 = dt.resize(5 bits)
-    val invDs = U(16, 5 bits) - ds5
-    val invDt = U(16, 5 bits) - dt5
-    val weights = BilinearWeights()
-    weights.w0 := (invDs * invDt).resize(10 bits)
-    weights.w1 := (ds5 * invDt).resize(10 bits)
-    weights.w2 := (invDs * dt5).resize(10 bits)
-    weights.w3 := (ds5 * dt5).resize(10 bits)
-    weights
-  }
-
-  def blendChannel(weights: BilinearWeights, t0: UInt, t1: UInt, t2: UInt, t3: UInt): UInt = {
-    val sum = (t0.resize(18 bits) * weights.w0.resize(10 bits)) +
-      (t1.resize(18 bits) * weights.w1.resize(10 bits)) +
-      (t2.resize(18 bits) * weights.w2.resize(10 bits)) +
-      (t3.resize(18 bits) * weights.w3.resize(10 bits))
-    (sum >> 8).resize(8 bits)
-  }
-
-  def clz32(v: UInt): UInt = {
-    val v0 = v.resize(32 bits)
-
-    val test0 = v0(31 downto 16) === 0
-    val n0 = test0 ? U(16, 6 bits) | U(0, 6 bits)
-    val s0 = test0 ? (v0 |<< 16) | v0
-
-    val test1 = s0(31 downto 24) === 0
-    val n1 = n0 + (test1 ? U(8, 6 bits) | U(0, 6 bits))
-    val s1 = test1 ? (s0 |<< 8) | s0
-
-    val test2 = s1(31 downto 28) === 0
-    val n2 = n1 + (test2 ? U(4, 6 bits) | U(0, 6 bits))
-    val s2 = test2 ? (s1 |<< 4) | s1
-
-    val test3 = s2(31 downto 30) === 0
-    val n3 = n2 + (test3 ? U(2, 6 bits) | U(0, 6 bits))
-    val s3 = test3 ? (s2 |<< 2) | s2
-
-    val test4 = !s3(31)
-    (n3 + (test4 ? U(1, 6 bits) | U(0, 6 bits))).resize(6 bits)
-  }
-
-  def clz64(v: UInt): UInt = {
-    val v0 = v.resize(64 bits)
-    val hi = v0(63 downto 32)
-    val lo = v0(31 downto 0)
-    val hiZero = hi === 0
-    val clzHi = clz32(hi)
-    val clzLo = clz32(lo)
-    Mux(hiZero, (U(32, 7 bits) + clzLo.resize(7 bits)).resize(7 bits), clzHi.resize(7 bits))
-  }
-
-  def wrapOrClamp(coord: SInt, sizeBits: UInt, clampEnable: Bool): UInt = {
-    val size = (U(1, 10 bits) << sizeBits).resize(10 bits)
-    val maxVal = size - 1
-    val wrapped = (coord.resize(10 bits).asUInt & maxVal).resize(10 bits)
-    val clamped = UInt(10 bits)
-    when(coord < 0) {
-      clamped := 0
-    }.elsewhen(coord.asUInt >= size) {
-      clamped := maxVal
-    }.otherwise {
-      clamped := coord.resize(10 bits).asUInt
-    }
-    clampEnable ? clamped | wrapped
-  }
 
   def assignPassthrough(
       dst: TmuPassthrough,

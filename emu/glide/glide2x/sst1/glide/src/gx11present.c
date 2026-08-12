@@ -432,6 +432,11 @@ static int x11PresenterReadFrontBuffer(void) {
 
   if (!gc) return 0;
 #ifdef SIM_BACKEND
+#ifdef PURE_XLS_BACKEND
+  readOk = sim_read_frontbuffer(
+      (FxU32)x11Presenter.width, (FxU32)x11Presenter.height,
+      x11Presenter.frontBuffer) == 0;
+#else
   readOk = grLfbReadRegion(GR_BUFFER_FRONTBUFFER,
                            0,
                            0,
@@ -439,6 +444,7 @@ static int x11PresenterReadFrontBuffer(void) {
                            (FxU32)x11Presenter.height,
                            (FxU32)x11Presenter.width * sizeof(FxU16),
                            x11Presenter.frontBuffer);
+#endif
   if (!readOk) return 0;
   x11Presenter.lastBufferOffset = 0u;
   x11PresenterLog("frontbuffer lfb read ok");

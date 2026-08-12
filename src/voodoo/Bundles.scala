@@ -129,53 +129,6 @@ package object voodoo {
   def alignedWordAddress(address: UInt): UInt =
     (address(address.getWidth - 1 downto 2) ## U"2'b00").asUInt
 
-  def selectWordLane(word: Bits, laneHi: Bool): UInt =
-    (laneHi ? word(31 downto 16) | word(15 downto 0)).asUInt
-
-  def packWordLane(data: Bits, laneHi: Bool): Bits = {
-    val packed = Bits(32 bits)
-    packed := laneHi ? (data ## B(0, 16 bits)) | (B(0, 16 bits) ## data)
-    packed
-  }
-
-  def wordLaneMask(laneHi: Bool): Bits = laneHi ? B"4'b1100" | B"4'b0011"
-
-  /** Expand RGB1555 packed value to 8-bit Color (ignores alpha bit 15) */
-  def expandRgb555(v: UInt): Color[UInt] = {
-    val c = Color.u8()
-    c.r := expandTo8(v(14 downto 10), 5)
-    c.g := expandTo8(v(9 downto 5), 5)
-    c.b := expandTo8(v(4 downto 0), 5)
-    c
-  }
-
-  /** Clamp signed value to [0, 255] and return as UInt(8 bits) */
-  def clampToU8(v: SInt): UInt = {
-    val result = UInt(8 bits)
-    when(v < 0) { result := 0 }
-      .elsewhen(v > 255) { result := 255 }
-      .otherwise { result := v(7 downto 0).asUInt }
-    result
-  }
-
-  /** Apply word-swap and byte-swizzle transforms to 32-bit data */
-  def wordSwapAndSwizzle(data: Bits, doWordSwap: Bool, doByteSwizzle: Bool): Bits = {
-    val afterWordSwap = Bits(32 bits)
-    when(doWordSwap) {
-      afterWordSwap := data(15 downto 0) ## data(31 downto 16)
-    } otherwise {
-      afterWordSwap := data
-    }
-    val result = Bits(32 bits)
-    when(doByteSwizzle) {
-      result := afterWordSwap(7 downto 0) ## afterWordSwap(15 downto 8) ##
-        afterWordSwap(23 downto 16) ## afterWordSwap(31 downto 24)
-    } otherwise {
-      result := afterWordSwap
-    }
-    result
-  }
-
   type AddressRemapper = voodoo.frontend.AddressRemapper
   val AddressRemapper = voodoo.frontend.AddressRemapper
   type RegisterBank = voodoo.frontend.RegisterBank

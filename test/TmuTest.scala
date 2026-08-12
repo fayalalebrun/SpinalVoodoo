@@ -23,6 +23,7 @@ class TmuTest extends AnyFunSuite {
   // Helper to set default config (now part of input stream)
   def setDefaultConfig(dut: Tmu): Unit = {
     // Default textureMode: RGB565 format (8), no clamping, no perspective
+    dut.io.input.payload.config.textureEnable #= true
     dut.io.input.payload.config.textureMode #= (Tmu.TextureFormat.RGB565 << 8)
     dut.io.input.payload.config.texBaseAddr #= 0
     // Default tLOD: lodmin=0, lodmax=8, lodbias=0, aspect=1:1
@@ -75,16 +76,18 @@ class TmuTest extends AnyFunSuite {
 
   // Helper to simulate BMB memory response
   def respondToTexRead(dut: Tmu, texelData: Int): Unit = {
-    // Wait for command request
-    if (dut.io.texRead.cmd.valid.toBoolean) {
+    fork {
+      dut.io.texRead.cmd.ready #= false
+      dut.io.texRead.rsp.valid #= false
+      dut.io.texRead.rsp.last #= false
+      while (!dut.io.texRead.cmd.valid.toBoolean) dut.clockDomain.waitSampling()
       dut.io.texRead.cmd.ready #= true
       dut.clockDomain.waitSampling()
       dut.io.texRead.cmd.ready #= false
-
-      // Send response with texel data
-      dut.io.texRead.rsp.valid #= true
       dut.io.texRead.rsp.fragment.data #= texelData
       dut.io.texRead.rsp.last #= true
+      dut.io.texRead.rsp.valid #= true
+      while (!dut.io.texRead.rsp.ready.toBoolean) dut.clockDomain.waitSampling()
       dut.clockDomain.waitSampling()
       dut.io.texRead.rsp.valid #= false
     }
@@ -94,197 +97,171 @@ class TmuTest extends AnyFunSuite {
   val maxPipelineLatency = 80
 
   test("TMU converts RGB565 white to RGB888") {
-    SimConfig.withIVerilog.withWave.compile(Tmu(config)).doSim { dut =>
-      setupDut(dut)
-      setDefaultInput(dut)
+    SimConfig.withIVerilog.withWave.compile(Tmu(config.copy(useTexFillCache = false))).doSim {
+      dut =>
+        setupDut(dut)
+        setDefaultInput(dut)
 
-      dut.io.input.valid #= true
+        respondToTexRead(dut, 0xffff)
+        dut.io.input.valid #= true
 
-      // Handle memory transactions
-      var cycles = 0
-      while (!dut.io.output.valid.toBoolean && cycles < maxPipelineLatency) {
-        if (dut.io.texRead.cmd.valid.toBoolean) {
-          dut.io.texRead.cmd.ready #= true
-          dut.io.texRead.rsp.valid #= true
-          // RGB565 white: RRRRR_GGGGGG_BBBBB = 11111_111111_11111 = 0xFFFF
-          dut.io.texRead.rsp.fragment.data #= 0xffff
-          dut.io.texRead.rsp.last #= true
-        } else {
-          dut.io.texRead.cmd.ready #= false
-          dut.io.texRead.rsp.valid #= false
+        var cycles = 0
+        while (!dut.io.output.valid.toBoolean && cycles < maxPipelineLatency) {
+          dut.clockDomain.waitSampling()
+          cycles += 1
         }
-        dut.clockDomain.waitSampling()
-        cycles += 1
-      }
 
-      assert(dut.io.output.valid.toBoolean, s"Expected output to be valid (waited $cycles cycles)")
+        assert(
+          dut.io.output.valid.toBoolean,
+          s"Expected output to be valid (waited $cycles cycles)"
+        )
 
-      val r = dut.io.output.payload.texture.r.toInt
-      val g = dut.io.output.payload.texture.g.toInt
-      val b = dut.io.output.payload.texture.b.toInt
-      val a = dut.io.output.payload.textureAlpha.toInt
+        val r = dut.io.output.payload.texture.r.toInt
+        val g = dut.io.output.payload.texture.g.toInt
+        val b = dut.io.output.payload.texture.b.toInt
+        val a = dut.io.output.payload.textureAlpha.toInt
 
-      println(s"RGB565 white (0xFFFF) -> RGB888: R=$r, G=$g, B=$b, A=$a")
+        println(s"RGB565 white (0xFFFF) -> RGB888: R=$r, G=$g, B=$b, A=$a")
 
-      // RGB565 white: R=31, G=63, B=31
-      // Expanded: R = 31 << 3 | 31 >> 2 = 248 | 7 = 255
-      //           G = 63 << 2 | 63 >> 4 = 252 | 3 = 255
-      //           B = 31 << 3 | 31 >> 2 = 248 | 7 = 255
-      assert(r == 255, s"Expected R=255 for white, got $r")
-      assert(g == 255, s"Expected G=255 for white, got $g")
-      assert(b == 255, s"Expected B=255 for white, got $b")
-      assert(a == 255, s"Expected A=255 (full opacity), got $a")
+        // RGB565 white: R=31, G=63, B=31
+        // Expanded: R = 31 << 3 | 31 >> 2 = 248 | 7 = 255
+        //           G = 63 << 2 | 63 >> 4 = 252 | 3 = 255
+        //           B = 31 << 3 | 31 >> 2 = 248 | 7 = 255
+        assert(r == 255, s"Expected R=255 for white, got $r")
+        assert(g == 255, s"Expected G=255 for white, got $g")
+        assert(b == 255, s"Expected B=255 for white, got $b")
+        assert(a == 255, s"Expected A=255 (full opacity), got $a")
     }
   }
 
   test("TMU converts RGB565 black to RGB888") {
-    SimConfig.withIVerilog.withWave.compile(Tmu(config)).doSim { dut =>
-      setupDut(dut)
-      setDefaultInput(dut)
+    SimConfig.withIVerilog.withWave.compile(Tmu(config.copy(useTexFillCache = false))).doSim {
+      dut =>
+        setupDut(dut)
+        setDefaultInput(dut)
 
-      dut.io.input.valid #= true
+        respondToTexRead(dut, 0x0000)
+        dut.io.input.valid #= true
 
-      var cycles = 0
-      while (!dut.io.output.valid.toBoolean && cycles < maxPipelineLatency) {
-        if (dut.io.texRead.cmd.valid.toBoolean) {
-          dut.io.texRead.cmd.ready #= true
-          dut.io.texRead.rsp.valid #= true
-          // RGB565 black: 0x0000
-          dut.io.texRead.rsp.fragment.data #= 0x0000
-          dut.io.texRead.rsp.last #= true
-        } else {
-          dut.io.texRead.cmd.ready #= false
-          dut.io.texRead.rsp.valid #= false
+        var cycles = 0
+        while (!dut.io.output.valid.toBoolean && cycles < maxPipelineLatency) {
+          dut.clockDomain.waitSampling()
+          cycles += 1
         }
-        dut.clockDomain.waitSampling()
-        cycles += 1
-      }
 
-      assert(dut.io.output.valid.toBoolean, s"Expected output to be valid (waited $cycles cycles)")
+        assert(
+          dut.io.output.valid.toBoolean,
+          s"Expected output to be valid (waited $cycles cycles)"
+        )
 
-      val r = dut.io.output.payload.texture.r.toInt
-      val g = dut.io.output.payload.texture.g.toInt
-      val b = dut.io.output.payload.texture.b.toInt
+        val r = dut.io.output.payload.texture.r.toInt
+        val g = dut.io.output.payload.texture.g.toInt
+        val b = dut.io.output.payload.texture.b.toInt
 
-      println(s"RGB565 black (0x0000) -> RGB888: R=$r, G=$g, B=$b")
+        println(s"RGB565 black (0x0000) -> RGB888: R=$r, G=$g, B=$b")
 
-      assert(r == 0, s"Expected R=0 for black, got $r")
-      assert(g == 0, s"Expected G=0 for black, got $g")
-      assert(b == 0, s"Expected B=0 for black, got $b")
+        assert(r == 0, s"Expected R=0 for black, got $r")
+        assert(g == 0, s"Expected G=0 for black, got $g")
+        assert(b == 0, s"Expected B=0 for black, got $b")
     }
   }
 
   test("TMU converts RGB565 red to RGB888") {
-    SimConfig.withIVerilog.withWave.compile(Tmu(config)).doSim { dut =>
-      setupDut(dut)
-      setDefaultInput(dut)
+    SimConfig.withIVerilog.withWave.compile(Tmu(config.copy(useTexFillCache = false))).doSim {
+      dut =>
+        setupDut(dut)
+        setDefaultInput(dut)
 
-      dut.io.input.valid #= true
+        respondToTexRead(dut, 0xf800)
+        dut.io.input.valid #= true
 
-      var cycles = 0
-      while (!dut.io.output.valid.toBoolean && cycles < maxPipelineLatency) {
-        if (dut.io.texRead.cmd.valid.toBoolean) {
-          dut.io.texRead.cmd.ready #= true
-          dut.io.texRead.rsp.valid #= true
-          // RGB565 pure red: R=31, G=0, B=0 = 11111_000000_00000 = 0xF800
-          dut.io.texRead.rsp.fragment.data #= 0xf800
-          dut.io.texRead.rsp.last #= true
-        } else {
-          dut.io.texRead.cmd.ready #= false
-          dut.io.texRead.rsp.valid #= false
+        var cycles = 0
+        while (!dut.io.output.valid.toBoolean && cycles < maxPipelineLatency) {
+          dut.clockDomain.waitSampling()
+          cycles += 1
         }
-        dut.clockDomain.waitSampling()
-        cycles += 1
-      }
 
-      assert(dut.io.output.valid.toBoolean, s"Expected output to be valid (waited $cycles cycles)")
+        assert(
+          dut.io.output.valid.toBoolean,
+          s"Expected output to be valid (waited $cycles cycles)"
+        )
 
-      val r = dut.io.output.payload.texture.r.toInt
-      val g = dut.io.output.payload.texture.g.toInt
-      val b = dut.io.output.payload.texture.b.toInt
+        val r = dut.io.output.payload.texture.r.toInt
+        val g = dut.io.output.payload.texture.g.toInt
+        val b = dut.io.output.payload.texture.b.toInt
 
-      println(s"RGB565 red (0xF800) -> RGB888: R=$r, G=$g, B=$b")
+        println(s"RGB565 red (0xF800) -> RGB888: R=$r, G=$g, B=$b")
 
-      // R=31: 31 << 3 | 31 >> 2 = 248 | 7 = 255
-      assert(r == 255, s"Expected R=255 for red, got $r")
-      assert(g == 0, s"Expected G=0 for red, got $g")
-      assert(b == 0, s"Expected B=0 for red, got $b")
+        // R=31: 31 << 3 | 31 >> 2 = 248 | 7 = 255
+        assert(r == 255, s"Expected R=255 for red, got $r")
+        assert(g == 0, s"Expected G=0 for red, got $g")
+        assert(b == 0, s"Expected B=0 for red, got $b")
     }
   }
 
   test("TMU converts RGB565 green to RGB888") {
-    SimConfig.withIVerilog.withWave.compile(Tmu(config)).doSim { dut =>
-      setupDut(dut)
-      setDefaultInput(dut)
+    SimConfig.withIVerilog.withWave.compile(Tmu(config.copy(useTexFillCache = false))).doSim {
+      dut =>
+        setupDut(dut)
+        setDefaultInput(dut)
 
-      dut.io.input.valid #= true
+        respondToTexRead(dut, 0x07e0)
+        dut.io.input.valid #= true
 
-      var cycles = 0
-      while (!dut.io.output.valid.toBoolean && cycles < maxPipelineLatency) {
-        if (dut.io.texRead.cmd.valid.toBoolean) {
-          dut.io.texRead.cmd.ready #= true
-          dut.io.texRead.rsp.valid #= true
-          // RGB565 pure green: R=0, G=63, B=0 = 00000_111111_00000 = 0x07E0
-          dut.io.texRead.rsp.fragment.data #= 0x07e0
-          dut.io.texRead.rsp.last #= true
-        } else {
-          dut.io.texRead.cmd.ready #= false
-          dut.io.texRead.rsp.valid #= false
+        var cycles = 0
+        while (!dut.io.output.valid.toBoolean && cycles < maxPipelineLatency) {
+          dut.clockDomain.waitSampling()
+          cycles += 1
         }
-        dut.clockDomain.waitSampling()
-        cycles += 1
-      }
 
-      assert(dut.io.output.valid.toBoolean, s"Expected output to be valid (waited $cycles cycles)")
+        assert(
+          dut.io.output.valid.toBoolean,
+          s"Expected output to be valid (waited $cycles cycles)"
+        )
 
-      val r = dut.io.output.payload.texture.r.toInt
-      val g = dut.io.output.payload.texture.g.toInt
-      val b = dut.io.output.payload.texture.b.toInt
+        val r = dut.io.output.payload.texture.r.toInt
+        val g = dut.io.output.payload.texture.g.toInt
+        val b = dut.io.output.payload.texture.b.toInt
 
-      println(s"RGB565 green (0x07E0) -> RGB888: R=$r, G=$g, B=$b")
+        println(s"RGB565 green (0x07E0) -> RGB888: R=$r, G=$g, B=$b")
 
-      // G=63: 63 << 2 | 63 >> 4 = 252 | 3 = 255
-      assert(r == 0, s"Expected R=0 for green, got $r")
-      assert(g == 255, s"Expected G=255 for green, got $g")
-      assert(b == 0, s"Expected B=0 for green, got $b")
+        // G=63: 63 << 2 | 63 >> 4 = 252 | 3 = 255
+        assert(r == 0, s"Expected R=0 for green, got $r")
+        assert(g == 255, s"Expected G=255 for green, got $g")
+        assert(b == 0, s"Expected B=0 for green, got $b")
     }
   }
 
   test("TMU converts RGB565 blue to RGB888") {
-    SimConfig.withIVerilog.withWave.compile(Tmu(config)).doSim { dut =>
-      setupDut(dut)
-      setDefaultInput(dut)
+    SimConfig.withIVerilog.withWave.compile(Tmu(config.copy(useTexFillCache = false))).doSim {
+      dut =>
+        setupDut(dut)
+        setDefaultInput(dut)
 
-      dut.io.input.valid #= true
+        respondToTexRead(dut, 0x001f)
+        dut.io.input.valid #= true
 
-      var cycles = 0
-      while (!dut.io.output.valid.toBoolean && cycles < maxPipelineLatency) {
-        if (dut.io.texRead.cmd.valid.toBoolean) {
-          dut.io.texRead.cmd.ready #= true
-          dut.io.texRead.rsp.valid #= true
-          // RGB565 pure blue: R=0, G=0, B=31 = 00000_000000_11111 = 0x001F
-          dut.io.texRead.rsp.fragment.data #= 0x001f
-          dut.io.texRead.rsp.last #= true
-        } else {
-          dut.io.texRead.cmd.ready #= false
-          dut.io.texRead.rsp.valid #= false
+        var cycles = 0
+        while (!dut.io.output.valid.toBoolean && cycles < maxPipelineLatency) {
+          dut.clockDomain.waitSampling()
+          cycles += 1
         }
-        dut.clockDomain.waitSampling()
-        cycles += 1
-      }
 
-      assert(dut.io.output.valid.toBoolean, s"Expected output to be valid (waited $cycles cycles)")
+        assert(
+          dut.io.output.valid.toBoolean,
+          s"Expected output to be valid (waited $cycles cycles)"
+        )
 
-      val r = dut.io.output.payload.texture.r.toInt
-      val g = dut.io.output.payload.texture.g.toInt
-      val b = dut.io.output.payload.texture.b.toInt
+        val r = dut.io.output.payload.texture.r.toInt
+        val g = dut.io.output.payload.texture.g.toInt
+        val b = dut.io.output.payload.texture.b.toInt
 
-      println(s"RGB565 blue (0x001F) -> RGB888: R=$r, G=$g, B=$b")
+        println(s"RGB565 blue (0x001F) -> RGB888: R=$r, G=$g, B=$b")
 
-      // B=31: 31 << 3 | 31 >> 2 = 248 | 7 = 255
-      assert(r == 0, s"Expected R=0 for blue, got $r")
-      assert(g == 0, s"Expected G=0 for blue, got $g")
-      assert(b == 255, s"Expected B=255 for blue, got $b")
+        // B=31: 31 << 3 | 31 >> 2 = 248 | 7 = 255
+        assert(r == 0, s"Expected R=0 for blue, got $r")
+        assert(g == 0, s"Expected G=0 for blue, got $g")
+        assert(b == 255, s"Expected B=255 for blue, got $b")
     }
   }
 

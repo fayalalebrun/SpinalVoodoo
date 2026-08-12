@@ -4,6 +4,37 @@ set_global_assignment -name TOP_LEVEL_ENTITY De10PlatformTop
 
 set_global_assignment -name VERILOG_FILE ../rtl/De10Top.v
 set_global_assignment -name VERILOG_FILE De10PlatformTop.v
+set_global_assignment -name VERILOG_FILE ../../../xls/rtl/VoodooXlsFramebufferAddress.v
+set_global_assignment -name VERILOG_FILE ../../../xls/rtl/VoodooXlsWritePack.v
+set_global_assignment -name VERILOG_FILE ../../../xls/rtl/VoodooXlsDepthCompare.v
+set_global_assignment -name VERILOG_FILE ../../../xls/rtl/VoodooXlsAlphaBlend.v
+set_global_assignment -name VERILOG_FILE ../../../xls/rtl/VoodooXlsFogWDepth.v
+set_global_assignment -name VERILOG_FILE ../../../xls/rtl/VoodooXlsFogTableFactor.v
+set_global_assignment -name VERILOG_FILE ../../../xls/rtl/VoodooXlsFogBlend.v
+set_global_assignment -name VERILOG_FILE ../../../xls/rtl/VoodooXlsColorCombine.v
+set_global_assignment -name VERILOG_FILE ../../../xls/rtl/VoodooXlsLfbDecode.v
+set_global_assignment -name VERILOG_FILE ../../../xls/rtl/VoodooXlsPixelTests.v
+set_global_assignment -name VERILOG_FILE ../../../xls/rtl/VoodooXlsDataSwizzle.v
+set_global_assignment -name VERILOG_FILE ../../../xls/rtl/VoodooXlsTexelDecode.v
+set_global_assignment -name VERILOG_FILE ../../../xls/rtl/VoodooXlsTextureFilter.v
+set_global_assignment -name VERILOG_FILE ../../../xls/rtl/VoodooXlsTextureLayout.v
+set_global_assignment -name VERILOG_FILE ../../../xls/rtl/VoodooXlsTmuRecipMeta.v
+set_global_assignment -name VERILOG_FILE ../../../xls/rtl/VoodooXlsTmuRecip.v
+set_global_assignment -name VERILOG_FILE ../../../xls/rtl/VoodooXlsTmuPerspectiveCoords.v
+set_global_assignment -name VERILOG_FILE ../../../xls/rtl/VoodooXlsTmuGradient.v
+set_global_assignment -name VERILOG_FILE ../../../xls/rtl/VoodooXlsTmuLodIndex.v
+set_global_assignment -name VERILOG_FILE ../../../xls/rtl/VoodooXlsTmuBaseLod.v
+set_global_assignment -name VERILOG_FILE ../../../xls/rtl/VoodooXlsTmuLodSelect.v
+set_global_assignment -name VERILOG_FILE ../../../xls/rtl/VoodooXlsTmuCoordinates.v
+set_global_assignment -name VERILOG_FILE ../../../xls/rtl/VoodooXlsTmuAddresses.v
+set_global_assignment -name VERILOG_FILE ../../../xls/rtl/VoodooXlsTmuPackedDecode.v
+set_global_assignment -name VERILOG_FILE ../../../xls/rtl/VoodooXlsTextureWriteAddress.v
+set_global_assignment -name VERILOG_FILE ../../../xls/rtl/VoodooXlsTriangleIterLoad.v
+set_global_assignment -name VERILOG_FILE ../../../xls/rtl/VoodooXlsTriangleIterStep.v
+set_global_assignment -name VERILOG_FILE ../../../xls/rtl/VoodooXlsSignedMagnitude16.v
+set_global_assignment -name VERILOG_FILE ../../../xls/rtl/VoodooXlsTriangleSetup.v
+set_global_assignment -name VERILOG_FILE ../../../xls/rtl/VoodooXlsTriangleSetupS16.v
+set_global_assignment -name VERILOG_FILE ../../../xls/rtl/VoodooXlsSpanStep.v
 # Compile the Qsys top wrappers into the default project library so plain
 # Verilog instantiations in De10PlatformTop bind to the real module views.
 set_global_assignment -name QIP_FILE ../qsys/generated/pll/synthesis/de10_core_pll.qip

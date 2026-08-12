@@ -75,6 +75,16 @@ module De10PlatformTop (
   wire        fb_aux_read;
   wire [3:0]  fb_aux_byteenable;
 
+  wire        scanout_waitrequest;
+  wire [31:0] scanout_readdata;
+  wire        scanout_readdatavalid;
+  wire [10:0] scanout_burstcount;
+  wire [31:0] scanout_writedata;
+  wire [31:0] scanout_address;
+  wire        scanout_write;
+  wire        scanout_read;
+  wire [3:0]  scanout_byteenable;
+
   wire        tex_waitrequest;
   wire [31:0] tex_readdata;
   wire        tex_readdatavalid;
@@ -205,6 +215,16 @@ module De10PlatformTop (
     .fb_aux_read_mem_read          (fb_aux_read),
     .fb_aux_read_mem_byteenable    (fb_aux_byteenable),
     .fb_aux_read_mem_debugaccess   (1'b0),
+    .scanout_mem_waitrequest       (scanout_waitrequest),
+    .scanout_mem_readdata          (scanout_readdata),
+    .scanout_mem_readdatavalid     (scanout_readdatavalid),
+    .scanout_mem_burstcount        (scanout_burstcount),
+    .scanout_mem_writedata         (scanout_writedata),
+    .scanout_mem_address           (scanout_address),
+    .scanout_mem_write             (scanout_write),
+    .scanout_mem_read              (scanout_read),
+    .scanout_mem_byteenable        (scanout_byteenable),
+    .scanout_mem_debugaccess       (1'b0),
     .h2f_avalon_waitrequest      (h2f_waitrequest),
     .h2f_avalon_readdata         (h2f_readdata),
     .h2f_avalon_readdatavalid    (h2f_readdatavalid),
@@ -281,7 +301,11 @@ module De10PlatformTop (
 
   assign core_reset = ~pll_locked_sync | ~h2f_reset_sync | ~core_reset_release[27];
 
+`ifdef PURE_XLS_DE10
+  XlsDe10Top core_0 (
+`else
   De10Top core_0 (
+`endif
     .io_h2fLw_address        (h2f_address[23:2]),
     .io_h2fLw_read           (h2f_read),
     .io_h2fLw_write          (h2f_write),
@@ -326,6 +350,17 @@ module De10PlatformTop (
     .io_memTex_writeData     (tex_writedata),
     .io_memTex_readDataValid (tex_readdatavalid),
     .io_memTex_readData      (tex_readdata),
+`ifdef PURE_XLS_DE10
+    .io_memScanout_read          (scanout_read),
+    .io_memScanout_write         (scanout_write),
+    .io_memScanout_waitRequestn  (~scanout_waitrequest),
+    .io_memScanout_burstCount    (scanout_burstcount),
+    .io_memScanout_address       (scanout_address),
+    .io_memScanout_byteEnable    (scanout_byteenable),
+    .io_memScanout_writeData     (scanout_writedata),
+    .io_memScanout_readDataValid (scanout_readdatavalid),
+    .io_memScanout_readData      (scanout_readdata),
+`endif
     .io_hdmi_clock                    (hdmi_clk),
     .io_hdmi_reset                    (~hdmi_pll_locked),
     .io_hdmi_video_rgb_r              (hdmi_rgb_r),
@@ -347,4 +382,13 @@ module De10PlatformTop (
     .reset                   (core_reset),
     .clk                     (core_clk)
   );
+
+`ifndef PURE_XLS_DE10
+  assign scanout_read = 1'b0;
+  assign scanout_write = 1'b0;
+  assign scanout_burstcount = 11'b0;
+  assign scanout_address = 32'b0;
+  assign scanout_byteenable = 4'b0;
+  assign scanout_writedata = 32'b0;
+`endif
 endmodule

@@ -28,7 +28,8 @@ TRACE_DIR  = ../trace
 # Verilator
 VERILATOR       = verilator
 VERILATOR_ROOT ?= $(shell $(VERILATOR) --getenv VERILATOR_ROOT)
-VERILATOR_FLAGS = --cc --output-split 20000 --output-split-cfuncs 5000 --decorations none --public-flat-rw --x-assign fast --x-initial fast --noassert -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -Wno-CMPCONST -Wno-UNSIGNED
+VERILATOR_FLAGS = --cc --top-module $(SIM_MODEL) --output-split 20000 --output-split-cfuncs 5000 --decorations none --public --x-assign fast --x-initial fast --noassert -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -Wno-CMPCONST -Wno-UNSIGNED
+VERILATOR_CONFIG = $(SIM_DIR)/verilator.vlt
 SCALA_CLI ?= scala-cli
 SCALA_CLI_FLAGS ?= --power
 CORE_SIM_GEN_ARGS ?=
@@ -60,6 +61,8 @@ endif
 # SpinalHDL Verilog source
 VERILOG = $(SIM_DIR)/rtl/$(SIM_MODEL).v
 SCALA_SRCS := $(shell find $(PROJ_ROOT)/src -name '*.scala') $(PROJ_ROOT)/project.scala
+XLS_STAMP = $(PROJ_ROOT)/xls/rtl/.stamp
+XLS_RTL = $(wildcard $(PROJ_ROOT)/xls/rtl/*.v)
 
 # Stamps
 VERILATE_STAMP = $(OBJ_DIR)/.verilate.stamp
@@ -85,15 +88,18 @@ all: $(OBJ_DIR)/trace_test
 state-roundtrip: $(OBJ_DIR)/state_roundtrip_test
 
 # Step 1: Generate Verilog (reuse existing or rebuild)
-$(VERILOG): $(SCALA_SRCS) $(CORE_SIM_GEN_ARGS_FILE) $(SIM_INTERFACE_FILE)
+$(XLS_STAMP): $(wildcard $(PROJ_ROOT)/xls/dslx/*.x) $(PROJ_ROOT)/scripts/generate-xls-rtl $(PROJ_ROOT)/flake.nix $(PROJ_ROOT)/flake.lock
+	$(MAKE) -C $(PROJ_ROOT)/xls all
+
+$(VERILOG): $(SCALA_SRCS) $(CORE_SIM_GEN_ARGS_FILE) $(SIM_INTERFACE_FILE) $(XLS_STAMP)
 	@rm -f $(dir $(VERILOG))*.bin
 	cd $(PROJ_ROOT) && java -Xmx2g -cp "$$( $(SCALA_CLI) compile project.scala src --print-class-path $(SCALA_CLI_FLAGS) )" $(SIM_GEN_CLASS) $(if $(filter 1,$(TRACE)),--trace-pipeline) $(CORE_SIM_GEN_ARGS)
 	@sed -i 's|\$$readmemb("\([^/"]*\.bin\)"|\$$readmemb("$(abspath $(dir $(VERILOG)))/\1"|g' $@
 
 # Step 2: Verilate (64-bit obj_dir, separate from 32-bit Glide build)
-$(VERILATE_STAMP): $(VERILOG) $(TRACE_MODE_FILE) $(SIM_INTERFACE_FILE)
+$(VERILATE_STAMP): $(VERILOG) $(TRACE_MODE_FILE) $(SIM_INTERFACE_FILE) $(XLS_STAMP) $(VERILATOR_CONFIG)
 	@mkdir -p $(OBJ_DIR)
-	$(VERILATOR) $(VERILATOR_FLAGS) $(VERILOG) --Mdir $(OBJ_DIR)
+	$(VERILATOR) $(VERILATOR_FLAGS) $(VERILATOR_CONFIG) $(VERILOG) $(XLS_RTL) --Mdir $(OBJ_DIR)
 	@touch $@
 
 # Step 3: Build Verilator model + runtime libraries (64-bit)
@@ -166,7 +172,7 @@ endif
 VERILATED_MODEL_OBJS = $(addprefix $(OBJ_DIR)/,$(addsuffix .o,$(VM_CLASSES_FAST) $(VM_CLASSES_SLOW) $(VM_SUPPORT_FAST) $(VM_SUPPORT_SLOW)))
 
 $(OBJ_DIR)/trace_test: $(OBJS) $(OBJ_DIR)/V$(SIM_MODEL)__ALL.a $(VERILATED_RUNTIME_OBJS) $(SIM_INTERFACE_FILE)
-	$(CXX) -o $@ $(OBJS) $(OBJ_DIR)/V$(SIM_MODEL)__ALL.a $(VERILATED_RUNTIME_OBJS) -lm -lz -lpthread
+	$(CXX) -no-pie -o $@ $(OBJS) $(OBJ_DIR)/V$(SIM_MODEL)__ALL.a $(VERILATED_RUNTIME_OBJS) -lm -lz -lpthread
 
 ROUNDTRIP_OBJS = $(OBJ_DIR)/state_roundtrip_test.o \
                  $(OBJ_DIR)/ref_model.o \
@@ -178,7 +184,7 @@ ROUNDTRIP_OBJS = $(OBJ_DIR)/state_roundtrip_test.o \
                  $(OBJ_DIR)/voodoo_trace_writer.o
 
 $(OBJ_DIR)/state_roundtrip_test: $(ROUNDTRIP_OBJS)
-	$(CXX) -o $@ $(ROUNDTRIP_OBJS) -lm -lpthread
+	$(CXX) -no-pie -o $@ $(ROUNDTRIP_OBJS) -lm -lpthread
 
 clean:
 	rm -rf $(OBJ_DIR)

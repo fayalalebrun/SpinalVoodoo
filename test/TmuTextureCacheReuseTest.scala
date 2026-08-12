@@ -16,27 +16,28 @@ class TmuTextureCacheReuseTest extends AnyFunSuite {
       texFillRequestWindow = 4
     )
 
-  def zeroNcc(dut: TmuTextureCache): Unit = {
-    for (i <- 0 until 16) dut.io.sampleRequest.payload.passthrough.ncc.y(i) #= 0
-    for (i <- 0 until 4) {
-      dut.io.sampleRequest.payload.passthrough.ncc.i(i) #= 0
-      dut.io.sampleRequest.payload.passthrough.ncc.q(i) #= 0
-    }
-  }
-
   def setReq(dut: TmuTextureCache, addr: Int, bank: Int, bilinear: Boolean = false): Unit = {
     dut.io.sampleRequest.payload.pointAddr #= addr
     dut.io.sampleRequest.payload.biAddr0 #= addr
     dut.io.sampleRequest.payload.biAddr1 #= addr + 2
     dut.io.sampleRequest.payload.biAddr2 #= addr + 0x200
     dut.io.sampleRequest.payload.biAddr3 #= addr + 0x202
-    dut.io.sampleRequest.payload.pointBankSel #= bank
-    dut.io.sampleRequest.payload.biBankSel0 #= 0
-    dut.io.sampleRequest.payload.biBankSel1 #= 1
-    dut.io.sampleRequest.payload.biBankSel2 #= 2
-    dut.io.sampleRequest.payload.biBankSel3 #= 3
+    val tapAddresses = Seq(addr, addr + 2, addr + 0x200, addr + 0x202)
+    val lineBytes = c.texFillLineWords * 4
+    for (tap <- 0 until 4) {
+      val lineBase = tapAddresses(tap) & -lineBytes
+      dut.io.sampleRequest.payload.tapStartupDecode(tap).valid #= 0xf
+      dut.io.sampleRequest.payload.tapStartupDecode(tap).pair #= 0
+      for (byte <- 0 until 4) {
+        val offset = lineBase + byte
+        val bankMsb = ((offset >> 8) & 1) | ((offset >> 9) & 1)
+        val bankLsb = (offset & 1) | ((offset >> 1) & 1)
+        dut.io.sampleRequest.payload.tapStartupDecode(tap).bank(byte) #= ((bankMsb << 1) | bankLsb)
+      }
+      dut.io.sampleRequest.payload.tapPackedBank(tap) #= (if (bilinear) tap else bank)
+      dut.io.sampleRequest.payload.tapPackedPair(tap) #= (((tapAddresses(tap) >> 1) & 1) != 0)
+    }
     dut.io.sampleRequest.payload.lodBase #= 0
-    dut.io.sampleRequest.payload.lodEnd #= 0x20000
     dut.io.sampleRequest.payload.lodShift #= 8
     dut.io.sampleRequest.payload.is16Bit #= true
     for (lod <- 0 until 9) {
@@ -49,12 +50,9 @@ class TmuTextureCacheReuseTest extends AnyFunSuite {
     dut.io.sampleRequest.payload.bilinear #= bilinear
     dut.io.sampleRequest.payload.passthrough.format #= Tmu.TextureFormat.RGB565
     dut.io.sampleRequest.payload.passthrough.bilinear #= bilinear
-    dut.io.sampleRequest.payload.passthrough.sendConfig #= false
+    dut.io.sampleRequest.payload.passthrough.nccTableSelect #= false
     dut.io.sampleRequest.payload.passthrough.ds #= 0
     dut.io.sampleRequest.payload.passthrough.dt #= 0
-    dut.io.sampleRequest.payload.passthrough.readIdx #= 0
-    dut.io.sampleRequest.payload.passthrough.requestId #= 0
-    zeroNcc(dut)
   }
 
   test("packed cache reuses a filled point word") {

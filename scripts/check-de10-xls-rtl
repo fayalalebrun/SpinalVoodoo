@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+"$root/scripts/test-quartus-compat-xls-rtl"
+"$root/scripts/gen-rtl-de10-xls"
+iverilog -g2012 -s XlsAvalonTransferMasterTb \
+  -o "$root/xls/build/xls-avalon-transfer-tb" \
+  "$root/hw/de10/xls/XlsAvalonTransferMaster.sv" \
+  "$root/hw/de10/xls/XlsAvalonTransferMaster_tb.sv"
+vvp "$root/xls/build/xls-avalon-transfer-tb"
+iverilog -g2012 -s XlsPackedBankMemoryTb \
+  -o "$root/xls/build/xls-packed-bank-tb" \
+  "$root/hw/de10/xls/XlsPackedBankMemory.sv" \
+  "$root/hw/de10/xls/XlsPackedBankMemory_tb.sv"
+vvp "$root/xls/build/xls-packed-bank-tb"
+verilator --lint-only --top-module XlsDe10Top \
+  -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -Wno-UNSIGNED -Wno-CMPCONST \
+  -Wno-MULTITOP -Wno-TIMESCALEMOD -Wno-PINCONNECTEMPTY \
+  -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM \
+  "$root/hw/de10/xls/XlsDe10Top.sv" \
+  "$root/hw/de10/xls/XlsAvalonTransferMaster.sv" \
+  "$root/hw/de10/xls/XlsPackedBankMemory.sv" \
+  "$root/xls/build/core_sim_de10_rtl/CoreSimDe10.sv" \
+  "$root/hw/de10/rtl/XlsDe10Scanout.v" \
+  "$root/xls/rtl/VoodooXlsFramebufferAddress.v"

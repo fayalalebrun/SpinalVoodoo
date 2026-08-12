@@ -22,6 +22,10 @@ SIM_DIR = ../../../../../../emu/sim
 SIM_INTERFACE ?= core
 SIM_MODEL = $(if $(filter de10,$(SIM_INTERFACE)),CoreDe10,CoreSim)
 SIM_TRACE_MODE_FILE = $(SIM_DIR)/obj_dir/.trace_mode
+BACKEND_MODE_FILE = $(SIM_DIR)/obj_dir/.glide_backend_mode
+BACKEND_MODE = $(SIM_INTERFACE):$(if $(filter 1,$(PURE_XLS)),xls,$(if $(filter 1,$(TRACE_CAPTURE)),trace,sim)):$(TRACE)
+$(shell mkdir -p $(dir $(BACKEND_MODE_FILE)))
+$(shell [ -f $(BACKEND_MODE_FILE) ] && [ "$$(cat $(BACKEND_MODE_FILE))" = "$(BACKEND_MODE)" ] || printf '%s\n' "$(BACKEND_MODE)" > $(BACKEND_MODE_FILE))
 
 GLIDE_LIB = libglide2x.a
 GLIDE_SHARED = libglide2x.so.2
@@ -48,6 +52,9 @@ CDEFS = -DINIT_LINUX
 CDEFS += -DSIM_BACKEND
 ifeq ($(SIM_INTERFACE),de10)
 CDEFS += -DSIM_DE10_INTERFACE
+endif
+ifeq ($(PURE_XLS),1)
+CDEFS += -DPURE_XLS_BACKEND
 endif
 CDEFS += -DGLIDE_HARDWARE -DGLIDE_DEFAULT_GAMMA=1.3f -DGLIDE_LIB=1
 CDEFS += -DSST1
@@ -128,7 +135,11 @@ GLIDE_OBJECTS += \
 	$(FX_GLIDE_SW)/fxmisc/fximg.o
 
 # Backend objects (built by emu/sim/Makefile)
-ifeq ($(TRACE_CAPTURE),1)
+ifeq ($(PURE_XLS),1)
+BACKEND_OBJ = $(SIM_DIR)/obj_dir/sim_harness_xls.o
+BACKEND_LIB =
+BACKEND_DEPS = $(BACKEND_OBJ)
+else ifeq ($(TRACE_CAPTURE),1)
 BACKEND_OBJ = \
 	$(SIM_DIR)/obj_dir/sim_trace_harness.o \
 	$(SIM_DIR)/obj_dir/voodoo_trace_writer.o
@@ -156,7 +167,7 @@ endif
 
 all: $(GLIDE_LIBDIR) $(GLIDE_LIBDIR)/$(GLIDE_LIB) $(GLIDE_LIBDIR)/$(GLIDE_SO)
 
-$(GLIDE_OBJECTS): fxinline.h fxgasm.h
+$(GLIDE_OBJECTS): fxinline.h fxgasm.h $(BACKEND_MODE_FILE)
 
 ###############################################################################
 #	rules
@@ -191,5 +202,5 @@ $(GLIDE_LIBDIR)/$(GLIDE_SO): $(GLIDE_OBJECTS) $(BACKEND_DEPS)
 
 clean:
 	rm -f $(GLIDE_OBJECTS)
-	rm -f fxinline.h fxgasm.h
+	rm -f fxinline.h fxgasm.h $(BACKEND_MODE_FILE)
 	rm -f $(GLIDE_LIBDIR)/$(GLIDE_LIB) $(GLIDE_LIBDIR)/$(GLIDE_SHARED) $(GLIDE_LIBDIR)/$(GLIDE_SO)

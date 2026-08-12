@@ -6,6 +6,7 @@ import spinal.lib.bus.bmb._
 import voodoo._
 import voodoo.bus.TexWritePayload
 import voodoo.frontend.RegisterBank
+import voodoo.xls.XlsTextureWriteAddress
 
 object TextureMem {
   case class DownloadConfig(c: Config) extends Bundle {
@@ -37,16 +38,6 @@ object TextureMem {
   }
 
   object WriteCmd {
-    private case class PackedCpuWritePrep(c: Config) extends Bundle {
-      val validWrite = Bool()
-      val lodBase = UInt(22 bits)
-      val lodShift = UInt(4 bits)
-      val s = UInt(8 bits)
-      val t = UInt(8 bits)
-      val is16bit = Bool()
-      val data = Bits(32 bits)
-      val mask = Bits(4 bits)
-    }
 
     private case class LinearCpuWritePrep(c: Config) extends Bundle {
       val validWrite = Bool()
@@ -77,7 +68,6 @@ object TextureMem {
         cfg: DownloadConfig
     ): Stream[WriteCmd] = {
       val pciAddr = drain.pciAddr
-      val tmuValid = pciAddr(22 downto 21) === 0
 
       if (c.packedTexLayout) {
         val texCfg = TexLayoutTables.TexConfig()
@@ -91,31 +81,25 @@ object TextureMem {
         texCfg.tLOD_multibase := cfg.tLOD(24)
         val writeTables = TexLayoutTables.compute(texCfg)
 
-        val is16bit = texCfg.tformat >= Tmu.TextureFormat.ARGB8332
-        val seq8 = cfg.textureMode(31)
         val lod = pciAddr(20 downto 17)
-        val t = pciAddr(16 downto 9)
-        val s = UInt(8 bits)
-
-        when(is16bit) {
-          s := ((pciAddr >> 1) & 0xfe).resize(8 bits)
-        }.elsewhen(seq8) {
-          s := (pciAddr & 0xfc).resize(8 bits)
-        }.otherwise {
-          s := ((pciAddr >> 1) & 0xfc).resize(8 bits)
-        }
-
-        val drainValid = lod <= 8 && tmuValid
+        val address = new XlsTextureWriteAddress
+        address.io.pci_address := pciAddr
+        address.io.is_16_bit := texCfg.tformat >= Tmu.TextureFormat.ARGB8332
+        address.io.sequential_8_bit := cfg.textureMode(31)
+        address.io.packed_layout := True
+        address.io.lod_base := writeTables.texBase(lod)
+        address.io.lod_shift := writeTables.texShift(lod)
+        address.io.base0 := cfg.texBaseAddr
+        address.io.base1 := cfg.texBaseAddr1
+        address.io.base2 := cfg.texBaseAddr2
+        address.io.base38 := cfg.texBaseAddr38
+        address.io.multibase := cfg.tLOD(24)
 
         val prepared = drain
           .translateWith {
-            val prep = PackedCpuWritePrep(c)
-            prep.validWrite := drainValid
-            prep.lodBase := writeTables.texBase(lod.resize(4 bits))
-            prep.lodShift := writeTables.texShift(lod.resize(4 bits))
-            prep.s := s
-            prep.t := t
-            prep.is16bit := is16bit
+            val prep = LinearCpuWritePrep(c)
+            prep.validWrite := address.io.out(26)
+            prep.address := address.io.out(25 downto 0).asUInt
             prep.data := drain.data
             prep.mask := drain.mask
             prep
@@ -126,51 +110,32 @@ object TextureMem {
           .throwWhen(!prepared.payload.validWrite)
           .translateWith {
             val prep = prepared.payload
-            val sramAddr = UInt(c.addressWidth.value bits)
-            when(prep.is16bit) {
-              sramAddr := (prep.lodBase + (prep.s << 1).resize(22 bits) +
-                (prep.t.resize(22 bits) << (prep.lodShift +^ U(1)).resize(5 bits)).resize(22 bits))
-                .resize(c.addressWidth.value bits)
-            }.otherwise {
-              sramAddr :=
-                (prep.lodBase + prep.s.resize(22 bits) + (prep.t.resize(22 bits) << prep.lodShift)
-                  .resize(22 bits)).resize(c.addressWidth.value bits)
-            }
-
             val cmd = WriteCmd(c)
-            cmd.address := sramAddr
+            cmd.address := prep.address
             cmd.data := prep.data
             cmd.mask := prep.mask
             cmd
           }
           .m2sPipe()
       } else {
-        val lod = pciAddr(20 downto 17)
-        val baseReg = UInt(24 bits)
-        baseReg := cfg.texBaseAddr
-        when(cfg.tLOD(24)) {
-          switch(lod.resize(4 bits)) {
-            is(U(1, 4 bits)) {
-              baseReg := cfg.texBaseAddr1
-            }
-            is(U(2, 4 bits)) {
-              baseReg := cfg.texBaseAddr2
-            }
-            default {
-              when(lod >= 3) {
-                baseReg := cfg.texBaseAddr38
-              }
-            }
-          }
-        }
-        val flatSramAddr =
-          ((baseReg(18 downto 0) << 3) +^ pciAddr).resize(c.addressWidth.value bits)
+        val address = new XlsTextureWriteAddress
+        address.io.pci_address := pciAddr
+        address.io.is_16_bit := cfg.textureMode(11 downto 8).asUInt >= Tmu.TextureFormat.ARGB8332
+        address.io.sequential_8_bit := cfg.textureMode(31)
+        address.io.packed_layout := False
+        address.io.lod_base := 0
+        address.io.lod_shift := 0
+        address.io.base0 := cfg.texBaseAddr
+        address.io.base1 := cfg.texBaseAddr1
+        address.io.base2 := cfg.texBaseAddr2
+        address.io.base38 := cfg.texBaseAddr38
+        address.io.multibase := cfg.tLOD(24)
 
         val prepared = drain
           .translateWith {
             val prep = LinearCpuWritePrep(c)
-            prep.validWrite := tmuValid
-            prep.address := flatSramAddr
+            prep.validWrite := address.io.out(26)
+            prep.address := address.io.out(25 downto 0).asUInt
             prep.data := drain.data
             prep.mask := drain.mask
             prep

@@ -1,0 +1,98 @@
+#!/usr/bin/env python3
+import argparse
+import pathlib
+import struct
+import subprocess
+import sys
+
+TEXTURE_REGISTERS = {0x300: "texture_mode", 0x304: "t_lod", 0x30C: "tex_base", 0x310: "tex_base1", 0x314: "tex_base2", 0x318: "tex_base38"}
+FLOAT_FRACTIONS = {
+    **{address: 4 for address in range(0x088, 0x0A0, 4)},
+    **{address: 12 for address in (0x0A0, 0x0A4, 0x0A8, 0x0AC, 0x0B0, 0x0C0, 0x0C4, 0x0C8, 0x0CC, 0x0D0, 0x0E0, 0x0E4, 0x0E8, 0x0EC, 0x0F0)},
+    **{address: 18 for address in (0x0B4, 0x0B8, 0x0D4, 0x0D8, 0x0F4, 0x0F8)},
+    **{address: 30 for address in (0x0BC, 0x0DC, 0x0FC)},
+}
+
+
+def load(path):
+    data = pathlib.Path(path).read_bytes()
+    if len(data) < 64 or struct.unpack_from("<I", data)[0] != 0x564F4F44:
+        raise ValueError(f"invalid Voodoo trace: {path}")
+    commands = []
+    expected = [0] * 256
+    texture = {name: 0 for name in TEXTURE_REGISTERS.values()}
+    counters = {"triangles": 0, "fastfills": 0, "nops": 0}
+    for offset in range(64, len(data), 24):
+        _, _, kind, address, value, count = struct.unpack_from("<IIB3xIII", data, offset)
+        register = address & 0x3FC
+        if kind == 0:
+            for _ in range(count or 1):
+                commands.append((register, value))
+                target = register
+                stored = value
+                if register in FLOAT_FRACTIONS:
+                    target = register - 0x80
+                    number = struct.unpack("<f", struct.pack("<I", value))[0]
+                    stored = int(number * (1 << FLOAT_FRACTIONS[register])) & 0xFFFFFFFF
+                expected[target >> 2] = stored
+                if target in TEXTURE_REGISTERS:
+                    texture[TEXTURE_REGISTERS[target]] = stored
+                if register in (0x080, 0x100):
+                    counters["triangles"] += 1
+                elif register == 0x124:
+                    counters["fastfills"] += 1
+                elif register == 0x120:
+                    counters["nops"] += 1
+    return commands, expected, texture, counters
+
+
+def module(commands, expected, texture, counters):
+    lines = ["import core_sim;", "", "#[test]", "fn replay_trace() {", "    let state = core_sim::initial_state();"]
+    for index, (address, value) in enumerate(commands):
+        lines.extend([
+            f"    let (state, response) = core_sim::step(state, core_sim::CoreCommand {{",
+            "        write: u1:1,",
+            f"        address: u24:0x{address:03x},",
+            f"        data: u32:0x{value:08x},",
+            "        mask: u4:0xf,",
+            "    });",
+            f"    assert_eq(response.success, u1:1);",
+            "    let state = core_sim::tick(state, u1:0);",
+        ])
+    for index, value in enumerate(expected):
+        if value:
+            lines.append(f"    assert_eq(state.registers[u8:{index}], u32:0x{value:08x});")
+    for name, value in texture.items():
+        lines.append(f"    assert_eq(state.texture.{name}, u32:0x{value:08x});")
+    for name, value in counters.items():
+        lines.append(f"    assert_eq(state.commands.{name}, u32:{value});")
+    lines.extend(["}", ""])
+    return "\n".join(lines)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("trace")
+    parser.add_argument("--output", default="xls/build/pure_xls_trace_replay.x")
+    parser.add_argument("--generate-only", action="store_true")
+    args = parser.parse_args()
+    commands, expected, texture, counters = load(args.trace)
+    output = pathlib.Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(module(commands, expected, texture, counters))
+    print(f"generated {len(commands)} stateful XLS commands from {args.trace}")
+    if not args.generate_only:
+        subprocess.run([
+            "interpreter_main",
+            "--dslx_path=xls/dslx",
+            "--evaluator=ir-jit",
+            str(output),
+        ], check=True)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        print(error, file=sys.stderr)
+        raise SystemExit(1)

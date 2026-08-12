@@ -94,7 +94,7 @@ class FramebufferPlaneBufferThroughputTest extends AnyFunSuite {
       var sawDrain = false
       for (_ <- 0 until 10) {
         dut.clockDomain.waitSampling()
-        if (dut.slotDraining(0).toBoolean || dut.slotDraining(1).toBoolean) sawDrain = true
+        if (dut.io.mem.cmd.valid.toBoolean) sawDrain = true
       }
       assert(sawDrain, "expected write-combiner drain to start")
 

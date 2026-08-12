@@ -1,6 +1,7 @@
 package voodoo.pixel
 
 import voodoo._
+import voodoo.xls.XlsWritePack
 import spinal.core._
 import spinal.lib._
 
@@ -14,18 +15,15 @@ case class Write(c: Config) extends Component {
   }
 
   o.fbWrite.translateFrom(i.fromPipeline) { (out, in) =>
-    val planeAddress =
-      FramebufferAddressMath.planeAddress(
-        in.fbBaseAddr,
-        in.coords(0).asUInt,
-        in.coords(1).asUInt,
-        in.fbPixelStride
-      )
-    val laneHi = planeAddress(1)
-
-    out.address := alignedWordAddress(planeAddress)
-    out.data := packWordLane(in.data, laneHi)
-    out.mask := wordLaneMask(laneHi)
+    val xls = new XlsWritePack
+    xls.io.base := in.fbBaseAddr.resize(26 bits)
+    xls.io.x := in.coords(0).asUInt.resize(16 bits)
+    xls.io.y := in.coords(1).asUInt.resize(16 bits)
+    xls.io.stride := in.fbPixelStride
+    xls.io.data := in.data
+    out.address := xls.io.out(61 downto 36).asUInt.resize(c.addressWidth)
+    out.data := xls.io.out(35 downto 4)
+    out.mask := xls.io.out(3 downto 0)
   }
 }
 

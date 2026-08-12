@@ -31,8 +31,8 @@
     ];
     LIBRARY_PATH = lib.makeLibraryPath [
       pkgs.pkgsi686Linux.zlib
-      pkgs.pkgsi686Linux.xorg.libX11
-      pkgs.pkgsi686Linux.xorg.libXext
+      pkgs.pkgsi686Linux.libx11
+      pkgs.pkgsi686Linux.libxext
     ];
     YOSYS_GHDL_EXTENSION = pkgs.yosys-ghdl.outPath + "/share/yosys/plugins/ghdl.so";
     # 32-bit toolchain for Glide builds
@@ -87,6 +87,11 @@
     pkgs.nasm
     pkgs.pkgsi686Linux.stdenv.cc
     pkgs.pkgsi686Linux.dosbox-x
+    pkgs.pkgsi686Linux.zlib
+    pkgs.pkgsi686Linux.libx11
+    pkgs.pkgsi686Linux.libx11.dev
+    pkgs.pkgsi686Linux.libxext
+    pkgs.pkgsi686Linux.libxext.dev
     pkgs.open-watcom-bin
     pkgs.djgpp
     # Verilator build acceleration

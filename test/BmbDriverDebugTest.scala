@@ -26,13 +26,13 @@ class BmbDriverDebugTest extends AnyFunSuite {
       dut.io.swapDisplayedBuffer #= 0
       dut.io.swapsPending #= 0
 
-      dut.io.statisticsIn.pixelsIn #= 0
-      dut.io.statisticsIn.chromaFail #= 0
-      dut.io.statisticsIn.zFuncFail #= 0
-      dut.io.statisticsIn.aFuncFail #= 0
-      dut.io.statisticsIn.pixelsOut #= 0
+      dut.io.statistics.pixelsIn #= 0
+      dut.io.statistics.chromaFail #= 0
+      dut.io.statistics.zFuncFail #= 0
+      dut.io.statistics.aFuncFail #= 0
+      dut.io.statistics.pixelsOut #= 0
 
-      dut.io.pipelineBusy #= false
+      dut.io.debug.pipelineBusy #= false
 
       dut.commands.triangleCmd.ready #= true
       dut.commands.fastfillCmd.ready #= true

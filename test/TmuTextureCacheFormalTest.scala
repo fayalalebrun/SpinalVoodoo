@@ -31,13 +31,16 @@ class TmuTextureCacheFormalDut extends Component {
     req.biAddr1 := U(addr, c.addressWidth.value bits)
     req.biAddr2 := U(addr, c.addressWidth.value bits)
     req.biAddr3 := U(addr, c.addressWidth.value bits)
-    req.pointBankSel := 0
-    req.biBankSel0 := 0
-    req.biBankSel1 := 0
-    req.biBankSel2 := 0
-    req.biBankSel3 := 0
+    for (tap <- 0 until 4) {
+      req.tapStartupDecode(tap).valid := B"1111"
+      req.tapStartupDecode(tap).pair := 0
+      req.tapStartupDecode(tap).bank.zipWithIndex.foreach { case (bank, byte) =>
+        bank := (if (byte == 0) 0 else 3)
+      }
+      req.tapPackedBank(tap) := 0
+      req.tapPackedPair(tap) := False
+    }
     req.lodBase := 0
-    req.lodEnd := U((1 << c.addressWidth.value) - 1, c.addressWidth.value bits)
     req.lodShift := 0
     req.is16Bit := True
     req.bilinear := False
@@ -46,8 +49,6 @@ class TmuTextureCacheFormalDut extends Component {
     req.passthrough.nccTableSelect := False
     req.passthrough.ds := 0
     req.passthrough.dt := 0
-    req.passthrough.readIdx := 0
-    req.passthrough.requestId := U(reqId, Tmu.requestIdWidth bits)
     for (lod <- 0 until 9) {
       val base = if (lod == 0) 0 else (1 << c.addressWidth.value) - 1
       val end = if (lod == 0) (1 << c.addressWidth.value) else (1 << c.addressWidth.value) - 1
@@ -169,13 +170,16 @@ class TmuTextureCacheHitThroughputFormalDut(bilinear: Boolean) extends Component
     req.biAddr1 := U(addr, c.addressWidth.value bits)
     req.biAddr2 := U(addr, c.addressWidth.value bits)
     req.biAddr3 := U(addr, c.addressWidth.value bits)
-    req.pointBankSel := 0
-    req.biBankSel0 := 0
-    req.biBankSel1 := (if (bilinear) 1 else 0)
-    req.biBankSel2 := (if (bilinear) 2 else 0)
-    req.biBankSel3 := (if (bilinear) 3 else 0)
+    for (tap <- 0 until 4) {
+      req.tapStartupDecode(tap).valid := B"1111"
+      req.tapStartupDecode(tap).pair := 0
+      req.tapStartupDecode(tap).bank.zipWithIndex.foreach { case (bank, byte) =>
+        bank := (if (byte == 0) 0 else 3)
+      }
+      req.tapPackedBank(tap) := (if (bilinear) tap else 0)
+      req.tapPackedPair(tap) := False
+    }
     req.lodBase := 0
-    req.lodEnd := U((1 << c.addressWidth.value) - 1, c.addressWidth.value bits)
     req.lodShift := 0
     req.is16Bit := True
     req.bilinear := (if (bilinear) True else False)
@@ -184,8 +188,6 @@ class TmuTextureCacheHitThroughputFormalDut(bilinear: Boolean) extends Component
     req.passthrough.nccTableSelect := False
     req.passthrough.ds := 0
     req.passthrough.dt := 0
-    req.passthrough.readIdx := 0
-    req.passthrough.requestId := U(reqId, Tmu.requestIdWidth bits)
     for (lod <- 0 until 9) {
       val base = if (lod == 0) 0 else (1 << c.addressWidth.value) - 1
       val end = if (lod == 0) (1 << c.addressWidth.value) else (1 << c.addressWidth.value) - 1

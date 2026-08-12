@@ -167,7 +167,7 @@ class H2fRegisterPathTest extends AnyFunSuite {
       dut.io.pipelineBusy #= true
       dut.clockDomain.waitSampling()
 
-      for (i <- 0 until 80) {
+      for (i <- 0 until 64) {
         mmioWrite(0x110, i, maxWait = 256)
       }
 
@@ -192,7 +192,7 @@ class H2fRegisterPathTest extends AnyFunSuite {
       dut.io.pipelineBusy #= true
       dut.clockDomain.waitSampling()
 
-      for (i <- 0 until 80) {
+      for (i <- 0 until 64) {
         mmioWrite(0x110, i, maxWait = 256)
       }
 

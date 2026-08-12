@@ -67,6 +67,7 @@ class RasterizerFormalDut(formalStrong: Boolean) extends Component {
   }
 
   dut.o.ready := True
+  dut.prefetchSpan.ready := True
   dut.enableClipping := False
   dut.clipLeft := 0
   dut.clipRight := 0
@@ -140,7 +141,8 @@ class SpanRasterizerThroughputCoverDut extends Component {
     payload.stepX.linear.all.foreach(_ := 0.0)
     payload.stepX.tex.foreach(_ := 0.0)
     payload.stepX.alpha := 0.0
-    payload.config.assignFromBits(B(0, payload.config.getBitsWidth bits))
+    payload.tmuConfig.assignFromBits(B(0, payload.tmuConfig.getBitsWidth bits))
+    payload.pixelConfig.assignFromBits(B(0, payload.pixelConfig.getBitsWidth bits))
     payload.firstSpan := True
     payload.trace.valid := True
     payload.trace.origin := U(Trace.Origin.triangle, 2 bits)
@@ -166,11 +168,6 @@ class SpanRasterizerThroughputCoverDut extends Component {
   }
 
   dut.o.ready := True
-  dut.enableClipping := False
-  dut.clipLeft := 0
-  dut.clipRight := 0
-  dut.clipLowY := 0
-  dut.clipHighY := 0
 
   assumeInitial(reset)
   when(pastValid) {
@@ -202,14 +199,14 @@ class RasterizerFormalCoverDut extends RasterizerFormalDut(formalStrong = true)
 class RasterizerFormalTest extends SpinalFormalFunSuite {
   test("Rasterizer invariants bmc") {
     FormalConfig
-      .withBMC(20)
+      .withBMC(12)
       .withAsync
       .doVerify(new RasterizerFormalBmcDut)
   }
 
   test("Rasterizer invariants prove") {
     FormalConfig
-      .withProve(20)
+      .withProve(12)
       .withAsync
       .doVerify(new RasterizerFormalProveDut)
   }

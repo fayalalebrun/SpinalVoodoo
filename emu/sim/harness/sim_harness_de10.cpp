@@ -75,6 +75,7 @@ static uint64_t compare_pop_any_miss_count = 0;
 static uint64_t compare_pop_issue_needed_sum = 0;
 static uint64_t compare_pop_tap_hit_sum = 0;
 static uint64_t compare_pop_nonfast_zero_issue = 0;
+static uint64_t compare_pop_bilinear_all_hits = 0;
 
 struct TexSampleDumpHeader {
     char magic[4];
@@ -697,9 +698,11 @@ static void eval_inputs(void) {
     top->eval();
 }
 
-static void tick_one(void) {
-    drive_memory_inputs();
-    top->eval();
+static void tick_one(bool inputs_evaluated = false) {
+    if (!inputs_evaluated) {
+        drive_memory_inputs();
+        top->eval();
+    }
     observe_memory_outputs();
 
 #ifdef VM_TRACE_FST
@@ -775,7 +778,7 @@ static bool wait_h2f_idle(uint32_t addr, const char* kind) {
         if (stall_debug && iter > 0 && (iter % 100000) == 0) {
             log_stalled_bus_state(kind, "preidle", addr, iter);
         }
-        tick_one();
+        tick_one(true);
         if (cycle_limit_hit) break;
         timeout--;
         iter++;
@@ -983,7 +986,7 @@ static void bus_write(uint32_t addr, uint32_t data) {
         if (top->io_memTex_readDataValid) tex_rvalid_cycles++;
         if (!top->io_h2fLw_waitrequest) {
             maybe_log_mmio("WRITE", "accept", addr, data, iter);
-            tick_one();
+            tick_one(true);
             break;
         }
         if (mmio_debug && (iter < 8 || (iter % 1000000) == 0)) {
@@ -992,7 +995,7 @@ static void bus_write(uint32_t addr, uint32_t data) {
         if (stall_debug && iter > 0 && (iter % stall_log_period) == 0) {
             log_stalled_bus_state("WRITE", "cmd", addr, iter);
         }
-        tick_one();
+        tick_one(true);
         if (cycle_limit_hit) break;
         idle_cycles++;
         iter++;
@@ -1129,7 +1132,7 @@ static void bus_write_masked(uint32_t addr, uint32_t data, uint8_t byteenable) {
         if (top->io_memTex_readDataValid) tex_rvalid_cycles++;
         if (!top->io_h2fLw_waitrequest) {
             maybe_log_mmio("WRITE", "accept", addr, data, iter);
-            tick_one();
+            tick_one(true);
             break;
         }
         if (mmio_debug && (iter < 8 || (iter % 1000000) == 0)) {
@@ -1138,7 +1141,7 @@ static void bus_write_masked(uint32_t addr, uint32_t data, uint8_t byteenable) {
         if (stall_debug && iter > 0 && (iter % stall_log_period) == 0) {
             log_stalled_bus_state("WRITE", "cmd", addr, iter);
         }
-        tick_one();
+        tick_one(true);
         if (cycle_limit_hit) break;
         idle_cycles++;
         iter++;
@@ -1207,7 +1210,7 @@ static uint32_t bus_read(uint32_t addr) {
         }
         if (!top->io_h2fLw_waitrequest) {
             maybe_log_mmio("READ", "accept", addr, 0, iter);
-            tick_one();
+            tick_one(true);
             break;
         }
         if (mmio_debug && (iter < 8 || (iter % 1000000) == 0)) {
@@ -1216,7 +1219,7 @@ static uint32_t bus_read(uint32_t addr) {
         if (stall_debug && iter > 0 && (iter % stall_log_period) == 0) {
             log_stalled_bus_state("READ", "cmd", addr, iter);
         }
-        tick_one();
+        tick_one(true);
         if (cycle_limit_hit) break;
         idle_cycles++;
         iter++;
@@ -1245,7 +1248,7 @@ static uint32_t bus_read(uint32_t addr) {
         if (top->io_h2fLw_readdatavalid) {
             const uint32_t data = top->io_h2fLw_readdata;
             maybe_log_mmio("READ", "rsp", addr, data, iter);
-            tick_one();
+            tick_one(true);
             const uint64_t ticks = (sim_time - t0) / 2;
             total_read_ticks += ticks;
             total_read_count++;
@@ -1257,7 +1260,7 @@ static uint32_t bus_read(uint32_t addr) {
         if (stall_debug && iter > 0 && (iter % stall_log_period) == 0) {
             log_stalled_bus_state("READ", "rsp", addr, iter);
         }
-        tick_one();
+        tick_one(true);
         if (cycle_limit_hit) break;
         idle_cycles++;
         iter++;
@@ -1524,7 +1527,7 @@ uint32_t sim_probe_reg_drain_under_continuous_read(uint32_t write_addr,
             read_rsps++;
             last_rsp = top->io_h2fLw_readdata;
         }
-        tick_one();
+        tick_one(true);
     }
     mmio_end();
 
@@ -1552,10 +1555,10 @@ uint32_t sim_idle_wait(void) {
     #define SST_BUSY (1u << 9)
     #define SST_FIFOFREE_MASK 0x3Fu
 
-    int timeout = 5000000;
+    const uint64_t timeout_cycles = 1000000;
     uint64_t t0 = sim_time;
     int idle_count = 0;
-    while (timeout > 0) {
+    while ((sim_time - t0) / 2 < timeout_cycles) {
         uint32_t status = bus_read(0x000000);
         int busy = (status & SST_BUSY) != 0;
         int fifo_free = status & SST_FIFOFREE_MASK;
@@ -1565,7 +1568,6 @@ uint32_t sim_idle_wait(void) {
             idle_count = 0;
         }
         if (cycle_limit_hit) return status;
-        timeout--;
     }
 
     uint32_t status = bus_read(0x000000);
@@ -1865,10 +1867,12 @@ uint32_t sim_get_fb_read_max_queue_occupancy(void) {
 }
 
 uint32_t sim_get_tex_fill_hits(void) {
-    return 0;
+    if (!top) return 0;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__tmu_1__DOT__texturePath__DOT__dbgCacheTapHits;
 }
 uint32_t sim_get_tex_fill_misses(void) {
-    return 0;
+    if (!top) return 0;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__tmu_1__DOT__texturePath__DOT__dbgCacheTapMisses;
 }
 uint32_t sim_get_tex_fill_burst_count(void) {
     return 0;
@@ -1880,10 +1884,14 @@ uint32_t sim_get_tex_fill_stall_cycles(void) {
     return 0;
 }
 uint32_t sim_get_tex_fast_bilinear_hits(void) {
-    return 0;
+    if (!top) return 0;
+    return top->rootp->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__tmu_1__DOT__texturePath__DOT__dbgCacheAllHitRequests;
 }
 uint32_t sim_get_tex_compare_miss_samples(void) {
-    return 0;
+    if (!top) return 0;
+    const auto* root = top->rootp;
+    return root->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__tmu_1__DOT__texturePath__DOT__dbgCacheRequests -
+           root->CoreDe10__DOT__core_1__DOT__pixelPipeline_1__DOT__tmu_1__DOT__texturePath__DOT__dbgCacheAllHitRequests;
 }
 uint32_t sim_get_tex_lookup_blocked_cycles(void) {
     return 0;

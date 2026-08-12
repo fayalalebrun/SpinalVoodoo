@@ -26,11 +26,24 @@ fn block_command(block: memory::MemoryBlockWrite, bank: u3, offset: u2) -> memor
     }
 }
 
+fn block_read_command(block: memory::MemoryBlockRead, bank: u3, offset: u3)
+    -> memory::MemoryCommand {
+    let index = (bank as u7) + ((offset as u7) << u8:3);
+    memory::MemoryCommand {
+        write: u1:0,
+        address: (block.address + (index as u22)) >> u8:3,
+        data: u32:0,
+        mask: u4:0,
+    }
+}
+
 pub proc banked_word_memory<SIZE: u32> {
     command_r: chan<memory::MemoryCommand> in;
     response_s: chan<memory::MemoryResponse> out;
     block_r: chan<memory::MemoryBlockWrite> in;
     block_response_s: chan<memory::MemoryBlockResponse> out;
+    block_read_r: chan<memory::MemoryBlockRead> in;
+    block_read_response_s: chan<memory::MemoryBlockReadResponse> out;
     c0s: chan<memory::MemoryCommand> out;
     c0r: chan<memory::MemoryResponse> in;
     c1s: chan<memory::MemoryCommand> out;
@@ -53,6 +66,8 @@ pub proc banked_word_memory<SIZE: u32> {
         response_s: chan<memory::MemoryResponse> out,
         block_r: chan<memory::MemoryBlockWrite> in,
         block_response_s: chan<memory::MemoryBlockResponse> out,
+        block_read_r: chan<memory::MemoryBlockRead> in,
+        block_read_response_s: chan<memory::MemoryBlockReadResponse> out,
     ) {
         let (c0s, c0c) = chan<memory::MemoryCommand>("command0");
         let (r0c, c0r) = chan<memory::MemoryResponse>("response0");
@@ -79,8 +94,10 @@ pub proc banked_word_memory<SIZE: u32> {
         spawn striped_memory::striped_word_memory<{(SIZE + u32:7) / u32:8}>(c6c, r6c);
         spawn striped_memory::striped_word_memory<{(SIZE + u32:7) / u32:8}>(c7c, r7c);
         (
-            command_r, response_s, block_r, block_response_s, c0s, c0r, c1s, c1r, c2s, c2r, c3s,
-            c3r, c4s, c4r, c5s, c5r, c6s, c6r, c7s, c7r,
+            command_r, response_s, block_r, block_response_s,
+            block_read_r, block_read_response_s,
+            c0s, c0r, c1s, c1r, c2s, c2r, c3s, c3r,
+            c4s, c4r, c5s, c5r, c6s, c6r, c7s, c7r,
         )
     }
 
@@ -92,11 +109,14 @@ pub proc banked_word_memory<SIZE: u32> {
         let default_block = memory::MemoryBlockWrite {
             address: u22:0, data: u32[32]:[u32:0, ...], masks: u4[32]:[u4:0, ...],
         };
+        let default_block_read = memory::MemoryBlockRead { address: u22:0 };
         let (tok, command, command_valid) = recv_non_blocking(join(), command_r, default_command);
         let (tok, write_block, write_block_valid) = recv_non_blocking(tok, block_r, default_block);
+        let (tok, read_block, read_block_valid) =
+            recv_non_blocking(tok, block_read_r, default_block_read);
         let bank = command.address[0+:u3];
         let hash_block = command.write == u1:0 && command.mask == u4:0xf;
-        let scalar_valid = command_valid && !write_block_valid;
+        let scalar_valid = command_valid && !write_block_valid && !read_block_valid;
         let local = memory::MemoryCommand { address: command.address >> u8:3, ..command };
         let tok = unroll_for! (i, tok): (u3, token) in u3:0..u3:4 {
             send_if(tok, c0s, write_block_valid, block_command(write_block, u3:0, i as u2))
@@ -121,6 +141,30 @@ pub proc banked_word_memory<SIZE: u32> {
         }(tok);
         let tok = unroll_for! (i, tok): (u3, token) in u3:0..u3:4 {
             send_if(tok, c7s, write_block_valid, block_command(write_block, u3:7, i as u2))
+        }(tok);
+        let tok = unroll_for! (i, tok): (u4, token) in u4:0..u4:8 {
+            send_if(tok, c0s, read_block_valid, block_read_command(read_block, u3:0, i as u3))
+        }(tok);
+        let tok = unroll_for! (i, tok): (u4, token) in u4:0..u4:8 {
+            send_if(tok, c1s, read_block_valid, block_read_command(read_block, u3:1, i as u3))
+        }(tok);
+        let tok = unroll_for! (i, tok): (u4, token) in u4:0..u4:8 {
+            send_if(tok, c2s, read_block_valid, block_read_command(read_block, u3:2, i as u3))
+        }(tok);
+        let tok = unroll_for! (i, tok): (u4, token) in u4:0..u4:8 {
+            send_if(tok, c3s, read_block_valid, block_read_command(read_block, u3:3, i as u3))
+        }(tok);
+        let tok = unroll_for! (i, tok): (u4, token) in u4:0..u4:8 {
+            send_if(tok, c4s, read_block_valid, block_read_command(read_block, u3:4, i as u3))
+        }(tok);
+        let tok = unroll_for! (i, tok): (u4, token) in u4:0..u4:8 {
+            send_if(tok, c5s, read_block_valid, block_read_command(read_block, u3:5, i as u3))
+        }(tok);
+        let tok = unroll_for! (i, tok): (u4, token) in u4:0..u4:8 {
+            send_if(tok, c6s, read_block_valid, block_read_command(read_block, u3:6, i as u3))
+        }(tok);
+        let tok = unroll_for! (i, tok): (u4, token) in u4:0..u4:8 {
+            send_if(tok, c7s, read_block_valid, block_read_command(read_block, u3:7, i as u3))
         }(tok);
         let tok = send_if(tok, c0s, scalar_valid && (hash_block || bank == u3:0), local);
         let tok = send_if(tok, c1s, scalar_valid && (hash_block || bank == u3:1), local);
@@ -203,6 +247,73 @@ pub proc banked_word_memory<SIZE: u32> {
         let tok = send_if(
             tok, block_response_s, write_block_valid,
             memory::MemoryBlockResponse { success: block_success });
+        let (tok, read_data, read_success) = unroll_for! (i, accumulator):
+            (u4, (token, bits[2048], u1)) in u4:0..u4:8 {
+            let (tok, data, success) = accumulator;
+            let (tok, child) = recv_if(tok, c0r, read_block_valid, default);
+            let index = (i as u7) << u8:3;
+            let shift = (index as u12) * u12:32;
+            (tok, data | ((child.data as bits[2048]) << shift), success && child.success)
+        }((tok, bits[2048]:0, u1:1));
+        let (tok, read_data, read_success) = unroll_for! (i, accumulator):
+            (u4, (token, bits[2048], u1)) in u4:0..u4:8 {
+            let (tok, data, success) = accumulator;
+            let (tok, child) = recv_if(tok, c1r, read_block_valid, default);
+            let index = ((i as u7) << u8:3) | u7:1;
+            let shift = (index as u12) * u12:32;
+            (tok, data | ((child.data as bits[2048]) << shift), success && child.success)
+        }((tok, read_data, read_success));
+        let (tok, read_data, read_success) = unroll_for! (i, accumulator):
+            (u4, (token, bits[2048], u1)) in u4:0..u4:8 {
+            let (tok, data, success) = accumulator;
+            let (tok, child) = recv_if(tok, c2r, read_block_valid, default);
+            let index = ((i as u7) << u8:3) | u7:2;
+            let shift = (index as u12) * u12:32;
+            (tok, data | ((child.data as bits[2048]) << shift), success && child.success)
+        }((tok, read_data, read_success));
+        let (tok, read_data, read_success) = unroll_for! (i, accumulator):
+            (u4, (token, bits[2048], u1)) in u4:0..u4:8 {
+            let (tok, data, success) = accumulator;
+            let (tok, child) = recv_if(tok, c3r, read_block_valid, default);
+            let index = ((i as u7) << u8:3) | u7:3;
+            let shift = (index as u12) * u12:32;
+            (tok, data | ((child.data as bits[2048]) << shift), success && child.success)
+        }((tok, read_data, read_success));
+        let (tok, read_data, read_success) = unroll_for! (i, accumulator):
+            (u4, (token, bits[2048], u1)) in u4:0..u4:8 {
+            let (tok, data, success) = accumulator;
+            let (tok, child) = recv_if(tok, c4r, read_block_valid, default);
+            let index = ((i as u7) << u8:3) | u7:4;
+            let shift = (index as u12) * u12:32;
+            (tok, data | ((child.data as bits[2048]) << shift), success && child.success)
+        }((tok, read_data, read_success));
+        let (tok, read_data, read_success) = unroll_for! (i, accumulator):
+            (u4, (token, bits[2048], u1)) in u4:0..u4:8 {
+            let (tok, data, success) = accumulator;
+            let (tok, child) = recv_if(tok, c5r, read_block_valid, default);
+            let index = ((i as u7) << u8:3) | u7:5;
+            let shift = (index as u12) * u12:32;
+            (tok, data | ((child.data as bits[2048]) << shift), success && child.success)
+        }((tok, read_data, read_success));
+        let (tok, read_data, read_success) = unroll_for! (i, accumulator):
+            (u4, (token, bits[2048], u1)) in u4:0..u4:8 {
+            let (tok, data, success) = accumulator;
+            let (tok, child) = recv_if(tok, c6r, read_block_valid, default);
+            let index = ((i as u7) << u8:3) | u7:6;
+            let shift = (index as u12) * u12:32;
+            (tok, data | ((child.data as bits[2048]) << shift), success && child.success)
+        }((tok, read_data, read_success));
+        let (tok, read_data, read_success) = unroll_for! (i, accumulator):
+            (u4, (token, bits[2048], u1)) in u4:0..u4:8 {
+            let (tok, data, success) = accumulator;
+            let (tok, child) = recv_if(tok, c7r, read_block_valid, default);
+            let index = ((i as u7) << u8:3) | u7:7;
+            let shift = (index as u12) * u12:32;
+            (tok, data | ((child.data as bits[2048]) << shift), success && child.success)
+        }((tok, read_data, read_success));
+        let tok = send_if(
+            tok, block_read_response_s, read_block_valid,
+            memory::MemoryBlockReadResponse { data: read_data, success: read_success });
         state
     }
 }
@@ -220,6 +331,8 @@ proc banked_word_memory_test {
     response_r: chan<memory::MemoryResponse> in;
     block_s: chan<memory::MemoryBlockWrite> out;
     block_response_r: chan<memory::MemoryBlockResponse> in;
+    block_read_s: chan<memory::MemoryBlockRead> out;
+    block_read_response_r: chan<memory::MemoryBlockReadResponse> in;
     terminator: chan<bool> out;
 
     config(terminator: chan<bool> out) {
@@ -228,9 +341,16 @@ proc banked_word_memory_test {
         let (block_s, block_r) = chan<memory::MemoryBlockWrite>("block");
         let (block_response_s, block_response_r) =
             chan<memory::MemoryBlockResponse>("block_response");
+        let (block_read_s, block_read_r) = chan<memory::MemoryBlockRead>("block_read");
+        let (block_read_response_s, block_read_response_r) =
+            chan<memory::MemoryBlockReadResponse>("block_read_response");
         spawn banked_word_memory<u32:64>(
-            command_r, response_s, block_r, block_response_s);
-        (command_s, response_r, block_s, block_response_r, terminator)
+            command_r, response_s, block_r, block_response_s,
+            block_read_r, block_read_response_s);
+        (
+            command_s, response_r, block_s, block_response_r,
+            block_read_s, block_read_response_r, terminator,
+        )
     }
 
     init { () }
@@ -286,6 +406,13 @@ proc banked_word_memory_test {
             memory::MemoryCommand { write: u1:0, address: u22:9, data: u32:0, mask: u4:0 });
         let (tok, response) = recv(tok, response_r);
         assert_eq(response.data, u32:0xabcdef01);
+        let tok = send(tok, block_read_s, memory::MemoryBlockRead { address: u22:0 });
+        let (tok, block_read_response) = recv(tok, block_read_response_r);
+        assert_eq(block_read_response.success, u1:1);
+        assert_eq(block_read_response.data[0+:u32], u32:0x00110011);
+        assert_eq(block_read_response.data[32+:u32], u32:0x12345678);
+        assert_eq(block_read_response.data[288+:u32], u32:0xabcdef01);
+        assert_eq(block_read_response.data[992+:u32], u32:0xeeeeeeee);
         send(tok, terminator, true);
     }
 }

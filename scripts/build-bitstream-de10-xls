@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ "${DE10_SKIP_RTL_GEN:-0}" != "1" ]]; then
+  "$root/scripts/gen-rtl-de10-xls"
+fi
+DE10_CORE_CLOCK_MHZ="${DE10_CORE_CLOCK_MHZ:-18.0}" \
+DE10_PROJECT_NAME=SpinalVoodoo_de10_xls \
+DE10_OUT_DIR="${DE10_XLS_OUT_DIR:-$root/output/de10/xls-bitstream}" \
+DE10_SKIP_RTL_GEN=1 \
+"$root/scripts/build-bitstream-de10" "$@"

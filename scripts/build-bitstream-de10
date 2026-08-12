@@ -92,6 +92,12 @@ if [[ ! -f "$ROOT_DIR/hw/de10/qsys/generated/pll/synthesis/de10_core_pll.qip" ]]
   exit 1
 fi
 
+if [[ ! -f "$ROOT_DIR/hw/de10/qsys/generated/hdmi_pll/synthesis/de10_hdmi_pll.qip" ]]; then
+  echo "Missing expected generated HDMI PLL Qsys file: hw/de10/qsys/generated/hdmi_pll/synthesis/de10_hdmi_pll.qip" >&2
+  echo "Run without --skip-qsys-gen to regenerate Platform Designer outputs." >&2
+  exit 1
+fi
+
 echo "[de10] Running Quartus compile flow"
 (cd "$PROJECT_DIR" && quartus_sh -t build.tcl "$PROJECT_NAME")
 

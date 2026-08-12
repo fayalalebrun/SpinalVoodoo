@@ -14,7 +14,15 @@ object CoreDe10SimGen extends App {
   val defaultConfig: Config =
     Config
       .voodoo1(trace = TraceConfig(enabled = enableTrace))
-      .copy(useFbWriteBuffer = true, fbWriteBufferLineWords = 256, useFbReadCache = false)
+      .copy(
+        useFbWriteBuffer = true,
+        fbWriteBufferLineWords = 256,
+        useFbReadCache = false,
+        texFillLineWords = 64,
+        texFillCacheSlots = 64,
+        texFillWayCount = 2,
+        texFillXorIndex = true
+      )
   val useFbWriteBuffer =
     if (args.contains("--no-fb-write-buffer")) false
     else defaultConfig.useFbWriteBuffer
@@ -47,14 +55,14 @@ object CoreDe10SimGen extends App {
             enableChromaKey = enableChromaKey,
             enableAlphaTest = enableAlphaTest,
             texFillLineWords =
-              argIntValue("--tex-fill-line-words").getOrElse(Config.voodoo1().texFillLineWords),
+              argIntValue("--tex-fill-line-words").getOrElse(defaultConfig.texFillLineWords),
             texFillCacheSlots =
-              argIntValue("--tex-fill-cache-slots").getOrElse(Config.voodoo1().texFillCacheSlots),
+              argIntValue("--tex-fill-cache-slots").getOrElse(defaultConfig.texFillCacheSlots),
             texFillWayCount =
-              argIntValue("--tex-fill-way-count").getOrElse(Config.voodoo1().texFillWayCount),
-            texFillXorIndex = args.contains("--tex-fill-xor-index"),
+              argIntValue("--tex-fill-way-count").getOrElse(defaultConfig.texFillWayCount),
+            texFillXorIndex = !args.contains("--no-tex-fill-xor-index"),
             texFillRequestWindow = argIntValue("--tex-fill-request-window")
-              .getOrElse(Config.voodoo1().texFillRequestWindow)
+              .getOrElse(defaultConfig.texFillRequestWindow)
           )
       )
     )

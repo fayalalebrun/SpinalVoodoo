@@ -10,6 +10,8 @@ SOC_QSYS_OUT_DIR="$QSYS_OUT_DIR"
 PLL_QSYS_SCRIPT="$QSYS_DIR/create_de10_core_pll.tcl"
 PLL_QSYS_FILE="$QSYS_DIR/de10_core_pll.qsys"
 PLL_QSYS_OUT_DIR="$QSYS_OUT_DIR/pll"
+HDMI_PLL_QSYS_FILE="$QSYS_DIR/de10_hdmi_pll.qsys"
+HDMI_PLL_QSYS_OUT_DIR="$QSYS_OUT_DIR/hdmi_pll"
 PLL_OUTPUT_CLOCK_MHZ="${DE10_CORE_CLOCK_MHZ:-50.0}"
 FABRIC_CLOCK_HZ="$(python3 - <<'PY'
 import os
@@ -43,7 +45,7 @@ if ! command -v qsys-generate >/dev/null 2>&1; then
   exit 1
 fi
 
-for required_script in "$SOC_QSYS_SCRIPT" "$PLL_QSYS_SCRIPT"; do
+for required_script in "$SOC_QSYS_SCRIPT" "$PLL_QSYS_SCRIPT" "$HDMI_PLL_QSYS_FILE"; do
   if [[ ! -f "$required_script" ]]; then
     echo "Missing expected Qsys script: $required_script" >&2
     exit 1
@@ -97,5 +99,15 @@ qsys-generate "$PLL_QSYS_FILE" --synthesis=VERILOG --output-directory="$PLL_QSYS
 
 if [[ ! -f "$PLL_QSYS_OUT_DIR/synthesis/de10_core_pll.qip" ]]; then
   echo "Missing expected generated QIP: $PLL_QSYS_OUT_DIR/synthesis/de10_core_pll.qip" >&2
+  exit 1
+fi
+
+mkdir -p "$HDMI_PLL_QSYS_OUT_DIR"
+
+echo "[de10] Generating HDMI PLL synthesis outputs"
+qsys-generate "$HDMI_PLL_QSYS_FILE" --synthesis=VERILOG --output-directory="$HDMI_PLL_QSYS_OUT_DIR"
+
+if [[ ! -f "$HDMI_PLL_QSYS_OUT_DIR/synthesis/de10_hdmi_pll.qip" ]]; then
+  echo "Missing expected generated QIP: $HDMI_PLL_QSYS_OUT_DIR/synthesis/de10_hdmi_pll.qip" >&2
   exit 1
 fi

@@ -18,7 +18,7 @@ class FramebufferPlaneReaderFormalDut extends Component {
       useTexFillCache = false
     )
 
-  val dut = FramebufferPlaneReader(c, prefetchWords = 8)
+  val dut = FramebufferPlaneReader(c)
   val reset = ClockDomain.current.isResetActive
   val pastValid = RegNext(True) init (False)
 

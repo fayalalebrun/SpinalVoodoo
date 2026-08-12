@@ -2,9 +2,32 @@ pub struct MemoryCommand { write: u1, address: u22, data: u32, mask: u4 }
 
 pub struct MemoryResponse { data: u32, success: u1 }
 
+pub struct MemoryRequestPair { valid: u2, commands: MemoryCommand[2] }
+
+pub fn empty_request_pair() -> MemoryRequestPair {
+    MemoryRequestPair {
+        valid: u2:0,
+        commands: MemoryCommand[2]:[
+            MemoryCommand { write: u1:0, address: u22:0, data: u32:0, mask: u4:0 }, ...
+        ],
+    }
+}
+
+pub struct MemoryResponsePair { responses: MemoryResponse[2] }
+
+pub fn empty_response_pair() -> MemoryResponsePair {
+    MemoryResponsePair {
+        responses: MemoryResponse[2]:[MemoryResponse { data: u32:0, success: u1:0 }, ...],
+    }
+}
+
 pub struct MemoryBlockWrite { address: u22, data: u32[32], masks: u4[32] }
 
 pub struct MemoryBlockResponse { success: u1 }
+
+pub struct MemoryBlockRead { address: u22 }
+
+pub struct MemoryBlockReadResponse { data: bits[2048], success: u1 }
 
 fn byte_mask(mask: u4) -> u32 {
     (if mask[0+:u1] == u1:1 { u32:0x000000ff } else { u32:0 }) |

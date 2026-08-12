@@ -39,6 +39,8 @@ private object TrianglePipelineThroughputTest {
       val triangle = slave(Stream(TrianglePipelineThroughputTest.TriangleCmd(c)))
       val pointSample = in Bool ()
       val fbMemWrite = master(Bmb(Core.fbMemBmbParams(c)))
+      val fbColorWriteMem = master(Bmb(Core.fbMemBmbParams(c)))
+      val fbAuxWriteMem = master(Bmb(Core.fbMemBmbParams(c)))
       val fbColorReadMem = master(Bmb(Core.fbMemBmbParams(c)))
       val fbAuxReadMem = master(Bmb(Core.fbMemBmbParams(c)))
       val texMem = master(Bmb(Tmu.bmbParams(c)))
@@ -236,6 +238,8 @@ private object TrianglePipelineThroughputTest {
     framebuffer.io.flush := False
 
     io.fbMemWrite <> framebuffer.io.fbMemWrite
+    io.fbColorWriteMem <> framebuffer.io.fbColorWriteMem
+    io.fbAuxWriteMem <> framebuffer.io.fbAuxWriteMem
     io.fbColorReadMem <> framebuffer.io.fbColorReadMem
     io.fbAuxReadMem <> framebuffer.io.fbAuxReadMem
     io.texMem <> pipeline.io.texRead
@@ -322,6 +326,8 @@ class TrianglePipelineThroughputTest extends AnyFunSuite {
   private def attachFramebufferMemory(dut: Harness): BmbMemoryAgent = {
     val memory = new BmbMemoryAgent(1 << dut.c.addressWidth.value)
     memory.addPort(dut.io.fbMemWrite, 0, dut.clockDomain, withDriver = true, withStall = false)
+    memory.addPort(dut.io.fbColorWriteMem, 0, dut.clockDomain, withDriver = true, withStall = false)
+    memory.addPort(dut.io.fbAuxWriteMem, 0, dut.clockDomain, withDriver = true, withStall = false)
     memory.addPort(dut.io.fbColorReadMem, 0, dut.clockDomain, withDriver = true, withStall = false)
     memory.addPort(dut.io.fbAuxReadMem, 0, dut.clockDomain, withDriver = true, withStall = false)
     memory

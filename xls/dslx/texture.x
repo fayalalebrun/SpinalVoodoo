@@ -77,17 +77,23 @@ fn rgba_b(rgba: u32) -> u8 { rgba[8+:u8] }
 
 fn rgba_a(rgba: u32) -> u8 { rgba[0+:u8] }
 
+fn mul_u13_by_u5(value: u13, factor: u5) -> u18 {
+    let value = value as u18;
+    (if factor[0+:u1] { value } else { u18:0 }) +
+    (if factor[1+:u1] { value << u8:1 } else { u18:0 }) +
+    (if factor[2+:u1] { value << u8:2 } else { u18:0 }) +
+    (if factor[3+:u1] { value << u8:3 } else { u18:0 }) +
+    (if factor[4+:u1] { value << u8:4 } else { u18:0 })
+}
+
 fn filter_channel(t0: u8, t1: u8, t2: u8, t3: u8, ds: u4, dt: u4) -> u8 {
     let x = ds as u5;
     let y = dt as u5;
     let ix = u5:16 - x;
     let iy = u5:16 - y;
-    let w0 = (ix as u10) * (iy as u10);
-    let w1 = (x as u10) * (iy as u10);
-    let w2 = (ix as u10) * (y as u10);
-    let w3 = (x as u10) * (y as u10);
-    let sum = ((t0 as u18) * (w0 as u18)) + ((t1 as u18) * (w1 as u18)) +
-              ((t2 as u18) * (w2 as u18)) + ((t3 as u18) * (w3 as u18));
+    let top = mul_u13_by_u5(t0 as u13, ix) + mul_u13_by_u5(t1 as u13, x);
+    let bottom = mul_u13_by_u5(t2 as u13, ix) + mul_u13_by_u5(t3 as u13, x);
+    let sum = mul_u13_by_u5(top as u13, iy) + mul_u13_by_u5(bottom as u13, y);
     (sum >> u8:8) as u8
 }
 

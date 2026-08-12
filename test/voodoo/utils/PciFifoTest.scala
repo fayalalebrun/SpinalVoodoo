@@ -2,6 +2,7 @@
 
 package voodoo.utils
 
+import voodoo.bus.{BmbBusInterface, PciFifo, RegisterCategory, TexWritePayload}
 import spinal.core._
 import spinal.core.sim._
 import spinal.lib._

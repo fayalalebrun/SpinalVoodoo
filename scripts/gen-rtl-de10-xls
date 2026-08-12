@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+"$root/scripts/generate-xls-rtl" --de10-proc
+DE10_RTL_MAIN_CLASS=voodoo.de10.XlsDe10ScanoutGen "$root/scripts/gen-rtl-de10"
+test -s "$root/xls/build/core_sim_de10_rtl/CoreSimDe10.sv"
+test -s "$root/hw/de10/rtl/XlsDe10Scanout.v"

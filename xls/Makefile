@@ -29,6 +29,7 @@ RTL := \
 	rtl/VoodooXlsTriangleIterStep.v \
 	rtl/VoodooXlsSignedMagnitude16.v \
 	rtl/VoodooXlsTriangleSetup.v \
+	rtl/VoodooXlsTriangleSetupS16.v \
 	rtl/VoodooXlsSpanStep.v
 
 OUTPUTS := $(RTL) rtl/.stamp

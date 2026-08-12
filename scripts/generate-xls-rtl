@@ -10,6 +10,75 @@ for tool in interpreter_main ir_converter_main opt_main codegen_main dslx_fmt; d
   command -v "$tool" >/dev/null
 done
 
+if [[ "${1:-}" == "--de10-proc" ]]; then
+  proc_build="$build/core_sim_de10_rtl"
+  mkdir -p "$proc_build"
+  ir_converter_main \
+    --dslx_path="$root/xls/dslx" \
+    --top=core_sim_de10 \
+    --lower_to_proc_scoped_channels \
+    "$root/xls/dslx/core_sim.x" >"$proc_build/unoptimized.ir"
+  sed -E \
+    -e '/^  chan _(texture_fill_response|texture_fill_transfer_response|pixel_interpolation_request|triangle_setup_request|triangle_edges)\(/ s/\)$/\, fifo_depth=0, bypass=true, register_push_outputs=false, register_pop_outputs=false)/' \
+    -e '/^  chan _(texture_fill_response|texture_fill_transfer_response|pixel_interpolation_request|triangle_setup_request|triangle_edges)\(/b' \
+    -e '/^  chan _(pixel_result|pixel_interpolation_response|triangle_setup_response)\(/ s/\)$/\, fifo_depth=1, bypass=false, register_push_outputs=true, register_pop_outputs=false)/' \
+    -e '/^  chan _(pixel_result|pixel_interpolation_response|triangle_setup_response)\(/b' \
+    -e '/^  chan _pixel_job\(/ s/\)$/\, fifo_depth=1, bypass=false, register_push_outputs=false, register_pop_outputs=false)/' \
+    -e '/^  chan _pixel_job\(/b' \
+    -e '/^  chan _.*ops=send_receive/ s/\)$/\, fifo_depth=1, bypass=false, register_push_outputs=true, register_pop_outputs=false)/' \
+    "$proc_build/unoptimized.ir" >"$proc_build/fifo.ir"
+  opt_main --output_path="$proc_build/hardware.ir" "$proc_build/fifo.ir"
+  codegen_main \
+    --generator=pipeline \
+    --pipeline_stages=8 \
+    --delay_model=unit \
+    --worst_case_throughput=1 \
+    --reset=rst \
+    --fifo_module='' \
+    --materialize_internal_fifos \
+    --flop_inputs=false \
+    --flop_outputs=false \
+    --module_name=CoreSimDe10 \
+    --output_verilog_path="$proc_build/CoreSimDe10.sv" \
+    --output_block_ir_path="$proc_build/block.ir" \
+    --output_signature_path="$proc_build/signature.textproto" \
+    --output_schedule_path="$proc_build/schedule.textproto" \
+    "$proc_build/hardware.ir"
+  "$root/scripts/quartus-compat-xls-rtl" "$proc_build/CoreSimDe10.sv"
+  exit
+fi
+
+if [[ "${1:-}" == "--hosted-proc" ]]; then
+  proc_build="$build/core_sim_hosted_rtl"
+  mkdir -p "$proc_build"
+  ir_converter_main \
+    --dslx_path="$root/xls/dslx" \
+    --top=core_sim_hosted \
+    --lower_to_proc_scoped_channels \
+    "$root/xls/dslx/core_sim.x" >"$proc_build/unoptimized.ir"
+  sed -E \
+    '/^  chan _(fill_line_request|fill_line_response|texture_cache_request|texture_cache_response|pixel_job|pixel_result|pixel_cache_request|pixel_cache_response)\(/ s/\)$/\, fifo_depth=1, bypass=false, register_push_outputs=true, register_pop_outputs=false)/' \
+    "$proc_build/unoptimized.ir" >"$proc_build/fifo.ir"
+  opt_main --output_path="$proc_build/hardware.ir" "$proc_build/fifo.ir"
+  codegen_main \
+    --generator=pipeline \
+    --pipeline_stages=15 \
+    --delay_model=unit \
+    --worst_case_throughput=1 \
+    --reset=rst \
+    --fifo_module='' \
+    --materialize_internal_fifos \
+    --flop_inputs=false \
+    --flop_outputs=false \
+    --module_name=CoreSimHosted \
+    --output_verilog_path="$proc_build/CoreSimHosted.sv" \
+    --output_block_ir_path="$proc_build/block.ir" \
+    --output_signature_path="$proc_build/signature.textproto" \
+    --output_schedule_path="$proc_build/schedule.textproto" \
+    "$proc_build/hardware.ir"
+  exit
+fi
+
 sources=(pixel texture layout tmu raster)
 for source in "${sources[@]}"; do
   dslx_fmt -i "$root/xls/dslx/$source.x"
@@ -59,6 +128,7 @@ generate raster triangle_iter_load VoodooXlsTriangleIterLoad
 generate raster triangle_iter_step VoodooXlsTriangleIterStep
 generate raster signed_magnitude_16 VoodooXlsSignedMagnitude16
 generate raster triangle_setup VoodooXlsTriangleSetup
+generate raster triangle_setup_s16 VoodooXlsTriangleSetupS16
 generate raster span_step VoodooXlsSpanStep
 
 touch "$rtl/.stamp"

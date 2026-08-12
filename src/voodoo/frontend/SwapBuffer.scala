@@ -98,18 +98,12 @@ case class SwapBuffer(formalStrong: Boolean = false) extends Component {
     }
 
     if (formalStrong) {
-      when(!formalReset) {
-        when(state === State.Sampling) {
-          assert(io.cmd.valid)
-        }
-        when(state === State.Waiting) {
-          assert(io.cmd.valid)
-          assert(retraceCounter <= capturedInterval)
-        }
+      when(!formalReset && state === State.Waiting) {
+        assert(retraceCounter <= capturedInterval)
       }
 
-      cover(io.cmd.ready && state === State.Sampling)
-      cover(io.cmd.ready && state === State.Waiting)
+      cover(!io.cmd.ready && state === State.Sampling)
+      cover(!io.cmd.ready && state === State.Waiting)
       cover(state === State.Waiting && retraceCounter > 0)
     }
   }

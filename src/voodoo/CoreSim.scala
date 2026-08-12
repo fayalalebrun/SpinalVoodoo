@@ -51,6 +51,8 @@ case class CoreSim(c: Config, memTiming: SimMemoryTiming = SimMemoryTiming()) ex
 
   core.io.fbBaseAddr := 0
   core.io.flushFbCaches := io.flushFbCaches
+  core.io.hdmi.clock := ClockDomain.current.readClockWire
+  core.io.hdmi.reset := ClockDomain.current.readResetWire
 }
 
 object CoreSim {

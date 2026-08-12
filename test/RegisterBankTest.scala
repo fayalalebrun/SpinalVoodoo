@@ -23,14 +23,14 @@ class RegisterBankTest extends AnyFunSuite {
     dut.io.swapsPending #= 0
 
     // Initialize statistics inputs
-    dut.io.statisticsIn.pixelsIn #= 0
-    dut.io.statisticsIn.chromaFail #= 0
-    dut.io.statisticsIn.zFuncFail #= 0
-    dut.io.statisticsIn.aFuncFail #= 0
-    dut.io.statisticsIn.pixelsOut #= 0
+    dut.io.statistics.pixelsIn #= 0
+    dut.io.statistics.chromaFail #= 0
+    dut.io.statistics.zFuncFail #= 0
+    dut.io.statistics.aFuncFail #= 0
+    dut.io.statistics.pixelsOut #= 0
 
     // Initialize pipelineBusy to false by default
-    dut.io.pipelineBusy #= false
+    dut.io.debug.pipelineBusy #= false
 
     // PciFifo status inputs (RegisterBank no longer has internal FIFO)
     dut.io.pciFifoEmpty #= true
@@ -89,7 +89,7 @@ class RegisterBankTest extends AnyFunSuite {
 
       // Set specific status inputs (pciFifoFree comes from io.pciFifoFree, set in setupDut)
       // fbiBusy/trexBusy/sstBusy are wired from pipelineBusy internally
-      dut.io.pipelineBusy #= true
+      dut.io.debug.pipelineBusy #= true
       dut.io.swapDisplayedBuffer #= 1
       dut.io.swapsPending #= 2
 
@@ -253,9 +253,9 @@ class RegisterBankTest extends AnyFunSuite {
       setupDut(dut)
 
       // Helper to test a command stream with forking
-      def testCommandStream(
+      def testCommandStream[T <: Data](
           address: Long,
-          stream: spinal.lib.Stream[spinal.lib.NoData],
+          stream: spinal.lib.Stream[T],
           name: String
       ): Unit = {
         var sawValid = false
@@ -372,8 +372,8 @@ class RegisterBankTest extends AnyFunSuite {
       setupDut(dut)
 
       // Set statistics inputs
-      dut.io.statisticsIn.pixelsIn #= 12345
-      dut.io.statisticsIn.chromaFail #= 100
+      dut.io.statistics.pixelsIn #= 12345
+      dut.io.statistics.chromaFail #= 100
       dut.clockDomain.waitSampling(2)
 
       // Read pixelsIn (address changed from 0x110 to 0x14c)

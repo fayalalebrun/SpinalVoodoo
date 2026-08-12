@@ -32,8 +32,16 @@
               xls
               git
               curl
+              file
               gnumake
               gcc_multi
+              open-watcom-bin
+              pkgsi686Linux.dosbox-x
+              pkgsi686Linux.zlib
+              pkgsi686Linux.libx11
+              pkgsi686Linux.libx11.dev
+              pkgsi686Linux.libxext
+              pkgsi686Linux.libxext.dev
               jdk17
               scala-cli
               scalafmt

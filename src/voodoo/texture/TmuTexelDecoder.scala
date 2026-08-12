@@ -1,6 +1,7 @@
 package voodoo.texture
 
 import voodoo._
+import voodoo.xls.{XlsTexelDecode, XlsTextureFilter}
 import spinal.core._
 import spinal.lib._
 
@@ -29,116 +30,7 @@ case class TmuTexelDecoder(c: voodoo.Config) extends Component {
   case class DecodedFetch() extends Bundle {
     val passthrough = Tmu.TmuPassthrough(c)
     val bilinear = Bool()
-    val weights = Tmu.BilinearWeights()
     val texels = Vec.fill(4)(DecodedRgba())
-  }
-
-  def decodeTexelWord(
-      texelData: Bits,
-      format: UInt,
-      ncc: Tmu.NccTableData,
-      paletteColor: Bits
-  ): DecodedRgba = {
-    val texelByte = texelData(7 downto 0)
-    val decoded = DecodedRgba()
-
-    def nccDecode(texByte: Bits, nccData: Tmu.NccTableData): (UInt, UInt, UInt) = {
-      val yVal = nccData.y(texByte(7 downto 4).asUInt)
-      val iEntry = nccData.i(texByte(3 downto 2).asUInt)
-      val qEntry = nccData.q(texByte(1 downto 0).asUInt)
-      val iR = iEntry(26 downto 18).asSInt
-      val iG = iEntry(17 downto 9).asSInt
-      val iB = iEntry(8 downto 0).asSInt
-      val qR = qEntry(26 downto 18).asSInt
-      val qG = qEntry(17 downto 9).asSInt
-      val qB = qEntry(8 downto 0).asSInt
-      val rRaw = (False ## yVal).asSInt.resize(11 bits) + iR.resize(11 bits) + qR.resize(11 bits)
-      val gRaw = (False ## yVal).asSInt.resize(11 bits) + iG.resize(11 bits) + qG.resize(11 bits)
-      val bRaw = (False ## yVal).asSInt.resize(11 bits) + iB.resize(11 bits) + qB.resize(11 bits)
-      (clampToU8(rRaw), clampToU8(gRaw), clampToU8(bRaw))
-    }
-
-    switch(format) {
-      is(Tmu.TextureFormat.RGB332) {
-        decoded.r := expandTo8(texelByte(7 downto 5).asUInt, 3)
-        decoded.g := expandTo8(texelByte(4 downto 2).asUInt, 3)
-        decoded.b := expandTo8(texelByte(1 downto 0).asUInt, 2)
-        decoded.a := U(255, 8 bits)
-      }
-      is(Tmu.TextureFormat.YIQ422) {
-        val (r, g, b) = nccDecode(texelByte, ncc)
-        decoded.r := r; decoded.g := g; decoded.b := b; decoded.a := U(255, 8 bits)
-      }
-      is(Tmu.TextureFormat.A8) {
-        val dat = texelByte.asUInt
-        decoded.r := dat; decoded.g := dat; decoded.b := dat; decoded.a := dat
-      }
-      is(Tmu.TextureFormat.I8) {
-        val intensity = texelByte.asUInt
-        decoded.r := intensity; decoded.g := intensity; decoded.b := intensity;
-        decoded.a := U(255, 8 bits)
-      }
-      is(Tmu.TextureFormat.AI44) {
-        val alpha = texelByte(7 downto 4).asUInt
-        val intensity = texelByte(3 downto 0).asUInt
-        decoded.r := expandTo8(intensity, 4)
-        decoded.g := expandTo8(intensity, 4)
-        decoded.b := expandTo8(intensity, 4)
-        decoded.a := expandTo8(alpha, 4)
-      }
-      is(Tmu.TextureFormat.P8) {
-        decoded.r := paletteColor(23 downto 16).asUInt
-        decoded.g := paletteColor(15 downto 8).asUInt
-        decoded.b := paletteColor(7 downto 0).asUInt
-        decoded.a := U(255, 8 bits)
-      }
-      is(Tmu.TextureFormat.ARGB8332) {
-        decoded.a := texelData(15 downto 8).asUInt
-        decoded.r := expandTo8(texelData(7 downto 5).asUInt, 3)
-        decoded.g := expandTo8(texelData(4 downto 2).asUInt, 3)
-        decoded.b := expandTo8(texelData(1 downto 0).asUInt, 2)
-      }
-      is(Tmu.TextureFormat.AYIQ8422) {
-        val (r, g, b) = nccDecode(texelData(7 downto 0), ncc)
-        decoded.r := r; decoded.g := g; decoded.b := b; decoded.a := texelData(15 downto 8).asUInt
-      }
-      is(Tmu.TextureFormat.RGB565) {
-        decoded.r := expandTo8(texelData(15 downto 11).asUInt, 5)
-        decoded.g := expandTo8(texelData(10 downto 5).asUInt, 6)
-        decoded.b := expandTo8(texelData(4 downto 0).asUInt, 5)
-        decoded.a := U(255, 8 bits)
-      }
-      is(Tmu.TextureFormat.ARGB1555) {
-        decoded.a := expandTo8(texelData(15 downto 15).asUInt, 1)
-        decoded.r := expandTo8(texelData(14 downto 10).asUInt, 5)
-        decoded.g := expandTo8(texelData(9 downto 5).asUInt, 5)
-        decoded.b := expandTo8(texelData(4 downto 0).asUInt, 5)
-      }
-      is(Tmu.TextureFormat.ARGB4444) {
-        decoded.a := expandTo8(texelData(15 downto 12).asUInt, 4)
-        decoded.r := expandTo8(texelData(11 downto 8).asUInt, 4)
-        decoded.g := expandTo8(texelData(7 downto 4).asUInt, 4)
-        decoded.b := expandTo8(texelData(3 downto 0).asUInt, 4)
-      }
-      is(Tmu.TextureFormat.AI88) {
-        val alpha = texelData(15 downto 8).asUInt
-        val intensity = texelData(7 downto 0).asUInt
-        decoded.r := intensity; decoded.g := intensity; decoded.b := intensity; decoded.a := alpha
-      }
-      is(Tmu.TextureFormat.AP88) {
-        decoded.r := paletteColor(23 downto 16).asUInt
-        decoded.g := paletteColor(15 downto 8).asUInt
-        decoded.b := paletteColor(7 downto 0).asUInt
-        decoded.a := texelData(15 downto 8).asUInt
-      }
-      default {
-        decoded.r := expandTo8(texelData(15 downto 11).asUInt, 5)
-        decoded.g := expandTo8(texelData(10 downto 5).asUInt, 6)
-        decoded.b := expandTo8(texelData(4 downto 0).asUInt, 5)
-        decoded.a := U(255, 8 bits)
-      }
-    }
-    decoded
   }
 
   val paletteColors = Seq.tabulate(4) { idx =>
@@ -155,14 +47,19 @@ case class TmuTexelDecoder(c: voodoo.Config) extends Component {
       val decodedFetch = DecodedFetch()
       decodedFetch.passthrough := pass
       decodedFetch.bilinear := fetchPipe.payload.bilinear
-      decodedFetch.weights := Tmu.bilinearWeights(pass.ds, pass.dt)
       for (idx <- 0 until 4) {
-        decodedFetch.texels(idx) := decodeTexelWord(
-          fetchPipe.payload.texels(idx),
-          pass.format,
-          ncc,
-          paletteColors(idx)
-        )
+        val texel = fetchPipe.payload.texels(idx)
+        val xls = new XlsTexelDecode
+        xls.io.texel := texel
+        xls.io.format := pass.format
+        xls.io.palette := paletteColors(idx)
+        xls.io.ncc_y := ncc.y(texel(7 downto 4).asUInt)
+        xls.io.ncc_i := ncc.i(texel(3 downto 2).asUInt)
+        xls.io.ncc_q := ncc.q(texel(1 downto 0).asUInt)
+        decodedFetch.texels(idx).r := xls.io.out(31 downto 24).asUInt
+        decodedFetch.texels(idx).g := xls.io.out(23 downto 16).asUInt
+        decodedFetch.texels(idx).b := xls.io.out(15 downto 8).asUInt
+        decodedFetch.texels(idx).a := xls.io.out(7 downto 0).asUInt
       }
       decodedFetch
     }
@@ -171,55 +68,21 @@ case class TmuTexelDecoder(c: voodoo.Config) extends Component {
   io.output << decodedPipe
     .translateWith {
       val pass = decodedPipe.payload.passthrough
-      val weights = decodedPipe.payload.weights
-
-      def channel(idx: Int, sel: DecodedRgba => UInt): UInt = sel(decodedPipe.payload.texels(idx))
+      val filter = new XlsTextureFilter
+      val packed = decodedPipe.payload.texels.map(t => (t.r ## t.g ## t.b ## t.a).asBits)
+      filter.io.t0 := packed(0)
+      filter.io.t1 := packed(1)
+      filter.io.t2 := packed(2)
+      filter.io.t3 := packed(3)
+      filter.io.ds := pass.ds
+      filter.io.dt := pass.dt
+      filter.io.bilinear := decodedPipe.payload.bilinear
 
       val result = Tmu.Output(c)
-      result.texture.r := Mux(
-        decodedPipe.payload.bilinear,
-        Tmu.blendChannel(
-          weights,
-          channel(0, _.r),
-          channel(1, _.r),
-          channel(2, _.r),
-          channel(3, _.r)
-        ),
-        channel(0, _.r)
-      )
-      result.texture.g := Mux(
-        decodedPipe.payload.bilinear,
-        Tmu.blendChannel(
-          weights,
-          channel(0, _.g),
-          channel(1, _.g),
-          channel(2, _.g),
-          channel(3, _.g)
-        ),
-        channel(0, _.g)
-      )
-      result.texture.b := Mux(
-        decodedPipe.payload.bilinear,
-        Tmu.blendChannel(
-          weights,
-          channel(0, _.b),
-          channel(1, _.b),
-          channel(2, _.b),
-          channel(3, _.b)
-        ),
-        channel(0, _.b)
-      )
-      result.textureAlpha := Mux(
-        decodedPipe.payload.bilinear,
-        Tmu.blendChannel(
-          weights,
-          channel(0, _.a),
-          channel(1, _.a),
-          channel(2, _.a),
-          channel(3, _.a)
-        ),
-        channel(0, _.a)
-      )
+      result.texture.r := filter.io.out(31 downto 24).asUInt
+      result.texture.g := filter.io.out(23 downto 16).asUInt
+      result.texture.b := filter.io.out(15 downto 8).asUInt
+      result.textureAlpha := filter.io.out(7 downto 0).asUInt
       when(io.sendConfig) {
         result.texture.r := 0
         result.texture.g := 0

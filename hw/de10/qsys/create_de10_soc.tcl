@@ -69,6 +69,7 @@ add_instance h2f_bridge altera_avalon_mm_bridge
 add_instance fb_write_bridge altera_avalon_mm_bridge
 add_instance fb_color_read_bridge altera_avalon_mm_bridge
 add_instance fb_aux_read_bridge altera_avalon_mm_bridge
+add_instance scanout_bridge altera_avalon_mm_bridge
 add_instance tex_bridge altera_avalon_mm_bridge
 
 set_instance_parameter_value h2f_bridge DATA_WIDTH {32}
@@ -76,7 +77,7 @@ set_instance_parameter_value h2f_bridge SYMBOL_WIDTH {8}
 set_instance_parameter_value h2f_bridge HDL_ADDR_WIDTH {24}
 set_instance_parameter_value h2f_bridge ADDRESS_WIDTH {24}
 
-foreach bridge {fb_write_bridge fb_color_read_bridge fb_aux_read_bridge} {
+foreach bridge {fb_write_bridge fb_color_read_bridge fb_aux_read_bridge scanout_bridge} {
   set_instance_parameter_value $bridge DATA_WIDTH {32}
   set_instance_parameter_value $bridge SYMBOL_WIDTH {8}
   set_instance_parameter_value $bridge HDL_ADDR_WIDTH {32}
@@ -98,19 +99,21 @@ add_connection clk_0.clk h2f_bridge.clk
 add_connection clk_0.clk fb_write_bridge.clk
 add_connection clk_0.clk fb_color_read_bridge.clk
 add_connection clk_0.clk fb_aux_read_bridge.clk
+add_connection clk_0.clk scanout_bridge.clk
 add_connection clk_0.clk tex_bridge.clk
 
 add_connection clk_0.clk_reset h2f_bridge.reset
 add_connection clk_0.clk_reset fb_write_bridge.reset
 add_connection clk_0.clk_reset fb_color_read_bridge.reset
 add_connection clk_0.clk_reset fb_aux_read_bridge.reset
+add_connection clk_0.clk_reset scanout_bridge.reset
 add_connection clk_0.clk_reset tex_bridge.reset
 
 add_connection hps_0.h2f_axi_master h2f_bridge.s0
 set_connection_parameter_value hps_0.h2f_axi_master/h2f_bridge.s0 baseAddress {0x00000000}
 set_connection_parameter_value hps_0.h2f_axi_master/h2f_bridge.s0 defaultConnection {0}
 
-foreach bridge {fb_write_bridge fb_color_read_bridge fb_aux_read_bridge} {
+foreach bridge {fb_write_bridge fb_color_read_bridge fb_aux_read_bridge scanout_bridge} {
   add_connection ${bridge}.m0 hps_0.f2h_sdram0_data
   set_connection_parameter_value ${bridge}.m0/hps_0.f2h_sdram0_data baseAddress {0x00000000}
   set_connection_parameter_value ${bridge}.m0/hps_0.f2h_sdram0_data defaultConnection {0}
@@ -146,6 +149,9 @@ set_interface_property fb_color_read_mem EXPORT_OF fb_color_read_bridge.s0
 
 add_interface fb_aux_read_mem avalon end
 set_interface_property fb_aux_read_mem EXPORT_OF fb_aux_read_bridge.s0
+
+add_interface scanout_mem avalon end
+set_interface_property scanout_mem EXPORT_OF scanout_bridge.s0
 
 add_interface tex_mem avalon end
 set_interface_property tex_mem EXPORT_OF tex_bridge.s0

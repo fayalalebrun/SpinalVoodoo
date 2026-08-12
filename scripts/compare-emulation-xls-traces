@@ -1,0 +1,320 @@
+#!/usr/bin/env python3
+import argparse
+import csv
+import html
+import math
+import struct
+import subprocess
+import sys
+import tempfile
+import zlib
+from pathlib import Path
+
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+SRGB_LUT = bytes(
+    int(((value / 255.0) * 12.92 if value / 255.0 <= 0.0031308
+         else 1.055 * (value / 255.0) ** (1.0 / 2.4) - 0.055) * 255.0 + 0.5)
+    for value in range(256)
+)
+
+
+def png_chunk(tag, payload):
+    return struct.pack(">I", len(payload)) + tag + payload + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF)
+
+
+def write_png(path, width, height, pixels):
+    rows = bytearray()
+    stride = width * 3
+    for y in range(height):
+        rows.append(0)
+        rows.extend(pixels[y * stride:(y + 1) * stride])
+    data = bytearray(PNG_SIGNATURE)
+    data.extend(png_chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)))
+    data.extend(png_chunk(b"IDAT", zlib.compress(bytes(rows), 6)))
+    data.extend(png_chunk(b"IEND", b""))
+    path.write_bytes(data)
+
+
+def paeth(a, b, c):
+    p = a + b - c
+    pa = abs(p - a)
+    pb = abs(p - b)
+    pc = abs(p - c)
+    return a if pa <= pb and pa <= pc else b if pb <= pc else c
+
+
+def read_png(path):
+    data = path.read_bytes()
+    if not data.startswith(PNG_SIGNATURE):
+        raise ValueError(f"not a PNG: {path}")
+    offset = len(PNG_SIGNATURE)
+    compressed = bytearray()
+    width = height = None
+    while offset < len(data):
+        size = struct.unpack_from(">I", data, offset)[0]
+        tag = data[offset + 4:offset + 8]
+        payload = data[offset + 8:offset + 8 + size]
+        offset += 12 + size
+        if tag == b"IHDR":
+            width, height, depth, color, compression, filtering, interlace = struct.unpack(">IIBBBBB", payload)
+            if (depth, color, compression, filtering, interlace) != (8, 2, 0, 0, 0):
+                raise ValueError(f"unsupported PNG format in {path}")
+        elif tag == b"IDAT":
+            compressed.extend(payload)
+        elif tag == b"IEND":
+            break
+    if width is None or height is None:
+        raise ValueError(f"missing PNG header: {path}")
+    raw = zlib.decompress(compressed)
+    stride = width * 3
+    pixels = bytearray(width * height * 3)
+    source = 0
+    for y in range(height):
+        filter_type = raw[source]
+        source += 1
+        row = bytearray(raw[source:source + stride])
+        source += stride
+        previous = pixels[(y - 1) * stride:y * stride] if y else bytes(stride)
+        for x in range(stride):
+            left = row[x - 3] if x >= 3 else 0
+            up = previous[x]
+            upper_left = previous[x - 3] if x >= 3 else 0
+            if filter_type == 1:
+                row[x] = (row[x] + left) & 0xFF
+            elif filter_type == 2:
+                row[x] = (row[x] + up) & 0xFF
+            elif filter_type == 3:
+                row[x] = (row[x] + ((left + up) >> 1)) & 0xFF
+            elif filter_type == 4:
+                row[x] = (row[x] + paeth(left, up, upper_left)) & 0xFF
+            elif filter_type != 0:
+                raise ValueError(f"unsupported PNG filter {filter_type} in {path}")
+        pixels[y * stride:(y + 1) * stride] = row
+    return width, height, bytes(pixels)
+
+
+def read_bmp(path):
+    data = path.read_bytes()
+    if data[:2] != b"BM" or len(data) < 54:
+        raise ValueError(f"unsupported BMP: {path}")
+    offset = struct.unpack_from("<I", data, 10)[0]
+    width, height = struct.unpack_from("<ii", data, 18)
+    planes, depth, compression = struct.unpack_from("<HHI", data, 26)
+    if width <= 0 or height == 0 or planes != 1 or depth != 24 or compression != 0:
+        raise ValueError(f"unsupported BMP format in {path}")
+    top_down = height < 0
+    height = abs(height)
+    row_size = (width * 3 + 3) & ~3
+    if offset + row_size * height > len(data):
+        raise ValueError(f"truncated BMP: {path}")
+    pixels = bytearray(width * height * 3)
+    for y in range(height):
+        source_y = y if top_down else height - y - 1
+        for x in range(width):
+            blue, green, red = data[offset + source_y * row_size + x * 3:offset + source_y * row_size + x * 3 + 3]
+            destination = (y * width + x) * 3
+            pixels[destination:destination + 3] = bytes((red, green, blue))
+    return width, height, bytes(pixels)
+
+
+def convert_v1_state(source, destination):
+    data = bytearray(source.read_bytes())
+    if len(data) < 64 or struct.unpack_from("<I", data, 0)[0] != 0x41545356:
+        raise ValueError(f"invalid state snapshot: {source}")
+    version = struct.unpack_from("<I", data, 4)[0]
+    if version != 1:
+        return source
+    register_count = struct.unpack_from("<I", data, 28)[0]
+    if 64 + register_count * 8 > len(data):
+        raise ValueError(f"truncated state snapshot: {source}")
+    struct.pack_into("<I", data, 4, 2)
+    for index in range(register_count):
+        entry = 64 + index * 8
+        address, value = struct.unpack_from("<II", data, entry)
+        if address & 0x3FC in (0x30C, 0x310, 0x314, 0x318):
+            struct.pack_into("<I", data, entry + 4, value >> 3)
+    destination.write_bytes(data)
+    return destination
+
+
+def read_rgb565(path, width, height):
+    raw = path.read_bytes()
+    if len(raw) != width * height * 2:
+        raise ValueError(f"unexpected RGB565 size in {path}: {len(raw)}")
+    pixels = bytearray(width * height * 3)
+    for index in range(width * height):
+        pixel = raw[index * 2] | raw[index * 2 + 1] << 8
+        red = (pixel >> 11) & 31
+        green = (pixel >> 5) & 63
+        blue = pixel & 31
+        pixels[index * 3:index * 3 + 3] = bytes((
+            SRGB_LUT[(red << 3) | (red >> 2)],
+            SRGB_LUT[(green << 2) | (green >> 4)],
+            SRGB_LUT[(blue << 3) | (blue >> 2)],
+        ))
+    return bytes(pixels)
+
+
+def compare(reference, actual):
+    if reference[:2] != actual[:2]:
+        raise ValueError("framebuffer dimensions differ")
+    width, height = reference[:2]
+    ref = reference[2]
+    got = actual[2]
+    diff = bytearray(len(ref))
+    mismatches = 0
+    squared_error = 0
+    maximum_error = 0
+    for index in range(width * height):
+        base = index * 3
+        delta = [abs(ref[base + channel] - got[base + channel]) for channel in range(3)]
+        if any(delta):
+            mismatches += 1
+            diff[base:base + 3] = bytes((255, min(255, delta[1] * 4), min(255, delta[2] * 4)))
+        else:
+            value = (ref[base] + ref[base + 1] + ref[base + 2]) // 18
+            diff[base:base + 3] = bytes((value, value, value))
+        squared_error += sum(value * value for value in delta)
+        maximum_error = max(maximum_error, *delta)
+    rmse = math.sqrt(squared_error / len(ref))
+    combined = bytearray(width * height * 9)
+    combined_width = width * 3
+    for y in range(height):
+        destination = y * combined_width * 3
+        source = y * width * 3
+        combined[destination:destination + width * 3] = ref[source:source + width * 3]
+        combined[destination + width * 3:destination + width * 6] = got[source:source + width * 3]
+        combined[destination + width * 6:destination + width * 9] = diff[source:source + width * 3]
+    return mismatches, rmse, maximum_error, bytes(diff), bytes(combined)
+
+
+def run_logged(command, log_path):
+    with log_path.open("w") as log:
+        completed = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT)
+    return completed.returncode
+
+
+def discover(root, names):
+    traces = {}
+    for path in sorted((root / "traces").glob("*.bin")):
+        traces[path.stem] = path
+    for path in sorted((root / "traces").glob("*/trace.bin")):
+        traces[path.parent.name] = path.parent
+    if names:
+        missing = sorted(set(names) - traces.keys())
+        if missing:
+            raise ValueError("unknown traces: " + ", ".join(missing))
+        traces = {name: traces[name] for name in names}
+    return traces
+
+
+def write_report(output, rows):
+    with (output / "summary.csv").open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=["trace", "status", "mismatches", "pixels", "mismatch_percent", "rmse", "max_channel_error"])
+        writer.writeheader()
+        writer.writerows(rows)
+    sections = []
+    for row in rows:
+        name = html.escape(row["trace"])
+        if row["status"] == "ok":
+            details = f'{row["mismatches"]}/{row["pixels"]} pixels ({row["mismatch_percent"]}%), RMSE {row["rmse"]}, max error {row["max_channel_error"]}'
+            image = f'<a href="{name}/comparison.png"><img src="{name}/comparison.png" loading="lazy"></a>'
+        else:
+            details = html.escape(row["status"])
+            image = ""
+        sections.append(f"<section><h2>{name}</h2><p>{details}</p>{image}</section>")
+    document = """<!doctype html><html><head><meta charset="utf-8"><title>Emulation vs XLS</title><style>body{font-family:sans-serif;background:#181818;color:#eee;margin:2rem}section{margin:2rem 0}img{width:100%;max-width:1920px;image-rendering:pixelated}p{color:#bbb}.legend{display:grid;grid-template-columns:repeat(3,1fr);max-width:1920px;text-align:center}</style></head><body><h1>Emulation vs pure XLS framebuffer comparison</h1><div class="legend"><b>86Box emulation</b><b>pure XLS</b><b>difference</b></div>""" + "".join(sections) + "</body></html>"
+    (output / "index.html").write_text(document)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Generate 86Box-emulation versus pure-XLS framebuffer comparisons")
+    parser.add_argument("traces", nargs="*")
+    parser.add_argument("--output-dir", default="test-output/emulation-xls-comparison")
+    parser.add_argument("--trace-test", default="emu/test/obj_dir/trace_test")
+    parser.add_argument("--reuse", action="store_true")
+    args = parser.parse_args()
+    root = Path(__file__).resolve().parent.parent
+    output = root / args.output_dir
+    output.mkdir(parents=True, exist_ok=True)
+    traces = discover(root, args.traces)
+    rows = []
+    for position, (name, source) in enumerate(traces.items(), 1):
+        print(f"[{position}/{len(traces)}] {name}", flush=True)
+        directory = output / name
+        directory.mkdir(parents=True, exist_ok=True)
+        reference = directory / f"{name}_ref.png"
+        raw = directory / "xls.rgb565"
+        xls_png = directory / "xls.png"
+        state = convert_v1_state(source / "state.bin", directory / "state-v2.bin") if source.is_dir() else None
+        temporary = None
+        reference_source = source
+        if state is not None and state != source / "state.bin":
+            temporary = tempfile.TemporaryDirectory()
+            reference_source = Path(temporary.name) / name
+            reference_source.mkdir()
+            (reference_source / "trace.bin").symlink_to((source / "trace.bin").resolve())
+            (reference_source / "state.bin").symlink_to(state.resolve())
+        if not args.reuse or not reference.exists():
+            status = run_logged([
+                str(root / args.trace_test), str(reference_source), "--ref-only",
+                "--output-dir", str(directory),
+            ], directory / "emulation.log")
+            if status != 0 or not reference.exists():
+                captured = source / "frame.bmp" if source.is_dir() else None
+                if captured is None or not captured.exists():
+                    rows.append({"trace": name, "status": f"emulation failed ({status})", "mismatches": "", "pixels": "", "mismatch_percent": "", "rmse": "", "max_channel_error": ""})
+                    if temporary is not None:
+                        temporary.cleanup()
+                    continue
+                width, height, pixels = read_bmp(captured)
+                write_png(reference, width, height, pixels)
+                with (directory / "emulation.log").open("a") as log:
+                    log.write(f"using captured emulator framebuffer {captured}\n")
+        if temporary is not None:
+            temporary.cleanup()
+        if not args.reuse or not raw.exists():
+            command = [
+                str(root / "scripts/replay-pure-xls-proc-trace"), "--de10",
+                f"--framebuffer-output={raw}", str(source),
+            ]
+            if state is not None:
+                command.insert(-1, f"--state={state}")
+            if name == "test02":
+                command.insert(-1, "--max-ticks=20000000")
+            if name == "screamer2":
+                command.insert(-1, "--minimum-cache-hit-rate=0.9")
+            status = run_logged(command, directory / "xls.log")
+            if status != 0 or not raw.exists():
+                rows.append({"trace": name, "status": f"XLS failed ({status})", "mismatches": "", "pixels": "", "mismatch_percent": "", "rmse": "", "max_channel_error": ""})
+                continue
+        ref_image = read_png(reference)
+        width, height = ref_image[:2]
+        xls_pixels = read_rgb565(raw, width, height)
+        write_png(xls_png, width, height, xls_pixels)
+        actual = (width, height, xls_pixels)
+        mismatches, rmse, maximum_error, diff, combined = compare(ref_image, actual)
+        write_png(directory / "diff.png", width, height, diff)
+        write_png(directory / "comparison.png", width * 3, height, combined)
+        rows.append({
+            "trace": name,
+            "status": "ok",
+            "mismatches": mismatches,
+            "pixels": width * height,
+            "mismatch_percent": f"{mismatches * 100 / (width * height):.4f}",
+            "rmse": f"{rmse:.4f}",
+            "max_channel_error": maximum_error,
+        })
+        write_report(output, rows)
+    write_report(output, rows)
+    failures = sum(row["status"] != "ok" for row in rows)
+    print(f"wrote {output / 'index.html'} with {len(rows) - failures}/{len(rows)} comparisons")
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        print(error, file=sys.stderr)
+        raise SystemExit(1)

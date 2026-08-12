@@ -459,8 +459,64 @@ def framebuffer_module(commands, expected, framebuffer):
     return "\n".join(lines)
 
 
+def strip_disabled_burst_nodes(path):
+    markers = (
+        "to_apply=__core_sim__texture_block_write",
+        "to_apply=__core_sim__advance_burst_ticks",
+        "channel=_burst_r",
+        "channel=_texture_block_s",
+        "channel=_texture_block_response_r",
+    )
+    text = path.read_text()
+    kept = []
+    removed = 0
+    for line in text.splitlines(keepends=True):
+        burst_response = "channel=_response_s" in line and "predicate=block_access" in line
+        if burst_response or any(marker in line for marker in markers):
+            removed += 1
+        else:
+            kept.append(line)
+    if removed == 0:
+        return
+    if removed not in (3, 4):
+        raise ValueError("unexpected scalar hosted burst nodes")
+    temporary = path.with_name(f"{path.stem}.scalarized{path.suffix}")
+    temporary.write_text("".join(kept))
+    subprocess.run([
+        "opt_main", "--passes=dce dfe", f"--output_path={path}", str(temporary),
+    ], check=True)
+    temporary.unlink()
+
+
+def promote_hosted_impl(path):
+    lines = path.read_text().splitlines(keepends=True)
+    implementation = [
+        i for i, line in enumerate(lines)
+        if line.startswith("proc __core_sim__core_sim_hosted_impl_")
+    ]
+    promoted = [
+        i for i, line in enumerate(lines)
+        if line.startswith("top proc __core_sim__core_sim_hosted_impl_")
+    ]
+    wrapper = [
+        i for i, line in enumerate(lines)
+        if line.startswith("top proc __core_sim__core_sim_hosted_") and "_impl_" not in line
+    ]
+    if len(promoted) == 1 and not wrapper:
+        return
+    if len(implementation) != 1 or len(wrapper) != 1 or promoted:
+        raise ValueError("unexpected hosted proc hierarchy")
+    end = next(
+        (i for i in range(wrapper[0] + 1, len(lines)) if lines[i].strip() == "}"), None)
+    if end is None:
+        raise ValueError("unterminated hosted proc wrapper")
+    lines[implementation[0]] = lines[implementation[0]].replace("proc ", "top proc ", 1)
+    del lines[wrapper[0]:end + 1]
+    path.write_text("".join(lines))
+
+
 def native_replay(args, framebuffer):
-    requested_ir = pathlib.Path(args.native_ir)
+    requested_ir = pathlib.Path(args.native_ir or "xls/build/core_sim_hosted.ir")
     ir = (
         requested_ir.with_name(f"{requested_ir.stem}.hardware{requested_ir.suffix}")
         if args.hardware_opt
@@ -486,6 +542,7 @@ def native_replay(args, framebuffer):
         if not args.hardware_opt:
             command.append(f"--passes={CPU_OPT_PASSES}")
         subprocess.run([*command, str(unoptimized_ir)], check=True)
+    strip_disabled_burst_nodes(ir)
     obj = ir.with_suffix(".o")
     proto = ir.with_suffix(".pb")
     library = ir.with_suffix(".so")
@@ -506,13 +563,22 @@ def native_replay(args, framebuffer):
                 os.environ.get("CXX", "c++"), "-shared", str(obj), "-o", str(library),
             ], check=True)
     mode = "hardware" if args.hardware_opt else "CPU"
-    print(f"generated XLS {mode}-optimized hosted CoreSim {'JIT' if args.jit else 'AOT'} runtime from {ir}")
+    simulator = "DE10Sim" if args.de10 else "CoreSim"
+    print(f"generated XLS {mode}-optimized hosted {simulator} {'JIT' if args.jit else 'AOT'} runtime from {ir}")
     if args.generate_only:
         return
     command = [
         "voodoo_xls_runtime", str(ir), args.trace,
         f"--max_ticks={args.max_ticks}",
     ]
+    if args.de10:
+        command.append("--de10")
+    if args.state:
+        command.append(f"--state={args.state}")
+    if args.minimum_cache_hit_rate is not None:
+        command.append(f"--minimum_cache_hit_rate={args.minimum_cache_hit_rate}")
+    if args.framebuffer_output:
+        command.append(f"--framebuffer_output={args.framebuffer_output}")
     if not args.jit:
         command.extend([f"--aot_proto={proto}", f"--aot_library={library}"])
     if framebuffer:
@@ -521,7 +587,20 @@ def native_replay(args, framebuffer):
             f"--width={width}", f"--height={height}",
             f"--expected_hash=0x{expected_hash:08x}",
         ])
-    subprocess.run(command, check=True)
+    if args.max_replay_seconds is None:
+        subprocess.run(command, check=True)
+    else:
+        completed = subprocess.run(command, check=True, text=True, capture_output=True)
+        sys.stdout.write(completed.stdout)
+        sys.stderr.write(completed.stderr)
+        replay_seconds = next(
+            float(line.split()[2])
+            for line in completed.stdout.splitlines()
+            if line.startswith("replay wall: ")
+        )
+        if replay_seconds > args.max_replay_seconds:
+            raise ValueError(
+                f"replay wall {replay_seconds:.6f}s exceeds {args.max_replay_seconds:.6f}s")
 
 
 def main():
@@ -530,17 +609,29 @@ def main():
     parser.add_argument("--limit", type=int)
     parser.add_argument("--output", default="xls/build/pure_xls_proc_trace_replay.x")
     parser.add_argument("--generate-only", action="store_true")
-    parser.add_argument("--max-ticks", type=int, default=2_000_000)
+    parser.add_argument("--max-ticks", type=int, default=5_000_000)
     parser.add_argument("--framebuffer-reference")
+    parser.add_argument("--framebuffer-output", help="write packed RGB565 framebuffer")
     parser.add_argument("--framebuffer-report-only", action="store_true")
     parser.add_argument("--framebuffer-block-diagnostics", action="store_true")
     parser.add_argument("--interpreter", action="store_true")
     parser.add_argument("--jit", action="store_true")
     parser.add_argument("--hardware-opt", action="store_true")
-    parser.add_argument("--native-ir", default="xls/build/core_sim_hosted.ir")
+    parser.add_argument("--de10", action="store_true")
+    parser.add_argument("--state", help="Voodoo state snapshot; sibling state.bin is automatic")
+    parser.add_argument(
+        "--minimum-cache-hit-rate", type=float,
+        help="minimum required tap and all-hit request rates")
+    parser.add_argument("--max-replay-seconds", type=float, help="maximum replay wall time")
+    parser.add_argument("--native-ir")
     args = parser.parse_args()
+    trace_path = pathlib.Path(args.trace)
+    if trace_path.is_dir():
+        args.trace = str(trace_path / "trace.bin")
     if args.interpreter and (args.jit or args.hardware_opt):
         raise ValueError("--interpreter cannot be combined with --jit or --hardware-opt")
+    if args.interpreter and args.state:
+        raise ValueError("--state requires the native runtime")
     commands, expected = load(args.trace)
     if args.limit is not None:
         commands = commands[:args.limit]

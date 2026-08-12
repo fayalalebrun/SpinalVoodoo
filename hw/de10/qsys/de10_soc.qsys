@@ -57,11 +57,19 @@
          type = "int";
       }
    }
-   element tex_bridge
+   element scanout_bridge
    {
       datum _sortIndex
       {
          value = "6";
+         type = "int";
+      }
+   }
+   element tex_bridge
+   {
+      datum _sortIndex
+      {
+         value = "7";
          type = "int";
       }
    }
@@ -111,6 +119,11 @@
  <interface name="h2f_reset" internal="hps_0.h2f_reset" type="reset" dir="start" />
  <interface name="memory" internal="hps_0.memory" type="conduit" dir="end" />
  <interface name="reset" internal="clk_0.clk_in_reset" type="reset" dir="end" />
+ <interface
+   name="scanout_mem"
+   internal="scanout_bridge.s0"
+   type="avalon"
+   dir="end" />
  <interface name="tex_mem" internal="tex_bridge.s0" type="avalon" dir="end" />
  <module name="clk_0" kind="clock_source" version="24.1" enabled="1">
   <parameter name="clockFrequency" value="50000000" />
@@ -721,6 +734,24 @@
   <parameter name="use_default_mpu_clk" value="true" />
  </module>
  <module
+   name="scanout_bridge"
+   kind="altera_avalon_mm_bridge"
+   version="24.1"
+   enabled="1">
+  <parameter name="ADDRESS_UNITS" value="SYMBOLS" />
+  <parameter name="ADDRESS_WIDTH" value="32" />
+  <parameter name="DATA_WIDTH" value="32" />
+  <parameter name="LINEWRAPBURSTS" value="0" />
+  <parameter name="MAX_BURST_SIZE" value="1024" />
+  <parameter name="MAX_PENDING_RESPONSES" value="4" />
+  <parameter name="PIPELINE_COMMAND" value="1" />
+  <parameter name="PIPELINE_RESPONSE" value="1" />
+  <parameter name="SYMBOL_WIDTH" value="8" />
+  <parameter name="SYSINFO_ADDR_WIDTH" value="32" />
+  <parameter name="USE_AUTO_ADDRESS_WIDTH" value="0" />
+  <parameter name="USE_RESPONSE" value="0" />
+ </module>
+ <module
    name="tex_bridge"
    kind="altera_avalon_mm_bridge"
    version="24.1"
@@ -777,6 +808,15 @@
  <connection
    kind="avalon"
    version="24.1"
+   start="scanout_bridge.m0"
+   end="hps_0.f2h_sdram0_data">
+  <parameter name="arbitrationPriority" value="1" />
+  <parameter name="baseAddress" value="0x0000" />
+  <parameter name="defaultConnection" value="false" />
+ </connection>
+ <connection
+   kind="avalon"
+   version="24.1"
    start="tex_bridge.m0"
    end="hps_0.f2h_sdram0_data">
   <parameter name="arbitrationPriority" value="1" />
@@ -799,6 +839,11 @@
    version="24.1"
    start="clk_0.clk"
    end="fb_aux_read_bridge.clk" />
+ <connection
+   kind="clock"
+   version="24.1"
+   start="clk_0.clk"
+   end="scanout_bridge.clk" />
  <connection kind="clock" version="24.1" start="clk_0.clk" end="tex_bridge.clk" />
  <connection
    kind="clock"
@@ -840,6 +885,11 @@
    version="24.1"
    start="clk_0.clk_reset"
    end="fb_aux_read_bridge.reset" />
+ <connection
+   kind="reset"
+   version="24.1"
+   start="clk_0.clk_reset"
+   end="scanout_bridge.reset" />
  <connection
    kind="reset"
    version="24.1"

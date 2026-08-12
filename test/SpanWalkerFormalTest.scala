@@ -107,13 +107,13 @@ class SpanWalkerFormalDut(formalStrong: Boolean) extends Component {
       assert(dut.o.payload.trace.origin === U(Trace.Origin.triangle, 2 bits))
       when(dut.o.payload.trace.primitiveId === 0) {
         assert(xStart === 1)
-        assert(xEnd === 2)
+        assert(xEnd === 1)
         assert(y >= 0)
         assert(y <= 1)
       }.otherwise {
         assert(dut.o.payload.trace.primitiveId === 1)
         assert(xStart === 0)
-        assert(xEnd === 1)
+        assert(xEnd === 0)
         assert(y >= 2)
         assert(y <= 3)
       }

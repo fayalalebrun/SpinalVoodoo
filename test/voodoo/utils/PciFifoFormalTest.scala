@@ -2,6 +2,7 @@
 
 package voodoo.utils
 
+import voodoo.bus.{PciFifo, RegisterCategory}
 import spinal.core._
 import spinal.core.formal._
 import spinal.lib._

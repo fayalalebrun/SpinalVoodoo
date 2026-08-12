@@ -59,6 +59,8 @@ void sim_invalidate_fb_cache(void);
  * Reads word_count 32-bit words starting at byte_offset into dst. */
 void sim_read_fb(uint32_t byte_offset, uint32_t *dst, uint32_t word_count);
 
+int sim_read_frontbuffer(uint32_t width, uint32_t height, uint16_t *dst);
+
 /* Bulk write to CoreSim's fbRam (bypasses bus protocol). */
 void sim_write_fb_bulk(uint32_t byte_offset, const uint32_t *src, uint32_t word_count);
 

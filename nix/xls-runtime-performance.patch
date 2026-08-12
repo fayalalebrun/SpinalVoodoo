@@ -221,3 +221,89 @@ index 5bd046a..6d3e02a 100644
    const llvm::DataLayout& data_layout() const { return data_layout_; }
  
   private:
+
+diff --git a/xls/jit/proc_jit.cc b/xls/jit/proc_jit.cc
+index da15a23..bea9cc5 100644
+--- a/xls/jit/proc_jit.cc
++++ b/xls/jit/proc_jit.cc
+@@ -273,6 +273,17 @@ absl::Status ProcJitContinuation::NextTick() {
+     // be unchanged by default.
+     for (int64_t state_index = 0; state_index < proc()->GetStateElementCount();
+          ++state_index) {
++      bool has_unconditional_next = false;
++      for (Next* next :
++           proc()->next_values(proc()->GetStateElement(state_index))) {
++        if (!next->predicate().has_value()) {
++          has_unconditional_next = true;
++          break;
++        }
++      }
++      if (has_unconditional_next) {
++        continue;
++      }
+       memcpy(output_->get_element_pointers()[state_index],
+              input_->get_element_pointers()[state_index],
+              jit_runtime_->GetTypeByteSize(
+
+diff --git a/xls/interpreter/serial_proc_runtime.cc b/xls/interpreter/serial_proc_runtime.cc
+index 536f15d..ee4cb2b 100644
+--- a/xls/interpreter/serial_proc_runtime.cc
++++ b/xls/interpreter/serial_proc_runtime.cc
+@@ -62,5 +62,36 @@ SerialProcRuntime::TickInternal() {
+   VLOG(3) << absl::StreamFormat("TickInternal on package %s",
+                                 package()->name());
++  if (elaboration().proc_instances().size() == 1) {
++    ProcInstance* instance = elaboration().proc_instances().front();
++    ProcEvaluator* evaluator = evaluators_.at(instance->proc()).get();
++    ProcContinuation* continuation = continuations_.at(instance).get();
++    bool progress_made = false;
++    bool progress_made_on_io_procs = false;
++    while (true) {
++      XLS_ASSIGN_OR_RETURN(TickResult tick_result,
++                           evaluator->Tick(*continuation));
++      const InterpreterEvents& events = continuation->GetEvents();
++      XLS_RETURN_IF_ERROR(InterpreterEventsToStatus(events));
++      progress_made |= tick_result.progress_made;
++      progress_made_on_io_procs |=
++          tick_result.progress_made && evaluator->ProcHasIoOperations();
++      if (tick_result.execution_state == TickExecutionState::kSentOnChannel) {
++        continue;
++      }
++      std::vector<ChannelInstance*> blocked_channel_instances;
++      if (tick_result.execution_state ==
++          TickExecutionState::kBlockedOnReceive) {
++        blocked_channel_instances.push_back(
++            tick_result.channel_instance.value());
++      }
++      return NetworkTickResult{
++          .progress_made = progress_made,
++          .progress_made_on_io_procs = progress_made_on_io_procs,
++          .blocked_channel_instances =
++              std::move(blocked_channel_instances),
++      };
++    }
++  }
+   // Map containing any blocked proc instances and the channels they are blocked
+   // on.
+   absl::flat_hash_map<ChannelInstance*, ProcInstance*> blocked_instances;
+
+diff --git a/xls/jit/jit_proc_runtime.cc b/xls/jit/jit_proc_runtime.cc
+index ae4a18b..725346d 100644
+--- a/xls/jit/jit_proc_runtime.cc
++++ b/xls/jit/jit_proc_runtime.cc
+@@ -209,7 +209,7 @@ absl::StatusOr<std::unique_ptr<SerialProcRuntime>> CreateAotSerialProcRuntime(
+   // receive only queue for every receive only channel.
+   XLS_ASSIGN_OR_RETURN(
+       std::unique_ptr<JitChannelQueueManager> queue_manager,
+-      JitChannelQueueManager::CreateThreadSafe(
++      JitChannelQueueManager::CreateThreadUnsafe(
+           std::move(elaboration), std::make_unique<JitRuntime>(*layout)));
+   // Create a ProcJit for each Proc.
+   std::vector<std::unique_ptr<ProcEvaluator>> proc_jits;
+@@ -246,5 +246,5 @@ absl::StatusOr<std::unique_ptr<SerialProcRuntime>> CreateJitSerialProcRuntime(
+   // receive only queue for every receive only channel.
+   XLS_ASSIGN_OR_RETURN(
+       std::unique_ptr<JitChannelQueueManager> queue_manager,
+-      JitChannelQueueManager::CreateThreadSafe(
++      JitChannelQueueManager::CreateThreadUnsafe(
+           std::move(elaboration), std::make_unique<JitRuntime>(layout)));

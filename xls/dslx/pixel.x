@@ -18,9 +18,18 @@ fn rgb_b(rgb: u24) -> u8 { rgb[0+:u8] }
 
 fn pack_rgb(r: u8, g: u8, b: u8) -> u24 { r ++ g ++ b }
 
+fn mul_u16_by_u4(value: u16, coefficient: u4) -> u20 {
+    let wide = value as u20;
+    let p0 = if coefficient[0+:u1] { wide } else { u20:0 };
+    let p1 = if coefficient[1+:u1] { wide << u8:1 } else { u20:0 };
+    let p2 = if coefficient[2+:u1] { wide << u8:2 } else { u20:0 };
+    let p3 = if coefficient[3+:u1] { wide << u8:3 } else { u20:0 };
+    p0 + p1 + p2 + p3
+}
+
 pub fn framebuffer_address(base: u26, x: u16, y: u16, stride: u11) -> u26 {
     let tiles_x = (stride >> u11:6) as u4;
-    let row_tiles = (y as u26) * (tiles_x as u26);
+    let row_tiles = mul_u16_by_u4(y, tiles_x) as u26;
     base + (row_tiles << u26:7) + ((x as u26) << u26:1)
 }
 
@@ -339,6 +348,8 @@ fn fog_w_depth_test() {
 
 #[test]
 fn framebuffer_address_test() {
+    assert_eq(mul_u16_by_u4(u16:65535, u4:15), u20:983025);
+    assert_eq(mul_u16_by_u4(u16:65535, u4:0), u20:0);
     assert_eq(framebuffer_address(u26:0x1000000, u16:11, u16:5, u11:640), u26:0x1001916);
     assert_eq(framebuffer_address(u26:0, u16:0, u16:0, u11:2047), u26:0);
 }

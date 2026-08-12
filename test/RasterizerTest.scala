@@ -22,11 +22,17 @@ class RasterizerTest extends AnyFunSuite {
     dut.clockDomain.forkStimulus(period = 10)
     dut.i.valid #= false
     dut.o.ready #= true
+    dut.prefetchSpan.ready #= true
     dut.enableClipping #= false
     dut.clipLeft #= 0
     dut.clipRight #= 0
     dut.clipLowY #= 0
     dut.clipHighY #= 0
+    dut.i.config.enableClipping #= false
+    dut.i.config.clipLeft #= 0
+    dut.i.config.clipRight #= 0
+    dut.i.config.clipLowY #= 0
+    dut.i.config.clipHighY #= 0
     dut.clockDomain.waitSampling()
   }
 
@@ -56,7 +62,7 @@ class RasterizerTest extends AnyFunSuite {
   // Helper to set a box (all pixels inside)
   def setBox(dut: Rasterizer, xmin: Double, xmax: Double, ymin: Double, ymax: Double): Unit = {
     dut.i.xrange(0) #= xmin
-    dut.i.xrange(1) #= xmax
+    dut.i.xrange(1) #= xmax + 1.0
     dut.i.yrange(0) #= ymin
     dut.i.yrange(1) #= ymax
 
@@ -288,7 +294,7 @@ class RasterizerTest extends AnyFunSuite {
       // Edge 2->0: x = 0 (vertical left edge)
       val edges = Seq(
         EdgeEquation(a = 0.0, b = 1.0, c = 0.0, startValue = 0.0), // y = 0
-        EdgeEquation(a = 1.0, b = 1.0, c = -4.0, startValue = -4.0), // x + y = 4
+        EdgeEquation(a = -1.0, b = -1.0, c = 4.0, startValue = 4.0), // x + y = 4
         EdgeEquation(a = 1.0, b = 0.0, c = 0.0, startValue = 0.0) // x = 0
       )
 
@@ -418,11 +424,17 @@ class RasterizerTest extends AnyFunSuite {
       dut.clockDomain.forkStimulus(period = 10)
       dut.i.valid #= false
       dut.o.ready #= false
+      dut.prefetchSpan.ready #= true
       dut.enableClipping #= false
       dut.clipLeft #= 0
       dut.clipRight #= 0
       dut.clipLowY #= 0
       dut.clipHighY #= 0
+      dut.i.config.enableClipping #= false
+      dut.i.config.clipLeft #= 0
+      dut.i.config.clipRight #= 0
+      dut.i.config.clipLowY #= 0
+      dut.i.config.clipHighY #= 0
       dut.clockDomain.waitSampling()
 
       // 2x2 box — yrange is exclusive upper bound
@@ -505,7 +517,7 @@ class RasterizerTest extends AnyFunSuite {
         name = "Very thin triangle (extreme aspect ratio)",
         edges = Seq(
           EdgeEquation(a = 0.0, b = 1.0, c = 0.0, startValue = 0.0), // y = 0
-          EdgeEquation(a = 1.0, b = 10.0, c = -20.0, startValue = -20.0), // x + 10y = 20
+          EdgeEquation(a = -1.0, b = -10.0, c = 20.0, startValue = 20.0), // x + 10y = 20
           EdgeEquation(a = 1.0, b = -10.0, c = 0.0, startValue = 0.0) // x = 10y
         ),
         xmin = 0.0,
@@ -527,8 +539,8 @@ class RasterizerTest extends AnyFunSuite {
         name = "Very tall and narrow triangle (sharp apex)",
         edges = Seq(
           EdgeEquation(a = 0.0, b = 1.0, c = 0.0, startValue = 0.0), // y = 0
-          EdgeEquation(a = 20.0, b = 1.0, c = -120.0, startValue = -20.0), // 20x + y = 120
-          EdgeEquation(a = 20.0, b = -1.0, c = -100.0, startValue = 0.0) // 20x - y = 100
+          EdgeEquation(a = -20.0, b = -1.0, c = 220.0, startValue = 20.0), // 20x + y = 220
+          EdgeEquation(a = 20.0, b = -1.0, c = -200.0, startValue = 0.0) // 20x - y = 200
         ),
         xmin = 10.0,
         xmax = 11.0,

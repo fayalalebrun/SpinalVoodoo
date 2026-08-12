@@ -324,11 +324,15 @@ static void simFlushTexture(void) {
         FxU32 length = (FxU32)(i - start) << TEX_PAGE_SHIFT;
         FxU32 *data = (FxU32 *)(simMem + 0x800000 + offset);
         FxU32 words = length / 4;
+#ifdef PURE_XLS_BACKEND
+        sim_write_tex_bulk(offset, data, words);
+#else
         FxU32 j;
         for (j = 0; j < words; j++) {
             FxU32 texOffset = offset + j * 4;
             sim_write(0x800000 | texOffset, data[j]);
         }
+#endif
 
         totalBytes += length;
         numRuns++;
@@ -472,10 +476,14 @@ void simWriteTex(FxU32 offset, const void *data, FxU32 length) {
     /* Write each word to texture memory via unified bus */
     const FxU32 *words = (const FxU32 *)data;
     FxU32 numWords = length / 4;
+#ifdef PURE_XLS_BACKEND
+    sim_write_tex_bulk(offset, words, numWords);
+#else
     FxU32 i;
     for (i = 0; i < numWords; i++) {
         sim_write(0x800000 + offset + i * 4, words[i]);
     }
+#endif
 }
 
 void simIdleWait(void) {

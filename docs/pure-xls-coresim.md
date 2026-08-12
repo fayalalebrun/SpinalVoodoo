@@ -2,11 +2,11 @@
 
 ## Objective
 
-Replace the SpinalHDL `CoreSim` hierarchy with a stateful Google XLS implementation that can replay existing Voodoo traces through XLS's native LLVM JIT/AOT runtime. The pure-XLS CoreSim path must not depend on generated Verilog or Verilator. DE10 synthesis remains a separate concern.
+Replace the SpinalHDL simulation hierarchy with a stateful Google XLS implementation that can replay existing Voodoo traces through XLS's native LLVM JIT/AOT runtime. The pure-XLS CoreSim and behavioral DE10Sim paths must not depend on generated Verilog or Verilator. DE10 synthesis remains a separate concern.
 
 ## Architecture
 
-The stateful accelerator proc is `xls/dslx/core_sim.x::core_sim_hosted`. It exposes command, response, framebuffer-memory, texture-memory, and texture-block channels. `core_sim` is the closed pure-DSLX wrapper that connects the same proc to the banked XLS RAM hierarchy. Existing stateless functions in `pixel.x`, `texture.x`, `layout.x`, `tmu.x`, and `raster.x` are called directly from the stateful proc.
+The hosted top is `xls/dslx/core_sim.x::core_sim_hosted`. It spawns `core_sim_hosted_controller` for MMIO, register, raster, and fast-fill state; `hosted_pixel_pipeline` for per-pixel texture, depth, blend, and commit work; and the real `texture_cache::texture_cache` proc. Pixel jobs, cache requests, and results cross internal streaming channels. Paired framebuffer read, write, and fast-fill channels provide two memory operations per activation. The controller's `pixels_pending` barrier prevents later commands from passing a raster until the final `PixelResult` confirms that all pixel writes have drained. `core_sim` remains the closed pure-DSLX wrapper around `core_sim_impl` and the banked XLS RAM hierarchy.
 
 The migration order is:
 
@@ -31,6 +31,7 @@ The closed test configuration uses XLS RAM procs. The optimized replay configura
 - triangle setup, Voodoo horizontal coverage sampling, clipping, and R/G/B/A/Z/S/T/W interpolation
 - ftriangle S/T/W float shadows with reference-compatible subpixel adjustment and fixed-point rounding
 - de-duplicated point and bilinear texture reads, perspective coordinates, fixed LOD selection, texel extraction, and format decode
+- a spawned DE10-compatible `texture_cache::texture_cache` with 64-word lines, 64 two-way slots, XOR indexing, rotating victims, write invalidation, four packed banks, and stale-bank preservation
 - color/alpha combine, chroma and alpha tests, destination reads, and alpha blending
 - RGB565 framebuffer packing and direct BAR read/write access
 
@@ -51,11 +52,11 @@ nix develop "path:$PWD" -c ir_converter_main \
   xls/dslx/core_sim.x
 ```
 
-The native runtime lowers `core_sim_hosted` to proc-scoped IR with `__core_sim__core_sim_hosted_0_next` as its top proc. `core_sim` remains available for closed-network DSLX tests and RTL-oriented flows.
+The native runtime lowers the complete `core_sim_hosted` proc network to proc-scoped IR. `core_sim` remains available for closed-network DSLX tests and RTL-oriented flows.
 
-Trace replay uses `scripts/replay-pure-xls-proc-trace`. By default it caches proc-scoped hosted IR, runs a CPU-specific `opt_main` pipeline, compiles the optimized IR with `aot_compiler_main` at LLVM optimization level 3, links the position-independent object, and runs `voodoo_xls_runtime`. The runtime parses the trace, losslessly packets aligned runs of 32 texture writes, injects scalar and burst values through native XLS channel queues, and services framebuffer and texture response queues with raw native-layout generators backed by mutable arrays. These generators read and write JIT buffers directly using XLS `TypeLayout` offsets, avoiding recursive `xls::Value` conversion and per-access allocation. Register boundaries, partial runs, and non-contiguous downloads remain scalar and ordered. A framebuffer read command fences outstanding rendering before the runtime hashes the presented RGB565 pixels directly from native memory. `--interpreter` retains the generated closed `#[test_proc]` path and its row/block diagnostics.
+Trace replay uses `scripts/replay-pure-xls-proc-trace`. By default it caches proc-scoped hosted IR, runs a CPU-specific `opt_main` pipeline, compiles the optimized IR with `aot_compiler_main` at LLVM optimization level 3, links the position-independent object, and runs `voodoo_xls_runtime`. The runtime parses the trace, injects requests through native XLS channel queues, and backs scalar framebuffer traffic, paired pixel read/write/fast-fill traffic, texture block reads/writes, and four packed cache-bank channels with mutable arrays. Raw generators use XLS `TypeLayout` offsets rather than recursive `xls::Value` conversion. Register boundaries remain scalar and ordered. The final `PixelResult` is the render-drain barrier before a framebuffer read and hash. `--interpreter` retains the generated closed `#[test_proc]` path and its row/block diagnostics.
 
-The complete `test04.bin` presented framebuffer matches the reference at 640x480 with raw RGB565 FNV-1a hash `0x790a92b8`. A burst advances the command, inactive raster, and inactive fast-fill substates for the same additional 31 cycles as 32 scalar writes, but without copying the full `CoreState` on every iteration; a DSLX regression test compares this reduced accumulator with 31 complete scalar ticks. Burst replay reduces `qatest00_filter.bin` from 44,319 individual activations to 2,004 ordered operations and completes in about 1.52 seconds; its current framebuffer hash is `0x1053a945`, so reference parity still fails from row 0. The remaining rendering gaps are palette and NCC table state, texture-cache timing, fog, stipple, complete swap/retrace timing, LFB pixel-pipeline writes, statistics, and parity for the filter, mipmap, and multibase traces.
+The complete `test04.bin` presented framebuffer matches the reference at 640x480 with raw RGB565 FNV-1a hash `0x790a92b8`. A burst advances the command, inactive raster, and inactive fast-fill substates for the same additional 31 cycles as 32 scalar writes, but without copying the full `CoreState` on every iteration; a DSLX regression test compares this reduced accumulator with 31 complete scalar ticks. Burst replay reduces `qatest00_filter.bin` from 44,319 individual activations to 2,004 ordered operations. With the production cache geometry, the DE10 path completes it in about 3.1 seconds; its current framebuffer hash is `0xf98a1435`, so DE10 packed-cache artifact parity still differs. The remaining rendering gaps are palette and NCC table state, packed-cache artifact parity, fog, stipple, complete swap/retrace timing, LFB pixel-pipeline writes, statistics, and parity for the filter, mipmap, and multibase traces.
 
 ## Native XLS Runtime
 
@@ -68,17 +69,70 @@ nix build "path:$PWD#xls"
 nix develop "path:$PWD" -c scripts/replay-pure-xls-proc-trace traces/test04.bin
 ```
 
-Pass `--jit` to compile the cached CPU-optimized IR in-process instead of loading the cached AOT object, or `--interpreter` to use the legacy closed test proc. `--hardware-opt` builds and runs a separate artifact through the unmodified default XLS pipeline; `--hardware-opt --generate-only` is the full-optimization validation gate.
+Pass `--jit` to compile the cached CPU-optimized IR in-process instead of loading the cached AOT object, or `--interpreter` to use the legacy closed test proc. `--hardware-opt --generate-only` validates the same cache-enabled proc graph with the full default XLS hardware optimization pipeline.
 
-### Proc optimization root cause
+## Live DOSBox-X bridge
 
-The hosted memory protocol performs several ordered sends and receives on each memory channel during one proc activation. Those channels initially inherited XLS's `proven_mutually_exclusive` default. During pass invocation 931, `channel_legalization` therefore discarded token-order information and asked Z3 to prove all predicates mutually exclusive over the complete inlined CoreSim graph with no solver resource limit. The proof did not finish within 15 minutes; the same pass rejected the closed replay proc when it found multiple non-exclusive sends.
+The 32-bit Glide bridge can drive a persistent pure-XLS AOT runtime over a private Unix socket. Register, LFB, and texture operations remain synchronous and ordered; texture downloads are sent in bulk, and swap presentation reads packed RGB565 directly from the runtime's framebuffer array. The X11 presenter displays the resulting frames inside the DOSBox-X window.
 
-`core_sim_hosted` now enables DSLX channel attributes and declares its boundary channels `total_order`. This matches the existing token chain, lets `channel_legalization` use the projected token DAG instead of an unbounded mutual-exclusion proof, and preserves transaction order across activations. The unmodified default XLS pipeline now completes in about eight seconds; no optimization pass is skipped.
+```sh
+nix develop "path:$PWD" -c make dos/xls/run/df00sdk
+nix develop "path:$PWD" -c make dos/xls/dosbox ARGS='-c "mount c /path/to/demo" -c "c:" -c "demo.exe"'
+nix develop "path:$PWD" -c make tomb/xls/run
+```
 
-The default pipeline is designed for hardware and fully inlines the proc graph. It remains the synthesis-oriented correctness gate, while native replay uses hierarchical IR so LLVM's CPU cost model can choose helper boundaries. Both products preserve the exact burst-cycle advancement and framebuffer hash.
+Headless equivalents are `dos/xls/headless/<name>` and `tomb/xls/headless`. The launcher prepares cached proc IR/AOT artifacts, starts `voodoo_xls_runtime --server=SOCKET`, exports `SIM_XLS_SOCKET` to the Glide library, and cleans up both the server and socket when DOSBox-X exits. The server log defaults to `xls/build/dosbox-xls-server.log`.
 
-The CPU pipeline runs five controlled rounds of `pre-inlining` and `one-leaf-inlining`, then a final `pre-inlining` and `fixedpoint_simp(3)`. It currently leaves 20 optimized helper functions and 42 invokes, including the expensive tick, raster, TMU, and fast-fill boundaries, in about 960 KiB of IR. The full hardware pipeline remains independently runnable through `--hardware-opt`; it currently optimizes in about 6.33 seconds and replays `test04` in about 1.01 seconds.
+## Pure XLS DE10Sim
+
+`--de10` injects each scalar operation through the `De10MmioRequest` channel. XLS performs the DE10 H2F word-address to byte-address conversion, read/write validation, byte-enable propagation, command ordering, and response handling before the shared accelerator state sees the request. Texture bursts remain an explicitly ordered simulation acceleration path. Native arrays service the accelerator's explicit framebuffer and texture memory channels, so this behavioral DE10Sim has no SpinalHDL, generated Verilog, or Verilator dependency.
+
+```sh
+nix develop "path:$PWD" -c make native/xls-de10sim/check/test04 \
+  XLS_DE10SIM_REFERENCE=path/to/test04_ref.png
+nix develop "path:$PWD" -c make native/xls-de10sim/run/screamer2
+```
+
+Generate 86Box-reference and pure-XLS framebuffer screenshots for every trace with:
+
+```sh
+make native/xls-de10sim/compare-all
+```
+
+The report is written to `test-output/emulation-xls-comparison/index.html`. Each trace has full-resolution 86Box, XLS, and highlighted-difference panels; `summary.csv` records exact mismatch counts, RMSE, and maximum channel error. The comparison script can resume existing captures with `--reuse`. The native runtime's `--framebuffer_output=FILE` option writes a tightly packed little-endian RGB565 image for conversion or comparison.
+
+When a trace is in a directory, the native runtime automatically loads its sibling `state.bin`. It replays non-command registers in snapshot order with the DE10 high-register remap, initializes native framebuffer and TMU0 texture memory, restores swap parity, and starts with an empty texture cache before replaying `trace.bin`. `--state=FILE` selects an explicit snapshot.
+
+### DE10 RTL and Quartus
+
+The hardware path emits `xls/build/core_sim_de10_rtl/CoreSimDe10.sv` as an 8-stage, WCT/II-1 proc network. `XlsDe10Top.sv` connects its MMIO, four sequential DDR transfer streams, and four packed texture-cache banks to the DE10 platform. GPU and scanout selection state remain in XLS; Avalon, Qsys, PLL, physical HDMI, and the current generated SpinalHDL scanout datapath remain thin platform plumbing.
+
+```sh
+nix develop "path:$PWD" -c make de10/xls/rtl
+nix develop "path:$PWD" -c make de10/xls/check
+nix develop "path:$PWD" -c make de10/xls/replay
+nix develop "path:$PWD" -c make de10/xls/bitstream
+```
+
+The replay builds `VCoreSimDe10` from the generated RTL and requires `traces/test28.bin` to produce framebuffer hash `0xad4f2b82` with cache counters 10,208 hits, 32 misses, 2,546 all-hit requests, 14 missed requests, and 14 line fills. The fit-oriented 8-stage run takes 8,829,847 cycles.
+
+Quartus analysis and synthesis succeed for revision `SpinalVoodoo_de10_xls`, including HPS/Qsys and HDMI PLL integration. Current synthesis reports 59,342 registers, 1,201,344 block-memory bits, and 54 DSP blocks. The last completed Cyclone V fit used 37,190 / 41,910 ALMs (89%), 60,001 registers, 332 / 553 RAM blocks, and 54 / 112 DSP blocks. Persisted summaries are under `artifacts/quartus/`.
+
+This path currently validates accelerator-visible DE10 MMIO behavior and framebuffer results. Its texture cache matches the SpinalHDL CoreDe10Sim and FPGA geometry and traffic policy: 64 slots, two ways, 64 32-bit words per line, a 32-set three-fold XOR index, rotating victims, serialized lookup of up to four taps, one 64-word backing transaction per distinct missing line, serialized byte formatting into four packed banks, and invalidation on texture writes. Taps covered by an in-flight line are captured directly from its block response, including decode-edge taps outside a packed-layout segment. A complete state-backed Screamer 2 replay produces hash `0x698a7c90`, 2,488,149 tap hits, 43,219 misses, 618,389 all-hit requests, 14,453 missed requests, and 19,673 line fills. `make native/xls-de10sim/run/screamer2` requires both hit rates to remain at least 90%. Cycle-accurate Avalon wait states, bridge wedge diagnostics, HDMI scanout, and retrace cadence remain outside the behavioral model and require separate interface tests until represented as XLS procs.
+
+### Hosted proc scheduling
+
+The split network gives each steady-state hosted proc at most one operation on each channel per activation. `proven_mutually_exclusive` channel strictness is therefore valid without a global ordered-token recurrence. Cache misses hold the cache response and naturally backpressure the pixel producer; an all-hit sample can launch every clock. The cache miss FSM still performs at most one backing-memory block read and one whole-line operation per packed bank in each fill activation.
+
+Generate the scheduled network with:
+
+```sh
+nix develop "path:$PWD" -c scripts/generate-xls-rtl --hosted-proc
+```
+
+This emits `xls/build/core_sim_hosted_rtl/CoreSimHosted.sv`, block IR, signature, and schedule using 15 pipeline stages, explicit depth-one internal FIFOs, and `--worst_case_throughput=1`. `scripts/generate-xls-rtl --de10-proc` emits the board-facing `CoreSimDe10.sv` network with fixed transfer and packed-bank channels. A Verilator replay of `test28.bin` completes in 592,559 cycles through the hosted interface and 8,829,847 cycles through the fit-oriented DE10 transfer interface, with hash `0xad4f2b82` and exact cache counters.
+
+The CPU pipeline runs five controlled rounds of `pre-inlining` and `one-leaf-inlining`, then a final `pre-inlining` and `fixedpoint_simp(3)`. It keeps the expensive tick, raster, TMU, cache, and fast-fill boundaries available to LLVM's CPU cost model rather than flattening the complete proc graph.
 
 A reference image adds an enforced hash gate:
 
@@ -110,12 +164,10 @@ Measured timings on the current host are:
 | CPU-specific XLS optimization | 0.89 s |
 | CPU-optimized IR to LLVM-O3 AOT object and metadata | 3.02 s |
 | AOT shared-object link | 0.25 s |
-| Warm CPU-optimized AOT replay plus direct 640x480 hash, median of 7 | 0.68 s |
-| Warm CPU-optimized AOT process wall time, median of 7 | 0.83 s |
-| In-process CPU JIT compilation | 3.22 s |
-| Warm CPU JIT replay | 0.69 s |
-| Full hardware XLS optimization | 6.33 s |
-| Warm hardware-optimized AOT replay, median of 5 | 1.01 s |
-| Verilator full framebuffer validation | 83.91 s |
+| Warm cache-enabled DE10Sim AOT replay plus direct 640x480 hash | 0.87 s |
+| Warm hardware-optimized DE10Sim AOT replay plus direct 640x480 hash | 1.28 s |
+| Warm `qatest00_filter` DE10Sim AOT replay | 2.55 s |
+| State-backed Screamer 2 DE10Sim AOT replay | 12.49 s |
+| Optimized Verilator DE10Sim `qatest00_filter` validation | 22.3 s |
 
-The CPU-optimized AOT run executes 3,037 `test04` commands as 1,084 ordered operations over 141,515 CoreSim ticks and produces `0x790a92b8`. Its warm replay is about 4.1 times faster than the earlier 2.80-second native path, 1.5 times faster than the hardware-optimized AOT product, and 123 times faster than the measured Verilator full-validation path. Shell creation through `nix develop` is excluded because flake evaluation is independent of simulation.
+The cache-enabled AOT run executes 3,037 `test04` commands as 1,084 ordered operations over 141,533 behavioral DE10Sim ticks and produces `0x790a92b8`. `qatest00_filter` executes 44,319 commands as 2,004 operations over 287,392 ticks. Shell creation through `nix develop` is excluded because flake evaluation is independent of simulation.

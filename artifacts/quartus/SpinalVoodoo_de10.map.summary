@@ -1,0 +1,17 @@
+Analysis & Synthesis Status : Successful - Wed Aug 12 09:45:58 2026
+Quartus Prime Version : 25.1std.0 Build 1129 10/21/2025 SC Lite Edition
+Revision Name : SpinalVoodoo_de10
+Top-level Entity Name : De10PlatformTop
+Family : Cyclone V
+Logic utilization (in ALMs) : N/A
+Total registers : 50044
+Total pins : 116
+Total virtual pins : 0
+Total block memory bits : 1,447,318
+Total DSP Blocks : 55
+Total HSSI RX PCSs : 0
+Total HSSI PMA RX Deserializers : 0
+Total HSSI TX PCSs : 0
+Total HSSI PMA TX Serializers : 0
+Total PLLs : 2
+Total DLLs : 1

@@ -171,11 +171,26 @@ SpinalHDL implementation of the 3dfx Voodoo Graphics GPU.
 - [x] Gamma correction CLUT (clutData)
 - [x] DAC output equivalent via DE10 ADV7513 path
 
+## XLS Datapaths
+
+Pure combinational pixel, texture, TMU, and raster arithmetic is written in Google XLS/DSLX. The production core retains streams and control in SpinalHDL; a separate pure-XLS proc network implements the complete hosted accelerator and the experimental DE10 accelerator. See [XLS and SpinalHDL Architecture](docs/xls-architecture.md) for the module boundaries and verification record.
+
+```bash
+git submodule update --init emu/86Box
+nix develop "path:$PWD" -c make xls
+nix develop "path:$PWD" -c make -C xls test
+nix develop "path:$PWD" -c make -C emu/sim model
+nix develop "path:$PWD" -c make -C emu/test
+nix develop "path:$PWD" -c make de10/rtl
+```
+
+Generated XLS Verilog stays in `xls/rtl/` and is compiled alongside the SpinalHDL-generated top-level RTL.
+
 ## Scala CLI Commands
 
 ```bash
 # Run tests
-scala-cli test .
+scala-cli test project.scala src test --power
 
 # Format code
 scalafmt
@@ -223,6 +238,12 @@ make dos/sim/run/df00sdk
 # Headless DOS guest variant
 make dos/sim/headless/df00sdk
 
+# Live DOS guest rendered by the pure-XLS proc network
+make dos/xls/run/df00sdk
+
+# Launch a raw DOSBox-X session with the pure-XLS Glide backend injected
+make dos/xls/dosbox
+
 # DOS guest with trace backend
 make dos/trace/run/df00sdk
 
@@ -243,6 +264,8 @@ Common top-level commands:
 - `make dos/help` prints the DOS and Tomb command surface.
 - `make dos/sim/build` builds all DOS SDK-style test binaries from `emu/glide/glide2x/sst1/glide/tests/Makefile.sdkwat`.
 - `make dos/sim/build/<name>` builds one DOS SDK-style binary, for example `make dos/sim/build/df00sdk`.
+- `make dos/xls/run/<name>` runs that DOS binary live through the pure-XLS AOT bridge; `dos/xls/headless/<name>` is the headless form.
+- `make tomb/xls/run` runs a prepared Tomb Raider tree through the same bridge.
 - `make dos/sim/run/<name>` mounts `emu/glide/glide2x/sst1/glide/tests` as `C:` in DOSBox-X and runs `<name>.exe` with the sim backend.
 - `make dos/sim/headless/<name>` does the same with `DOSBOXX32_HEADLESS=1`.
 - `make dos/trace/run/<name>` runs a DOS guest against the trace-capture Glide runtime and writes `traces/dos/<name>.bin`.
@@ -267,11 +290,12 @@ Runtimes are explicit and non-stateful:
 
 - `sim` means the normal in-process Verilator-backed Glide runtime.
 - `trace` means the trace-capture Glide runtime.
+- `xls` means the socket-connected pure-XLS AOT runtime.
 - `de10` means the board/MMIO-backed Glide runtime.
 
 In practice:
 
-- `native/...` and `dos/...` currently expose `sim` and `trace` directly in the command path.
+- `native/...` exposes `sim` and `trace`; `dos/...` also exposes `xls` directly in the command path.
 - `de10/...` keeps the runtime implicit in the namespace because every `de10` command already targets the board runtime.
 - `SIM_INTERFACE=de10` is the closest host-side reproduction of the board interface: it still uses the `sim` runtime, but swaps the Verilated top-level from `CoreSim` to `CoreDe10` and drives the DE10-style MMIO plus Avalon memory ports from the host harness.
 
@@ -316,7 +340,7 @@ Typical flow:
 
 - Prepare the tree with `make tomb/prepare ...`, or assemble the layout manually.
 - Run `make tomb/help` to print the current assumptions.
-- Run `make tomb/sim/run` or `make tomb/sim/headless`.
+- Run `make tomb/sim/run`, `make tomb/sim/headless`, `make tomb/xls/run`, or `make tomb/xls/headless`.
 
 At launch time the helper scripts copy the source tree into `DOSBOX_TOMB_STAGE_ROOT`
 (default `/tmp/tr1-run`) and automatically rename any bundled `glide2x.ovl` so that
@@ -379,8 +403,15 @@ make de10/rtl
 make de10/qsys
 make de10/bitstream
 
+# Generate, check, and replay the pure-XLS DE10 accelerator
+make de10/xls/rtl
+make de10/xls/check
+make de10/xls/replay
+make de10/xls/bitstream
+
 # Program or deploy to the default board (fpga@debian-fpga.local)
 make de10/setup/program
+make de10/xls/setup/program
 make de10/setup/deploy
 
 # Basic board validation
@@ -393,6 +424,8 @@ make de10/run/tomb
 
 Useful defaults and assumptions:
 
+- The pure-XLS replay gates `traces/test28.bin` on framebuffer hash `0xad4f2b82` and exact cache counters.
+- The fit-oriented pure-XLS revision synthesizes to 59,342 registers, 1,201,344 block-memory bits, and 54 DSP blocks. Its last completed fit used 37,190 / 41,910 ALMs (89%); reports are preserved under `artifacts/quartus/`.
 - Default board target is `fpga@debian-fpga.local` unless `DE10_HOST` or `DE10_USER` override it.
 - Default deployed runtime prefix is `/home/fpga/spinalvoodoo` unless `DE10_REMOTE_PREFIX` overrides it.
 - `make de10/run/dos/<name>` uses the deployed launcher on the board and mounts `DE10_RUNTIME_DIR` (default `/home/fpga/de10-cross`) as `C:`.

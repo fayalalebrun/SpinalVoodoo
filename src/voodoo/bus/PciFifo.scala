@@ -162,6 +162,8 @@ case class PciFifo(
   }
 
   private val queueableCpuWrite = isWriteCmd && !fifoBypass
+  private val queueOccupancy = Reg(UInt(7 bits)) init (0)
+  private val queueHasSpace = queueOccupancy =/= 64
 
   // Small front-end staging FIFO decouples incoming PCI writes from float conversion bubbles.
   private val ingress = new Area {
@@ -170,7 +172,7 @@ case class PciFifo(
     clearStaged(stagedWriteTx)
 
     when(queueableCpuWrite) {
-      stagedWriteTx.valid := io.cpuSide.cmd.valid
+      stagedWriteTx.valid := io.cpuSide.cmd.valid && queueHasSpace
       stagedWriteTx.address := io.cpuSide.cmd.address
       stagedWriteTx.data := io.cpuSide.cmd.data
       stagedWriteTx.mask := io.cpuSide.cmd.mask
@@ -179,7 +181,7 @@ case class PciFifo(
       stagedWriteTx.floatTargetAddr := floatTargetAddr
       stagedWriteTx.floatShiftAmount := floatShiftAmount
     } elsewhen (io.texWrite.valid) {
-      stagedWriteTx.valid := True
+      stagedWriteTx.valid := queueHasSpace
       stagedWriteTx.data := io.texWrite.data
       stagedWriteTx.mask := io.texWrite.mask
       stagedWriteTx.isTexture := True
@@ -264,7 +266,7 @@ case class PciFifo(
   }
 
   // Texture writes queue behind CPU writes but no longer stall behind float conversion bubbles.
-  io.texWrite.ready := !queueableCpuWrite && stageFifo.io.push.ready
+  io.texWrite.ready := !queueableCpuWrite && queueHasSpace && stageFifo.io.push.ready
 
   // wasEnqueued: detect when a specific register write was actually enqueued
   io.wasEnqueued := queuedWriteTx.fire && !queuedWriteTx.isTexture &&
@@ -276,7 +278,7 @@ case class PciFifo(
   private val pciQueue = new Area {
     val fifo = StreamFifo(QueuedWrite(), depth = 64)
     fifo.io.push << queuedWriteTx
-    io.pciFifoFree := fifo.io.availability
+    io.pciFifoFree := (U(64, 7 bits) - queueOccupancy).resize(7 bits)
   }
   private val pciFifo = pciQueue.fifo
 
@@ -297,20 +299,27 @@ case class PciFifo(
 
     val commandStreamBlocked = Bool()
     commandStreamBlocked := False
-    when(commandStreamBlocked) {
-      canDrain := False
-    }
 
     val fifoEmpty = Bool().setName("pciFifo_fifoEmpty")
     fifoEmpty.simPublic()
-    fifoEmpty := !pciFifo.io.pop.valid && !issuedWrite.valid
+    fifoEmpty := queueOccupancy === 0
     io.fifoEmpty := fifoEmpty
   }
   private val canDrain = drainControl.canDrain
   private val issuedWrite = drainControl.issuedWrite
   private val commandStreamBlocked = drainControl.commandStreamBlocked
+  private val syncDrainBlocked =
+    issuedWrite.valid && !issuedWrite.isTexture && issuedWrite.syncRequired && io.pipelineBusy
   private val drainedWrite = issuedWrite
   private val fifoEmpty = drainControl.fifoEmpty
+
+  when(stagedWriteTx.fire =/= drainedWrite.fire) {
+    when(stagedWriteTx.fire) {
+      queueOccupancy := queueOccupancy + 1
+    } otherwise {
+      queueOccupancy := queueOccupancy - 1
+    }
+  }
 
   // ========================================================================
   // Drain routing: register writes vs texture writes
@@ -343,7 +352,7 @@ case class PciFifo(
     val doWriteDirect = isWriteCmd && fifoBypass
     val cpuPassthrough = io.cpuSide.cmd.valid &&
       (io.cpuSide.cmd.opcode === Bmb.Cmd.Opcode.READ || doWriteDirect)
-    val doRegDrain = isRegDrain && !cpuPassthrough
+    val doRegDrain = isRegDrain && !cpuPassthrough && !commandStreamBlocked && !syncDrainBlocked
 
     io.regSide.cmd.valid := cpuPassthrough || doRegDrain
     io.regSide.cmd.last := True
@@ -365,7 +374,7 @@ case class PciFifo(
       io.regSide.cmd.length := io.cpuSide.cmd.length
     }
 
-    drainedWrite.ready := (isRegDrain && !cpuPassthrough && io.regSide.cmd.ready) ||
+    drainedWrite.ready := (doRegDrain && io.regSide.cmd.ready) ||
       (isTexDrain && io.texDrain.ready)
   }
   private val doWriteDirect = regSideMux.doWriteDirect
@@ -416,7 +425,7 @@ case class PciFifo(
   private val cpuReady = new Area {
     io.cpuSide.cmd.ready := True
     when(queueableCpuWrite) {
-      io.cpuSide.cmd.ready := stageFifo.io.push.ready
+      io.cpuSide.cmd.ready := queueHasSpace && stageFifo.io.push.ready
     }
     when(io.cpuSide.cmd.valid && io.cpuSide.cmd.opcode === Bmb.Cmd.Opcode.READ && pendingRead) {
       io.cpuSide.cmd.ready := False
@@ -489,7 +498,10 @@ case class PciFifo(
     )
     if (commandAddresses.nonEmpty) {
       for ((addr, idx) <- commandAddresses.zipWithIndex) {
-        when(pciFifo.io.pop.address === U(addr, busAddrWidth bits)) {
+        when(
+          issuedWrite.valid && !issuedWrite.isTexture &&
+            issuedWrite.address === U(addr, busAddrWidth bits)
+        ) {
           commandStreamBlocked := !io.commandReady(idx)
         }
       }
@@ -497,7 +509,7 @@ case class PciFifo(
   })
 
   GenerationFlags.formal {
-    assert(io.fifoEmpty === (!pciFifo.io.pop.valid && !issuedWrite.valid))
+    assert(io.fifoEmpty === (queueOccupancy === 0))
     assert(isTexDrain === (drainedWrite.valid && drainedWrite.isTexture))
     assert(isRegDrain === (drainedWrite.valid && !drainedWrite.isTexture))
     assert(io.texDrain.valid === isTexDrain)
@@ -506,7 +518,7 @@ case class PciFifo(
     )
     assert(io.syncDrained === (isRegDrain && drainedWrite.fire && drainedWrite.syncRequired))
     assert(
-      drainedWrite.ready === ((isRegDrain && !cpuPassthrough && io.regSide.cmd.ready) ||
+      drainedWrite.ready === ((doRegDrain && io.regSide.cmd.ready) ||
         (isTexDrain && io.texDrain.ready))
     )
     assert(io.regSide.cmd.valid === (cpuPassthrough || doRegDrain))
@@ -536,7 +548,7 @@ case class PciFifo(
       assert(io.regSide.cmd.last)
     }
 
-    when(pciFifo.io.pop.syncRequired && io.pipelineBusy) {
+    when(syncDrainBlocked) {
       assert(!drainedWrite.fire)
     }
     when(commandStreamBlocked) {
@@ -590,15 +602,7 @@ case class PciFifo(
     }
 
     if (formalStrong) {
-      val fOccupancy = Reg(UInt(7 bits)) init (0)
-      when(queuedWriteTx.fire =/= drainedWrite.fire) {
-        when(queuedWriteTx.fire) {
-          fOccupancy := fOccupancy + 1
-        } otherwise {
-          fOccupancy := fOccupancy - 1
-        }
-      }
-      assert(io.pciFifoFree + fOccupancy === U(64, 7 bits))
+      assert(io.pciFifoFree + queueOccupancy === U(64, 7 bits))
 
       val fTrackIdx0 = anyconst(UInt(3 bits))
       val fTrackIdx1 = anyconst(UInt(3 bits))

@@ -1,0 +1,35 @@
+#!/usr/bin/env python3
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+lines = path.read_text().splitlines()
+output = []
+index = 0
+loop_index = 0
+pattern = re.compile(r"^(\s*)for \(genvar ([A-Za-z_][A-Za-z0-9_]*) =")
+while index < len(lines):
+    match = pattern.match(lines[index])
+    if match is None:
+        output.append(lines[index])
+        index += 1
+        continue
+    if index + 2 >= len(lines) or lines[index + 2].strip() != "end":
+        raise SystemExit(f"unsupported generated loop at {path}:{index + 1}")
+    indent, name = match.groups()
+    replacement = f"__xls_genvar_{loop_index}"
+    loop = re.sub(r"for \(genvar [A-Za-z_][A-Za-z0-9_]* =", f"for ({replacement} =", lines[index], count=1)
+    loop = re.sub(rf"\b{re.escape(name)}\b", replacement, loop)
+    body = re.sub(rf"\b{re.escape(name)}\b", replacement, lines[index + 1])
+    output.extend([
+        f"{indent}genvar {replacement};",
+        f"{indent}generate",
+        loop,
+        body,
+        lines[index + 2],
+        f"{indent}endgenerate",
+    ])
+    loop_index += 1
+    index += 3
+path.write_text("\n".join(output) + "\n")

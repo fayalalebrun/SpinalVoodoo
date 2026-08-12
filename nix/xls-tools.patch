@@ -64,13 +64,17 @@ diff --git a/xls/tools/BUILD b/xls/tools/BUILD
 index ed5c93b..04187e6 100644
 --- a/xls/tools/BUILD
 +++ b/xls/tools/BUILD
-@@ -30,6 +30,30 @@ package(
+@@ -30,6 +30,34 @@ package(
      licenses = ["notice"],  # Apache 2.0
  )
  
 +cc_binary(
 +    name = "voodoo_xls_runtime",
-+    srcs = ["voodoo_xls_runtime.cc"],
++    srcs = [
++        "voodoo_xls_runtime.cc",
++        "xls-bridge-protocol.h",
++        "xls-bridge-server.inc",
++    ],
 +    linkopts = ["-ldl"],
 +    visibility = ["//visibility:public"],
 +    deps = [

@@ -33,6 +33,8 @@ buildBazelPackage rec {
   postPatch = ''
     printf '7.6.0\n' > .bazelversion
     cp ${./voodoo-xls-runtime.cc} xls/tools/voodoo_xls_runtime.cc
+    cp ${./xls-bridge-protocol.h} xls/tools/xls-bridge-protocol.h
+    cp ${./xls-bridge-server.inc} xls/tools/xls-bridge-server.inc
     patchShebangs xls/build_rules/clang-format.sh
   '';
 

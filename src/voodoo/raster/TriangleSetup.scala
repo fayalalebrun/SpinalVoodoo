@@ -1,6 +1,7 @@
 package voodoo.raster
 
 import voodoo._
+import voodoo.xls._
 import spinal.core._
 import spinal.core.formal._
 import spinal.lib._
@@ -59,47 +60,6 @@ case class TriangleSetup(c: Config, formalStrong: Boolean = false) extends Compo
     if (c.trace.enabled) copyTrace(dst.trace, src.trace)
   }
 
-  def mulBySubpixel(value: SInt, coeff: UInt): SInt = {
-    val width = value.getWidth + coeff.getWidth
-    val zero = S(0, width bits)
-    val terms = (0 until coeff.getWidth).map { bit =>
-      val shifted = (value.resize(width bits) |<< bit).resize(width bits)
-      Mux(coeff(bit), shifted, zero)
-    }
-    terms.reduce(_ + _).resize(width bits)
-  }
-
-  def signedMagnitude(value: SInt): UInt = {
-    val wide = value.resize(value.getWidth + 1 bits)
-    Mux(
-      wide.msb,
-      (-wide).asUInt.resize(value.getWidth bits),
-      wide.asUInt.resize(value.getWidth bits)
-    )
-  }
-
-  def signAdjust(value: SInt, negate: Bool, width: Int): SInt = {
-    val resized = value.resize(width bits)
-    Mux(negate, (-resized).resize(width bits), resized)
-  }
-
-  def scaleByChunk(term: SInt, chunk: UInt): SInt = {
-    val scaled = SInt(term.getWidth bits)
-    scaled := 0
-    switch(chunk) {
-      is(U"2'b01") {
-        scaled := term
-      }
-      is(U"2'b10") {
-        scaled := (term |<< 1).resize(term.getWidth bits)
-      }
-      is(U"2'b11") {
-        scaled := (term + (term |<< 1)).resize(term.getWidth bits)
-      }
-    }
-    scaled
-  }
-
   case class IterChannel(inStart: AFix, dxRaw: SInt, dyRaw: SInt) extends Area {
     val startWidth = inStart.raw.getWidth
     val accWidth = startWidth + 18
@@ -108,27 +68,30 @@ case class TriangleSetup(c: Config, formalStrong: Boolean = false) extends Compo
     val dyTerm = Reg(SInt(accWidth bits)) init (0)
 
     def load(dxSubRaw: UInt, dySubRaw: UInt, paramAdjust: Bool, dxNeg: Bool, dyNeg: Bool): Unit = {
-      val corrRaw = (mulBySubpixel(dxRaw, dxSubRaw) + mulBySubpixel(dyRaw, dySubRaw)) >> 4
-      val startRaw = inStart.raw.asSInt
-      val correctedRaw = (startRaw + corrRaw.resize(startWidth bits))(startWidth - 1 downto 0)
-      val adjustedBits = Mux(paramAdjust, correctedRaw.asBits, inStart.raw)
-      acc := adjustedBits.asSInt.resize(accWidth bits)
-      dxTerm := signAdjust(dxRaw, dxNeg, accWidth)
-      dyTerm := signAdjust(dyRaw, dyNeg, accWidth)
+      val load = new XlsTriangleIterLoad
+      load.io.start := inStart.raw.asSInt.resize(48 bits)
+      load.io.dx := dxRaw.resize(48 bits)
+      load.io.dy := dyRaw.resize(48 bits)
+      load.io.dx_subpixel := dxSubRaw
+      load.io.dy_subpixel := dySubRaw
+      load.io.adjust := paramAdjust
+      load.io.dx_negative := dxNeg
+      load.io.dy_negative := dyNeg
+      acc := load.io.out(197 downto 132).asSInt.resize(accWidth bits)
+      dxTerm := load.io.out(131 downto 66).asSInt.resize(accWidth bits)
+      dyTerm := load.io.out(65 downto 0).asSInt.resize(accWidth bits)
     }
 
     def step(dxChunk: UInt, dyChunk: UInt): Unit = {
-      val sumWidth = accWidth + 2
-      val nextAcc =
-        (acc.resize(sumWidth bits) + scaleByChunk(dxTerm, dxChunk).resize(
-          sumWidth bits
-        ) + scaleByChunk(
-          dyTerm,
-          dyChunk
-        ).resize(sumWidth bits)).resize(accWidth bits)
-      acc := nextAcc
-      dxTerm := (dxTerm |<< 2).resize(accWidth bits)
-      dyTerm := (dyTerm |<< 2).resize(accWidth bits)
+      val step = new XlsTriangleIterStep
+      step.io.accumulator := acc.resize(66 bits)
+      step.io.dx_term := dxTerm.resize(66 bits)
+      step.io.dy_term := dyTerm.resize(66 bits)
+      step.io.dx_chunk := dxChunk
+      step.io.dy_chunk := dyChunk
+      acc := step.io.out(197 downto 132).asSInt.resize(accWidth bits)
+      dxTerm := step.io.out(131 downto 66).asSInt.resize(accWidth bits)
+      dyTerm := step.io.out(65 downto 0).asSInt.resize(accWidth bits)
     }
 
     def resultBits: Bits = acc(startWidth - 1 downto 0).asBits
@@ -223,51 +186,42 @@ case class TriangleSetup(c: Config, formalStrong: Boolean = false) extends Compo
     val tri = input.triWithSign.tri
     val signBit = input.triWithSign.signBit
 
-    val xminRaw = tri.map(_(0)).reduceBalancedTree((a, b) => a.min(b))
-    val xmaxRaw = tri.map(_(0)).reduceBalancedTree((a, b) => a.max(b))
-    val xrange0 = xminRaw.floor(0).fixTo(c.vertexFormat)
-    val xrange1 = xmaxRaw.ceil(0).fixTo(c.vertexFormat)
-    val yrange0 = tri(0)(1).roundHalfDown(0).fixTo(c.vertexFormat)
-    val yrange1 = tri(2)(1).roundHalfDown(0).fixTo(c.vertexFormat)
+    val setupWidth = if (tri(0)(0).raw.getWidth == 16) 16 else 20
+    val setup = new XlsTriangleSetup(setupWidth)
+    setup.io.ax := tri(0)(0).raw.asSInt.resize(setupWidth)
+    setup.io.ay := tri(0)(1).raw.asSInt.resize(setupWidth)
+    setup.io.bx := tri(1)(0).raw.asSInt.resize(setupWidth)
+    setup.io.by := tri(1)(1).raw.asSInt.resize(setupWidth)
+    setup.io.cx := tri(2)(0).raw.asSInt.resize(setupWidth)
+    setup.io.cy := tri(2)(1).raw.asSInt.resize(setupWidth)
+    setup.io.reverse := signBit
+
+    val xrange0 = AFix(c.vertexFormat)
+    val xrange1 = AFix(c.vertexFormat)
+    val yrange0 = AFix(c.vertexFormat)
+    val yrange1 = AFix(c.vertexFormat)
+    xrange0.raw := setup.io.out(559 downto 540).resize(xrange0.raw.getWidth bits)
+    xrange1.raw := setup.io.out(539 downto 520).resize(xrange1.raw.getWidth bits)
+    yrange0.raw := setup.io.out(519 downto 500).resize(yrange0.raw.getWidth bits)
+    yrange1.raw := setup.io.out(499 downto 480).resize(yrange1.raw.getWidth bits)
 
     val coeffsVec = Vec(Coefficients(c), 3)
-    val edgeBiasLsb = AFix(c.coefficientFormat)
-    edgeBiasLsb.raw := 1
-    val coeffZero = AFix(c.coefficientFormat)
-    coeffZero.raw := 0
-    Seq((0, 1), (1, 2), (2, 0)).zipWithIndex.foreach { case ((i0, i1), idx) =>
-      val v0 = tri(i0)
-      val v1 = tri(i1)
-
-      val a_raw = v0(1) - v1(1)
-      val b_raw = v1(0) - v0(0)
-      val c_raw = v0(0) * v1(1) - v1(0) * v0(1)
-
-      val a_coeff = Mux(signBit, -a_raw, a_raw)
-      val b_coeff = Mux(signBit, -b_raw, b_raw)
-      val c_coeff = Mux(signBit, -c_raw, c_raw)
-      val a_fixed = a_coeff.fixTo(c.coefficientFormat)
-      val b_fixed = b_coeff.fixTo(c.coefficientFormat)
-      val c_fixed = c_coeff.fixTo(c.coefficientFormat)
-      val isTopLeft = (a_fixed > coeffZero) || ((a_fixed === coeffZero) && (b_fixed > coeffZero))
-
-      coeffsVec(idx).a := a_fixed
-      coeffsVec(idx).b := b_fixed
-      coeffsVec(idx).c := Mux(
-        isTopLeft,
-        c_fixed,
-        (c_fixed - edgeBiasLsb).fixTo(c.coefficientFormat)
-      )
+    for (idx <- 0 until 3) {
+      val high = 479 - idx * 120
+      coeffsVec(idx).a.raw := setup.io
+        .out(high downto high - 39)
+        .resize(coeffsVec(idx).a.raw.getWidth bits)
+      coeffsVec(idx).b.raw := setup.io
+        .out(high - 40 downto high - 79)
+        .resize(coeffsVec(idx).b.raw.getWidth bits)
+      coeffsVec(idx).c.raw := setup.io
+        .out(high - 80 downto high - 119)
+        .resize(coeffsVec(idx).c.raw.getWidth bits)
     }
-
-    val halfPixel = AFix.SQ(3 bits, 4 bits)
-    halfPixel := 0.5
-    val xCenter = (xrange0 + halfPixel).fixTo(c.vertexFormat)
-    val yCenter = (yrange0 + halfPixel).fixTo(c.vertexFormat)
     val edgeStartVec = Vec(AFix(c.coefficientFormat), 3)
-    coeffsVec.zipWithIndex.foreach { case (coeff, idx) =>
-      edgeStartVec(idx) := (coeff.a * xCenter + coeff.b * yCenter + coeff.c).truncated
-    }
+    edgeStartVec(0).raw := setup.io.out(119 downto 80).resize(edgeStartVec(0).raw.getWidth bits)
+    edgeStartVec(1).raw := setup.io.out(79 downto 40).resize(edgeStartVec(1).raw.getWidth bits)
+    edgeStartVec(2).raw := setup.io.out(39 downto 0).resize(edgeStartVec(2).raw.getWidth bits)
 
     val paramAdjust = input.config.fbzColorPath.paramAdjust
     val fracAx = tri(0)(0).raw(3 downto 0).asUInt
@@ -299,8 +253,12 @@ case class TriangleSetup(c: Config, formalStrong: Boolean = false) extends Compo
 
     val dxNeg = dxPix.msb
     val dyNeg = dyPix.msb
-    dxMagWork := signedMagnitude(dxPix)
-    dyMagWork := signedMagnitude(dyPix)
+    val dxMagnitude = new XlsSignedMagnitude16
+    val dyMagnitude = new XlsSignedMagnitude16
+    dxMagnitude.io.value := dxPix
+    dyMagnitude.io.value := dyPix
+    dxMagWork := dxMagnitude.io.out
+    dyMagWork := dyMagnitude.io.out
     allStarts.foreach(_.load(dxSubRaw, dySubRaw, paramAdjust, dxNeg, dyNeg))
     iterIndex := 0
     state := SetupState.Iterate

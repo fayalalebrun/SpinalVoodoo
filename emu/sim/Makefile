@@ -29,14 +29,11 @@ HARNESS_SRC = $(if $(filter de10,$(SIM_INTERFACE)),$(HARNESS_DIR)/sim_harness_de
 # SpinalHDL sources that generate the Verilog
 SCALA_SRCS := $(shell find $(PROJ_ROOT)/src -name '*.scala' ! -name '.#*') $(PROJ_ROOT)/project.scala
 SCALA_CLI_SRCS = project.scala src
-XLS_STAMP = $(PROJ_ROOT)/xls/rtl/.stamp
-XLS_RTL = $(wildcard $(PROJ_ROOT)/xls/rtl/*.v)
 
 # Verilator settings
 VERILATOR = verilator
 VERILATOR_ROOT ?= $(shell $(VERILATOR) --getenv VERILATOR_ROOT)
-VERILATOR_FLAGS = --cc --top-module $(SIM_TOP) --output-split 20000 --output-split-cfuncs 5000 --decorations none --public --x-assign fast --x-initial fast --noassert -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -Wno-CMPCONST -Wno-UNSIGNED
-VERILATOR_CONFIG = verilator.vlt
+VERILATOR_FLAGS = --cc --output-split 20000 --output-split-cfuncs 5000 --decorations none --public-flat-rw --x-assign fast --x-initial fast --noassert -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -Wno-CMPCONST -Wno-UNSIGNED
 SCALA_CLI ?= scala-cli
 SCALA_CLI_FLAGS ?= --power
 CORE_SIM_GEN_ARGS ?=
@@ -93,10 +90,7 @@ all: model harness
 
 # Step 1: Generate Verilog from SpinalHDL (rebuilds when Scala sources or TRACE mode change)
 # scala-cli run has a LibC native-image bug; use java -cp workaround
-$(XLS_STAMP): $(wildcard $(PROJ_ROOT)/xls/dslx/*.x) $(PROJ_ROOT)/scripts/generate-xls-rtl $(PROJ_ROOT)/flake.nix $(PROJ_ROOT)/flake.lock
-	$(MAKE) -C $(PROJ_ROOT)/xls all
-
-$(RTL_FILE): $(SCALA_SRCS) $(TRACE_MODE_FILE) $(CORE_SIM_GEN_ARGS_FILE) $(XLS_STAMP)
+$(RTL_FILE): $(SCALA_SRCS) $(TRACE_MODE_FILE) $(CORE_SIM_GEN_ARGS_FILE)
 	@rm -f $(RTL_DIR)/*.bin
 	cd $(PROJ_ROOT) && java -Xmx2g -cp "$$( $(SCALA_CLI) compile project.scala src --print-class-path $(SCALA_CLI_FLAGS) )" $(SIM_GEN_CLASS) $(if $(filter 1,$(TRACE)),--trace-pipeline) $(CORE_SIM_GEN_ARGS)
 	@# Fix $readmemb paths: SpinalHDL emits bare filenames resolved relative to
@@ -107,8 +101,8 @@ $(RTL_FILE): $(SCALA_SRCS) $(TRACE_MODE_FILE) $(CORE_SIM_GEN_ARGS_FILE) $(XLS_ST
 verilog: $(RTL_FILE)
 
 # Step 2: Run Verilator (rebuilds when Verilog source or TRACE mode changes)
-$(VERILATE_STAMP): $(RTL_FILE) $(TRACE_MODE_FILE) $(XLS_STAMP) $(VERILATOR_CONFIG)
-	$(VERILATOR) $(VERILATOR_FLAGS) $(VERILATOR_CONFIG) $(RTL_FILE) $(XLS_RTL) --Mdir $(OBJ_DIR)
+$(VERILATE_STAMP): $(RTL_FILE) $(TRACE_MODE_FILE)
+	$(VERILATOR) $(VERILATOR_FLAGS) $(RTL_FILE) --Mdir $(OBJ_DIR)
 	@touch $@
 
 # Step 3: Build Verilator model library

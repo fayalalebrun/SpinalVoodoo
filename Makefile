@@ -278,14 +278,14 @@ de10/plan:
 	@echo "See docs/DE10_BRINGUP_PLAN.md"
 	@echo "See docs/DE10_DEPLOYMENT.md"
 
-de10/rtl: $(XLS_STAMP)
+de10/rtl:
 	@mkdir -p $(DE10_RTL_DIR)
 	$(DE10_RTL_SCRIPT)
 
 de10/qsys:
 	$(DE10_QSYS_SCRIPT)
 
-de10/bitstream: $(XLS_STAMP)
+de10/bitstream:
 	$(DE10_BUILD_SCRIPT)
 
 de10/xls/rtl:
@@ -303,13 +303,13 @@ de10/xls/bitstream:
 $(DE10_XLS_RBF):
 	$(MAKE) de10/xls/bitstream
 
-de10/ddrbench/rtl: $(XLS_STAMP)
+de10/ddrbench/rtl:
 	@mkdir -p $(DE10_RTL_DIR)
 	DE10_RTL_MAIN_CLASS=voodoo.de10.De10DdrBenchTopGen $(DE10_RTL_SCRIPT)
 
 de10/ddrbench/bitstream: $(DE10_DDR_RBF)
 
-$(DE10_DDR_RBF): $(SCALA_SRCS) $(XLS_STAMP) hw/de10/quartus/De10PlatformTop.v hw/de10/qsys/create_de10_soc.tcl
+$(DE10_DDR_RBF): $(SCALA_SRCS) hw/de10/quartus/De10PlatformTop.v hw/de10/qsys/create_de10_soc.tcl
 	DE10_RTL_MAIN_CLASS=voodoo.de10.De10DdrBenchTopGen $(DE10_BUILD_SCRIPT)
 
 de10/sync-sysroot:
@@ -384,7 +384,7 @@ $(SIM_DIR)/obj_dir/sim_trace_harness.o: FORCE
 
 # File-based build chain: only recurse when outputs are stale.
 # The sub-makes handle fine-grained .c/.o dependency tracking internally.
-$(SIM_STAMP): $(SCALA_SRCS) $(TRACE_MODE_FILE) $(XLS_STAMP)
+$(SIM_STAMP): $(SCALA_SRCS) $(TRACE_MODE_FILE)
 	$(MAKE) -C $(SIM_DIR) all SIM_INTERFACE=$(SIM_INTERFACE)
 
 # Always recurse so sub-make tracks .c → .o deps for Glide sources

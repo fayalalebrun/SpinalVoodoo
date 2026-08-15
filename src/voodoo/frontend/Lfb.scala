@@ -2,7 +2,6 @@ package voodoo.frontend
 
 import voodoo._
 import voodoo.core.FramebufferLayout
-import voodoo.xls.{XlsDataSwizzle, XlsLfbDecode}
 import spinal.core._
 import spinal.lib._
 import spinal.lib.bus.bmb._
@@ -116,11 +115,12 @@ case class Lfb(c: Config) extends Component {
   io.bus.cmd.ready := (state === stateIdle) && !rspPending
 
   // Apply word swap and byte swizzle to incoming write data
-  val writeSwizzle = new XlsDataSwizzle
-  writeSwizzle.io.data := io.bus.cmd.data
-  writeSwizzle.io.word_swap := io.regs.lfbMode.wordSwapWrites
-  writeSwizzle.io.byte_swizzle := io.regs.lfbMode.byteSwizzleWrites
-  val afterByteSwizzle = writeSwizzle.io.out
+  val afterByteSwizzle =
+    wordSwapAndSwizzle(
+      io.bus.cmd.data,
+      io.regs.lfbMode.wordSwapWrites,
+      io.regs.lfbMode.byteSwizzleWrites
+    )
 
   // Capture on cmd.fire
   when(io.bus.cmd.fire) {
@@ -168,21 +168,133 @@ case class Lfb(c: Config) extends Component {
   // Full 32-bit data for XRGB8888/ARGB8888
   val pixelData32 = capturedData
 
-  val lfbDecode = new XlsLfbDecode
-  lfbDecode.io.data32 := pixelData32
-  lfbDecode.io.data16 := pixelData16
-  lfbDecode.io.format := io.regs.lfbMode.writeFormat
-  lfbDecode.io.lanes := io.regs.lfbMode.rgbaLanes
-  lfbDecode.io.default_depth := io.regs.zaColor(15 downto 0)
-  lfbDecode.io.alpha_planes := io.regs.fbzMode.enableAlphaPlanes
+  // Format decode: expand to 8-bit RGB + depth + write masks
+  val decodedR = UInt(8 bits)
+  val decodedG = UInt(8 bits)
+  val decodedB = UInt(8 bits)
+  val decodedDepth = Bits(16 bits)
+  val decodedRgbWrite = Bool()
+  val decodedAuxWrite = Bool()
 
-  val decodedR = lfbDecode.io.out(49 downto 42).asUInt
-  val decodedG = lfbDecode.io.out(41 downto 34).asUInt
-  val decodedB = lfbDecode.io.out(33 downto 26).asUInt
-  val decodedDepth = lfbDecode.io.out(25 downto 10)
-  val decodedAlpha = lfbDecode.io.out(9 downto 2).asUInt
-  val decodedRgbWrite = lfbDecode.io.out(1)
-  val decodedAuxWrite = lfbDecode.io.out(0)
+  // Default assignments
+  decodedR := 0
+  decodedG := 0
+  decodedB := 0
+  decodedDepth := io.regs.zaColor(15 downto 0) // Default depth from zaColor when no explicit depth
+  decodedRgbWrite := True
+  decodedAuxWrite := False
+
+  // ARGB8888 with rgbaLanes swizzle
+  def decodeArgb8888(data: Bits, lanes: UInt): (UInt, UInt, UInt) = {
+    val r = UInt(8 bits)
+    val g = UInt(8 bits)
+    val b = UInt(8 bits)
+    r := data(23 downto 16).asUInt
+    g := data(15 downto 8).asUInt
+    b := data(7 downto 0).asUInt
+    switch(lanes) {
+      is(0) { // ARGB
+        r := data(23 downto 16).asUInt
+        g := data(15 downto 8).asUInt
+        b := data(7 downto 0).asUInt
+      }
+      is(1) { // ABGR
+        r := data(7 downto 0).asUInt
+        g := data(15 downto 8).asUInt
+        b := data(23 downto 16).asUInt
+      }
+      is(2) { // RGBA
+        r := data(31 downto 24).asUInt
+        g := data(23 downto 16).asUInt
+        b := data(15 downto 8).asUInt
+      }
+      is(3) { // BGRA
+        r := data(15 downto 8).asUInt
+        g := data(23 downto 16).asUInt
+        b := data(31 downto 24).asUInt
+      }
+    }
+    (r, g, b)
+  }
+
+  // Decode alpha from ARGB8888 with rgbaLanes swizzle
+  def decodeAlpha8888(data: Bits, lanes: UInt): UInt = {
+    val a = UInt(8 bits)
+    a := data(31 downto 24).asUInt
+    switch(lanes) {
+      is(0) { a := data(31 downto 24).asUInt } // ARGB: A=[31:24]
+      is(1) { a := data(31 downto 24).asUInt } // ABGR: A=[31:24]
+      is(2) { a := data(7 downto 0).asUInt } // RGBA: A=[7:0]
+      is(3) { a := data(7 downto 0).asUInt } // BGRA: A=[7:0]
+    }
+    a
+  }
+
+  // Format decode logic
+  switch(io.regs.lfbMode.writeFormat) {
+    is(0) { // RGB565 - dual pixel
+      val rgb = expandRgb565(pixelData16)
+      decodedR := rgb.r; decodedG := rgb.g; decodedB := rgb.b
+      decodedRgbWrite := True; decodedAuxWrite := io.regs.fbzMode.enableAlphaPlanes
+    }
+    is(1) { // RGB555 - dual pixel
+      val rgb = expandRgb555(pixelData16)
+      decodedR := rgb.r; decodedG := rgb.g; decodedB := rgb.b
+      decodedRgbWrite := True; decodedAuxWrite := io.regs.fbzMode.enableAlphaPlanes
+    }
+    is(2) { // ARGB1555 - dual pixel
+      val rgb = expandRgb555(pixelData16)
+      decodedR := rgb.r; decodedG := rgb.g; decodedB := rgb.b
+      decodedRgbWrite := True; decodedAuxWrite := io.regs.fbzMode.enableAlphaPlanes
+    }
+    is(4) { // XRGB8888 - single pixel
+      val (r, g, b) = decodeArgb8888(pixelData32, io.regs.lfbMode.rgbaLanes)
+      decodedR := r; decodedG := g; decodedB := b
+      decodedRgbWrite := True; decodedAuxWrite := io.regs.fbzMode.enableAlphaPlanes
+    }
+    is(5) { // ARGB8888 - single pixel
+      val (r, g, b) = decodeArgb8888(pixelData32, io.regs.lfbMode.rgbaLanes)
+      decodedR := r; decodedG := g; decodedB := b
+      decodedRgbWrite := True; decodedAuxWrite := io.regs.fbzMode.enableAlphaPlanes
+    }
+    is(12) { // Depth+RGB565 - single pixel (hi16=depth, lo16=RGB565)
+      val rgb = expandRgb565(lo16)
+      decodedR := rgb.r; decodedG := rgb.g; decodedB := rgb.b
+      decodedDepth := hi16.asBits
+      decodedRgbWrite := True; decodedAuxWrite := True
+    }
+    is(13) { // Depth+RGB555 - single pixel
+      val rgb = expandRgb555(lo16)
+      decodedR := rgb.r; decodedG := rgb.g; decodedB := rgb.b
+      decodedDepth := hi16.asBits
+      decodedRgbWrite := True; decodedAuxWrite := True
+    }
+    is(14) { // Depth+ARGB1555 - single pixel
+      val rgb = expandRgb555(lo16)
+      decodedR := rgb.r; decodedG := rgb.g; decodedB := rgb.b
+      decodedDepth := hi16.asBits
+      decodedRgbWrite := True; decodedAuxWrite := True
+    }
+    is(15) { // Depth-only - dual pixel
+      decodedDepth := pixelData16.asBits
+      decodedRgbWrite := False; decodedAuxWrite := True
+    }
+  }
+
+  // Decode alpha for pipeline mode
+  val decodedAlpha = UInt(8 bits)
+  decodedAlpha := U(0xff, 8 bits) // Default: fully opaque
+  switch(io.regs.lfbMode.writeFormat) {
+    is(5) { // ARGB8888: extract alpha
+      decodedAlpha := decodeAlpha8888(pixelData32, io.regs.lfbMode.rgbaLanes)
+    }
+    is(2) { // ARGB1555 dual pixel: bit 15
+      decodedAlpha := pixelData16(15) ? U(0xff, 8 bits) | U(0, 8 bits)
+    }
+    is(14) { // Depth+ARGB1555: bit 15 of lo16
+      decodedAlpha := lo16(15) ? U(0xff, 8 bits) | U(0, 8 bits)
+    }
+  }
 
   // ========================================================================
   // Bypass mode: output Write.PreDither (dithering done by shared instance in Core)
@@ -294,11 +406,12 @@ case class Lfb(c: Config) extends Component {
   val readResponseRaw = readData2 ## readData1
 
   // Apply word swap and byte swizzle to read result
-  val readSwizzle = new XlsDataSwizzle
-  readSwizzle.io.data := readResponseRaw
-  readSwizzle.io.word_swap := io.regs.lfbMode.wordSwapReads
-  readSwizzle.io.byte_swizzle := io.regs.lfbMode.byteSwizzleReads
-  val readResponseData = readSwizzle.io.out
+  val readResponseData =
+    wordSwapAndSwizzle(
+      readResponseRaw,
+      io.regs.lfbMode.wordSwapReads,
+      io.regs.lfbMode.byteSwizzleReads
+    )
 
   // RRESP state: wait for bus response handshake
   when(state === stateRresp && io.bus.rsp.fire) {

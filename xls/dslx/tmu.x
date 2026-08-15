@@ -1,13 +1,25 @@
-fn abs_s48(value: s48) -> u48 { if value < s48:0 { (-value) as u48 } else { value as u48 } }
+fn negate_u48(value: u48) -> u48 {
+    let byte0 = -value[0+:u8];
+    let byte1 = !value[8+:u8] + ((value[0+:u8] == u8:0) as u8);
+    let byte2 = !value[16+:u8] + ((value[0+:u16] == u16:0) as u8);
+    let byte3 = !value[24+:u8] + ((value[0+:u24] == u24:0) as u8);
+    let byte4 = !value[32+:u8] + ((value[0+:u32] == u32:0) as u8);
+    let byte5 = !value[40+:u8] + ((value[0+:u40] == u40:0) as u8);
+    byte5 ++ byte4 ++ byte3 ++ byte2 ++ byte1 ++ byte0
+}
+
+fn abs_s48(value: s48) -> u48 {
+    if value < s48:0 { negate_u48(value as u48) } else { value as u48 }
+}
 
 pub fn tmu_recip_meta(w: s48, clamp_w: u1) -> u25 {
-    let magnitude = abs_s48(w) as u64;
+    let magnitude = abs_s48(w);
     let leading = clz(magnitude) as u7;
-    let msb = u7:63 - leading;
+    let msb = u7:47 - leading;
     let normalized = magnitude << leading;
-    let index = normalized[55+:u8];
-    let fraction = normalized[47+:u8];
-    let valid = (w >= s48:0) && magnitude != u64:0;
+    let index = normalized[39+:u8];
+    let fraction = normalized[31+:u8];
+    let valid = (w >= s48:0) && magnitude != u48:0;
     let clamp = clamp_w && w < s48:0;
     index ++ fraction ++ msb ++ (valid as u1) ++ (clamp as u1)
 }
@@ -25,15 +37,47 @@ pub fn tmu_recip
     (if valid { interpolated } else { u17:0 }) ++ adjust
 }
 
+fn rounded_perspective_product(product: sN[66], msb: u7) -> s18 {
+    let shifted = (product >> msb) as s18;
+    if msb == u7:0 { shifted } else { shifted + (((product >> (msb - u7:1)) as u1) as s18) }
+}
+
 pub fn tmu_perspective_coords(s: s48, t: s48, interpolated: u17, msb: u7, perspective: u1) -> u36 {
     let reciprocal = interpolated as sN[66];
     let product_s = (s as sN[66]) * reciprocal;
     let product_t = (t as sN[66]) * reciprocal;
-    let bias_shift = if msb == u7:0 { u7:127 } else { msb - u7:1 };
-    let bias = sN[66]:1 << bias_shift;
-    let tex_s = if perspective { ((product_s + bias) >> msb) as s18 } else { (s >> u8:14) as s18 };
-    let tex_t = if perspective { ((product_t + bias) >> msb) as s18 } else { (t >> u8:14) as s18 };
+    let tex_s =
+        if perspective { rounded_perspective_product(product_s, msb) } else { (s >> u8:14) as s18 };
+    let tex_t =
+        if perspective { rounded_perspective_product(product_t, msb) } else { (t >> u8:14) as s18 };
     (tex_s as u18) ++ (tex_t as u18)
+}
+
+fn add_u64_bytes(lhs: u64, rhs: u64) -> u64 {
+    let sum0 = (lhs[0+:u8] as u9) + (rhs[0+:u8] as u9);
+    let sum1 = (lhs[8+:u8] as u9) + (rhs[8+:u8] as u9);
+    let sum2 = (lhs[16+:u8] as u9) + (rhs[16+:u8] as u9);
+    let sum3 = (lhs[24+:u8] as u9) + (rhs[24+:u8] as u9);
+    let sum4 = (lhs[32+:u8] as u9) + (rhs[32+:u8] as u9);
+    let sum5 = (lhs[40+:u8] as u9) + (rhs[40+:u8] as u9);
+    let sum6 = (lhs[48+:u8] as u9) + (rhs[48+:u8] as u9);
+    let sum7 = (lhs[56+:u8] as u9) + (rhs[56+:u8] as u9);
+    let carry1 = sum0[8+:u1];
+    let carry2 = sum1[8+:u1] || (sum1[0+:u8] == u8:0xff && carry1);
+    let carry3 = sum2[8+:u1] || (sum2[0+:u8] == u8:0xff && carry2);
+    let carry4 = sum3[8+:u1] || (sum3[0+:u8] == u8:0xff && carry3);
+    let carry5 = sum4[8+:u1] || (sum4[0+:u8] == u8:0xff && carry4);
+    let carry6 = sum5[8+:u1] || (sum5[0+:u8] == u8:0xff && carry5);
+    let carry7 = sum6[8+:u1] || (sum6[0+:u8] == u8:0xff && carry6);
+    let byte0 = sum0 as u8;
+    let byte1 = (sum1 as u8) + (carry1 as u8);
+    let byte2 = (sum2 as u8) + (carry2 as u8);
+    let byte3 = (sum3 as u8) + (carry3 as u8);
+    let byte4 = (sum4 as u8) + (carry4 as u8);
+    let byte5 = (sum5 as u8) + (carry5 as u8);
+    let byte6 = (sum6 as u8) + (carry6 as u8);
+    let byte7 = (sum7 as u8) + (carry7 as u8);
+    byte7 ++ byte6 ++ byte5 ++ byte4 ++ byte3 ++ byte2 ++ byte1 ++ byte0
 }
 
 pub fn tmu_gradient(ds_dx: s32, dt_dx: s32, ds_dy: s32, dt_dy: s32) -> u64 {
@@ -41,8 +85,8 @@ pub fn tmu_gradient(ds_dx: s32, dt_dx: s32, ds_dy: s32, dt_dy: s32) -> u64 {
     let tx = (dt_dx as s64) * (dt_dx as s64);
     let sy = (ds_dy as s64) * (ds_dy as s64);
     let ty = (dt_dy as s64) * (dt_dy as s64);
-    let dx = (sx as u64) + (tx as u64);
-    let dy = (sy as u64) + (ty as u64);
+    let dx = add_u64_bytes(sx as u64, tx as u64);
+    let dy = add_u64_bytes(sy as u64, ty as u64);
     if dx > dy { dx } else { dy }
 }
 
@@ -295,9 +339,29 @@ pub fn tmu_packed_decode
 
 #[test]
 fn recip_meta_test() {
+    assert_eq(negate_u48(u48:0), u48:0);
+    assert_eq(negate_u48(u48:1), u48:0xffffffffffff);
+    assert_eq(negate_u48(u48:0x000000000100), u48:0xffffffffff00);
+    assert_eq(negate_u48(u48:0x010000000000), u48:0xff0000000000);
+    assert_eq(negate_u48(u48:0x800000000000), u48:0x800000000000);
+    assert_eq(negate_u48(u48:0xffffffffffff), u48:1);
     let result = tmu_recip_meta(s48:0x40000000, u1:0);
     assert_eq(result[2+:u7], u7:30);
     assert_eq(result[1+:u1], u1:1);
+    assert_eq(tmu_recip_meta(s48:0, u1:0), u25:0x1fc);
+    assert_eq(tmu_recip_meta(s48:1, u1:0), u25:2);
+    assert_eq(tmu_recip_meta(s48:-1, u1:0), u25:0);
+    assert_eq(tmu_recip_meta(s48:-1, u1:1), u25:1);
+    assert_eq(tmu_recip_meta(s48:0x7fffffffffff, u1:0), u25:0x1fffeba);
+}
+
+#[test]
+fn byte_adder_matches_u64_addition() {
+    assert_eq(add_u64_bytes(u64:0, u64:0), u64:0);
+    assert_eq(add_u64_bytes(u64:0xff, u64:1), u64:0x100);
+    assert_eq(add_u64_bytes(u64:0xffffffffffffffff, u64:1), u64:0);
+    assert_eq(add_u64_bytes(u64:0x00ff00ff00ff00ff, u64:1), u64:0x00ff00ff00ff0100);
+    assert_eq(add_u64_bytes(u64:0x123456789abcdef0, u64:0x0fedcba987654321), u64:0x2222222222222211);
 }
 
 #[test]
@@ -321,6 +385,9 @@ fn lod_and_coordinate_test() {
     assert_eq(
         tmu_perspective_coords(s48:0x28000, s48:-0x14000, u17:0, u7:0, u1:0),
         (u18:10 ++ (s18:-5 as u18)));
+    assert_eq(
+        tmu_perspective_coords(s48:100, s48:-100, u17:3, u7:2, u1:1),
+        ((s18:75 as u18) ++ (s18:-75 as u18)));
 }
 
 #[test]

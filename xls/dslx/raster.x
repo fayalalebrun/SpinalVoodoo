@@ -110,16 +110,33 @@ fn round_half_down_vertex20(value: s20) -> s20 {
     if (value as u4) > u4:8 { floor + s20:16 } else { floor }
 }
 
+fn add_u40_bytes_with_carry(lhs: u40, rhs: u40, carry0: u1) -> u40 {
+    let sum0 = (lhs[0+:u8] as u9) + (rhs[0+:u8] as u9);
+    let sum1 = (lhs[8+:u8] as u9) + (rhs[8+:u8] as u9);
+    let sum2 = (lhs[16+:u8] as u9) + (rhs[16+:u8] as u9);
+    let sum3 = (lhs[24+:u8] as u9) + (rhs[24+:u8] as u9);
+    let sum4 = (lhs[32+:u8] as u9) + (rhs[32+:u8] as u9);
+    let carry1 = sum0[8+:u1] || (sum0 as u8 == u8:0xff && carry0);
+    let carry2 = sum1[8+:u1] || (sum1 as u8 == u8:0xff && carry1);
+    let carry3 = sum2[8+:u1] || (sum2 as u8 == u8:0xff && carry2);
+    let carry4 = sum3[8+:u1] || (sum3 as u8 == u8:0xff && carry3);
+    ((sum4 as u8) + (carry4 as u8)) ++ ((sum3 as u8) + (carry3 as u8)) ++
+    ((sum2 as u8) + (carry2 as u8)) ++ ((sum1 as u8) + (carry1 as u8)) ++
+    ((sum0 as u8) + (carry0 as u8))
+}
+
 pub fn edge_coefficients20(v0x: s20, v0y: s20, v1x: s20, v1y: s20, reverse: u1) -> uN[120] {
     let a_unadjusted = (((v0y as s21) - (v1y as s21)) as s40) << u8:4;
     let b_unadjusted = (((v1x as s21) - (v0x as s21)) as s40) << u8:4;
-    let c_unadjusted = ((v0x as s40) * (v1y as s40) - (v1x as s40) * (v0y as s40)) as s40;
     let a = if reverse { -a_unadjusted } else { a_unadjusted };
     let b = if reverse { -b_unadjusted } else { b_unadjusted };
-    let c = if reverse { -c_unadjusted } else { c_unadjusted };
     let top_left = a > s40:0 || (a == s40:0 && b > s40:0);
-    let biased_c = if top_left { c } else { c - s40:1 };
-    (a as u40) ++ (b as u40) ++ (biased_c as u40)
+    let product0 = ((v0x as s40) * (v1y as s40)) as u40;
+    let product1 = ((v1x as s40) * (v0y as s40)) as u40;
+    let lhs = if reverse { product1 } else { product0 };
+    let rhs = if reverse { product0 } else { product1 };
+    let biased_c = add_u40_bytes_with_carry(lhs, !rhs, top_left);
+    (a as u40) ++ (b as u40) ++ biased_c
 }
 
 pub fn edge_start20(coefficients: uN[120], x_center: s20, y_center: s20) -> s40 {

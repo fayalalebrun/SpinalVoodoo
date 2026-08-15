@@ -1,7 +1,6 @@
 package voodoo.pixel
 
 import voodoo._
-import voodoo.xls.{XlsAlphaBlend, XlsDepthCompare}
 import spinal.core._
 import spinal.core.sim._
 import spinal.lib._
@@ -162,6 +161,8 @@ case class FramebufferAccess(c: Config) extends Component {
   case class BlendPrep() extends Bundle {
     val passthrough = Passthrough()
     val blendDestColor = Color.u8()
+    val srcScale = Color.u8()
+    val dstScale = Color.u8()
   }
 
   val requestStream = io.input.translateWith(request)
@@ -265,11 +266,16 @@ case class FramebufferAccess(c: Config) extends Component {
   val pdata = fetched.payload.passthrough
   val oldDepth = auxData.asUInt
 
-  val depthCompare = new XlsDepthCompare
-  depthCompare.io.comparison := pdata.fbzMode.depthFunction
-  depthCompare.io.new_depth := pdata.newDepth
-  depthCompare.io.old_depth := oldDepth
-  val depthPassed = depthCompare.io.out
+  val depthPassed = pdata.fbzMode.depthFunction.mux(
+    U(0) -> False,
+    U(1) -> (pdata.newDepth < oldDepth),
+    U(2) -> (pdata.newDepth === oldDepth),
+    U(3) -> (pdata.newDepth <= oldDepth),
+    U(4) -> (pdata.newDepth > oldDepth),
+    U(5) -> (pdata.newDepth =/= oldDepth),
+    U(6) -> (pdata.newDepth >= oldDepth),
+    U(7) -> True
+  )
 
   val depthKill = pdata.fbzMode.enableDepthBuffer && !depthPassed
   io.zFuncFail := fetched.fire && depthKill
@@ -307,11 +313,84 @@ case class FramebufferAccess(c: Config) extends Component {
     ditherAddr(destColor.b, afterPdata.fbzMode.ditherAlgorithm, dsubX, dsubY)
   )
   val blendDestColor = afterPdata.fbzMode.enableDitherSubtract ? destDsub | destColor
+  val destA = U(0xff, 8 bits)
+
+  val srcColor = afterPdata.color
+  val srcA = afterPdata.alpha
+  val colorBeforeFog = afterPdata.colorBeforeFog
+
+  // Integer division by 255: (v + 1 + (v >> 8)) >> 8 gives exact a*b/255 for 0 <= a*b <= 65025
+  def divBy255(v: UInt): UInt = {
+    val wide = v.resize(17 bits)
+    ((wide + 1 + (wide >> 8)) >> 8).resize(8 bits)
+  }
+
+  // Blend factor computation: factor * color / 255
+  def blendMul(factor: UInt, color: UInt): UInt = {
+    divBy255(factor.resize(16 bits) * color.resize(16 bits))
+  }
+
+  // 255 - x
+  def oneMinusU8(x: UInt): UInt = (U(255, 8 bits) - x)
+
+  def computeBlendScale(
+      factorSel: UInt,
+      srcAlpha: UInt,
+      destAlpha: UInt,
+      colorFactor: Color[UInt],
+      isSrc: Boolean,
+      colBeforeFog: Color[UInt]
+  ): Color[UInt] = {
+    val scale = Color.u8()
+    switch(factorSel) {
+      is(0x0) { scale.foreach(_ := U(0, 8 bits)) } // ZERO
+      is(0x1) { scale.foreach(_ := srcAlpha) } // SRC_ALPHA
+      is(0x2) { scale := colorFactor } // COLOR
+      is(0x3) { scale.foreach(_ := destAlpha) } // DST_ALPHA
+      is(0x4) { scale.foreach(_ := U(255, 8 bits)) } // ONE
+      is(0x5) { scale.foreach(_ := oneMinusU8(srcAlpha)) } // ONE_MINUS_SRC_ALPHA
+      is(0x6) { scale.assignFromSeq(colorFactor.map(oneMinusU8)) } // ONE_MINUS_COLOR
+      is(0x7) { scale.foreach(_ := oneMinusU8(destAlpha)) } // ONE_MINUS_DST_ALPHA
+      is(0xf) {
+        if (isSrc) scale.foreach(_ := srcAlpha.min(oneMinusU8(destAlpha))) // SATURATE
+        else scale := colBeforeFog // ACOLORBEFOREFOG
+      }
+      default {
+        if (isSrc) scale.foreach(_ := U(255, 8 bits)) else scale.foreach(_ := U(0, 8 bits))
+      }
+    }
+    scale
+  }
+
+  def applyBlendScale(selfColor: Color[UInt], scale: Color[UInt]): Color[UInt] = {
+    val result = Color.u8()
+    result.assignFromSeq(selfColor.zipWith(scale)((c, s) => blendMul(s, c)))
+    result
+  }
+
+  val srcScale = computeBlendScale(
+    afterPdata.alphaMode.rgbSrcFact,
+    srcA,
+    destA,
+    blendDestColor,
+    isSrc = true,
+    colorBeforeFog
+  )
+  val dstScale = computeBlendScale(
+    afterPdata.alphaMode.rgbDstFact,
+    srcA,
+    destA,
+    srcColor,
+    isSrc = false,
+    colorBeforeFog
+  )
   val blendPrep = afterDepthTestPiped
     .translateWith {
       val prep = BlendPrep()
       prep.passthrough := afterPdata
       prep.blendDestColor := blendDestColor
+      prep.srcScale := srcScale
+      prep.dstScale := dstScale
       prep
     }
     .m2sPipe()
@@ -347,14 +426,17 @@ case class FramebufferAccess(c: Config) extends Component {
   io.debug(31 downto 27) := inFlightCount.asBits
 
   val blendPdata = blendPrep.payload.passthrough
-  val alphaBlend = new XlsAlphaBlend
-  alphaBlend.io.src_rgb := (blendPdata.color.r ## blendPdata.color.g ## blendPdata.color.b).asBits
-  alphaBlend.io.dest_rgb := (blendPrep.payload.blendDestColor.r ## blendPrep.payload.blendDestColor.g ## blendPrep.payload.blendDestColor.b).asBits
-  alphaBlend.io.before_fog_rgb := (blendPdata.colorBeforeFog.r ## blendPdata.colorBeforeFog.g ## blendPdata.colorBeforeFog.b).asBits
-  alphaBlend.io.src_alpha := blendPdata.alpha
-  alphaBlend.io.src_selector := blendPdata.alphaMode.rgbSrcFact
-  alphaBlend.io.dest_selector := blendPdata.alphaMode.rgbDstFact
-  alphaBlend.io.enable := blendPdata.alphaMode.alphaBlendEnable
+  val srcFactor = applyBlendScale(blendPdata.color, blendPrep.payload.srcScale)
+  val dstFactor = applyBlendScale(blendPrep.payload.blendDestColor, blendPrep.payload.dstScale)
+
+  // Sum and clamp to [0, 255]
+  def clampAdd(a: UInt, b: UInt): UInt = {
+    val sum = (a.resize(9 bits) + b.resize(9 bits))
+    sum.min(U(255, 9 bits)).resize(8 bits)
+  }
+
+  val blended = Color.u8()
+  blended.assignFromSeq(srcFactor.zipWith(dstFactor)(clampAdd))
 
   // ========================================================================
   // Step 5: Output
@@ -363,9 +445,11 @@ case class FramebufferAccess(c: Config) extends Component {
   io.output.translateFrom(blendPrep) { (out, in) =>
     val pd = in.passthrough
     out.coords := pd.coords
-    out.color.r := alphaBlend.io.out(23 downto 16).asUInt
-    out.color.g := alphaBlend.io.out(15 downto 8).asUInt
-    out.color.b := alphaBlend.io.out(7 downto 0).asUInt
+    when(pd.alphaMode.alphaBlendEnable) {
+      out.color := blended
+    }.otherwise {
+      out.color := pd.color
+    }
     out.alpha := pd.alpha
     out.colorBeforeFog := pd.colorBeforeFog
     out.newDepth := pd.newDepth

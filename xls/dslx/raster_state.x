@@ -46,14 +46,14 @@ pub fn initial_state() -> RasterState {
     }
 }
 
-pub fn from_triangle_setup(setup: uN[560]) -> RasterState {
-    let x0 = setup[540+:u20] as s20;
-    let x1 = setup[520+:u20] as s20;
-    let y0 = setup[500+:u20] as s20;
-    let y1 = setup[480+:u20] as s20;
-    let edge0 = setup[80+:u40] as s40;
-    let edge1 = setup[40+:u40] as s40;
-    let edge2 = setup[0+:u40] as s40;
+pub fn from_triangle_parts(bounds: uN[80], edges: uN[360], starts: uN[120]) -> RasterState {
+    let x0 = bounds[60+:u20] as s20;
+    let x1 = bounds[40+:u20] as s20;
+    let y0 = bounds[20+:u20] as s20;
+    let y1 = bounds[0+:u20] as s20;
+    let edge0 = starts[80+:u40] as s40;
+    let edge1 = starts[40+:u40] as s40;
+    let edge2 = starts[0+:u40] as s40;
     RasterState {
         active: (x0 < x1 && y0 < y1) as u1,
         x0,
@@ -67,13 +67,17 @@ pub fn from_triangle_setup(setup: uN[560]) -> RasterState {
         row_edge0: edge0,
         row_edge1: edge1,
         row_edge2: edge2,
-        a0: setup[440+:u40] as s40,
-        a1: setup[320+:u40] as s40,
-        a2: setup[200+:u40] as s40,
-        b0: setup[400+:u40] as s40,
-        b1: setup[280+:u40] as s40,
-        b2: setup[160+:u40] as s40,
+        a0: edges[320+:u40] as s40,
+        a1: edges[200+:u40] as s40,
+        a2: edges[80+:u40] as s40,
+        b0: edges[280+:u40] as s40,
+        b1: edges[160+:u40] as s40,
+        b2: edges[40+:u40] as s40,
     }
+}
+
+pub fn from_triangle_setup(setup: uN[560]) -> RasterState {
+    from_triangle_parts(setup[480+:uN[80]], setup[120+:uN[360]], setup[0+:uN[120]])
 }
 
 pub fn begin_triangle
@@ -120,12 +124,51 @@ fn first_nonnegative(edge: s40, step: s40, limit: u16) -> u16 {
     }
 }
 
+pub fn tick_bounded(state: RasterState) -> (RasterState, PixelCandidate) {
+    let inside = state.edge0 >= s40:0 && state.edge1 >= s40:0 && state.edge2 >= s40:0;
+    let next_x = state.x + s20:16;
+    let skipped_x = state.x + s20:32;
+    let end_first = next_x >= state.x1;
+    let end_second = skipped_x >= state.x1;
+    let skip = state.active == u1:1 && !inside && !end_first;
+    let candidate_edge0 = if skip { state.edge0 + state.a0 } else { state.edge0 };
+    let candidate_edge1 = if skip { state.edge1 + state.a1 } else { state.edge1 };
+    let candidate_edge2 = if skip { state.edge2 + state.a2 } else { state.edge2 };
+    let candidate_inside = candidate_edge0 >= s40:0 && candidate_edge1 >= s40:0 &&
+                           candidate_edge2 >= s40:0;
+    let end_row = end_first || (skip && end_second);
+    let end_triangle = end_row && state.y + s20:16 >= state.y1;
+    let row_edge0 = if end_row { state.row_edge0 + state.b0 } else { state.row_edge0 };
+    let row_edge1 = if end_row { state.row_edge1 + state.b1 } else { state.row_edge1 };
+    let row_edge2 = if end_row { state.row_edge2 + state.b2 } else { state.row_edge2 };
+    let step0 = if skip { state.a0 << u8:1 } else { state.a0 };
+    let step1 = if skip { state.a1 << u8:1 } else { state.a1 };
+    let step2 = if skip { state.a2 << u8:1 } else { state.a2 };
+    let next_state = RasterState {
+        active: if end_triangle { u1:0 } else { state.active },
+        x: if end_row { state.x0 } else { if skip { skipped_x } else { next_x } },
+        y: if end_row { state.y + s20:16 } else { state.y },
+        edge0: if end_row { row_edge0 } else { state.edge0 + step0 },
+        edge1: if end_row { row_edge1 } else { state.edge1 + step1 },
+        edge2: if end_row { row_edge2 } else { state.edge2 + step2 },
+        row_edge0,
+        row_edge1,
+        row_edge2,
+        ..state
+    };
+    let candidate = PixelCandidate {
+        valid: (state.active == u1:1 && candidate_inside) as u1,
+        x: ((if skip { next_x } else { state.x }) >> u8:4) as s16,
+        y: (state.y >> u8:4) as s16,
+    };
+    (next_state, candidate)
+}
+
 pub fn tick_visible(state: RasterState) -> (RasterState, PixelCandidate) {
     if state.active == u1:0 {
         tick(state)
     } else {
-        let remaining = (
-            (((state.x1 as s21) - (state.x as s21) + s21:15) >> u8:4) as u16);
+        let remaining = ((((state.x1 as s21) - (state.x as s21) + s21:15) >> u8:4) as u16);
         let offset0 = first_nonnegative(state.edge0, state.a0, remaining);
         let offset1 = first_nonnegative(state.edge1, state.a1, remaining);
         let offset2 = first_nonnegative(state.edge2, state.a2, remaining);
@@ -135,8 +178,7 @@ pub fn tick_visible(state: RasterState) -> (RasterState, PixelCandidate) {
         let edge0 = state.edge0 + state.a0 * edge_offset;
         let edge1 = state.edge1 + state.a1 * edge_offset;
         let edge2 = state.edge2 + state.a2 * edge_offset;
-        let covered = offset < remaining &&
-            edge0 >= s40:0 && edge1 >= s40:0 && edge2 >= s40:0;
+        let covered = offset < remaining && edge0 >= s40:0 && edge1 >= s40:0 && edge2 >= s40:0;
         let consumed = if covered { offset + u16:1 } else { remaining };
         let end_row = consumed >= remaining;
         let row_edge0 = if end_row { state.row_edge0 + state.b0 } else { state.row_edge0 };
@@ -165,14 +207,56 @@ pub fn tick_visible(state: RasterState) -> (RasterState, PixelCandidate) {
 }
 
 #[test]
+fn bounded_tick_checks_two_candidates() {
+    let state = RasterState {
+        active: u1:1,
+        x0: s20:0,
+        x1: s20:64,
+        y1: s20:16,
+        x: s20:0,
+        y: s20:0,
+        edge0: s40:-2,
+        edge1: s40:0,
+        edge2: s40:0,
+        row_edge0: s40:-2,
+        row_edge1: s40:0,
+        row_edge2: s40:0,
+        a0: s40:1,
+        a1: s40:0,
+        a2: s40:0,
+        b0: s40:0,
+        b1: s40:0,
+        b2: s40:0,
+    };
+    let (state, candidate) = tick_bounded(state);
+    assert_eq(candidate.valid, u1:0);
+    assert_eq(state.x, s20:32);
+    let (state, candidate) = tick_bounded(state);
+    assert_eq(candidate, PixelCandidate { valid: u1:1, x: s16:2, y: s16:0 });
+    assert_eq(state.x, s20:48);
+}
+
+#[test]
 fn visible_tick_skips_rejected_candidates() {
     let state = RasterState {
-        active: u1:1, x0: s20:0, x1: s20:64, y1: s20:16,
-        x: s20:0, y: s20:0,
-        edge0: s40:-2, edge1: s40:0, edge2: s40:0,
-        row_edge0: s40:-2, row_edge1: s40:0, row_edge2: s40:0,
-        a0: s40:1, a1: s40:0, a2: s40:0,
-        b0: s40:0, b1: s40:0, b2: s40:0,
+        active: u1:1,
+        x0: s20:0,
+        x1: s20:64,
+        y1: s20:16,
+        x: s20:0,
+        y: s20:0,
+        edge0: s40:-2,
+        edge1: s40:0,
+        edge2: s40:0,
+        row_edge0: s40:-2,
+        row_edge1: s40:0,
+        row_edge2: s40:0,
+        a0: s40:1,
+        a1: s40:0,
+        a2: s40:0,
+        b0: s40:0,
+        b1: s40:0,
+        b2: s40:0,
     };
     let (state, candidate) = tick_visible(state);
     assert_eq(candidate, PixelCandidate { valid: u1:1, x: s16:2, y: s16:0 });
@@ -182,12 +266,24 @@ fn visible_tick_skips_rejected_candidates() {
 #[test]
 fn visible_tick_skips_empty_row() {
     let state = RasterState {
-        active: u1:1, x0: s20:0, x1: s20:64, y1: s20:32,
-        x: s20:0, y: s20:0,
-        edge0: s40:-1, edge1: s40:0, edge2: s40:0,
-        row_edge0: s40:-1, row_edge1: s40:0, row_edge2: s40:0,
-        a0: s40:0, a1: s40:0, a2: s40:0,
-        b0: s40:1, b1: s40:0, b2: s40:0,
+        active: u1:1,
+        x0: s20:0,
+        x1: s20:64,
+        y1: s20:32,
+        x: s20:0,
+        y: s20:0,
+        edge0: s40:-1,
+        edge1: s40:0,
+        edge2: s40:0,
+        row_edge0: s40:-1,
+        row_edge1: s40:0,
+        row_edge2: s40:0,
+        a0: s40:0,
+        a1: s40:0,
+        a2: s40:0,
+        b0: s40:1,
+        b1: s40:0,
+        b2: s40:0,
     };
     let (state, candidate) = tick_visible(state);
     assert_eq(candidate.valid, u1:0);

@@ -1,3 +1,0 @@
-`verilator_config
-public_flat_rw -module "Core" -var "io_flushFbCaches"
-public_flat_rw -module "SwapBuffer" -var "swapCountReg"

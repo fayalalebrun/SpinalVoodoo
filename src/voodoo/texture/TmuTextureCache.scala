@@ -1,7 +1,6 @@
 package voodoo.texture
 
 import voodoo._
-import voodoo.xls.XlsTmuPackedDecode
 import spinal.core._
 import spinal.core.formal._
 import spinal.core.sim._
@@ -170,7 +169,6 @@ case class TmuTextureCache(
   require((slotCount % wayCount) == 0)
   val setCount = slotCount / wayCount
   val setBits = scala.math.max(1, log2Up(setCount))
-  val physicalSetCount = 1 << setBits
   val wayBits = scala.math.max(1, log2Up(wayCount))
   val bankEntries = lineWords
   val bankEntryWidth = log2Up(bankEntries)
@@ -250,7 +248,7 @@ case class TmuTextureCache(
 
   val currentEpoch = Reg(UInt(8 bits)) init 0
 
-  val metaMem = Seq.fill(tapCount)(Mem(TmuTextureCacheSetMeta(c, wayCount), physicalSetCount))
+  val metaMem = Seq.fill(tapCount)(Mem(TmuTextureCacheSetMeta(c, wayCount), setCount))
   val metaRead = Seq.tabulate(tapCount) { tap =>
     metaMem(tap).readSyncPort()
   }
@@ -258,8 +256,7 @@ case class TmuTextureCache(
     metaMem(tap).writePort
   }
 
-  val bankMem =
-    Seq.fill(bankCount)(Seq.fill(wayCount)(Mem(Bits(32 bits), physicalSetCount * bankEntries)))
+  val bankMem = Seq.fill(bankCount)(Seq.fill(wayCount)(Mem(Bits(32 bits), setCount * bankEntries)))
   val bankRead = bankMem.map(_.map(_.readSyncPort()))
 
   def bankRsp(sel: UInt, way: Int): Bits = Vec(bankRead.map(_(way).rsp))(sel)
@@ -478,32 +475,6 @@ case class TmuTextureCache(
   val compareTapActive = Vec(
     (0 until tapCount).map(i => if (i == 0) True else compareStage.sample.bilinear)
   )
-  val compareActiveCount = (0 until tapCount)
-    .map(i => compareTapActive(i).asUInt.resize(3 bits))
-    .reduce(_ + _)
-  val compareHitCount = (0 until tapCount)
-    .map(i => (compareTapActive(i) && compareStage.tapHit(i)).asUInt.resize(3 bits))
-    .reduce(_ + _)
-  val dbgCacheTapHits = Reg(UInt(32 bits)) init 0
-  val dbgCacheTapMisses = Reg(UInt(32 bits)) init 0
-  val dbgCacheRequests = Reg(UInt(32 bits)) init 0
-  val dbgCacheAllHitRequests = Reg(UInt(32 bits)) init 0
-  dbgCacheTapHits.setName("dbgCacheTapHits")
-  dbgCacheTapMisses.setName("dbgCacheTapMisses")
-  dbgCacheRequests.setName("dbgCacheRequests")
-  dbgCacheAllHitRequests.setName("dbgCacheAllHitRequests")
-  markSimulationOnly(dbgCacheTapHits)
-  markSimulationOnly(dbgCacheTapMisses)
-  markSimulationOnly(dbgCacheRequests)
-  markSimulationOnly(dbgCacheAllHitRequests)
-  when(compareConsumes) {
-    dbgCacheTapHits := dbgCacheTapHits + compareHitCount.resized
-    dbgCacheTapMisses := dbgCacheTapMisses + (compareActiveCount - compareHitCount).resized
-    dbgCacheRequests := dbgCacheRequests + 1
-    when(compareStage.allHits) {
-      dbgCacheAllHitRequests := dbgCacheAllHitRequests + 1
-    }
-  }
   val compareTapLineBase = Vec(
     (0 until tapCount).map(i => pointOrBilinearLineBase22(compareStage.sample, i))
   )
@@ -573,15 +544,35 @@ case class TmuTextureCache(
       bankEntryOf(pointOrBilinearAddr(owner.sample, i), ownerTapLineBase(i))
     )
   )
-  val ownerTapByte = Vec(
-    (0 until tapCount).map(i => pointOrBilinearAddr(owner.sample, i)(1 downto 0))
-  )
+  val ownerTapPair = Vec((0 until tapCount).map(i => packedPairSel(owner.sample, i)))
 
   val fillRsp = io.texRead.rsp.haltWhen(!fill.activeReg)
 
   val wordAddr =
     (fill.req.lineBase + (fill.rspCount << 2).resized).resize(c.addressWidth.value bits)
   val wordEntry = fill.rspCount.resize(bankEntryWidth bits)
+
+  def packedLocation(
+      addr: UInt,
+      is16Bit: Bool,
+      lodBase: UInt,
+      lodShift: UInt,
+      texBase: Seq[UInt],
+      texEnd: Seq[UInt],
+      texShift: Seq[UInt]
+  ): (Bool, UInt, Bool) =
+    Tmu.packedLocation22(addr, is16Bit, lodBase, lodShift, texBase, texEnd, texShift)
+
+  def packedLocation(addr: UInt): (Bool, UInt, Bool) =
+    packedLocation(
+      addr,
+      fill.req.is16Bit,
+      fill.req.lodBase,
+      fill.req.lodShift,
+      fill.texBase,
+      fill.texEnd,
+      fill.texShift
+    )
 
   val mask = Bits(bankCount bits)
   mask := 0
@@ -636,26 +627,16 @@ case class TmuTextureCache(
   val ownerActiveMask = Bits(tapCount bits)
   for (i <- 0 until tapCount) {
     ownerFillCaptureMask(i) := fillRsp.valid && owner.active && ownerTapActive(i) && !owner
-      .resolved(i) && ownerTapLineBase(i) === fill.req.lineBase && ownerTapEntry(i) === wordEntry
+      .resolved(i) && ownerTapLineBase(i) === fill.req.lineBase && ownerTapEntry(
+      i
+    ) === wordEntry && pairMask(ownerTapBank(i))(ownerTapPair(i).asUInt)
     ownerFillCommitMask(i) := fillRsp.fire && owner.active && ownerTapActive(i) && !owner
-      .resolved(i) && ownerTapLineBase(i) === fill.req.lineBase && ownerTapEntry(i) === wordEntry
+      .resolved(i) && ownerTapLineBase(i) === fill.req.lineBase && ownerTapEntry(
+      i
+    ) === wordEntry && pairMask(ownerTapBank(i))(ownerTapPair(i).asUInt)
     ownerResolvedPotential(i) := owner.resolved(i) || ownerFillCaptureMask(i)
     ownerResolvedNext(i) := owner.resolved(i) || ownerFillCommitMask(i)
     ownerActiveMask(i) := owner.active && ownerTapActive(i)
-  }
-
-  val ownerRawTexels = Vec(Bits(16 bits), tapCount)
-  for (i <- 0 until tapCount) {
-    val expanded = Vec(
-      (0 until 4).map(byte =>
-        fillRsp.fragment.data(byte * 8 + 7 downto byte * 8) ##
-          fillRsp.fragment.data(byte * 8 + 7 downto byte * 8)
-      )
-    )
-    val halfwords = Vec(fillRsp.fragment.data(15 downto 0), fillRsp.fragment.data(31 downto 16))
-    ownerRawTexels(i) := fill.req.is16Bit ? halfwords(ownerTapByte(i)(1).asUInt) | expanded(
-      ownerTapByte(i)
-    )
   }
 
   val ownerRsp = Tmu.SampleFetch(c)
@@ -664,7 +645,7 @@ case class TmuTextureCache(
   for (i <- 0 until tapCount) {
     val nextTexel = Mux(
       ownerFillCaptureMask(i),
-      ownerRawTexels(i),
+      bankTexel(writeData(ownerTapBank(i)), ownerTapPair(i)),
       owner.texels(i)
     )
     ownerRsp.texels(i) := (if (i == 0) nextTexel
@@ -748,10 +729,19 @@ case class TmuTextureCache(
     metaWriteData := fillStart.payload.setMeta
   }
 
+  val startTexEnd = Vec((0 until 9).map { lod =>
+    val base = fillStart.payload.req.texTables.texBase(lod)
+    val rawEnd = fillStart.payload.req.texTables.texEnd(lod)
+    val fallback =
+      if (lod < 8) fillStart.payload.req.texTables.texBase(lod + 1)
+      else (base + (fillStart.payload.req.is16Bit ? U(2, 22 bits) | U(1, 22 bits))).resized
+    (rawEnd > base) ? rawEnd | fallback
+  })
+
   when(fillStart.fire) {
     for (lod <- 0 until 9) {
       fill.texBase(lod) := fillStart.payload.req.texTables.texBase(lod)
-      fill.texEnd(lod) := fillStart.payload.req.texTables.texEnd(lod)
+      fill.texEnd(lod) := startTexEnd(lod)
       fill.texShift(lod) := fillStart.payload.req.texTables.texShift(lod)
     }
     for (byteIdx <- 0 until 4) {
@@ -774,34 +764,19 @@ case class TmuTextureCache(
   fillFetchRaw.valid := fillRsp.valid && fillFetchEmit
   fillFetchRaw.payload := ownerRspCommitted
 
-  val nextWordAddr =
-    (fill.req.lineBase + ((fill.rspCount + 1) << 2).resized).resize(c.addressWidth.value bits)
-  val nextDecode = new XlsTmuPackedDecode
-  nextDecode.io.line0 := 0
-  nextDecode.io.line1 := 0
-  nextDecode.io.line2 := 0
-  nextDecode.io.line3 := 0
-  nextDecode.io.addr0 := nextWordAddr.resize(22 bits)
-  nextDecode.io.addr1 := (nextWordAddr + 1).resize(22 bits)
-  nextDecode.io.addr2 := (nextWordAddr + 2).resize(22 bits)
-  nextDecode.io.addr3 := (nextWordAddr + 3).resize(22 bits)
-  nextDecode.io.is_16_bit := fill.req.is16Bit
-  nextDecode.io.lod_base := fill.req.lodBase.resize(22 bits)
-  nextDecode.io.lod_shift := fill.req.lodShift
-  nextDecode.io.bases := fill.texBase.map(_.asBits).reduce(_ ## _)
-  nextDecode.io.ends := fill.texEnd.map(_.asBits).reduce(_ ## _)
-  nextDecode.io.shifts := fill.texShift.map(_.asBits).reduce(_ ## _)
-
   when(fillRsp.fire) {
+    val nextWordAddr =
+      (fill.req.lineBase + ((fill.rspCount + 1) << 2).resized).resize(c.addressWidth.value bits)
     for (byteIdx <- 0 until 4) {
-      val location = nextDecode.io.out(15 - byteIdx * 4 downto 12 - byteIdx * 4)
-      fill.decodeValid(byteIdx) := location(3)
-      fill.decodeBank(byteIdx) := location(2 downto 1).asUInt
-      fill.decodePair(byteIdx) := location(0)
+      val nextAddr = (nextWordAddr + byteIdx).resize(c.addressWidth.value bits)
+      val loc = packedLocation(nextAddr)
+      fill.decodeValid(byteIdx) := loc._1
+      fill.decodeBank(byteIdx) := loc._2
+      fill.decodePair(byteIdx) := loc._3
     }
     for (i <- 0 until tapCount) {
       when(ownerFillCommitMask(i)) {
-        owner.texels(i) := ownerRawTexels(i)
+        owner.texels(i) := bankTexel(writeData(ownerTapBank(i)), ownerTapPair(i))
       }
     }
     owner.resolved := ownerResolvedNext

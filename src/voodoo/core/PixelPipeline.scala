@@ -7,7 +7,6 @@ import spinal.lib.bus.bmb._
 import voodoo._
 import voodoo.frontend.RegisterBank
 import voodoo.raster.FastfillWordWriter
-import voodoo.xls.XlsPixelTests
 
 object PixelPipeline {
   case class ClipRect() extends Bundle {
@@ -371,6 +370,17 @@ case class PixelPipeline(c: Config) extends Component {
   io.prefetchColor << colorPrefetcher.io.readReq
   io.prefetchAux << auxPrefetcher.io.readReq
 
+  val ckBits = colorCombine.io.output.payload.chromaKey
+  val ckR = ckBits(23 downto 16).asUInt
+  val ckG = ckBits(15 downto 8).asUInt
+  val ckB = ckBits(7 downto 0).asUInt
+  val ccColor = colorCombine.io.output.payload.color
+  val chromaKill =
+    if (c.enableChromaKey)
+      colorCombine.io.output.payload.fbzMode.enableChromaKey && ccColor.r === ckR &&
+      ccColor.g === ckG && ccColor.b === ckB
+    else False
+
   val fogArbiterInput = Stream(ColorCombine.Output(c))
   fogArbiterInput.valid := colorCombine.io.output.valid || lfb.io.pipelineOutput.valid
   fogArbiterInput.payload := lfb.io.pipelineOutput.payload
@@ -411,6 +421,23 @@ case class PixelPipeline(c: Config) extends Component {
     fogBusy := False
   }
 
+  val alphaBits = fogOutput.payload.alphaMode
+  val alphaTestEnable = alphaBits.alphaTestEnable
+  val alphaFunc = alphaBits.alphaFunc
+  val alphaRef = alphaBits.alphaRef
+  val srcAlpha = fogOutput.payload.alpha
+  val alphaPassed = alphaFunc.mux(
+    0 -> False,
+    1 -> (srcAlpha < alphaRef),
+    2 -> (srcAlpha === alphaRef),
+    3 -> (srcAlpha <= alphaRef),
+    4 -> (srcAlpha > alphaRef),
+    5 -> (srcAlpha =/= alphaRef),
+    6 -> (srcAlpha >= alphaRef),
+    7 -> True
+  )
+  val alphaKill = if (c.enableAlphaTest) alphaTestEnable && !alphaPassed else False
+
   fogOutput >/-> fbAccess.io.input
   fbAccess.io.fbReadColorRsp << io.colorReadRsp
   fbAccess.io.fbReadAuxRsp << io.auxReadRsp
@@ -418,23 +445,26 @@ case class PixelPipeline(c: Config) extends Component {
   io.auxReadReq << fbAccess.io.fbReadAuxReq.s2mPipe()
 
   val fbAccessChromaKey = fbAccess.io.output.payload.chromaKey
-  val fbAccessAlphaBits = fbAccess.io.output.payload.alphaMode
-  val pixelTests = new XlsPixelTests
-  pixelTests.io.color := (fbAccess.io.output.payload.colorBeforeFog.r ##
-    fbAccess.io.output.payload.colorBeforeFog.g ##
-    fbAccess.io.output.payload.colorBeforeFog.b).asBits
-  pixelTests.io.chroma := fbAccessChromaKey(23 downto 0)
-  pixelTests.io.alpha := fbAccess.io.output.payload.alpha
-  pixelTests.io.alpha_reference := fbAccessAlphaBits.alphaRef
-  pixelTests.io.alpha_function := fbAccessAlphaBits.alphaFunc
   val fbAccessChromaKill =
     if (c.enableChromaKey)
-      fbAccess.io.output.payload.fbzMode.enableChromaKey && pixelTests.io.out(1)
+      fbAccess.io.output.payload.fbzMode.enableChromaKey &&
+      fbAccess.io.output.payload.colorBeforeFog.r === fbAccessChromaKey(23 downto 16).asUInt &&
+      fbAccess.io.output.payload.colorBeforeFog.g === fbAccessChromaKey(15 downto 8).asUInt &&
+      fbAccess.io.output.payload.colorBeforeFog.b === fbAccessChromaKey(7 downto 0).asUInt
     else False
+  val fbAccessAlphaBits = fbAccess.io.output.payload.alphaMode
+  val fbAccessAlphaPassed = fbAccessAlphaBits.alphaFunc.mux(
+    0 -> False,
+    1 -> (fbAccess.io.output.payload.alpha < fbAccessAlphaBits.alphaRef),
+    2 -> (fbAccess.io.output.payload.alpha === fbAccessAlphaBits.alphaRef),
+    3 -> (fbAccess.io.output.payload.alpha <= fbAccessAlphaBits.alphaRef),
+    4 -> (fbAccess.io.output.payload.alpha > fbAccessAlphaBits.alphaRef),
+    5 -> (fbAccess.io.output.payload.alpha =/= fbAccessAlphaBits.alphaRef),
+    6 -> (fbAccess.io.output.payload.alpha >= fbAccessAlphaBits.alphaRef),
+    7 -> True
+  )
   val fbAccessAlphaKill =
-    if (c.enableAlphaTest)
-      fbAccessAlphaBits.alphaTestEnable && !pixelTests.io.out(0)
-    else False
+    if (c.enableAlphaTest) fbAccessAlphaBits.alphaTestEnable && !fbAccessAlphaPassed else False
   val afterFbKills = fbAccess.io.output.throwWhen(fbAccessChromaKill || fbAccessAlphaKill).stage()
 
   val trianglePreDither = afterFbKills
@@ -677,16 +707,6 @@ case class PixelPipeline(c: Config) extends Component {
   pipelineBusySources(30) := lfb.io.busy
 
   io.debug.pipelineBusy := pipelineBusySignal
-  io.debug.pipelineBusySources := pipelineBusySources
-  io.debug.fbAccess := 0
-  io.debug.fbColorCache := 0
-  io.debug.fbColorCacheReq := 0
-  io.debug.fbColorCacheExpected := 0
-  io.debug.fbColorCacheOccupancy := 0
-  io.debug.fbAuxCache := 0
-  io.debug.fbAuxCacheReq := 0
-  io.debug.fbAuxCacheExpected := 0
-  io.debug.fbAuxCacheOccupancy := 0
   lfb.io.pipelineBusy := lfbReadSafeBusySignal
 
   io.stats.exposeToSim()

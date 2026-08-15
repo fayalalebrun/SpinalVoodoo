@@ -4,7 +4,6 @@ import spinal.core._
 import spinal.core.formal._
 import spinal.lib._
 import voodoo._
-import voodoo.xls.XlsSpanStep
 
 case class SpanWalker(c: Config, formalStrong: Boolean = false) extends Component {
   val i = slave Stream (TriangleSetup.Output(c))
@@ -39,8 +38,19 @@ case class SpanWalker(c: Config, formalStrong: Boolean = false) extends Componen
   i.ready := state === WalkerState.Idle
   val one = AFix(c.vertexFormat)
   one := 1.0
+  val negOne = AFix(c.vertexFormat)
+  negOne := -1.0
   val zero = 0.SQ(1 bits, 0 bits)
   val vertexFracZeros = U(0, c.vertexFormat.fraction bits)
+
+  private val lowGradFormats = Seq(
+    c.vColorFormat,
+    c.vColorFormat,
+    c.vColorFormat,
+    c.vDepthFormat,
+    c.vColorFormat,
+    c.wAccumFormat
+  )
 
   def initTriangleConst(dst: SpanWalker.TriangleConst, input: TriangleSetup.Output): Unit = {
     dst.coeffs := input.coeffs
@@ -121,105 +131,69 @@ case class SpanWalker(c: Config, formalStrong: Boolean = false) extends Componen
 
   o.valid := state === WalkerState.EmitSpan && emitVisible
 
-  def xlsStep(current: SInt, dx: SInt, dy: SInt, mode: Int): Bits = {
-    val step = new XlsSpanStep
-    step.io.current := current.resize(48 bits)
-    step.io.dx := dx.resize(48 bits)
-    step.io.dy := dy.resize(48 bits)
-    step.io.mode := mode
-    step.io.out.resize(current.getWidth bits).asBits
-  }
-
   def stepHorizontal(dst: SpanWalker.Cursor, src: SpanWalker.Cursor, moveRight: Boolean): Unit = {
-    val mode = if (moveRight) 0 else 1
-    dst.coords(0).raw := xlsStep(src.coords(0).raw.asSInt, one.raw.asSInt, one.raw.asSInt, mode)
+    val xDelta = if (moveRight) one else negOne
+    dst.coords(0) := (src.coords(0) + xDelta).fixTo(c.vertexFormat)
     dst.coords(1) := src.coords(1)
     dst.edge.zip(src.edge).zip(triangleConst.coeffs).foreach { case ((nxt, cur), coeff) =>
-      nxt.raw := xlsStep(cur.raw.asSInt, coeff.a.raw.asSInt, coeff.a.raw.asSInt, mode)
+      val delta = if (moveRight) coeff.a else (-coeff.a).fixTo(c.coefficientFormat)
+      nxt := (cur + delta).fixTo(c.coefficientFormat)
     }
-    dst.linear.all.zip(src.linear.all).zip(triangleConst.linearDx.all).foreach {
-      case ((nxt, cur), grad) =>
-        nxt.raw := xlsStep(cur.raw.asSInt, grad.raw.asSInt, grad.raw.asSInt, mode)
-    }
-    dst.hiS.raw := xlsStep(
-      src.hiS.raw.asSInt,
-      triangleConst.texDx(0).raw.asSInt,
-      triangleConst.texDx(0).raw.asSInt,
-      mode
-    )
-    dst.hiT.raw := xlsStep(
-      src.hiT.raw.asSInt,
-      triangleConst.texDx(1).raw.asSInt,
-      triangleConst.texDx(1).raw.asSInt,
-      mode
-    )
-    dst.hiAlpha.raw := xlsStep(
-      src.hiAlpha.raw.asSInt,
-      triangleConst.alphaDx.raw.asSInt,
-      triangleConst.alphaDx.raw.asSInt,
-      mode
-    )
+    dst.linear.all
+      .zip(src.linear.all)
+      .zip(triangleConst.linearDx.all)
+      .zipWithIndex
+      .foreach { case (((nxt, cur), grad), idx) =>
+        val delta = if (moveRight) grad else (-grad).fixTo(lowGradFormats(idx))
+        nxt := (cur + delta).fixTo(lowGradFormats(idx))
+      }
+    val sDelta = if (moveRight) triangleConst.texDx(0) else (-triangleConst.texDx(0))
+    val tDelta = if (moveRight) triangleConst.texDx(1) else (-triangleConst.texDx(1))
+    val aDelta = if (moveRight) triangleConst.alphaDx else (-triangleConst.alphaDx)
+    dst.hiS := (src.hiS + sDelta).fixTo(c.texCoordsHiFormat)
+    dst.hiT := (src.hiT + tDelta).fixTo(c.texCoordsHiFormat)
+    dst.hiAlpha := (src.hiAlpha + aDelta).fixTo(c.texCoordsHiFormat)
   }
 
   def stepVertical(dst: SpanWalker.Cursor, src: SpanWalker.Cursor): Unit = {
     dst.coords(0) := src.coords(0)
-    dst.coords(1).raw := xlsStep(src.coords(1).raw.asSInt, one.raw.asSInt, one.raw.asSInt, 2)
+    dst.coords(1) := (src.coords(1) + one).fixTo(c.vertexFormat)
     dst.edge.zip(src.edge).zip(triangleConst.coeffs).foreach { case ((nxt, cur), coeff) =>
-      nxt.raw := xlsStep(cur.raw.asSInt, coeff.b.raw.asSInt, coeff.b.raw.asSInt, 2)
+      nxt := (cur + coeff.b).fixTo(c.coefficientFormat)
     }
-    dst.linear.all.zip(src.linear.all).zip(triangleConst.linearDy.all).foreach {
-      case ((nxt, cur), grad) =>
-        nxt.raw := xlsStep(cur.raw.asSInt, grad.raw.asSInt, grad.raw.asSInt, 2)
-    }
-    dst.hiS.raw := xlsStep(
-      src.hiS.raw.asSInt,
-      triangleConst.texDy(0).raw.asSInt,
-      triangleConst.texDy(0).raw.asSInt,
-      2
-    )
-    dst.hiT.raw := xlsStep(
-      src.hiT.raw.asSInt,
-      triangleConst.texDy(1).raw.asSInt,
-      triangleConst.texDy(1).raw.asSInt,
-      2
-    )
-    dst.hiAlpha.raw := xlsStep(
-      src.hiAlpha.raw.asSInt,
-      triangleConst.alphaDy.raw.asSInt,
-      triangleConst.alphaDy.raw.asSInt,
-      2
-    )
+    dst.linear.all
+      .zip(src.linear.all)
+      .zip(triangleConst.linearDy.all)
+      .zipWithIndex
+      .foreach { case (((nxt, cur), grad), idx) =>
+        nxt := (cur + grad).fixTo(lowGradFormats(idx))
+      }
+    dst.hiS := (src.hiS + triangleConst.texDy(0)).fixTo(c.texCoordsHiFormat)
+    dst.hiT := (src.hiT + triangleConst.texDy(1)).fixTo(c.texCoordsHiFormat)
+    dst.hiAlpha := (src.hiAlpha + triangleConst.alphaDy).fixTo(c.texCoordsHiFormat)
   }
 
   def stepDownLeft(dst: SpanWalker.Cursor, src: SpanWalker.Cursor): Unit = {
-    dst.coords(0).raw := xlsStep(src.coords(0).raw.asSInt, one.raw.asSInt, one.raw.asSInt, 3)
-    dst.coords(1).raw := xlsStep(src.coords(1).raw.asSInt, one.raw.asSInt, one.raw.asSInt, 2)
+    dst.coords(0) := (src.coords(0) + negOne).fixTo(c.vertexFormat)
+    dst.coords(1) := (src.coords(1) + one).fixTo(c.vertexFormat)
     dst.edge.zip(src.edge).zip(triangleConst.coeffs).foreach { case ((nxt, cur), coeff) =>
-      nxt.raw := xlsStep(cur.raw.asSInt, coeff.a.raw.asSInt, coeff.b.raw.asSInt, 3)
+      nxt := (cur + coeff.b - coeff.a).fixTo(c.coefficientFormat)
     }
     dst.linear.all
       .zip(src.linear.all)
       .zip(triangleConst.linearDy.all.zip(triangleConst.linearDx.all))
-      .foreach { case ((nxt, cur), (dy, dx)) =>
-        nxt.raw := xlsStep(cur.raw.asSInt, dx.raw.asSInt, dy.raw.asSInt, 3)
+      .zipWithIndex
+      .foreach { case (((nxt, cur), (dy, dx)), idx) =>
+        nxt := (cur + dy - dx).fixTo(lowGradFormats(idx))
       }
-    dst.hiS.raw := xlsStep(
-      src.hiS.raw.asSInt,
-      triangleConst.texDx(0).raw.asSInt,
-      triangleConst.texDy(0).raw.asSInt,
-      3
+    dst.hiS := (src.hiS + triangleConst.texDy(0) - triangleConst.texDx(0)).fixTo(
+      c.texCoordsHiFormat
     )
-    dst.hiT.raw := xlsStep(
-      src.hiT.raw.asSInt,
-      triangleConst.texDx(1).raw.asSInt,
-      triangleConst.texDy(1).raw.asSInt,
-      3
+    dst.hiT := (src.hiT + triangleConst.texDy(1) - triangleConst.texDx(1)).fixTo(
+      c.texCoordsHiFormat
     )
-    dst.hiAlpha.raw := xlsStep(
-      src.hiAlpha.raw.asSInt,
-      triangleConst.alphaDx.raw.asSInt,
-      triangleConst.alphaDy.raw.asSInt,
-      3
+    dst.hiAlpha := (src.hiAlpha + triangleConst.alphaDy - triangleConst.alphaDx).fixTo(
+      c.texCoordsHiFormat
     )
   }
 
@@ -345,7 +319,7 @@ case class SpanWalker(c: Config, formalStrong: Boolean = false) extends Componen
         stepHorizontal(probe, probe, moveRight = true)
       }
     }.otherwise {
-      emitRight.raw := xlsStep(probe.coords(0).raw.asSInt, one.raw.asSInt, one.raw.asSInt, 1)
+      emitRight := (probe.coords(0) + negOne).fixTo(c.vertexFormat)
       emitFirstSpan := firstSpanPending
       state := WalkerState.EmitSpan
     }
@@ -365,8 +339,7 @@ case class SpanWalker(c: Config, formalStrong: Boolean = false) extends Componen
   }
 
   when(state === WalkerState.AdvanceRow) {
-    val nextY = AFix(c.vertexFormat)
-    nextY.raw := xlsStep(nextRowBase.coords(1).raw.asSInt, one.raw.asSInt, one.raw.asSInt, 0)
+    val nextY = (nextRowBase.coords(1) + one).fixTo(c.vertexFormat)
     when(nextY >= triangleConst.yrange(1)) {
       state := WalkerState.Idle
       firstSpanPending := False
@@ -393,18 +366,16 @@ case class SpanWalker(c: Config, formalStrong: Boolean = false) extends Componen
   }
 
   GenerationFlags.formal {
-    if (formalStrong) {
-      val outputStartPix = o.payload.xStart.floor(0).asSInt
-      val outputEndPix = o.payload.xEnd.floor(0).asSInt
-      val outputYPix = o.payload.y.floor(0).asSInt
+    val outputStartPix = o.payload.xStart.floor(0).asSInt
+    val outputEndPix = o.payload.xEnd.floor(0).asSInt
+    val outputYPix = o.payload.y.floor(0).asSInt
 
-      when(o.fire) {
-        assert(outputStartPix <= outputEndPix)
-        assert(outputStartPix >= effectiveClipLeftPix)
-        assert(outputEndPix < effectiveClipRightPix)
-        assert(outputYPix >= effectiveClipLowYPix)
-        assert(outputYPix < effectiveClipHighYPix)
-      }
+    when(o.fire) {
+      assert(outputStartPix <= outputEndPix)
+      assert(outputStartPix >= effectiveClipLeftPix)
+      assert(outputEndPix < effectiveClipRightPix)
+      assert(outputYPix >= effectiveClipLowYPix)
+      assert(outputYPix < effectiveClipHighYPix)
     }
   }
 

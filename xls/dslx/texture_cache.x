@@ -8,6 +8,7 @@ pub struct CacheRequest {
     kind: u3,
     memory_command: memory::MemoryCommand,
     sample: texture_sampler::SampleRequest,
+    locations: u4[4],
     texture_layout: bits[432],
 }
 
@@ -29,7 +30,7 @@ pub struct CacheState {
     misses: u32,
     all_hit_requests: u32,
     missed_requests: u32,
-    phase: u2,
+    phase: u3,
     request: CacheRequest,
     tap: u3,
     slot: u6,
@@ -39,9 +40,23 @@ pub struct CacheState {
     raw_line: bits[2048],
     fill_word: u6,
     fill_byte: u2,
+    allocation_address: u26,
+    allocation_hit: u1,
+    miss_mask: u4,
+    prepared_address: u26,
+    prepared_location: u4,
 }
 
 struct LookupResult { state: CacheState, slot: u6, hit: u1 }
+
+struct ParallelLookup {
+    addresses: u26[4],
+    locations: u4[4],
+    entries: u22[4],
+    active: u4,
+    hits: u4,
+    conflict: u1,
+}
 
 struct BankWrites { data: u32[4], masks: u4[4] }
 
@@ -68,20 +83,18 @@ pub fn memory_request(command: memory::MemoryCommand) -> CacheRequest {
         kind: u3:0,
         memory_command: command,
         sample: zero_sample(),
+        locations: u4[4]:[u4:0, ...],
         texture_layout: bits[432]:0,
     }
 }
 
-pub fn sample_request
-    (sample: texture_sampler::SampleRequest, texture_layout: bits[432]) -> CacheRequest {
-    CacheRequest { kind: u3:1, memory_command: zero_memory_command(), sample, texture_layout }
-}
 
 pub fn invalidate_request() -> CacheRequest {
     CacheRequest {
         kind: u3:2,
         memory_command: zero_memory_command(),
         sample: zero_sample(),
+        locations: u4[4]:[u4:0, ...],
         texture_layout: bits[432]:0,
     }
 }
@@ -91,14 +104,11 @@ pub fn status_request() -> CacheRequest {
         kind: u3:3,
         memory_command: zero_memory_command(),
         sample: zero_sample(),
+        locations: u4[4]:[u4:0, ...],
         texture_layout: bits[432]:0,
     }
 }
 
-pub fn invalidating_sample_request
-    (sample: texture_sampler::SampleRequest, texture_layout: bits[432]) -> CacheRequest {
-    CacheRequest { kind: u3:4, memory_command: zero_memory_command(), sample, texture_layout }
-}
 
 pub fn initial_state() -> CacheState {
     CacheState {
@@ -109,7 +119,7 @@ pub fn initial_state() -> CacheState {
         misses: u32:0,
         all_hit_requests: u32:0,
         missed_requests: u32:0,
-        phase: u2:0,
+        phase: u3:0,
         request: invalidate_request(),
         tap: u3:0,
         slot: u6:0,
@@ -119,6 +129,11 @@ pub fn initial_state() -> CacheState {
         raw_line: bits[2048]:0,
         fill_word: u6:0,
         fill_byte: u2:0,
+        allocation_address: u26:0,
+        allocation_hit: u1:0,
+        miss_mask: u4:0,
+        prepared_address: u26:0,
+        prepared_location: u4:0,
     }
 }
 
@@ -128,17 +143,28 @@ fn tap_address(addresses: uN[104], tap: u3) -> u26 {
     (addresses >> (((u3:3 - tap) as u8) * u8:26)) as u26
 }
 
+fn select_location_segment(selected: (u1, u22, u4), segment: u48, address: u22) -> (u1, u22, u4) {
+    let lod_base = segment[26+:u22];
+    let lod_end = segment[4+:u22];
+    if address >= lod_base && address < lod_end {
+        (u1:1, lod_base, segment[0+:u4])
+    } else {
+        selected
+    }
+}
+
 fn location(texture_layout: bits[432], is_16_bit: u1, address: u26) -> u4 {
-    let (valid, base, shift) = for (lod, selected): (u4, (u1, u22, u4)) in u4:0..u4:9 {
-        let segment = (texture_layout >> (((u4:8 - lod) as u10) * u10:48)) as u48;
-        let lod_base = segment[26+:u22];
-        let lod_end = segment[4+:u22];
-        if address[0+:u22] >= lod_base && address[0+:u22] < lod_end {
-            (u1:1, lod_base, segment[0+:u4])
-        } else {
-            selected
-        }
-    }((u1:0, u22:0, u4:0));
+    let selected =
+        select_location_segment((u1:0, u22:0, u4:0), texture_layout[384+:u48], address[0+:u22]);
+    let selected = select_location_segment(selected, texture_layout[336+:u48], address[0+:u22]);
+    let selected = select_location_segment(selected, texture_layout[288+:u48], address[0+:u22]);
+    let selected = select_location_segment(selected, texture_layout[240+:u48], address[0+:u22]);
+    let selected = select_location_segment(selected, texture_layout[192+:u48], address[0+:u22]);
+    let selected = select_location_segment(selected, texture_layout[144+:u48], address[0+:u22]);
+    let selected = select_location_segment(selected, texture_layout[96+:u48], address[0+:u22]);
+    let selected = select_location_segment(selected, texture_layout[48+:u48], address[0+:u22]);
+    let (valid, base, shift) =
+        select_location_segment(selected, texture_layout[0+:u48], address[0+:u22]);
     let offset = (address as u10) - (base as u10);
     let bank_msb = if is_16_bit == u1:1 {
         offset[shift+:u1] | offset[(shift + u4:1) as u4+:u1]
@@ -148,6 +174,43 @@ fn location(texture_layout: bits[432], is_16_bit: u1, address: u26) -> u4 {
     let bank_lsb = if is_16_bit == u1:1 { offset[0+:u1] | offset[1+:u1] } else { offset[0+:u1] };
     let pair = is_16_bit == u1:0 && offset[1+:u1] == u1:1;
     valid ++ bank_msb ++ bank_lsb ++ (pair as u1)
+}
+
+fn sample_locations(sample: texture_sampler::SampleRequest, texture_layout: bits[432]) -> u4[4] {
+    let addresses = u26[4]:[
+        tap_address(sample.addresses, u3:0),
+        tap_address(sample.addresses, u3:1),
+        tap_address(sample.addresses, u3:2),
+        tap_address(sample.addresses, u3:3),
+    ];
+    u4[4]:[
+        location(texture_layout, sample.is_16_bit, addresses[0]),
+        location(texture_layout, sample.is_16_bit, addresses[1]),
+        location(texture_layout, sample.is_16_bit, addresses[2]),
+        location(texture_layout, sample.is_16_bit, addresses[3]),
+    ]
+}
+
+pub fn sample_request
+    (sample: texture_sampler::SampleRequest, texture_layout: bits[432]) -> CacheRequest {
+    CacheRequest {
+        kind: u3:1,
+        memory_command: zero_memory_command(),
+        sample,
+        locations: sample_locations(sample, texture_layout),
+        texture_layout,
+    }
+}
+
+pub fn invalidating_sample_request
+    (sample: texture_sampler::SampleRequest, texture_layout: bits[432]) -> CacheRequest {
+    CacheRequest {
+        kind: u3:4,
+        memory_command: zero_memory_command(),
+        sample,
+        locations: sample_locations(sample, texture_layout),
+        texture_layout,
+    }
 }
 
 fn line_base(address: u26) -> u26 { address & u26:0x3ffff00 }
@@ -198,8 +261,7 @@ fn lookup(state: CacheState, address: u26) -> LookupResult {
     LookupResult { state: next_state, slot: result.slot, hit: result.hit }
 }
 
-fn add_fill_byte_at
-    (is_16_bit: u1, raw: u32, byte: u2, loc: u4, writes: BankWrites) -> BankWrites {
+fn add_fill_byte_at(is_16_bit: u1, raw: u32, byte: u2, loc: u4, writes: BankWrites) -> BankWrites {
     let mapped = byte[0+:u1] == u1:0 || is_16_bit == u1:0;
     if mapped && loc[3+:u1] == u1:1 {
         let bank = loc[1+:u2];
@@ -218,8 +280,7 @@ fn add_fill_byte_at
         BankWrites {
             data: update(writes.data, bank, data),
             masks: update(
-                writes.masks, bank,
-                writes.masks[bank] | if pair == u1:1 { u4:0xc } else { u4:0x3 }),
+                writes.masks, bank, writes.masks[bank] | if pair == u1:1 { u4:0xc } else { u4:0x3 }),
         }
     } else {
         writes
@@ -230,8 +291,8 @@ fn add_fill_byte
     (texture_layout: bits[432], is_16_bit: u1, word_address: u26, raw: u32, byte: u2,
      writes: BankWrites) -> BankWrites {
     add_fill_byte_at(
-        is_16_bit, raw, byte,
-        location(texture_layout, is_16_bit, word_address + (byte as u26)), writes)
+        is_16_bit, raw, byte, location(texture_layout, is_16_bit, word_address + (byte as u26)),
+        writes)
 }
 
 fn fill_word(texture_layout: bits[432], is_16_bit: u1, word_address: u26, raw: u32) -> BankWrites {
@@ -246,7 +307,6 @@ fn byte_mask(mask: u4) -> u32 {
     (if mask[2+:u1] == u1:1 { u32:0x00ff0000 } else { u32:0 }) |
     (if mask[3+:u1] == u1:1 { u32:0xff000000 } else { u32:0 })
 }
-
 
 fn active_taps(sample: texture_sampler::SampleRequest) -> u4 {
     if sample.bilinear == u1:1 { u4:0xf } else { u4:0x1 }
@@ -270,6 +330,58 @@ fn count_taps(mask: u4) -> u32 {
 
 fn bank_texel(word: u32, pair: u1) -> u16 {
     if pair == u1:1 { word[16+:u16] } else { word[0+:u16] }
+}
+
+fn parallel_lookup(state: CacheState, request: CacheRequest) -> ParallelLookup {
+    let addresses = u26[4]:[
+        tap_address(request.sample.addresses, u3:0),
+        tap_address(request.sample.addresses, u3:1),
+        tap_address(request.sample.addresses, u3:2),
+        tap_address(request.sample.addresses, u3:3),
+    ];
+    let locations = request.locations;
+    let probe0 = probe(state, addresses[0]);
+    let probe1 = probe(state, addresses[1]);
+    let probe2 = probe(state, addresses[2]);
+    let probe3 = probe(state, addresses[3]);
+    let active = active_taps(request.sample);
+    let hits = ((active[3+:u1] && probe3.hit) as u4) << u8:3 |
+               ((active[2+:u1] && probe2.hit) as u4) << u8:2 |
+               ((active[1+:u1] && probe1.hit) as u4) << u8:1 |
+               ((active[0+:u1] && probe0.hit) as u4);
+    let entries = u22[4]:[
+        ((probe0.slot as u22) << u8:6) | (addresses[0][2+:u6] as u22),
+        ((probe1.slot as u22) << u8:6) | (addresses[1][2+:u6] as u22),
+        ((probe2.slot as u22) << u8:6) | (addresses[2][2+:u6] as u22),
+        ((probe3.slot as u22) << u8:6) | (addresses[3][2+:u6] as u22),
+    ];
+    let conflict =
+        (active[0+:u1] && active[1+:u1] && locations[0][1+:u2] == locations[1][1+:u2]) ||
+        (active[0+:u1] && active[2+:u1] && locations[0][1+:u2] == locations[2][1+:u2]) ||
+        (active[0+:u1] && active[3+:u1] && locations[0][1+:u2] == locations[3][1+:u2]) ||
+        (active[1+:u1] && active[2+:u1] && locations[1][1+:u2] == locations[2][1+:u2]) ||
+        (active[1+:u1] && active[3+:u1] && locations[1][1+:u2] == locations[3][1+:u2]) ||
+        (active[2+:u1] && active[3+:u1] && locations[2][1+:u2] == locations[3][1+:u2]);
+    ParallelLookup { addresses, locations, entries, active, hits, conflict: conflict as u1 }
+}
+
+fn bank_tap(lookup: ParallelLookup, bank: u2) -> u2 {
+    if lookup.active[0+:u1] && lookup.locations[0][1+:u2] == bank {
+        u2:0
+    } else if lookup.active[1+:u1] && lookup.locations[1][1+:u2] == bank {
+        u2:1
+    } else if lookup.active[2+:u1] && lookup.locations[2][1+:u2] == bank {
+        u2:2
+    } else {
+        u2:3
+    }
+}
+
+fn bank_requested(lookup: ParallelLookup, bank: u2) -> u1 {
+    ((lookup.active[0+:u1] && lookup.locations[0][1+:u2] == bank) ||
+     (lookup.active[1+:u1] && lookup.locations[1][1+:u2] == bank) ||
+     (lookup.active[2+:u1] && lookup.locations[2][1+:u2] == bank) ||
+     (lookup.active[3+:u1] && lookup.locations[3][1+:u2] == bank)) as u1
 }
 
 fn raw_texel(word: u32, is_16_bit: u1, address: u26) -> u16 {
@@ -357,33 +469,40 @@ pub proc texture_cache {
            bank1_command_s: chan<PackedBankCommand> out,
            bank1_response_r: chan<memory::MemoryResponse> in,
            bank2_command_s: chan<PackedBankCommand> out,
-            bank2_response_r: chan<memory::MemoryResponse> in,
+           bank2_response_r: chan<memory::MemoryResponse> in,
            bank3_command_s: chan<PackedBankCommand> out,
            bank3_response_r: chan<memory::MemoryResponse> in) {
         (
             request_r, response_s, memory_command_s, memory_response_r, block_read_s,
             block_read_response_r, bank0_command_s, bank0_response_r, bank1_command_s,
-            bank1_response_r, bank2_command_s, bank2_response_r, bank3_command_s,
-            bank3_response_r,
+            bank1_response_r, bank2_command_s, bank2_response_r, bank3_command_s, bank3_response_r,
         )
     }
 
     init { initial_state() }
 
     next(state: CacheState) {
-        let idle = state.phase == u2:0;
-        let lookup_active = state.phase == u2:1;
-        let fetching = state.phase == u2:2;
-        let writing = state.phase == u2:3;
+        let idle = state.phase == u3:0;
+        let lookup_active = state.phase == u3:1;
+        let lookup_prepare_active = state.phase == u3:7;
+        let fetching = state.phase == u3:2;
+        let writing = state.phase == u3:3;
+        let lookup_complete_active = state.phase == u3:6;
+        let allocation_probe_active = state.phase == u3:4;
+        let allocation_commit_active = state.phase == u3:5;
         let (tok, incoming) = recv_if(join(), request_r, idle, invalidate_request());
+        let incoming_lookup = idle && (incoming.kind == u3:1 || incoming.kind == u3:4);
+        let parallel = parallel_lookup(state, incoming);
+        let parallel_done = incoming_lookup && incoming.kind == u3:1 &&
+                            parallel.hits == parallel.active && !parallel.conflict;
         let memory_access = idle && incoming.kind == u3:0;
-        let start_lookup = idle && (incoming.kind == u3:1 || incoming.kind == u3:4);
-        let immediate_response = idle && !start_lookup;
+        let start_lookup = incoming_lookup && !parallel_done;
+        let immediate_response = idle && !incoming_lookup;
         let invalidating = idle &&
                            ((incoming.kind == u3:0 && incoming.memory_command.write == u1:1) ||
                            incoming.kind == u3:2 || incoming.kind == u3:4);
         let active = active_taps(state.request.sample);
-        let lookup_address = tap_address(state.request.sample.addresses, state.tap);
+        let lookup_address = state.prepared_address;
         let lookup_probe = probe(state, lookup_address);
         let lookup_hit = lookup_active && active[state.tap+:u1] && lookup_probe.hit;
         let lookup_hits = if lookup_active {
@@ -391,13 +510,11 @@ pub proc texture_cache {
         } else {
             state.request_hits
         };
-        let lookup_last = lookup_active &&
-                          (state.request.sample.bilinear == u1:0 || state.tap == u3:3);
-        let hits = lookup_hits[u32:3] ++ lookup_hits[u32:2] ++
-                   lookup_hits[u32:1] ++ lookup_hits[u32:0];
+        let lookup_last =
+            lookup_active && (state.request.sample.bilinear == u1:0 || state.tap == u3:3);
+        let hits =
+            lookup_hits[u32:3] ++ lookup_hits[u32:2] ++ lookup_hits[u32:1] ++ lookup_hits[u32:0];
         let misses = active & !hits;
-        let miss_tap = first_tap(misses);
-        let miss_address = tap_address(state.request.sample.addresses, miss_tap);
 
         let fill_address = tap_address(state.request.sample.addresses, state.tap);
         let fill_line_base = line_base(fill_address);
@@ -411,29 +528,45 @@ pub proc texture_cache {
         let (tok, block_read) = recv_if(
             tok, block_read_response_r, fetching,
             memory::MemoryBlockReadResponse { data: bits[2048]:0, success: u1:1 });
-        let fill_writes = add_fill_byte(
+        let fill_writes = fill_word(
             state.request.texture_layout, state.request.sample.is_16_bit,
-            fill_line_base + ((state.fill_word as u26) << u8:2), state.raw_line as u32,
-            state.fill_byte,
-            BankWrites { data: u32[4]:[u32:0, ...], masks: u4[4]:[u4:0, ...] });
+            fill_line_base + ((state.fill_word as u26) << u8:2), state.raw_line as u32);
 
-        let lookup_loc = location(
-            state.request.texture_layout, state.request.sample.is_16_bit, lookup_address);
-        let lookup_entry =
-            ((lookup_probe.slot as u22) << u8:6) | (lookup_address[2+:u6] as u22);
+        let lookup_loc = state.prepared_location;
+        let lookup_entry = ((lookup_probe.slot as u22) << u8:6) | (lookup_address[2+:u6] as u22);
 
         let bank0_write = fill_bank_command(state.slot, state.fill_word, fill_writes, u3:0);
         let bank1_write = fill_bank_command(state.slot, state.fill_word, fill_writes, u3:1);
         let bank2_write = fill_bank_command(state.slot, state.fill_word, fill_writes, u3:2);
         let bank3_write = fill_bank_command(state.slot, state.fill_word, fill_writes, u3:3);
-        let bank0_read = lookup_hit && lookup_loc[1+:u2] == u2:0;
-        let bank1_read = lookup_hit && lookup_loc[1+:u2] == u2:1;
-        let bank2_read = lookup_hit && lookup_loc[1+:u2] == u2:2;
-        let bank3_read = lookup_hit && lookup_loc[1+:u2] == u2:3;
-        let bank0_read_address = lookup_entry;
-        let bank1_read_address = lookup_entry;
-        let bank2_read_address = lookup_entry;
-        let bank3_read_address = lookup_entry;
+        let bank0_parallel = parallel_done && bank_requested(parallel, u2:0);
+        let bank1_parallel = parallel_done && bank_requested(parallel, u2:1);
+        let bank2_parallel = parallel_done && bank_requested(parallel, u2:2);
+        let bank3_parallel = parallel_done && bank_requested(parallel, u2:3);
+        let bank0_read = (lookup_hit && lookup_loc[1+:u2] == u2:0) || bank0_parallel;
+        let bank1_read = (lookup_hit && lookup_loc[1+:u2] == u2:1) || bank1_parallel;
+        let bank2_read = (lookup_hit && lookup_loc[1+:u2] == u2:2) || bank2_parallel;
+        let bank3_read = (lookup_hit && lookup_loc[1+:u2] == u2:3) || bank3_parallel;
+        let bank0_read_address = if bank0_parallel {
+            parallel.entries[bank_tap(parallel, u2:0)]
+        } else {
+            lookup_entry
+        };
+        let bank1_read_address = if bank1_parallel {
+            parallel.entries[bank_tap(parallel, u2:1)]
+        } else {
+            lookup_entry
+        };
+        let bank2_read_address = if bank2_parallel {
+            parallel.entries[bank_tap(parallel, u2:2)]
+        } else {
+            lookup_entry
+        };
+        let bank3_read_address = if bank3_parallel {
+            parallel.entries[bank_tap(parallel, u2:3)]
+        } else {
+            lookup_entry
+        };
         let bank0_read_command = memory::MemoryCommand {
             write: u1:0,
             address: bank0_read_address,
@@ -499,33 +632,87 @@ pub proc texture_cache {
         } else {
             state.texels
         };
+        let bank_words = u32[4]:[bank0.data, bank1.data, bank2.data, bank3.data];
+        let parallel_texels = u16[4]:[
+            if parallel.active[0+:u1] {
+                bank_texel(bank_words[parallel.locations[0][1+:u2]], parallel.locations[0][0+:u1])
+            } else {
+                u16:0
+            },
+            if parallel.active[1+:u1] {
+                bank_texel(bank_words[parallel.locations[1][1+:u2]], parallel.locations[1][0+:u1])
+            } else {
+                u16:0
+            },
+            if parallel.active[2+:u1] {
+                bank_texel(bank_words[parallel.locations[2][1+:u2]], parallel.locations[2][0+:u1])
+            } else {
+                u16:0
+            },
+            if parallel.active[3+:u1] {
+                bank_texel(bank_words[parallel.locations[3][1+:u2]], parallel.locations[3][0+:u1])
+            } else {
+                u16:0
+            },
+        ];
 
-        let capture_tap = state.fill_byte as u3;
-        let capture_address = tap_address(state.request.sample.addresses, capture_tap);
-        let capture = writing && state.unresolved[capture_tap+:u1] &&
-                      line_base(capture_address) == fill_line_base &&
-                      capture_address[2+:u6] == state.fill_word;
-        let capture_mask = (capture as u4) << capture_tap;
-        let fill_texels = if capture {
-            update(
-                state.texels, capture_tap,
-                raw_texel(state.raw_line as u32, state.request.sample.is_16_bit, capture_address))
-        } else {
-            state.texels
-        };
-        let next_unresolved = state.unresolved & !capture_mask;
-        let last_fill_byte = writing && state.fill_byte == u2:3;
-        let last_fill_word = last_fill_byte && state.fill_word == u6:63;
+        let (fill_texels, next_unresolved) =
+            for (tap, accumulator): (u3, (u16[4], u4)) in u3:0..u3:4 {
+                let (texels, unresolved) = accumulator;
+                let capture_address = tap_address(state.request.sample.addresses, tap);
+                let capture = writing && unresolved[tap+:u1] &&
+                              line_base(capture_address) == fill_line_base &&
+                              capture_address[2+:u6] == state.fill_word;
+                let texels = if capture {
+                    update(
+                        texels, tap,
+                        raw_texel(
+                            state.raw_line as u32, state.request.sample.is_16_bit,
+                            capture_address))
+                } else {
+                    texels
+                };
+                (texels, unresolved & !((capture as u4) << tap))
+            }((state.texels, state.unresolved));
+        let last_fill_word = writing && state.fill_word == u6:63;
         let fill_done = last_fill_word && next_unresolved == u4:0;
-        let continue_tap = first_tap(next_unresolved);
-        let continue_address = tap_address(state.request.sample.addresses, continue_tap);
-        let allocation = lookup(state, if writing { continue_address } else { miss_address });
+        let allocation_probe = probe(state, state.allocation_address);
+        let allocation_base = line_base(state.allocation_address);
+        let allocation_set = cache_set(allocation_base);
+        let allocation_way = state.slot[0+:u1];
+        let allocation_valid =
+            if state.allocation_hit { state.valid } else { update(state.valid, state.slot, u1:1) };
+        let allocation_bases = if state.allocation_hit {
+            state.bases
+        } else {
+            update(state.bases, state.slot, allocation_base)
+        };
+        let allocation_victims = if state.allocation_hit {
+            state.victims
+        } else {
+            update(state.victims, allocation_set, !allocation_way)
+        };
         let lookup_done = lookup_last && misses == u4:0;
+        let parallel_total_hits = state.hits + count_taps(parallel.active);
+        let parallel_all_hit_requests = state.all_hit_requests + u32:1;
         let lookup_total_hits = state.hits + count_taps(active & hits);
         let lookup_total_misses = state.misses + count_taps(misses);
         let lookup_all_hit_requests = state.all_hit_requests + (misses == u4:0) as u32;
         let lookup_missed_requests = state.missed_requests + (misses != u4:0) as u32;
-        let response = if lookup_done {
+        let response = if parallel_done {
+            CacheResponse {
+                memory_response: memory::MemoryResponse { data: u32:0, success: u1:1 },
+                texels: parallel_texels,
+                hits: u1[4]:[
+                    parallel.active[0+:u1], parallel.active[1+:u1],
+                    parallel.active[2+:u1], parallel.active[3+:u1],
+                ],
+                total_hits: parallel_total_hits,
+                total_misses: state.misses,
+                all_hit_requests: parallel_all_hit_requests,
+                missed_requests: state.missed_requests,
+            }
+        } else if lookup_done {
             CacheResponse {
                 memory_response: memory::MemoryResponse { data: u32:0, success: u1:1 },
                 texels: lookup_texels,
@@ -556,13 +743,22 @@ pub proc texture_cache {
                 missed_requests: state.missed_requests,
             }
         };
-        let tok =
-            send_if(tok, response_s, immediate_response || lookup_done || fill_done, response);
+        let tok = send_if(
+            tok, response_s, immediate_response || parallel_done || lookup_done || fill_done,
+            response);
 
         let state = if invalidating { invalidate(state) } else { state };
-        let state = if start_lookup {
+        let state = if parallel_done {
             CacheState {
-                phase: u2:1,
+                hits: parallel_total_hits,
+                all_hit_requests: parallel_all_hit_requests,
+                ..state
+            }
+        } else {
+            state
+        };
+        let state = if incoming_lookup {
+            CacheState {
                 request: incoming,
                 tap: u3:0,
                 texels: u16[4]:[u16:0, ...],
@@ -575,21 +771,14 @@ pub proc texture_cache {
         };
         let state = if lookup_active {
             if lookup_last {
-                let tag_state = if misses != u4:0 { allocation.state } else { state };
                 CacheState {
-                    valid: tag_state.valid,
-                    bases: tag_state.bases,
-                    victims: tag_state.victims,
                     hits: lookup_total_hits,
                     misses: lookup_total_misses,
                     all_hit_requests: lookup_all_hit_requests,
                     missed_requests: lookup_missed_requests,
-                    phase: if misses == u4:0 { u2:0 } else { u2:2 },
-                    tap: miss_tap,
-                    slot: allocation.slot,
+                    miss_mask: misses,
                     texels: lookup_texels,
                     request_hits: lookup_hits,
-                    unresolved: misses,
                     ..state
                 }
             } else {
@@ -603,9 +792,49 @@ pub proc texture_cache {
         } else {
             state
         };
+        let state = if lookup_prepare_active {
+            let prepared_address = tap_address(state.request.sample.addresses, state.tap);
+            CacheState {
+                prepared_address,
+                prepared_location: state.request.locations[state.tap],
+                ..state
+            }
+        } else {
+            state
+        };
+        let state = if lookup_complete_active {
+            let miss_tap = first_tap(state.miss_mask);
+            let miss_address = tap_address(state.request.sample.addresses, miss_tap);
+            CacheState {
+                tap: miss_tap,
+                allocation_address: miss_address,
+                unresolved: state.miss_mask,
+                ..state
+            }
+        } else {
+            state
+        };
+        let state = if allocation_probe_active {
+            CacheState {
+                slot: allocation_probe.slot,
+                allocation_hit: allocation_probe.hit,
+                ..state
+            }
+        } else {
+            state
+        };
+        let state = if allocation_commit_active {
+            CacheState {
+                valid: allocation_valid,
+                bases: allocation_bases,
+                victims: allocation_victims,
+                ..state
+            }
+        } else {
+            state
+        };
         let state = if fetching {
             CacheState {
-                phase: u2:3,
                 raw_line: block_read.data,
                 fill_word: u6:0,
                 fill_byte: u2:0,
@@ -614,15 +843,22 @@ pub proc texture_cache {
         } else {
             state
         };
-        if last_fill_word {
+        let next_phase = match state.phase {
+            u3:0 => if start_lookup { u3:7 } else { u3:0 },
+            u3:1 => if lookup_last { u3:6 } else { u3:7 },
+            u3:2 => u3:3,
+            u3:3 => if last_fill_word {
+                if next_unresolved != u4:0 { u3:6 } else { u3:0 }
+            } else { u3:3 },
+            u3:4 => u3:5,
+            u3:5 => u3:2,
+            u3:6 => if state.miss_mask == u4:0 { u3:0 } else { u3:4 },
+            u3:7 => u3:1,
+        };
+        let state = if last_fill_word {
             if next_unresolved != u4:0 {
                 CacheState {
-                    valid: allocation.state.valid,
-                    bases: allocation.state.bases,
-                    victims: allocation.state.victims,
-                    phase: u2:2,
-                    tap: continue_tap,
-                    slot: allocation.slot,
+                    miss_mask: next_unresolved,
                     texels: fill_texels,
                     unresolved: next_unresolved,
                     fill_byte: u2:0,
@@ -630,21 +866,25 @@ pub proc texture_cache {
                 }
             } else {
                 CacheState {
-                    phase: u2:0, texels: fill_texels, unresolved: u4:0, fill_byte: u2:0, ..state
+                    texels: fill_texels,
+                    unresolved: u4:0,
+                    fill_byte: u2:0,
+                    ..state
                 }
             }
         } else if writing {
             CacheState {
-                raw_line: if last_fill_byte { state.raw_line >> u8:32 } else { state.raw_line },
-                fill_word: if last_fill_byte { state.fill_word + u6:1 } else { state.fill_word },
-                fill_byte: state.fill_byte + u2:1,
+                raw_line: state.raw_line >> u8:32,
+                fill_word: state.fill_word + u6:1,
+                fill_byte: u2:0,
                 texels: fill_texels,
                 unresolved: next_unresolved,
                 ..state
             }
         } else {
             state
-        }
+        };
+        CacheState { phase: next_phase, ..state }
     }
 }
 

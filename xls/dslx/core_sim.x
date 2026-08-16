@@ -139,13 +139,7 @@ struct PixelInterpolatedValues {
 
 struct InterpolatedPixelJob { job: PixelJob, values: PixelInterpolatedValues }
 
-struct PixelResult {
-    cache_valid: u1,
-    texture_cache_hits: u32,
-    texture_cache_misses: u32,
-    texture_cache_all_hit_requests: u32,
-    texture_cache_missed_requests: u32,
-}
+type PixelResult = u1;
 
 
 fn initial_triangle_edges() -> TriangleEdges {
@@ -701,20 +695,29 @@ fn interpolated_value
      raster_uses_float_shadows: u1, candidate: raster_state::PixelCandidate, start_index: u8,
      dx_index: u8, dy_index: u8) -> s48 {
     let (shadow_shift, has_float_shadow) = float_shadow_shift(start_index);
-    let adjust = pixel_register(registers, u8:65)[26+:u1];
-    if raster_uses_float_shadows == u1:1 && has_float_shadow == u1:1 {
-        let high = interpolator::at_pixel_high(
-            pixel_float_shadow(float_shadows, start_index),
-            pixel_float_shadow(float_shadows, dx_index),
-            pixel_float_shadow(float_shadows, dy_index), pixel_vertex(registers, u8:2),
-            pixel_vertex(registers, u8:3), candidate.x, candidate.y, adjust);
+    let use_float_shadow = raster_uses_float_shadows == u1:1 && has_float_shadow == u1:1;
+    let start = if use_float_shadow {
+        pixel_float_shadow(float_shadows, start_index)
+    } else {
+        (pixel_register(registers, start_index) as s32) as s50
+    };
+    let dx = if use_float_shadow {
+        pixel_float_shadow(float_shadows, dx_index)
+    } else {
+        (pixel_register(registers, dx_index) as s32) as s50
+    };
+    let dy = if use_float_shadow {
+        pixel_float_shadow(float_shadows, dy_index)
+    } else {
+        (pixel_register(registers, dy_index) as s32) as s50
+    };
+    let high = interpolator::at_pixel_high(
+        start, dx, dy, pixel_vertex(registers, u8:2), pixel_vertex(registers, u8:3), candidate.x,
+        candidate.y, pixel_register(registers, u8:65)[26+:u1]);
+    if use_float_shadow {
         round_float_shadow(start_index, high, shadow_shift)
     } else {
-        interpolator::at_pixel(
-            (pixel_register(registers, start_index) as s32) as s48,
-            (pixel_register(registers, dx_index) as s32) as s48,
-            (pixel_register(registers, dy_index) as s32) as s48, pixel_vertex(registers, u8:2),
-            pixel_vertex(registers, u8:3), candidate.x, candidate.y, adjust)
+        high as s48
     }
 }
 
@@ -1136,14 +1139,12 @@ proc hosted_triangle_edge_setup {
         } else {
             state.y1
         };
-        let edge = match state.phase {
-            u3:1 => raster::edge_coefficients20(
-                request.ax, request.ay, request.bx, request.by, request.reverse),
-            u3:2 => raster::edge_coefficients20(
-                request.bx, request.by, request.cx, request.cy, request.reverse),
-            _ => raster::edge_coefficients20(
-                request.cx, request.cy, request.ax, request.ay, request.reverse),
+        let (v0x, v0y, v1x, v1y) = match state.phase {
+            u3:1 => (request.ax, request.ay, request.bx, request.by),
+            u3:2 => (request.bx, request.by, request.cx, request.cy),
+            _ => (request.cx, request.cy, request.ax, request.ay),
         };
+        let edge = raster::edge_coefficients20(v0x, v0y, v1x, v1y, request.reverse);
         let edge0 = if state.phase == u3:1 { edge } else { state.edge0 };
         let edge1 = if state.phase == u3:2 { edge } else { state.edge1 };
         let edge2 = if state.phase == u3:3 { edge } else { state.edge2 };
@@ -1432,14 +1433,7 @@ proc hosted_pixel_pipeline {
         let tok = send_if(tok, framebuffer_write_s, write_valid != u2:0, framebuffer_writes);
         let (tok, _) = recv_if(
             tok, framebuffer_write_response_r, write_valid != u2:0, memory::empty_response_pair());
-        let result = PixelResult {
-            cache_valid: cache_access as u1,
-            texture_cache_hits: cached_sample.total_hits,
-            texture_cache_misses: cached_sample.total_misses,
-            texture_cache_all_hit_requests: cached_sample.all_hit_requests,
-            texture_cache_missed_requests: cached_sample.missed_requests,
-        };
-        let tok = send(tok, result_s, result);
+        let tok = send(tok, result_s, u1:1);
         state
     }
 }
@@ -1950,7 +1944,8 @@ proc core_sim_hosted_controller<EXPORT_SCANOUT: bool = {false}> {
            framebuffer_fastfill_s: chan<memory::MemoryRequestPair> out,
            framebuffer_fastfill_response_r: chan<memory::MemoryResponsePair> in,
            cache_request_s: chan<texture_cache::CacheRequest> out,
-           cache_response_r: chan<texture_cache::CacheResponse> in, pixel_job_s: chan<PixelJob> out,
+           cache_response_r: chan<texture_cache::CacheResponse> in,
+           pixel_job_s: chan<PixelJob> out,
            pixel_result_r: chan<PixelResult> in,
            pixel_cache_request_r: chan<texture_cache::CacheRequest> in,
            pixel_cache_response_s: chan<PixelCacheResponse> out,
@@ -1985,28 +1980,11 @@ proc core_sim_hosted_controller<EXPORT_SCANOUT: bool = {false}> {
 
     next(state: HostedControllerState) {
         let (_, v_retrace, v_retrace_valid) = recv_non_blocking(join(), v_retrace_r, u1:0);
-        let default_result = PixelResult {
-            cache_valid: u1:0,
-            texture_cache_hits: u32:0,
-            texture_cache_misses: u32:0,
-            texture_cache_all_hit_requests: u32:0,
-            texture_cache_missed_requests: u32:0,
-        };
-        let (result_tok, pixel_result, result_valid) =
-            recv_non_blocking(join(), pixel_result_r, default_result);
+        let (result_tok, _, result_valid) =
+            recv_non_blocking(join(), pixel_result_r, u1:0);
         let (pixel_cache_tok, pixel_cache_request, pixel_cache_valid) = recv_non_blocking(
             join(), pixel_cache_request_r, texture_cache::invalidate_request());
-        let core = if result_valid && pixel_result.cache_valid == u1:1 {
-            CoreState {
-                texture_cache_hits: pixel_result.texture_cache_hits,
-                texture_cache_misses: pixel_result.texture_cache_misses,
-                texture_cache_all_hit_requests: pixel_result.texture_cache_all_hit_requests,
-                texture_cache_missed_requests: pixel_result.texture_cache_missed_requests,
-                ..state.core
-            }
-        } else {
-            state.core
-        };
+        let core = state.core;
         let pixels_pending = state.pixels_pending - (result_valid as u5);
         let triangle_pending = state.triangle_pending;
         if state.triangle_install == u2:2 {
@@ -2069,6 +2047,17 @@ proc core_sim_hosted_controller<EXPORT_SCANOUT: bool = {false}> {
             let cache_tok = send_if(
                 cache_tok, pixel_cache_response_s, pixel_cache_valid,
                 pixel_cache_response(cache_response, core.palette));
+            let ticked_core = if pixel_cache_valid {
+                CoreState {
+                    texture_cache_hits: cache_response.total_hits,
+                    texture_cache_misses: cache_response.total_misses,
+                    texture_cache_all_hit_requests: cache_response.all_hit_requests,
+                    texture_cache_missed_requests: cache_response.missed_requests,
+                    ..ticked_core
+                }
+            } else {
+                ticked_core
+            };
             let color_fill = fill.valid == u1:1 && fill.rgb_write == u1:1;
             let aux_fill = fill.valid == u1:1 && fill.aux_write == u1:1;
             let fill_valid = (aux_fill as u2) << u2:1 | (color_fill as u2);
@@ -2173,6 +2162,17 @@ proc core_sim_hosted_controller<EXPORT_SCANOUT: bool = {false}> {
             let cache_tok = send_if(
                 cache_tok, pixel_cache_response_s, pixel_cache_valid,
                 pixel_cache_response(cache_response, core.palette));
+            let core = if pixel_cache_valid {
+                CoreState {
+                    texture_cache_hits: cache_response.total_hits,
+                    texture_cache_misses: cache_response.total_misses,
+                    texture_cache_all_hit_requests: cache_response.all_hit_requests,
+                    texture_cache_missed_requests: cache_response.missed_requests,
+                    ..core
+                }
+            } else {
+                core
+            };
             let triangle_command = is_register && is_triangle_command(command);
             let triangle_tok = send_if(
                 join(), triangle_setup_request_s, triangle_command,
@@ -2486,6 +2486,12 @@ pub proc core_sim_de10 {
             bank3_command_s, bank3_response_r);
         spawn hosted_triangle_edge_setup(triangle_setup_request_r, triangle_edges_s);
         spawn hosted_triangle_start_setup(triangle_edges_r, triangle_setup_response_s);
+        spawn core_sim_hosted_controller<true>(
+            command_r, de10_request_r, response_s, framebuffer_command_s, framebuffer_response_r,
+            fastfill_s, fastfill_response_r, texture_cache_request_s, texture_cache_response_r,
+            pixel_job_s, pixel_result_r, pixel_cache_request_r, pixel_cache_response_s,
+            triangle_setup_request_s, triangle_setup_response_r, v_retrace_r, scanout_s,
+            float_shadow_request_s, float_shadow_response_r);
         spawn float_shadow_converter(float_shadow_request_r, float_shadow_response_s);
         spawn hosted_pixel_interpolator(
             pixel_interpolation_request_r, pixel_interpolation_response_s);
@@ -2496,13 +2502,6 @@ pub proc core_sim_de10 {
             pixel_work_r, pixel_result_s, pixel_cache_request_s, pixel_cache_response_r,
             pixel_read_s, pixel_read_response_r,
             pixel_write_s, pixel_write_response_r);
-        spawn core_sim_hosted_controller<true>(
-            command_r, de10_request_r, response_s, framebuffer_command_s, framebuffer_response_r,
-            fastfill_s, fastfill_response_r, texture_cache_request_s, texture_cache_response_r,
-            pixel_job_s, pixel_result_r, pixel_cache_request_r, pixel_cache_response_s,
-            triangle_setup_request_s, triangle_setup_response_r, v_retrace_r, scanout_s,
-            float_shadow_request_s, float_shadow_response_r);
-
         spawn de10_adapter::pair_to_planes(
             pixel_read_r, pixel_read_response_s, read_aux_s, read_aux_response_r, read_color_s,
             read_color_response_r);

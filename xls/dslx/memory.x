@@ -29,6 +29,8 @@ pub struct MemoryBlockRead { address: u22 }
 
 pub struct MemoryBlockReadResponse { data: bits[2048], success: u1 }
 
+pub struct MemoryBlockReadWordResponse { data: u32, success: u1 }
+
 fn byte_mask(mask: u4) -> u32 {
     (if mask[0+:u1] == u1:1 { u32:0x000000ff } else { u32:0 }) |
     (if mask[1+:u1] == u1:1 { u32:0x0000ff00 } else { u32:0 }) |

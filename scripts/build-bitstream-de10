@@ -99,7 +99,27 @@ if [[ ! -f "$ROOT_DIR/hw/de10/qsys/generated/hdmi_pll/synthesis/de10_hdmi_pll.qi
 fi
 
 echo "[de10] Running Quartus compile flow"
-(cd "$PROJECT_DIR" && quartus_sh -t build.tcl "$PROJECT_NAME")
+if [[ "$PROJECT_NAME" == "SpinalVoodoo_de10_xls" ]]; then
+  (
+    cd "$PROJECT_DIR"
+    quartus_map "$PROJECT_NAME" -c "$PROJECT_NAME" \
+      --read_settings_files=on --write_settings_files=off
+    quartus_fit "$PROJECT_NAME" -c "$PROJECT_NAME" --effort=fast --seed=5 \
+      --one_fit_attempt=on --read_settings_files=on --write_settings_files=off
+    quartus_sta "$PROJECT_NAME" -c "$PROJECT_NAME" &
+    sta_pid=$!
+    asm_status=0
+    sta_status=0
+    quartus_asm "$PROJECT_NAME" -c "$PROJECT_NAME" \
+      --read_settings_files=on --write_settings_files=off || asm_status=$?
+    wait "$sta_pid" || sta_status=$?
+    if ((asm_status != 0 || sta_status != 0)); then
+      exit 1
+    fi
+  )
+else
+  (cd "$PROJECT_DIR" && quartus_sh -t build.tcl "$PROJECT_NAME")
+fi
 
 SOF_FILE=""
 for candidate in \

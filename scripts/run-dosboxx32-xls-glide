@@ -23,6 +23,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 nix build "path:$root#xls"
+export PATH="$root/result/bin:$PATH"
 "$root/scripts/replay-pure-xls-proc-trace" --generate-only \
   --native-ir "$ir" "$root/traces/test28.bin"
 runtime="${XLS_RUNTIME_BIN:-$root/result/bin/voodoo_xls_runtime}"

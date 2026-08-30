@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 HOST="${DE10_HOST:-debian-fpga.local}"
 USER_NAME="${DE10_USER:-fpga}"
 RBF_FILE="${DE10_RBF:-output/de10/bitstream/SpinalVoodoo_de10.rbf}"
 REMOTE_TMP_DIR="${DE10_REMOTE_TMP_DIR:-/tmp/spinalvoodoo}"
 STATE_FILE="${DE10_STATE_FILE:-}"
+BRIDGE_FIX_SOURCE="$ROOT/tools/de10_bridge_fix.c"
 
 usage() {
   cat <<'EOF'
@@ -70,18 +72,25 @@ fi
 REMOTE_TARGET="${USER_NAME}@${HOST}"
 REMOTE_RBF="${REMOTE_TMP_DIR}/$(basename "$RBF_FILE")"
 REMOTE_FW_NAME="$(basename "$RBF_FILE")"
+REMOTE_BRIDGE_FIX_SOURCE="${REMOTE_TMP_DIR}/de10_bridge_fix.c"
+REMOTE_BRIDGE_FIX="${REMOTE_TMP_DIR}/de10_bridge_fix"
 
 echo "[de10] Uploading $(basename "$RBF_FILE") to ${REMOTE_TARGET}:${REMOTE_RBF}"
 ssh "$REMOTE_TARGET" "mkdir -p '$REMOTE_TMP_DIR'"
 scp "$RBF_FILE" "${REMOTE_TARGET}:${REMOTE_RBF}"
+scp "$BRIDGE_FIX_SOURCE" "${REMOTE_TARGET}:${REMOTE_BRIDGE_FIX_SOURCE}"
 
 echo "[de10] Programming FPGA on ${REMOTE_TARGET}"
-ssh "$REMOTE_TARGET" "bash -s -- '$REMOTE_RBF' '$REMOTE_FW_NAME' '$STATE_FILE'" <<'EOF'
+ssh "$REMOTE_TARGET" "bash -s -- '$REMOTE_RBF' '$REMOTE_FW_NAME' '$STATE_FILE' '$REMOTE_BRIDGE_FIX_SOURCE' '$REMOTE_BRIDGE_FIX'" <<'EOF'
 set -euo pipefail
 
 remote_rbf="$1"
 fw_name="$2"
 state_file="$3"
+bridge_fix_source="$4"
+bridge_fix="$5"
+
+cc -O2 -o "$bridge_fix" "$bridge_fix_source"
 
 run_root() {
   if [[ "$(id -u)" -eq 0 ]]; then
@@ -145,6 +154,8 @@ if [[ -r /sys/class/fpga_manager/fpga0/state ]]; then
     exit 1
   fi
 fi
+
+run_root "$bridge_fix"
 
 if [[ -n "$state_file" ]]; then
   remote_hash="$(sha256sum "$remote_rbf" | cut -d ' ' -f 1)"

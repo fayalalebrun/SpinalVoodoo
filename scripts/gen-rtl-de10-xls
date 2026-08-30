@@ -2,7 +2,15 @@
 set -euo pipefail
 
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-"$root/scripts/generate-xls-rtl" --de10-proc
-DE10_RTL_MAIN_CLASS=voodoo.de10.XlsDe10ScanoutGen "$root/scripts/gen-rtl-de10"
+"$root/scripts/generate-xls-rtl" --de10-proc &
+xls_pid=$!
+DE10_RTL_MAIN_CLASS=voodoo.de10.XlsDe10RtlGen "$root/scripts/gen-rtl-de10" &
+scala_pid=$!
+status=0
+wait "$xls_pid" || status=$?
+wait "$scala_pid" || status=$?
+((status == 0)) || exit "$status"
+
 test -s "$root/xls/build/core_sim_de10_rtl/CoreSimDe10.sv"
 test -s "$root/hw/de10/rtl/XlsDe10Scanout.v"
+test -s "$root/hw/de10/rtl/XlsAvalonTransferMasterCore.v"

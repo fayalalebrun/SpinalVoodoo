@@ -1,0 +1,36 @@
+#!/usr/bin/env python3
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text()
+start = text.index("module CoreSimDe10(")
+body = text[start:]
+
+
+def ports(*instances):
+    for instance in instances:
+        match = re.search(rf"\b{re.escape(instance)}\s*\((.*?)\n  \);", body, re.S)
+        if match:
+            return dict(re.findall(r"\.([A-Za-z0-9_]+)\(([^)]+)\)", match.group(1)))
+    raise SystemExit(f"missing instances {', '.join(instances)}")
+
+
+texture = ports(
+    "__core_sim__hosted_pixel_texture_requests_0__0_next_inst",
+    "__core_sim__hosted_pixel_texture_requests_0__1_next_inst",
+)
+expression = f'{texture["_cache_request_s_vld"]} && !{texture["_cache_request_s_rdy"]}'
+
+header = "  output wire _profile_write_done_s_vld\n);"
+replacement = "  output wire _profile_write_done_s_vld,\n  output wire _profile_causal\n);"
+if header not in body:
+    raise SystemExit("missing CoreSimDe10 output marker")
+body = body.replace(header, replacement, 1)
+assignment = f"  assign _profile_causal = {expression};"
+end = body.rfind("endmodule")
+if end < 0:
+    raise SystemExit("missing CoreSimDe10 endmodule")
+body = body[:end] + assignment + "\n" + body[end:]
+path.write_text(text[:start] + body)

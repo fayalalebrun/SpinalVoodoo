@@ -10,11 +10,16 @@
 #include <unistd.h>
 
 #define RSTMGR_BASE 0xFFD05000u
+#define L3REGS_BASE 0xFF800000u
+#define SDRCTRL_BASE 0xFFC25000u
 #define SYSMGR_BASE 0xFFD08000u
 #define BRGMODRST_OFF 0x1Cu
 #define MISCI_OFF 0x18u
-#define REMAP_OFF 0x58u
+#define REMAP_OFF 0x00u
+#define FPGAPORTRST_OFF 0x80u
+#define HANDOFF3_OFF 0x8Cu
 #define BRIDGE_RESET_MASK 0x7u
+#define FPGA2SDRAM_PORT_MASK 0x3FFFu
 
 static volatile uint32_t *map_reg(uint32_t phys, int *fd_out, void **map_out, size_t *len_out) {
   long page = sysconf(_SC_PAGESIZE);
@@ -35,12 +40,14 @@ static volatile uint32_t *map_reg(uint32_t phys, int *fd_out, void **map_out, si
 }
 
 int main(int argc, char **argv) {
-  int fd0, fd1, fd2;
-  void *m0, *m1, *m2;
-  size_t l0, l1, l2;
+  int fd0, fd1, fd2, fd3, fd4;
+  void *m0, *m1, *m2, *m3, *m4;
+  size_t l0, l1, l2, l3, l4;
   volatile uint32_t *brgmodrst = map_reg(RSTMGR_BASE + BRGMODRST_OFF, &fd0, &m0, &l0);
   volatile uint32_t *misci = map_reg(RSTMGR_BASE + MISCI_OFF, &fd1, &m1, &l1);
-  volatile uint32_t *remap = map_reg(SYSMGR_BASE + REMAP_OFF, &fd2, &m2, &l2);
+  volatile uint32_t *remap = map_reg(L3REGS_BASE + REMAP_OFF, &fd2, &m2, &l2);
+  volatile uint32_t *fpgaportrst = map_reg(SDRCTRL_BASE + FPGAPORTRST_OFF, &fd3, &m3, &l3);
+  volatile uint32_t *handoff3 = map_reg(SYSMGR_BASE + HANDOFF3_OFF, &fd4, &m4, &l4);
   uint32_t v;
   int pulse_bridge_reset = 0;
   if (argc == 2 && strcmp(argv[1], "bridge-reset") == 0) {
@@ -49,12 +56,13 @@ int main(int argc, char **argv) {
     fprintf(stderr, "usage: %s [bridge-reset]\n", argv[0]);
     return 2;
   }
-  if (!brgmodrst || !misci || !remap) {
+  if (!brgmodrst || !misci || !remap || !fpgaportrst || !handoff3) {
     fprintf(stderr, "map failed errno=%d (%s)\n", errno, strerror(errno));
     return 1;
   }
 
-  printf("before brgmodrst=0x%08x remap=0x%08x misci=0x%08x\n", *brgmodrst, *remap, *misci);
+  printf("before brgmodrst=0x%08x remap=0x%08x misci=0x%08x fpgaportrst=0x%08x handoff3=0x%08x\n",
+         *brgmodrst, *remap, *misci, *fpgaportrst, *handoff3);
 
   if (pulse_bridge_reset) {
     v = *brgmodrst;
@@ -73,16 +81,23 @@ int main(int argc, char **argv) {
   *remap = v;
   __sync_synchronize();
 
+  *handoff3 = FPGA2SDRAM_PORT_MASK;
+  *fpgaportrst = FPGA2SDRAM_PORT_MASK;
+  __sync_synchronize();
+
   if (pulse_bridge_reset) {
     // De10PlatformTop holds the core reset for a few seconds after h2f_reset_n
     // returns. Wait here so the next MMIO access does not hit the reset window.
     sleep(4);
   }
 
-  printf("after  brgmodrst=0x%08x remap=0x%08x misci=0x%08x\n", *brgmodrst, *remap, *misci);
+  printf("after  brgmodrst=0x%08x remap=0x%08x misci=0x%08x fpgaportrst=0x%08x handoff3=0x%08x\n",
+         *brgmodrst, *remap, *misci, *fpgaportrst, *handoff3);
 
   munmap(m0, l0); close(fd0);
   munmap(m1, l1); close(fd1);
   munmap(m2, l2); close(fd2);
+  munmap(m3, l3); close(fd3);
+  munmap(m4, l4); close(fd4);
   return 0;
 }

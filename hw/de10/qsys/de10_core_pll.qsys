@@ -44,6 +44,9 @@
  <interface name="outclk0" internal="pll_0.outclk0" type="clock" dir="start">
   <port name="outclk_0" internal="outclk_0" />
  </interface>
+ <interface name="outclk1" internal="pll_0.outclk1" type="clock" dir="start">
+  <port name="outclk_1" internal="outclk_1" />
+ </interface>
  <interface name="refclk" internal="pll_0.refclk" type="clock" dir="end">
   <port name="refclk" internal="refclk" />
  </interface>
@@ -172,10 +175,10 @@
   <parameter name="gui_fractional_cout" value="32" />
   <parameter name="gui_mif_generate" value="false" />
   <parameter name="gui_multiply_factor" value="1" />
-  <parameter name="gui_number_of_clocks" value="1" />
+  <parameter name="gui_number_of_clocks" value="2" />
   <parameter name="gui_operation_mode" value="direct" />
-  <parameter name="gui_output_clock_frequency0" value="50.0" />
-  <parameter name="gui_output_clock_frequency1" value="100.0" />
+  <parameter name="gui_output_clock_frequency0" value="27.0" />
+  <parameter name="gui_output_clock_frequency1" value="54.0" />
   <parameter name="gui_output_clock_frequency10" value="100.0" />
   <parameter name="gui_output_clock_frequency11" value="100.0" />
   <parameter name="gui_output_clock_frequency12" value="100.0" />

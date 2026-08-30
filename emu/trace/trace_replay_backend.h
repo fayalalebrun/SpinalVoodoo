@@ -40,7 +40,8 @@ public:
 
 static inline uint32_t traceReplayRemapBackendRegAddr(bool de10, uint32_t addr) {
     const uint32_t base = addr & 0x3FFFFFu;
-    if (!de10 || (base & 0x200000u) == 0) return base;
+    if (!de10) return base;
+    if ((base & 0x200000u) == 0) return base & 0x3ffu;
     switch (base & 0xfffu) {
         case 0x088: return 0x088;
         case 0x08c: return 0x08c;
@@ -72,7 +73,7 @@ static inline uint32_t traceReplayRemapBackendRegAddr(bool de10, uint32_t addr) 
         case 0x0f4: return 0x0bc;
         case 0x0f8: return 0x0dc;
         case 0x0fc: return 0x0fc;
-        default: return base & ~0x200000u;
+        default: return base & 0x3ffu;
     }
 }
 

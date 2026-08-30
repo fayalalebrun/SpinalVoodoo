@@ -6,7 +6,7 @@
 #   tomb/<runtime>/<action>
 #   de10/<action>
 
-.PHONY: all clean clean-sim clean-glide clean-tests xls native/help native/sim/build native/trace/build native/sim/run-all native/sim/check-all native/de10sim/check-all native/de10sim/check-image dos/help dos/sim/build dos/trace/build dos/xls/build dos/xls/check dos/dosbox dos/xls/dosbox tomb/help tomb/prepare tomb/sim/run tomb/sim/headless tomb/xls/run tomb/xls/headless tomb/sim/capture tomb/sim/trace tomb/sim/trace/check tomb/trace/run tomb/trace/headless tomb/trace/check tomb/trace/profile de10/help de10/setup/program de10/setup/deploy de10/check/mmio de10/check/ddr-stress de10/report/ddr de10/run/tomb de10/run/tomb/vnc de10/trace/build de10/trace/run de10/plan de10/rtl de10/qsys de10/bitstream de10/xls/rtl de10/xls/check de10/xls/replay de10/xls/bitstream de10/xls/setup/program de10/ddrbench/rtl de10/ddrbench/bitstream de10/sync-sysroot de10/glide de10/glide-tests de10/glide-cross de10/glide-tests-cross FORCE
+.PHONY: all clean clean-sim clean-glide clean-tests xls native/help native/sim/build native/trace/build native/sim/run-all native/sim/check-all native/de10sim/check-all native/de10sim/check-image dos/help dos/sim/build dos/trace/build dos/xls/build dos/xls/check dos/xls/check-headless dos/dosbox dos/xls/dosbox tomb/help tomb/prepare tomb/sim/run tomb/sim/headless tomb/xls/run tomb/xls/headless tomb/sim/capture tomb/sim/trace tomb/sim/trace/check tomb/trace/run tomb/trace/headless tomb/trace/check tomb/trace/profile de10/help de10/setup/program de10/setup/deploy de10/check/mmio de10/check/ddr-stress de10/report/ddr de10/run/tomb de10/run/tomb/vnc de10/trace/build de10/trace/run de10/plan de10/rtl de10/qsys de10/bitstream de10/xls/rtl de10/xls/check de10/xls/replay de10/xls/bitstream de10/xls/setup/program de10/ddrbench/rtl de10/ddrbench/bitstream de10/sync-sysroot de10/glide de10/glide-tests de10/glide-cross de10/glide-tests-cross FORCE
 .PHONY: native/xls-de10sim/compare-all
 .PRECIOUS: dos/sim/build/% dos/trace/build/% dos/xls/build/%
 
@@ -509,6 +509,13 @@ dos/xls/headless/%: dos/xls/build/%
 	  -c "c:" \
 	  -c "$*.exe" \
 	  $(ARGS)
+
+dos/xls/check-headless: dos/xls/build/df00sdk
+	DOSBOXX32_HEADLESS=1 timeout 180 bash ./scripts/run-dosboxx32-xls-glide \
+	  -c "mount c $(DOS_TEST_MOUNT_DIR)" \
+	  -c "c:" \
+	  -c "df00sdk.exe -n 10" \
+	  -c "exit"
 
 dos/trace/build/%: native/trace/build
 	$(MAKE) -C $(GLIDE_TST_DIR) -f $(DOS_SDK_MAKEFILE) $*.exe

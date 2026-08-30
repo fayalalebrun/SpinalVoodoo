@@ -654,7 +654,7 @@ GR_ENTRY(grBufferSwap, void, ( int swapInterval ))
   while (grBufferNumPending() > 6);
 
   /* if the interval is non-zero turn on VSYNC waiting */
-#ifdef DE10_BACKEND
+#if defined(DE10_BACKEND) || defined(PURE_XLS_BACKEND)
   swapInterval = 0;
   vSync = swapInterval > 0 ? 1 : 0;
 #else

@@ -2,12 +2,40 @@ set_global_assignment -name TOP_LEVEL_ENTITY De10PlatformTop
 source SpinalVoodoo_de10_xls_sources.tcl
 set_global_assignment -name VERILOG_MACRO "PURE_XLS_DE10=1"
 set_global_assignment -name SYSTEMVERILOG_FILE ../xls/XlsAvalonTransferMaster.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../xls/XlsAvalonReadWriteMaster.sv
+
+set_global_assignment -name VERILOG_FILE ../rtl/XlsAvalonTransferMasterCore.v
 set_global_assignment -name SYSTEMVERILOG_FILE ../xls/XlsPackedBankMemory.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../xls/XlsPackedBankMemoryVector.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../xls/XlsPaletteMemory.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../xls/XlsPerformanceCounters.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../xls/XlsPipelineProfiler.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../xls/XlsFramebufferReadCache.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../xls/XlsFramebufferReadPrefetch.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../xls/XlsFramebufferSpanReader.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../xls/XlsFramebufferWriteBuffer.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../xls/XlsFramebufferWriteIngress.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../xls/XlsAvalonArbiter2.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../xls/XlsH2fMemoryFifo.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../xls/XlsH2fCommandFifo.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../xls/XlsDe10Top.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../../../xls/build/core_sim_de10_rtl/CoreSimDe10.sv
 set_global_assignment -name VERILOG_FILE ../rtl/XlsDe10Scanout.v
-set_global_assignment -name OPTIMIZATION_MODE "AGGRESSIVE PERFORMANCE"
-set_global_assignment -name ROUTER_LCELL_INSERTION_AND_LOGIC_DUPLICATION ON
+set_global_assignment -name OPTIMIZATION_MODE "AGGRESSIVE AREA"
+
+set_global_assignment -name SYNTH_TIMING_DRIVEN_SYNTHESIS OFF
+set_global_assignment -name SYNTHESIS_EFFORT FAST
+set_global_assignment -name FITTER_EFFORT "FAST FIT"
+set_global_assignment -name PLACEMENT_EFFORT_MULTIPLIER 1.0
+set_global_assignment -name OPTIMIZE_MULTI_CORNER_TIMING OFF
+set_global_assignment -name OPTIMIZE_HOLD_TIMING "ALL PATHS"
+set_global_assignment -name FITTER_EARLY_TIMING_ESTIMATE_MODE OPTIMISTIC
+set_global_assignment -name FINAL_PLACEMENT_OPTIMIZATION NEVER
+set_global_assignment -name ADVANCED_PHYSICAL_OPTIMIZATION OFF
+set_global_assignment -name FITTER_AGGRESSIVE_ROUTABILITY_OPTIMIZATION ALWAYS
+set_global_assignment -name ROUTER_LCELL_INSERTION_AND_LOGIC_DUPLICATION OFF
+set_global_assignment -name TIMING_ANALYZER_REPORT_SCRIPT xls_timing.tcl
+set_global_assignment -name TIMING_ANALYZER_REPORT_SCRIPT_INCLUDE_DEFAULT_ANALYSIS OFF
 
 set_global_assignment -name LAST_QUARTUS_VERSION "24.1std.0 Lite Edition"
 set_global_assignment -name USE_DLL_FREQUENCY_FOR_DQS_DELAY_CHAIN ON
@@ -133,8 +161,9 @@ set_global_assignment -name UNIPHY_SEQUENCER_DQS_CONFIG_ENABLE ON
 set_global_assignment -name RESERVE_ALL_UNUSED_PINS_NO_OUTPUT_GND "AS INPUT TRI-STATED"
 set_global_assignment -name DEVICE 5CSEBA6U23I7
 set_global_assignment -name NUM_PARALLEL_PROCESSORS ALL
+set_global_assignment -name SEED 5
 set_global_assignment -name FAMILY "Cyclone V"
-set_global_assignment -name ROUTER_TIMING_OPTIMIZATION_LEVEL MINIMUM
+set_global_assignment -name ROUTER_TIMING_OPTIMIZATION_LEVEL NORMAL
 set_global_assignment -name VERILOG_FILE De10PlatformTop.v
 set_global_assignment -name VERILOG_FILE ../../../xls/rtl/VoodooXlsTmuBaseLod.v
 set_global_assignment -name VERILOG_FILE ../../../xls/rtl/VoodooXlsTriangleSetup.v

@@ -27,7 +27,7 @@ extern "C" {
 namespace {
 
 constexpr uint32_t kDefaultMmioBase = 0xC0000000u;
-constexpr uint32_t kDefaultMmioSpan = 0x00400000u;
+constexpr uint32_t kDefaultMmioSpan = 0x01000000u;
 constexpr uint32_t kDefaultFbBase = 0x3F000000u;
 constexpr uint32_t kResetManagerBase = 0xFFD05000u;
 constexpr uint32_t kResetManagerSpan = 0x1000u;
@@ -36,6 +36,7 @@ constexpr uint32_t kBridgeResetS2f = 1u << 6;
 constexpr uint32_t kTextureOffset = 0x00400000u;
 constexpr uint32_t kFramebufferBytes = 4u * 1024u * 1024u;
 constexpr uint32_t kTextureBytes = 8u * 1024u * 1024u;
+constexpr double kCoreClockHz = 18000000.0;
 
 struct MapRegion {
   void *raw = MAP_FAILED;
@@ -60,10 +61,12 @@ struct Options {
   bool skipFbState = false;
   bool dumpTexture = false;
   bool preloadTraceTextures = false;
+  bool skipTextureClear = false;
   uint32_t texWriteDelayUs = 0;
   bool idleAfterTexBatch = false;
   bool resetBeforePlayback = false;
   uint32_t maxEntries = 0;
+  uint64_t coreClockHz = static_cast<uint64_t>(kCoreClockHz);
 };
 
 inline uint32_t mmioRead32(volatile uint8_t *mmio, uint32_t addr);
@@ -95,15 +98,17 @@ public:
     return true;
   }
   bool writeFb32(uint32_t byteOffset, uint32_t value) override {
-    return physWrite32(fd_, fbCache_, fbBase_ + byteOffset, value);
+    mmioWrite32(mmio_, 0x00400000u | byteOffset, value);
+    return true;
   }
   bool writeFb16(uint32_t byteOffset, uint16_t value) override {
-    return physWrite16(fd_, fbCache_, fbBase_ + byteOffset, value);
+    mmioWrite16(mmio_, 0x00400000u | byteOffset, value);
+    return true;
   }
   bool writeTex32(uint32_t byteOffset, uint32_t value) override {
-    const bool ok = physWrite32(fd_, texCache_, fbBase_ + kTextureOffset + byteOffset, value);
-    if (ok && texWriteDelayUs_ != 0) usleep(texWriteDelayUs_);
-    return ok;
+    mmioWrite32(mmio_, 0x00800000u + byteOffset, value);
+    if (texWriteDelayUs_ != 0) usleep(texWriteDelayUs_);
+    return true;
   }
   bool writeFbBulk(uint32_t byteOffset, const uint8_t *data, uint32_t size) override {
     return physWriteAll(fd_, fbCache_, fbBase_ + byteOffset, data, size);
@@ -150,9 +155,50 @@ double elapsedMs(Clock::time_point start) {
   return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
 }
 
+double ratio(uint64_t numerator, uint64_t denominator) {
+  return denominator == 0 ? 0.0 : static_cast<double>(numerator) / denominator;
+}
+
+void printTransferProfile(const char *name, const uint32_t *profile, uint32_t base,
+                           uint64_t pixels, uint64_t renderCycles, uint32_t version) {
+  const uint64_t commands = static_cast<uint64_t>(profile[base + 8]) + profile[base + 9];
+  if (version >= 0x00020000) {
+    fprintf(stderr,
+            "[de10-trace] %s: requests=%u (R=%u W=%u, %.3f/pixel) req-stall=%u "
+            "avalon-wait=%u avg-wait=%.3f\n",
+            name, profile[base], profile[base + 1], profile[base + 2],
+            ratio(profile[base], pixels), profile[base + 3], profile[base + 7],
+            ratio(profile[base + 7], commands));
+    fprintf(stderr,
+            "[de10-trace] %s DDR: read-cmd=%u write-cmd=%u read-beats=%u "
+            "read-throughput=%.4f beats/cycle\n",
+            name, profile[base + 8], profile[base + 9], profile[base + 10],
+            ratio(profile[base + 10], renderCycles));
+    return;
+  }
+  fprintf(stderr,
+          "[de10-trace] %s: requests=%u (R=%u W=%u, %.3f/pixel) req-stall=%u "
+          "avg-xfer=%.3f avg-queue=%.3f avalon-wait=%u avg-wait=%.3f\n",
+          name, profile[base], profile[base + 1], profile[base + 2],
+          ratio(profile[base], pixels), profile[base + 3],
+          ratio(profile[base + 4], profile[base]), ratio(profile[base + 5], profile[base]),
+          profile[base + 7], ratio(profile[base + 7], commands));
+  fprintf(stderr,
+          "[de10-trace] %s parallelism: transfers=%.3f read-beats=%.3f "
+          "read-throughput=%.4f beats/cycle\n",
+          name, ratio(profile[base + 4], renderCycles),
+          ratio(profile[base + 6], renderCycles), ratio(profile[base + 10], renderCycles));
+  fprintf(stderr,
+          "[de10-trace] %s DDR: read-cmd=%u write-cmd=%u read-beats=%u "
+          "beat-occupancy=%u (%.3f/beat) response-stall=%u\n",
+          name, profile[base + 8], profile[base + 9], profile[base + 10],
+          profile[base + 6], ratio(profile[base + 6], profile[base + 10]),
+          profile[base + 11]);
+}
+
 void usage(const char *argv0) {
   fprintf(stderr,
-          "Usage: %s <trace.bin|trace-dir> [--mmio-base HEX] [--mmio-span HEX] [--fb-base HEX] [--mem-path PATH] [--skip-state] [--skip-fb-state] [--dump-texture] [--preload-trace-textures] [--tex-write-delay-us N] [--idle-after-tex-batch] [--max-entries N]\n",
+          "Usage: %s <trace.bin|trace-dir> [--mmio-base HEX] [--mmio-span HEX] [--fb-base HEX] [--mem-path PATH] [--skip-state] [--skip-fb-state] [--skip-texture-clear] [--dump-texture] [--preload-trace-textures] [--tex-write-delay-us N] [--idle-after-tex-batch] [--max-entries N] [--core-clock-hz N]\n",
           argv0);
 }
 
@@ -175,6 +221,8 @@ bool parseArgs(int argc, char **argv, Options *opts) {
       opts->skipState = true;
     } else if (strcmp(argv[i], "--skip-fb-state") == 0) {
       opts->skipFbState = true;
+    } else if (strcmp(argv[i], "--skip-texture-clear") == 0) {
+      opts->skipTextureClear = true;
     } else if (strcmp(argv[i], "--dump-texture") == 0) {
       opts->dumpTexture = true;
     } else if (strcmp(argv[i], "--preload-trace-textures") == 0) {
@@ -187,6 +235,12 @@ bool parseArgs(int argc, char **argv, Options *opts) {
       opts->resetBeforePlayback = true;
     } else if (strcmp(argv[i], "--max-entries") == 0 && i + 1 < argc) {
       opts->maxEntries = static_cast<uint32_t>(strtoul(argv[++i], nullptr, 0));
+    } else if (strcmp(argv[i], "--core-clock-hz") == 0 && i + 1 < argc) {
+      opts->coreClockHz = strtoull(argv[++i], nullptr, 0);
+      if (opts->coreClockHz == 0) {
+        fprintf(stderr, "Invalid core clock frequency\n");
+        return false;
+      }
     } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
       usage(argv[0]);
       exit(0);
@@ -410,7 +464,6 @@ bool physWriteAll(int fd, PageCache *cache, uint32_t physBase, const void *src, 
     cache->bytesCopied += chunk;
     done += chunk;
   }
-  unmapRegion(&cache->region);
   return true;
 }
 
@@ -450,7 +503,7 @@ bool physWrite16(int fd, PageCache *cache, uint32_t physAddr, uint16_t value) {
 
 uint32_t remapBackendRegAddr(uint32_t addr) {
   const uint32_t base = addr & 0x3FFFFFu;
-  if ((base & 0x200000u) == 0) return base;
+  if ((base & 0x200000u) == 0) return base & 0x3ffu;
   switch (base & 0xfffu) {
     case 0x088: return 0x088;
     case 0x08c: return 0x08c;
@@ -482,7 +535,7 @@ uint32_t remapBackendRegAddr(uint32_t addr) {
     case 0x0f4: return 0x0bc;
     case 0x0f8: return 0x0dc;
     case 0x0fc: return 0x0fc;
-    default: return base & ~0x200000u;
+    default: return base & 0x3ffu;
   }
 }
 
@@ -585,10 +638,10 @@ int main(int argc, char **argv) {
     free(trace.traceData);
     return 1;
   }
-  fprintf(stderr, "[de10-trace] MMIO mapping ready; DDR writes via pwrite at fb=0x%08x tex=0x%08x\n",
+  fprintf(stderr, "[de10-trace] MMIO mapping ready; framebuffer DDR=0x%08x texture DDR=0x%08x\n",
           opts.fbBase, opts.fbBase + kTextureOffset);
 
-  if (files.stateFile.empty() && !opts.preloadTraceTextures) {
+  if (files.stateFile.empty() && !opts.preloadTraceTextures && !opts.skipTextureClear) {
     fprintf(stderr, "[de10-trace] No state.bin; clearing texture region before replay\n");
     if (!physFillZero(fd, &texCache, opts.fbBase + kTextureOffset, kTextureBytes)) {
       fprintf(stderr, "[de10-trace] ERROR: failed to clear texture region\n");
@@ -671,6 +724,11 @@ int main(int argc, char **argv) {
     free(stateData);
   }
 
+  fprintf(stderr, "[de10-trace] Initial idle wait begin\n");
+  idleWait(mmio.base);
+  fprintf(stderr, "[de10-trace] Initial idle wait complete; clearing profile counters\n");
+  mmioWrite32(mmio.base, 0x3cc, 1);
+  fprintf(stderr, "[de10-trace] Profile counters cleared\n");
   uint32_t replayEntries = opts.maxEntries && opts.maxEntries < trace.entryCount ? opts.maxEntries : trace.entryCount;
   fbCache.mapCount = 0;
   fbCache.bytesCopied = 0;
@@ -725,12 +783,237 @@ int main(int argc, char **argv) {
   uint32_t finalFbiInit1 = mmioRead32(mmio.base, 0x214);
   uint32_t finalFbiInit2 = mmioRead32(mmio.base, 0x218);
   fprintf(stderr, "[de10-trace] Final idle wait took %.3f ms\n", elapsedMs(finalIdleStart));
-  uint32_t pixelsIn = mmioRead32(mmio.base, 0x14c);
-  uint32_t pixelsOut = mmioRead32(mmio.base, 0x15c);
+  uint64_t renderCycles = mmioRead32(mmio.base, 0x3d0) |
+                          (static_cast<uint64_t>(mmioRead32(mmio.base, 0x3d4)) << 32);
+  uint64_t pixelsIn = mmioRead32(mmio.base, 0x3d8) |
+                      (static_cast<uint64_t>(mmioRead32(mmio.base, 0x3dc)) << 32);
+  uint64_t pixelsOut = mmioRead32(mmio.base, 0x3e0) |
+                       (static_cast<uint64_t>(mmioRead32(mmio.base, 0x3e4)) << 32);
+  double cyclesPerInput = pixelsIn == 0 ? 0.0 : static_cast<double>(renderCycles) / pixelsIn;
+  double cyclesPerOutput = pixelsOut == 0 ? 0.0 : static_cast<double>(renderCycles) / pixelsOut;
+  double inputMegapixels = cyclesPerInput == 0.0 ? 0.0 : opts.coreClockHz / cyclesPerInput / 1000000.0;
   fprintf(stderr,
-          "[de10-trace] Replay complete: reg=%u tex=%u fb=%u swaps=%u status=0x%08x pixelsIn=%u pixelsOut=%u\n",
+          "[de10-trace] Replay complete: reg=%u tex=%u fb=%u swaps=%u status=0x%08x pixelsIn=%llu pixelsOut=%llu\n",
           replayResult.regWrites, replayResult.texWrites, replayResult.fbWrites,
-          replayResult.swapWrites, finalStatus, pixelsIn, pixelsOut);
+          replayResult.swapWrites, finalStatus, static_cast<unsigned long long>(pixelsIn),
+          static_cast<unsigned long long>(pixelsOut));
+  fprintf(stderr,
+          "[de10-trace] Triangle performance: cycles=%llu cycles/input=%.3f cycles/output=%.3f input=%.3f MPix/s at %.3f MHz\n",
+          static_cast<unsigned long long>(renderCycles), cyclesPerInput, cyclesPerOutput,
+          inputMegapixels, opts.coreClockHz / 1000000.0);
+  uint32_t profile[64] = {};
+  for (uint32_t i = 0; i < 64; ++i) profile[i] = mmioRead32(mmio.base, 0x100000 + i * 4);
+     if (profile[0] == 0x00140000) {
+       fprintf(stderr,
+               "[de10-trace] Texture-cache bank blocked/input: fast-request=%.3f "
+               "fast-response=%.3f\n",
+               ratio(profile[1], pixelsIn), ratio(profile[2], pixelsIn));
+     } else if (profile[0] == 0x00130000 || profile[0] == 0x00120000 ||
+                profile[0] == 0x00110000) {
+     fprintf(stderr,
+             "[de10-trace] Causal stalls cycles/input: read-request=%.3f "
+             "write-request=%.3f write-Avalon=%.3f texture-request=%.3f\n",
+             ratio(profile[1], pixelsIn), ratio(profile[2], pixelsIn),
+             ratio(profile[3], pixelsIn), ratio(profile[4], pixelsIn));
+     fprintf(stderr,
+             "[de10-trace] Framebuffer traffic: write-beats=%u (%.3f/input) "
+             "write-commands=%u average-write-burst=%.3f read-beats=%u (%.3f/input) "
+             "read-commands=%u average-read-burst=%.3f\n",
+             profile[5], ratio(profile[5], pixelsIn), profile[6], ratio(profile[5], profile[6]),
+             profile[7], ratio(profile[7], pixelsIn), profile[8], ratio(profile[7], profile[8]));
+     fprintf(stderr,
+             "[de10-trace] Ingress max: color=%u aux=%u; read stalls: data=%u "
+             "inflight=%u unissued=%u response=%u\n",
+             profile[9], profile[10], profile[11], profile[12], profile[13], profile[14]);
+      fprintf(stderr,
+              "[de10-trace] Stall overlap cycles/input: read+write-request=%.3f "
+              "read+write-Avalon=%.3f\n",
+              ratio(profile[15], pixelsIn), ratio(profile[16], pixelsIn));
+      if (profile[0] == 0x00130000) {
+        fprintf(stderr,
+                "[de10-trace] Independent controller cycles/input: job-valid=%.3f "
+                "job-blocked=%.3f no-job=%.3f row-wait=%.3f setup-wait=%.3f\n",
+                ratio(profile[17], pixelsIn), ratio(profile[18], pixelsIn),
+                ratio(profile[19], pixelsIn), ratio(profile[20], pixelsIn),
+                ratio(profile[21], pixelsIn));
+        fprintf(stderr,
+                "[de10-trace] Independent stage input blocked/input: interpolation=%.3f "
+                "texture=%.3f read=%.3f write=%.3f retire=%.3f\n",
+                ratio(profile[22], pixelsIn), ratio(profile[23], pixelsIn),
+                ratio(profile[26], pixelsIn), ratio(profile[28], pixelsIn),
+                ratio(profile[31], pixelsIn));
+        fprintf(stderr,
+                "[de10-trace] Independent waits/input: cache-response=%.3f "
+                "fb-read-response=%.3f; request blocked: texture-cache=%.3f "
+                "texture-fb-read=%.3f fb-write=%.3f\n",
+                ratio(profile[27], pixelsIn), ratio(profile[29], pixelsIn),
+                ratio(profile[24], pixelsIn), ratio(profile[25], pixelsIn),
+                ratio(profile[30], pixelsIn));
+        fprintf(stderr,
+                "[de10-trace] Texture DDR: commands=%u beats=%u pending=%u (%.3f/input) "
+                "no-data=%u (%.3f/input) pending-beats-max=%u\n",
+                profile[32], profile[33], profile[34], ratio(profile[34], pixelsIn),
+                profile[35], ratio(profile[35], pixelsIn), profile[36]);
+
+      } else if (profile[0] == 0x00120000) {
+        const uint64_t classifiedCycles = static_cast<uint64_t>(profile[17]) + profile[18] +
+            profile[19] + profile[20] + profile[21] + profile[22] + profile[23] + profile[24];
+        fprintf(stderr,
+                "[de10-trace] Render cycle partition: issue=%u (%.3f/input) setup=%u (%.3f) "
+                "interpolation=%u (%.3f) cache=%u (%.3f) texture=%u (%.3f) "
+                "fb-read=%u (%.3f) fb-write=%u (%.3f) retire=%u (%.3f)\n",
+                profile[17], ratio(profile[17], pixelsIn), profile[18], ratio(profile[18], pixelsIn),
+                profile[19], ratio(profile[19], pixelsIn), profile[20], ratio(profile[20], pixelsIn),
+                profile[21], ratio(profile[21], pixelsIn), profile[22], ratio(profile[22], pixelsIn),
+                profile[23], ratio(profile[23], pixelsIn), profile[24], ratio(profile[24], pixelsIn));
+        fprintf(stderr,
+                "[de10-trace] Render cycle partition sum=%llu render=%llu delta=%lld; "
+                "texture DDR: commands=%u beats=%u pending=%u no-data=%u "
+                "pipeline-max=%u pending-beats-max=%u\n",
+                static_cast<unsigned long long>(classifiedCycles),
+                static_cast<unsigned long long>(renderCycles),
+                static_cast<long long>(renderCycles) - static_cast<long long>(classifiedCycles),
+                profile[25], profile[26], profile[27], profile[28], profile[29], profile[30]);
+      }
+    } else if (profile[0] == 0x00100000) {
+     fprintf(stderr,
+             "[de10-trace] Causal stalls cycles/input: read-request=%.3f "
+             "write-request=%.3f write-Avalon=%.3f texture-request=%.3f\n",
+             ratio(profile[1], pixelsIn), ratio(profile[2], pixelsIn),
+             ratio(profile[3], pixelsIn), ratio(profile[4], pixelsIn));
+   } else if (profile[0] == 0x000f0000) {
+     fprintf(stderr, "[de10-trace] Pipeline profiling disabled\n");
+   } else if (profile[0] == 0x000e0000) {
+     fprintf(stderr,
+             "[de10-trace] Pipeline no-progress cycles/input: interpolation=%.3f "
+             "cache=%.3f fb-read=%.3f fb-write=%.3f\n",
+             ratio(profile[1], pixelsIn), ratio(profile[2], pixelsIn),
+             ratio(profile[3], pixelsIn), ratio(profile[4], pixelsIn));
+   } else if (profile[0] == 0x000d0000) {
+     fprintf(stderr,
+             "[de10-trace] Read data-empty stalls: total=%u (%.3f/input) "
+             "runs=%u average-run=%.3f read-commands=%u\n",
+             profile[1], ratio(profile[1], pixelsIn), profile[2],
+             ratio(profile[1], profile[2]), profile[3]);
+   } else if (profile[0] == 0x000c0000) {
+     fprintf(stderr,
+             "[de10-trace] Read data-empty stalls: total=%u (%.3f/input) response-full=%u\n",
+             profile[1], ratio(profile[1], pixelsIn), profile[2]);
+   } else if (profile[0] == 0x000b0000) {
+     const uint32_t dataEmptyStalls = profile[1] + profile[2];
+     fprintf(stderr,
+             "[de10-trace] Read data-empty stalls: total=%u (%.3f/input) "
+             "first-beat=%u (%.3f/input) interbeat=%u response-full=%u\n",
+             dataEmptyStalls, ratio(dataEmptyStalls, pixelsIn), profile[1],
+             ratio(profile[1], pixelsIn), profile[2], profile[3]);
+   } else if (profile[0] == 0x000a0000) {
+     fprintf(stderr,
+             "[de10-trace] Read data-empty stalls: total=%u (%.3f/input) "
+             "prefetch-in-flight=%u (%.3f/input) unissued=%u response-full=%u\n",
+             profile[1], ratio(profile[1], pixelsIn), profile[2], ratio(profile[2], pixelsIn),
+             profile[3], profile[4]);
+   } else if (profile[0] == 0x00090000) {
+      fprintf(stderr,
+              "[de10-trace] Read-request stalls: total=%u (%.3f/input) data-empty=%u "
+              "response-full=%u fallback=%u (plane categories may overlap)\n",
+              profile[1], ratio(profile[1], pixelsIn), profile[2], profile[3], profile[4]);
+   } else if (profile[0] == 0x00080000) {
+     fprintf(stderr,
+             "[de10-trace] Read-request stalls: total=%u (%.3f/input) data-empty=%u "
+             "response-full=%u fallback=%u unclassified=%lld\n",
+             profile[1], ratio(profile[1], pixelsIn), profile[2], profile[3], profile[4],
+             static_cast<long long>(profile[1]) - profile[2] - profile[3] - profile[4]);
+     fprintf(stderr,
+             "[de10-trace] Downstream cause: write-request-stall=%u (%.3f/input) "
+             "first-write-beat-wait=%u (%.3f/input) read+write-overlap=%u (%.3f/input) "
+             "max-pending=%u\n",
+             profile[5], ratio(profile[5], pixelsIn), profile[6], ratio(profile[6], pixelsIn),
+             profile[7], ratio(profile[7], pixelsIn), profile[8]);
+   } else if (profile[0] == 0x00070000) {
+     fprintf(stderr,
+             "[de10-trace] Causal stalls: read-request=%u (%.3f/input) "
+             "write-request=%u (%.3f/input)\n",
+             profile[1], ratio(profile[1], pixelsIn), profile[2], ratio(profile[2], pixelsIn));
+     fprintf(stderr,
+             "[de10-trace] Write Avalon union waits: first-beat=%u (%.3f/input) "
+             "inter-beat=%u (%.3f/input)\n",
+             profile[3], ratio(profile[3], pixelsIn), profile[4], ratio(profile[4], pixelsIn));
+     fprintf(stderr,
+             "[de10-trace] Causal overlap: write-stall+Avalon=%u (%.3f/input) "
+             "read+write-stall=%u (%.3f/input); max-pending=%u\n",
+             profile[5], ratio(profile[5], pixelsIn), profile[7], ratio(profile[7], pixelsIn),
+             profile[6]);
+   } else if (profile[0] == 0x00060000) {
+     fprintf(stderr,
+             "[de10-trace] Causal stalls cycles: read-request=%u (%.3f/input) "
+             "write-request=%u (%.3f/input) write-response=%u (%.3f/input)\n",
+             profile[1], ratio(profile[1], pixelsIn), profile[2], ratio(profile[2], pixelsIn),
+             profile[3], ratio(profile[3], pixelsIn));
+     fprintf(stderr,
+             "[de10-trace] Write Avalon union waits: first-beat=%u (%.3f/input) "
+             "inter-beat=%u (%.3f/input); beats=%u runs=%u average-run=%.3f\n",
+             profile[4], ratio(profile[4], pixelsIn), profile[5], ratio(profile[5], pixelsIn),
+             profile[6], profile[7], ratio(profile[6], profile[7]));
+     fprintf(stderr,
+             "[de10-trace] Causal overlap: read+write-stall=%u write-stall+Avalon=%u; "
+             "max-pending=%u\n",
+             profile[9], profile[10], profile[8]);
+   } else if (profile[0] == 0x00050000) {
+     fprintf(stderr,
+             "[de10-trace] Pipeline occupancy cycles/input: interpolation=%.3f cache=%.3f "
+             "fb-read=%.3f fb-write=%.3f retire=%.3f\n",
+             ratio(profile[1], pixelsIn), ratio(profile[2], pixelsIn),
+             ratio(profile[3], pixelsIn), ratio(profile[4], pixelsIn),
+             ratio(profile[5], pixelsIn));
+     fprintf(stderr,
+             "[de10-trace] Pipeline causal stalls: read-request=%u (%.3f/input) "
+             "write-request=%u (%.3f/input) write-response=%u (%.3f/input) "
+             "texture-request=%u texture-response=%u\n",
+             profile[8], ratio(profile[8], pixelsIn), profile[9], ratio(profile[9], pixelsIn),
+             profile[10], ratio(profile[10], pixelsIn), profile[17], profile[18]);
+     fprintf(stderr,
+             "[de10-trace] Write Avalon: first-beat-wait=%u (%.3f/input) "
+             "inter-beat-wait=%u; beats=%u runs=%u average-run=%.3f\n",
+             profile[11], ratio(profile[11], pixelsIn), profile[12], profile[13], profile[14],
+             ratio(profile[13], profile[14]));
+     fprintf(stderr,
+             "[de10-trace] Stall propagation: read+write=%u write+Avalon=%u; "
+             "pending avg=%.3f max=%u samples-at-60+=%u/%u\n",
+             profile[15], profile[16], ratio(profile[6], profile[20]), profile[7],
+             profile[19], profile[20]);
+   } else if (profile[0] == 0x00040000) {
+     fprintf(stderr,
+             "[de10-trace] Write Avalon: first-beat-waits=%u inter-beat-waits=%u "
+             "beats=%u (%.3f/render-cycle) runs=%u average-run=%.3f "
+             "ingress-stalls=%u\n",
+             profile[1], profile[2], profile[3], ratio(profile[3], renderCycles),
+             profile[4], ratio(profile[3], profile[4]), profile[5]);
+   } else {
+  fprintf(stderr,
+          "[de10-trace] Pipeline stages cycles/input: interpolation=%.3f cache=%.3f "
+          "fb-read=%.3f fb-write=%.3f retire=%.3f\n",
+          ratio(profile[1], pixelsIn), ratio(profile[2], pixelsIn),
+          ratio(profile[3], pixelsIn), ratio(profile[4], pixelsIn),
+          ratio(profile[5], pixelsIn));
+  fprintf(stderr,
+          "[de10-trace] Pipeline occupancy max: interpolation=%u cache=%u read=%u write=%u "
+          "retire=%u pending=%u avg-pending=%.3f; jobs=%u/%u/%u/%u/%u/%u errors=%u\n",
+          profile[6], profile[7], profile[8], profile[9], profile[10], profile[23],
+          ratio(profile[22], profile[16]), profile[11], profile[12], profile[13], profile[14],
+          profile[15], profile[16], profile[62]);
+  fprintf(stderr,
+          "[de10-trace] Pixel features: textured=%u depth-read=%u blend-read=%u "
+          "color-write=%u aux-write=%u\n",
+          profile[17], profile[18], profile[19], profile[20], profile[21]);
+  fprintf(stderr,
+          "[de10-trace] Active pipeline: empty=%u (%.3f/input) busy=%u (%.3f/input) "
+          "profile-version=0x%08x\n",
+          profile[60], ratio(profile[60], pixelsIn), profile[61], ratio(profile[61], pixelsIn),
+          profile[0]);
+  printTransferProfile("color", profile, 24, pixelsIn, renderCycles, profile[0]);
+  printTransferProfile("aux", profile, 36, pixelsIn, renderCycles, profile[0]);
+  printTransferProfile("texture", profile, 48, pixelsIn, renderCycles, profile[0]);
+  }
 
   if (!replayResult.havePresentedOffset) {
     replayResult.presentedOffset = replayResult.currentDrawOffset;

@@ -60,6 +60,7 @@ def connect(path):
 
 def main():
     subprocess.run(["nix", "build", f"path:{ROOT}#xls"], check=True)
+    os.environ["PATH"] = f"{ROOT / 'result/bin'}{os.pathsep}{os.environ.get('PATH', '')}"
     subprocess.run([
         str(ROOT / "scripts/replay-pure-xls-proc-trace"), "--generate-only",
         "--native-ir", str(IR), str(ROOT / "traces/test28.bin"),

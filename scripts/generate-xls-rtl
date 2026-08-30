@@ -19,24 +19,30 @@ if [[ "${1:-}" == "--de10-proc" ]]; then
     --lower_to_proc_scoped_channels \
     "$root/xls/dslx/core_sim.x" >"$proc_build/unoptimized.ir"
   sed -E \
-    -e '/^  chan _(texture_fill_response|texture_fill_transfer_response|pixel_interpolation_request|triangle_setup_request|triangle_edges)\(/ s/\)$/\, fifo_depth=0, bypass=true, register_push_outputs=false, register_pop_outputs=false)/' \
-    -e '/^  chan _(texture_fill_response|texture_fill_transfer_response|pixel_interpolation_request|triangle_setup_request|triangle_edges)\(/b' \
-    -e '/^  chan _pixel_interpolation_response\(/ s/\)$/\, fifo_depth=2, bypass=false, register_push_outputs=true, register_pop_outputs=true)/' \
-    -e '/^  chan _pixel_interpolation_response\(/b' \
-    -e '/^  chan _(pixel_result|triangle_setup_response)\(/ s/\)$/\, fifo_depth=1, bypass=false, register_push_outputs=true, register_pop_outputs=false)/' \
-    -e '/^  chan _(pixel_result|triangle_setup_response)\(/b' \
-    -e '/^  chan _pixel_work\(/ s/\)$/\, fifo_depth=2, bypass=false, register_push_outputs=true, register_pop_outputs=true)/' \
-    -e '/^  chan _pixel_work\(/b' \
-    -e '/^  chan _texture_cache_request\(/ s/\)$/\, fifo_depth=2, bypass=false, register_push_outputs=true, register_pop_outputs=true)/' \
+     -e '/^  chan _(texture_fill_response|texture_fill_transfer|texture_fill_transfer_response|triangle_setup_request)\(/ s/\)$/\, fifo_depth=0, bypass=true, register_push_outputs=false, register_pop_outputs=false)/' \
+     -e '/^  chan _(texture_fill_response|texture_fill_transfer|texture_fill_transfer_response|triangle_setup_request)\(/b' \
+    -e '/^  chan _triangle_setup_response\(/ s/\)$/\, fifo_depth=1, bypass=false, register_push_outputs=true, register_pop_outputs=false)/' \
+    -e '/^  chan _triangle_setup_response\(/b' \
+    -e '/^  chan _(pixel_work|pixel_result)\(/ s/\)$/\, fifo_depth=2, bypass=false, register_push_outputs=true, register_pop_outputs=false)/' \
+    -e '/^  chan _(pixel_work|pixel_result)\(/b' \
+    -e '/^  chan _pixel_read_job\(/ s/\)$/\, fifo_depth=2, bypass=false, register_push_outputs=true, register_pop_outputs=false)/' \
+    -e '/^  chan _pixel_pending\(/ s/\)$/\, fifo_depth=12, bypass=false, register_push_outputs=true, register_pop_outputs=false)/' \
+    -e '/^  chan _(pixel_read_job|pixel_pending)\(/b' \
+    -e '/^  chan _texture_cache_request\(/ s/\)$/\, fifo_depth=0, bypass=true, register_push_outputs=false, register_pop_outputs=false)/' \
     -e '/^  chan _texture_cache_request\(/b' \
     -e '/^  chan _pixel_job\(/ s/\)$/\, fifo_depth=0, bypass=true, register_push_outputs=false, register_pop_outputs=false)/' \
     -e '/^  chan _pixel_job\(/b' \
+    -e '/^  chan _framebuffer_pixel_read_response\(/ s/\)$/\, fifo_depth=2, bypass=false, register_push_outputs=true, register_pop_outputs=false)/' \
+    -e '/^  chan _framebuffer_pixel_read_response\(/b' \
+    -e '/^  chan _(framebuffer_pixel_(read|read_response|write|write_response)|read_(color|aux)(_response)?|write_(color|aux)(_response)?|(color|aux)_write_(command|response)|pixel_cache_(request|response|lookup)|texture_cache_response)\(/ s/\)$/\, fifo_depth=2, bypass=false, register_push_outputs=true, register_pop_outputs=false)/' \
+    -e '/^  chan _(framebuffer_pixel_(read|read_response|write|write_response)|read_(color|aux)(_response)?|write_(color|aux)(_response)?|(color|aux)_write_(command|response)|pixel_cache_(request|response|lookup)|texture_cache_response)\(/b' \
+    -e '/fifo_depth=/b' \
     -e '/^  chan _.*ops=send_receive/ s/\)$/\, fifo_depth=1, bypass=false, register_push_outputs=true, register_pop_outputs=false)/' \
     "$proc_build/unoptimized.ir" >"$proc_build/fifo.ir"
   opt_main --output_path="$proc_build/hardware.ir" "$proc_build/fifo.ir"
   codegen_main \
     --generator=pipeline \
-    --pipeline_stages=16 \
+    --pipeline_stages=3 \
     --delay_model=asap7 \
     --worst_case_throughput=1 \
     --reset=rst \
@@ -64,7 +70,7 @@ if [[ "${1:-}" == "--hosted-proc" ]]; then
     --lower_to_proc_scoped_channels \
     "$root/xls/dslx/core_sim.x" >"$proc_build/unoptimized.ir"
   sed -E \
-    '/^  chan _(fill_line_request|fill_line_response|texture_cache_request|texture_cache_response|pixel_job|pixel_result|pixel_cache_request|pixel_cache_response)\(/ s/\)$/\, fifo_depth=1, bypass=false, register_push_outputs=true, register_pop_outputs=false)/' \
+    '/^  chan _(fill_line_request|fill_line_response|texture_cache_request|texture_cache_response|pixel_job|pixel_work|pixel_read_job|pixel_pending|pixel_result|pixel_cache_request|pixel_cache_response)\(/ s/\)$/\, fifo_depth=1, bypass=false, register_push_outputs=true, register_pop_outputs=false)/' \
     "$proc_build/unoptimized.ir" >"$proc_build/fifo.ir"
   opt_main --output_path="$proc_build/hardware.ir" "$proc_build/fifo.ir"
   codegen_main \

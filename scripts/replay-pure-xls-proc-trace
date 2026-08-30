@@ -527,15 +527,21 @@ def native_replay(args, framebuffer):
     ir.parent.mkdir(parents=True, exist_ok=True)
     sources = list(pathlib.Path("xls/dslx").glob("*.x"))
     source_mtime = max(path.stat().st_mtime for path in sources)
-    if not unoptimized_ir.exists() or unoptimized_ir.stat().st_mtime < source_mtime:
-        with unoptimized_ir.open("w") as output:
-            subprocess.run([
-                "ir_converter_main",
-                "--dslx_path=xls/dslx",
-                "--top=core_sim_hosted",
-                "--lower_to_proc_scoped_channels",
-                "xls/dslx/core_sim.x",
-            ], stdout=output, check=True)
+    if (not unoptimized_ir.exists() or unoptimized_ir.stat().st_size == 0 or
+            unoptimized_ir.stat().st_mtime < source_mtime):
+        temporary_ir = unoptimized_ir.with_suffix(f"{unoptimized_ir.suffix}.tmp")
+        try:
+            with temporary_ir.open("w") as output:
+                subprocess.run([
+                    "ir_converter_main",
+                    "--dslx_path=xls/dslx",
+                    "--top=core_sim_hosted",
+                    "--lower_to_proc_scoped_channels",
+                    "xls/dslx/core_sim.x",
+                ], stdout=output, check=True)
+            temporary_ir.replace(unoptimized_ir)
+        finally:
+            temporary_ir.unlink(missing_ok=True)
     optimizer_mtime = max(unoptimized_ir.stat().st_mtime, pathlib.Path(__file__).stat().st_mtime)
     if not ir.exists() or ir.stat().st_mtime < optimizer_mtime:
         command = ["opt_main", f"--output_path={ir}"]

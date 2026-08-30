@@ -62,3 +62,16 @@ case class XlsDe10Scanout(c: Config) extends Component {
 object XlsDe10ScanoutGen extends App {
   GenSupport.de10Verilog().generate(XlsDe10Scanout(Config.voodoo1()))
 }
+
+object XlsDe10RtlGen extends App {
+  GenSupport.de10Verilog().generate(XlsDe10Scanout(Config.voodoo1()))
+  SpinalConfig(
+    mode = Verilog,
+    targetDirectory = "hw/de10/rtl",
+    privateNamespace = true,
+    defaultConfigForClockDomains = ClockDomainConfig(
+      resetKind = SYNC,
+      resetActiveLevel = HIGH
+    )
+  ).generate(XlsAvalonTransferMasterCore())
+}

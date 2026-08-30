@@ -12,25 +12,28 @@ PLL_QSYS_FILE="$QSYS_DIR/de10_core_pll.qsys"
 PLL_QSYS_OUT_DIR="$QSYS_OUT_DIR/pll"
 HDMI_PLL_QSYS_FILE="$QSYS_DIR/de10_hdmi_pll.qsys"
 HDMI_PLL_QSYS_OUT_DIR="$QSYS_OUT_DIR/hdmi_pll"
-PLL_OUTPUT_CLOCK_MHZ="${DE10_CORE_CLOCK_MHZ:-50.0}"
-FABRIC_CLOCK_HZ="$(python3 - <<'PY'
+PLL_OUTPUT_CLOCK_MHZ="${DE10_CORE_CLOCK_MHZ:-27.0}"
+H2F_OUTPUT_CLOCK_MHZ="${DE10_H2F_CLOCK_MHZ:-54.0}"
+read -r FABRIC_CLOCK_HZ H2F_CLOCK_HZ < <(python3 - <<'PY'
 import os
-mhz = float(os.environ.get('DE10_CORE_CLOCK_MHZ', '50.0'))
-print(int(round(mhz * 1000000.0)))
+core = float(os.environ.get('DE10_CORE_CLOCK_MHZ', '27.0'))
+h2f = float(os.environ.get('DE10_H2F_CLOCK_MHZ', '54.0'))
+print(int(round(core * 1000000.0)), int(round(h2f * 1000000.0)))
 PY
-)"
+)
 
 python3 - <<'PY'
 import os, sys
-value = os.environ.get('DE10_CORE_CLOCK_MHZ', '50.0')
-try:
-    mhz = float(value)
-except ValueError:
-    print(f"[de10] invalid DE10_CORE_CLOCK_MHZ: {value!r}", file=sys.stderr)
-    raise SystemExit(2)
-if mhz <= 0.0:
-    print(f"[de10] DE10_CORE_CLOCK_MHZ must be positive, got {mhz}", file=sys.stderr)
-    raise SystemExit(2)
+for name, default in [('DE10_CORE_CLOCK_MHZ', '27.0'), ('DE10_H2F_CLOCK_MHZ', '54.0')]:
+    value = os.environ.get(name, default)
+    try:
+        mhz = float(value)
+    except ValueError:
+        print(f"[de10] invalid {name}: {value!r}", file=sys.stderr)
+        raise SystemExit(2)
+    if mhz <= 0.0:
+        print(f"[de10] {name} must be positive, got {mhz}", file=sys.stderr)
+        raise SystemExit(2)
 PY
 
 if ! command -v qsys-script >/dev/null 2>&1; then
@@ -55,9 +58,11 @@ done
 mkdir -p "$QSYS_OUT_DIR"
 
 echo "[de10] DE10 core fabric clock: ${PLL_OUTPUT_CLOCK_MHZ} MHz (${FABRIC_CLOCK_HZ} Hz)"
+echo "[de10] DE10 H2F clock: ${H2F_OUTPUT_CLOCK_MHZ} MHz (${H2F_CLOCK_HZ} Hz)"
 
 echo "[de10] Creating Platform Designer system"
-(cd "$ROOT_DIR" && qsys-script --script="$SOC_QSYS_SCRIPT" --cmd="set fabric_clock_hz $FABRIC_CLOCK_HZ")
+(cd "$ROOT_DIR" && qsys-script --script="$SOC_QSYS_SCRIPT" \
+  --cmd="set fabric_clock_hz $FABRIC_CLOCK_HZ; set h2f_clock_hz $H2F_CLOCK_HZ")
 
 if [[ ! -f "$SOC_QSYS_FILE" ]]; then
   echo "Failed to create Qsys file: $SOC_QSYS_FILE" >&2
@@ -87,7 +92,8 @@ fi
 mkdir -p "$PLL_QSYS_OUT_DIR"
 
 echo "[de10] Creating shared-clock PLL system"
-(cd "$ROOT_DIR" && qsys-script --script="$PLL_QSYS_SCRIPT" --cmd="set output_clock_mhz $PLL_OUTPUT_CLOCK_MHZ")
+(cd "$ROOT_DIR" && qsys-script --script="$PLL_QSYS_SCRIPT" \
+  --cmd="set output_clock_mhz $PLL_OUTPUT_CLOCK_MHZ; set h2f_clock_mhz $H2F_OUTPUT_CLOCK_MHZ")
 
 if [[ ! -f "$PLL_QSYS_FILE" ]]; then
   echo "Failed to create Qsys file: $PLL_QSYS_FILE" >&2

@@ -1,0 +1,26 @@
+{
+  "boot_id": "32bbda2e-4586-4ff7-b759-bff08e8cd7d7",
+  "pid": 19613,
+  "frame_counter_address": "0xa6277f70",
+  "duration_s": 180.00185472100202,
+  "frames": 1846,
+  "fps": 10.255449883342868,
+  "cpu_s": 176.13,
+  "cpu_pct": 97.84899176344416,
+  "before": {
+    "time": 18027.39962777,
+    "frames": 499,
+    "ticks": 13390,
+    "starttime": 1753708,
+    "voluntary": 16454,
+    "involuntary": 1057
+  },
+  "after": {
+    "time": 18207.401482491,
+    "frames": 2345,
+    "ticks": 31003,
+    "starttime": 1753708,
+    "voluntary": 18866,
+    "involuntary": 2145
+  }
+}

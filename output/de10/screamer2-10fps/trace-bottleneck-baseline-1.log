@@ -1,0 +1,57 @@
+before brgmodrst=0x00000000 remap=0x00000000 misci=0x000000ff fpgaportrst=0x00003fff handoff3=0x00003fff
+after  brgmodrst=0x00000000 remap=0x00000000 misci=0x000000ff fpgaportrst=0x00003fff handoff3=0x00003fff
+[de10-trace] Loaded trace /dev/shm/screamer2-50mhz/trace.bin (46338 entries)
+[de10-trace] open(/dev/mem) returned 3 errno=0
+[de10-trace] Mapping MMIO region
+[de10-trace] mmap phys=0xc0000000 span=0x01000000 aligned=0xc0000000 size=0x01000000
+[de10-trace] mmap returned 0xb5ba9000 errno=0
+[de10-trace] mmap ok phys=0xc0000000 virt=0xb5ba9000
+[de10-trace] MMIO mapping ready; framebuffer DDR=0x3f400000 texture DDR=0x3f800000
+[de10-trace] Reading state /dev/shm/screamer2-50mhz/state.bin
+[de10-trace] State loaded via shared engine: draw=0x96000 aux=0x12c000 row=1280 disp=640x480
+[de10-trace] Initial idle wait begin
+[de10-trace] Initial idle wait complete; clearing profile counters
+[de10-trace] Profile counters cleared
+[de10-trace] Entry 0 type=6 addr=0x00000000 data=0x1212a3bf repeat=1
+[de10-trace] Entry 0 type=6 addr=0x00000000 data=0x1212a3bf repeat=1
+[de10-trace] Entry 1 type=6 addr=0x00000000 data=0x1214b3bf repeat=1
+[de10-trace] Entry 1 type=6 addr=0x00000000 data=0x1214b3bf repeat=1
+[de10-trace] Entry 2 type=0 addr=0x00200088 data=0x43810000 repeat=1
+[de10-trace] Entry 2 type=0 addr=0x00200088 data=0x43810000 repeat=1
+[de10-trace] Entry 3 type=0 addr=0x0020008c data=0x438d999a repeat=1
+[de10-trace] Entry 3 type=0 addr=0x0020008c data=0x438d999a repeat=1
+[de10-trace] Progress: 4096/46338 entries
+[de10-trace] Progress: 4096/46338 entries
+[de10-trace] Progress: 8192/46338 entries
+[de10-trace] Progress: 8192/46338 entries
+[de10-trace] Progress: 12288/46338 entries
+[de10-trace] Progress: 12288/46338 entries
+[de10-trace] Progress: 16384/46338 entries
+[de10-trace] Progress: 16384/46338 entries
+[de10-trace] Progress: 20480/46338 entries
+[de10-trace] Progress: 20480/46338 entries
+[de10-trace] Progress: 24576/46338 entries
+[de10-trace] Progress: 24576/46338 entries
+[de10-trace] Progress: 28672/46338 entries
+[de10-trace] Progress: 28672/46338 entries
+[de10-trace] Progress: 32768/46338 entries
+[de10-trace] Progress: 32768/46338 entries
+[de10-trace] Progress: 36864/46338 entries
+[de10-trace] Progress: 36864/46338 entries
+[de10-trace] Progress: 40960/46338 entries
+[de10-trace] Progress: 40960/46338 entries
+[de10-trace] Progress: 45056/46338 entries
+[de10-trace] Progress: 45056/46338 entries
+[de10-trace] Replay loop body took 51.533 ms (reg=23725 tex=1268 fb=21465 swaps=1 fbMaps=0 texMaps=0 fbBytes=0 texBytes=0)
+[de10-trace] Replay loop complete, entering final idle wait
+[de10-trace] Final idle wait took 26.181 ms
+[de10-trace] Replay complete: reg=23725 tex=1268 fb=21465 swaps=1 status=0x0ffff43f pixelsIn=636378 pixelsOut=612411
+[de10-trace] Triangle performance: cycles=2785036 cycles/input=4.376 cycles/output=4.548 input=11.425 MPix/s at 50.000 MHz
+[de10-trace] Texture-cache bank blocked/input: fast-request=0.000 fast-response=0.000
+[de10-trace] Captured framebuffer via shared backend: /dev/shm/screamer2-50mhz/trace_board_fb.raw (presented=0x96000 row=1280 disp=640x480)
+[de10-trace] Wrote PNG via shared LUT path: /dev/shm/screamer2-50mhz/trace_board_fb.png
+96d0cfd27ae4948d001625454722992c21407a61b4f0e7a9a658ce0f39192b45  /dev/shm/screamer2-50mhz/trace_board_fb.raw
+fb9db5530b4cb499aacfb3463232e2dca96d5162290ea505d2601350d8b38fc0  /dev/shm/screamer2-50mhz/dosbox-x-o3
+603a9e606f59e51cf560a28b2c71c98af37c17345190db64cfa210a1110eab36  /dev/shm/screamer2-50mhz/dosbox.conf
+7be828f5380912fd5f818b978f0d6e3a06ed5dd4b9ebe0c774de387f66c475d4  /dev/shm/screamer2-50mhz/game/SCREAMER.CFG
+a003437b5e7d02f78289b27591170de030cf399257c4663d7e8d63c0ba7e8b28  /dev/shm/screamer2-50mhz/lib/libglide2x.so.2

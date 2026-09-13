@@ -1,0 +1,5 @@
+/dev/shm/screamer2-50mhz/dosbox-x-o3: OK
+PASS
+FAIL
+before brgmodrst=0x00000000 remap=0x00000000 misci=0x000000ff fpgaportrst=0x00003fff handoff3=0x00003fff
+after  brgmodrst=0x00000000 remap=0x00000000 misci=0x000000ff fpgaportrst=0x00003fff handoff3=0x00003fff

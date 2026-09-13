@@ -1,0 +1,105 @@
+{
+  "source_baseline": "emulator/dosboxx-src (locally configured DOSBox-X 2025.10.07; upstream commit not independently established)",
+  "source_retained": "emulator-o3",
+  "patch": "retained-emulator.patch",
+  "patch_sha256": "0ad07cd7723436e134cd24ae3fda1004fa2717f63fe168a01f3d67fa3ccd8f67",
+  "scope": "1392 source/header/template files compared across src/ and include/; exactly these eight differ",
+  "changes": [
+    {
+      "path": "src/cpu/core_dynrec/branch_flags.h",
+      "baseline_sha256": null,
+      "retained_sha256": "e4799515bce4421cc4aedc57399c11e49da126b5aeaf050d85b9516dfe48f567"
+    },
+    {
+      "path": "src/cpu/core_dynrec/cache.h",
+      "baseline_sha256": "354c4317b4bd6b906b910930f09d3ce8bc497947a6f326afbc1b0036c5fbe842",
+      "retained_sha256": "38038b7b67e2b3c672182b25754223b7c45add16ff636ed31f980a06716ba0f1"
+    },
+    {
+      "path": "src/cpu/core_dynrec/decoder_basic.h",
+      "baseline_sha256": "c58318268232ac8361dbc8108176bc94c73c15349dda02e0046e45b1c419a287",
+      "retained_sha256": "aabb4ffced1eeac08237894536fa6a91e01884d2ef3867ce0f51733bebf48c05"
+    },
+    {
+      "path": "src/cpu/core_dynrec/dyn_fpu.h",
+      "baseline_sha256": "24a1ff67bcca45b2485cd121cd702ec037a74e2265e963d8d13c57102a151292",
+      "retained_sha256": "7e2d3a31e4c93ffe0ed73112273a51353b65a9bd5fa97b59ebe76ba033dd1a98"
+    },
+    {
+      "path": "src/cpu/core_dynrec/operators.h",
+      "baseline_sha256": "09728100cf3a806e9fd1d36a13953a256dfd745e63ed80d9345e0a10f54f7d98",
+      "retained_sha256": "9f21d88ad6dc6ad1b242ca4c922ab72e075e8011814926494a739f712bab8cd4"
+    },
+    {
+      "path": "src/cpu/core_dynrec/risc_armv4le-o3.h",
+      "baseline_sha256": "37b5d54186922ab5427b49c7903ef42318ef2a7536daf847fb559f060daab779",
+      "retained_sha256": "4dda9c8cbe666cac914cbeedffa7d511772e2ab3829c9c41126aaa9c8c534ffc"
+    },
+    {
+      "path": "src/gui/sdlmain.cpp",
+      "baseline_sha256": "2ae5939d21ec14d47d2850ed05c1ecb96c792c30867af0f768b93a1a283d8a3b",
+      "retained_sha256": "d413f71fbbb02f234a88dde3d7e583129fd8422a0d737fd449594072328aef8f"
+    },
+    {
+      "path": "src/hardware/glide.cpp",
+      "baseline_sha256": "eb012f278845757e4ec0c1832e6333d8d5a5cab9e7d8fd23cd651ff2405232f5",
+      "retained_sha256": "0a7ab4e585fa71090eddcd7fcb4c278feab6a70aecbb12659f10a4b2adbdc320"
+    }
+  ],
+  "configuration_sha256": {
+    "config.h": "b2ad180f44d70dcc7fa188e316d37e0dad5f69e826f5c424afb2b61c88a7f865",
+    "config.log": "c88579248f0dcee155045dd9d2184277ec0eba5a43a633043be3583ff00b64ec",
+    "config.status": "8c9f9d87c2788013c5e391c2ca54ed3ce294228fa688118efb98ce9e3385e7ae"
+  },
+  "patch_validation": "Applied with patch --batch --fuzz=0 -p1 to a copy of baseline files; no offset/fuzz; all eight resulting files byte-identical to retained tree",
+  "external_artifacts": {
+    "dosbox-x-event-poll-screening": {
+      "bytes": 15843420,
+      "sha256": "fb9db5530b4cb499aacfb3463232e2dca96d5162290ea505d2601350d8b38fc0"
+    },
+    "event-poll-training.profdata": {
+      "bytes": 2963920,
+      "sha256": "190dbdc99ea5c20c0e3366fcd47074d7332d12ed52db939e0c72ccaa9ad308b0"
+    },
+    "event-poll-training.counters": {
+      "bytes": 1727544,
+      "sha256": "0da8c630c77ee03122344fb3247bb6bd358fe78e4372bc0f6f9fe496e2083327"
+    },
+    "emulator-pgo-train/dosbox.bc": {
+      "bytes": 25830784,
+      "sha256": "9820b19d1218b8f82b2919bb6698c4c2d075e2f13ec25b29b017c966ab3ee671"
+    },
+    "emulator-pgo-use/dosbox.bc": {
+      "bytes": 25830784,
+      "sha256": "9820b19d1218b8f82b2919bb6698c4c2d075e2f13ec25b29b017c966ab3ee671"
+    },
+    "emulator-pgo-train/dosbox-x": {
+      "bytes": 29754008,
+      "sha256": "7d8fb6b524b111f972c4f625b04464ff5a096d3ce7b206c0814c77d30d8e58ad"
+    },
+    "initial-replay.raw": {
+      "bytes": 614400,
+      "sha256": "96d0cfd27ae4948d001625454722992c21407a61b4f0e7a9a658ce0f39192b45"
+    },
+    "event-poll-budget140-postgame-replay.raw": {
+      "bytes": 614400,
+      "sha256": "96d0cfd27ae4948d001625454722992c21407a61b4f0e7a9a658ce0f39192b45"
+    },
+    "event-poll-budget140-repeat-postgame-replay.raw": {
+      "bytes": 614400,
+      "sha256": "96d0cfd27ae4948d001625454722992c21407a61b4f0e7a9a658ce0f39192b45"
+    },
+    "trace-bottleneck-baseline-1.raw": {
+      "bytes": 614400,
+      "sha256": "96d0cfd27ae4948d001625454722992c21407a61b4f0e7a9a658ce0f39192b45"
+    },
+    "trace-bottleneck-baseline-2.raw": {
+      "bytes": 614400,
+      "sha256": "96d0cfd27ae4948d001625454722992c21407a61b4f0e7a9a658ce0f39192b45"
+    },
+    "trace-bottleneck-baseline-3.raw": {
+      "bytes": 614400,
+      "sha256": "96d0cfd27ae4948d001625454722992c21407a61b4f0e7a9a658ce0f39192b45"
+    }
+  }
+}

@@ -1,0 +1,7 @@
+warning: Git tree '/home/fal/voodoo/SpinalVoodoo_xls-rewrite' is dirty
+evaluation warning: linuxPackages.perf is now perf
+...
+----------------------------------------------------------------------
+Ran 3 tests in 1.721s
+
+OK

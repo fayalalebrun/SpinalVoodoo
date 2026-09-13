@@ -1,0 +1,667 @@
+--- /dev/null
++++ b/src/cpu/core_dynrec/branch_flags.h
+@@ -0,0 +1,86 @@
++template <BranchTypes branch>
++static inline bool dynrec_test_flags(bool cf, bool zf, bool sf, bool of) {
++	bool result;
++	switch (branch & ~1) {
++	case BR_O: result = of; break;
++	case BR_B: result = cf; break;
++	case BR_Z: result = zf; break;
++	case BR_BE: result = cf || zf; break;
++	case BR_S: result = sf; break;
++	case BR_L: result = sf != of; break;
++	case BR_LE: result = zf || (sf != of); break;
++	default: result = get_PF() != 0; break;
++	}
++	return result != bool(branch & 1);
++}
++
++template <BranchTypes branch, typename T, int operation>
++static inline bool dynrec_test_result() {
++	const uint32_t a = T(lf_var1d), b = T(lf_var2d), r = T(lf_resd);
++	const uint32_t sign = uint32_t(T(-1)) / 2 + 1;
++	bool cf = false, of = false;
++	switch (operation) {
++	case t_ORb: break;
++	case t_ADDb:
++		cf = r < a;
++		of = ((a ^ b ^ sign) & (r ^ b) & sign) != 0;
++		break;
++	case t_SUBb:
++		cf = a < b;
++		of = ((a ^ b) & (a ^ r) & sign) != 0;
++		break;
++	case t_INCb: cf = GETFLAG(CF) != 0; of = r == sign; break;
++	case t_DECb: cf = GETFLAG(CF) != 0; of = r == sign - 1; break;
++	case t_NEGb: cf = a != 0; of = a == sign; break;
++	}
++	return dynrec_test_flags<branch>(cf, r == 0, (r & sign) != 0, of);
++}
++
++template <BranchTypes branch>
++static inline bool dynrec_test_branch() {
++	if ((branch & ~1) == BR_P) return (get_PF() != 0) != bool(branch & 1);
++	switch (lflags.type) {
++	case t_UNKNOWN:
++		return dynrec_test_flags<branch>(GETFLAG(CF), GETFLAG(ZF), GETFLAG(SF), GETFLAG(OF));
++	case t_ADDb: return dynrec_test_result<branch, uint8_t, t_ADDb>();
++	case t_ADDw: return dynrec_test_result<branch, uint16_t, t_ADDb>();
++	case t_ADDd: return dynrec_test_result<branch, uint32_t, t_ADDb>();
++	case t_SUBb: case t_CMPb: return dynrec_test_result<branch, uint8_t, t_SUBb>();
++	case t_SUBw: case t_CMPw: return dynrec_test_result<branch, uint16_t, t_SUBb>();
++	case t_SUBd: case t_CMPd: return dynrec_test_result<branch, uint32_t, t_SUBb>();
++	case t_ORb: case t_ANDb: case t_XORb: case t_TESTb:
++		return dynrec_test_result<branch, uint8_t, t_ORb>();
++	case t_ORw: case t_ANDw: case t_XORw: case t_TESTw:
++		return dynrec_test_result<branch, uint16_t, t_ORb>();
++	case t_ORd: case t_ANDd: case t_XORd: case t_TESTd:
++		return dynrec_test_result<branch, uint32_t, t_ORb>();
++	case t_INCb: return dynrec_test_result<branch, uint8_t, t_INCb>();
++	case t_INCw: return dynrec_test_result<branch, uint16_t, t_INCb>();
++	case t_INCd: return dynrec_test_result<branch, uint32_t, t_INCb>();
++	case t_DECb: return dynrec_test_result<branch, uint8_t, t_DECb>();
++	case t_DECw: return dynrec_test_result<branch, uint16_t, t_DECb>();
++	case t_DECd: return dynrec_test_result<branch, uint32_t, t_DECb>();
++	case t_NEGb: return dynrec_test_result<branch, uint8_t, t_NEGb>();
++	case t_NEGw: return dynrec_test_result<branch, uint16_t, t_NEGb>();
++	case t_NEGd: return dynrec_test_result<branch, uint32_t, t_NEGb>();
++	}
++	switch (branch) {
++	case BR_O: return TFLG_O;
++	case BR_NO: return TFLG_NO;
++	case BR_B: return TFLG_B;
++	case BR_NB: return TFLG_NB;
++	case BR_Z: return TFLG_Z;
++	case BR_NZ: return TFLG_NZ;
++	case BR_BE: return TFLG_BE;
++	case BR_NBE: return TFLG_NBE;
++	case BR_S: return TFLG_S;
++	case BR_NS: return TFLG_NS;
++	case BR_P: return TFLG_P;
++	case BR_NP: return TFLG_NP;
++	case BR_L: return TFLG_L;
++	case BR_NL: return TFLG_NL;
++	case BR_LE: return TFLG_LE;
++	case BR_NLE: return TFLG_NLE;
++	}
++	return false;
++}
+--- a/src/cpu/core_dynrec/cache.h
++++ b/src/cpu/core_dynrec/cache.h
+@@ -69,6 +69,8 @@
+ 		CacheBlockDynRec * running;		// the last block that was entered for execution
+ 	} block;
+ 	uint8_t * pos;		// position in the cache block
++	uint8_t * emit_start;
++	Bitu emit_size;
+ 	CodePageHandlerDynRec * free_pages;		// pointer to the free list
+ 	CodePageHandlerDynRec * used_pages;		// pointer to the list of used pages
+ 	CodePageHandlerDynRec * last_page;		// the last used page
+@@ -517,6 +519,8 @@
+ 	block->cache.size=size;
+ 	block->cache.next=nextblock;
+ 	cache.pos=block->cache.start;
++	cache.emit_start=block->cache.start;
++	cache.emit_size=block->cache.size;
+ 	return block;
+ }
+ 
+@@ -560,44 +564,50 @@
+ }
+ 
+ 
++static INLINE void cache_check_space(uint8_t *pos, Bitu bytes) {
++	const uintptr_t offset = (uintptr_t)pos - (uintptr_t)cache.emit_start;
++	if (offset > cache.emit_size || bytes > cache.emit_size - offset)
++		E_Exit("Cache emission exceeds reserved block");
++}
++
+ // place an 8bit value into the cache
+ static INLINE void cache_addb(uint8_t val,uint8_t *pos) {
++	cache_check_space(pos, 1);
+ 	*pos=val;
+ }
+ static INLINE void cache_addb(uint8_t val) {
+-	uint8_t *pos=cache.pos+1;
+ 	cache_addb(val,cache.pos);
+-	cache.pos=pos;
++	cache.pos+=1;
+ }
+ 
+ // place a 16bit value into the cache
+ static INLINE void cache_addw(uint16_t val,uint8_t *pos) {
++	cache_check_space(pos, 2);
+ 	*(uint16_t*)pos=val;
+ }
+ static INLINE void cache_addw(uint16_t val) {
+-	uint8_t *pos=cache.pos+2;
+ 	cache_addw(val,cache.pos);
+-	cache.pos=pos;
++	cache.pos+=2;
+ }
+ 
+ // place a 32bit value into the cache
+ static INLINE void cache_addd(uint32_t val,uint8_t *pos) {
++	cache_check_space(pos, 4);
+ 	*(uint32_t*)pos=val;
+ }
+ static INLINE void cache_addd(uint32_t val) {
+-	uint8_t *pos=cache.pos+4;
+ 	cache_addd(val,cache.pos);
+-	cache.pos=pos;
++	cache.pos+=4;
+ }
+ 
+ // place a 64bit value into the cache
+ static INLINE void cache_addq(uint64_t val,uint8_t *pos) {
++	cache_check_space(pos, 8);
+ 	*(uint64_t*)pos=val;
+ }
+ static INLINE void cache_addq(uint64_t val) {
+-	uint8_t *pos=cache.pos+8;
+ 	cache_addq(val,cache.pos);
+-	cache.pos=pos;
++	cache.pos+=8;
+ }
+ 
+ 
+@@ -654,6 +664,8 @@
+ 		block->cache.next=nullptr;								//Last block in the list
+ 
+ 		/* Setup the default blocks for block linkage returns */
++		cache.emit_start=cache_code_link_blocks;
++		cache.emit_size=PAGESIZE_TEMP;
+ 		cache.pos=&cache_code_link_blocks[0];
+ 		link_blocks[0].cache.start=cache.pos;
+ 		link_blocks[0].cache.xstart=(uint8_t*)cache_rwtox(link_blocks[0].cache.start);
+@@ -713,6 +725,8 @@
+ 			block->cache.next=nullptr;						// last block in the list
+ 		}
+ 		// setup the default blocks for block linkage returns
++		cache.emit_start=cache_code_link_blocks;
++		cache.emit_size=PAGESIZE_TEMP;
+ 		cache.pos=&cache_code_link_blocks[0];
+ 		link_blocks[0].cache.start=cache.pos;
+ 		link_blocks[0].cache.xstart=(uint8_t*)cache_rwtox(link_blocks[0].cache.start);
+--- a/src/cpu/core_dynrec/decoder_basic.h
++++ b/src/cpu/core_dynrec/decoder_basic.h
+@@ -788,18 +788,37 @@
+ }
+ 
+ 
++#ifdef DRC_SHARED_MEMORY_HELPERS
++static void gen_memory_helpers() {
++	gen_memory_helper(false, 1, paging.tlb.read, mem_readb_checked_drc);
++	gen_memory_helper(false, 2, paging.tlb.read, mem_readw_checked_drc);
++	gen_memory_helper(false, 4, paging.tlb.read, mem_readd_checked_drc);
++	gen_memory_helper(true, 1, paging.tlb.write, mem_writeb_checked_drc);
++	gen_memory_helper(true, 2, paging.tlb.write, mem_writew_checked_drc);
++	gen_memory_helper(true, 4, paging.tlb.write, mem_writed_checked_drc);
++}
++#endif
++
+ // functions that enable access to the memory
+ 
+ // read a byte from a given address and store it in reg_dst
+ static void dyn_read_byte(HostReg reg_addr,HostReg reg_dst) {
+ 	gen_mov_regs(FC_OP1,reg_addr);
++#ifdef DRC_SHARED_MEMORY_HELPERS
++	gen_call_memory_helper(false, 1);
++#else
+ 	gen_call_function_raw(mem_readb_checked_drc);
++#endif
+ 	dyn_check_exception(FC_RETOP);
+ 	gen_mov_byte_to_reg_low(reg_dst,&core_dynrec.readdata);
+ }
+ static void dyn_read_byte_canuseword(HostReg reg_addr,HostReg reg_dst) {
+ 	gen_mov_regs(FC_OP1,reg_addr);
++#ifdef DRC_SHARED_MEMORY_HELPERS
++	gen_call_memory_helper(false, 1);
++#else
+ 	gen_call_function_raw(mem_readb_checked_drc);
++#endif
+ 	dyn_check_exception(FC_RETOP);
+ 	gen_mov_byte_to_reg_low_canuseword(reg_dst,&core_dynrec.readdata);
+ }
+@@ -808,7 +827,11 @@
+ static void dyn_write_byte(HostReg reg_addr,HostReg reg_val) {
+ 	gen_mov_regs(FC_OP2,reg_val);
+ 	gen_mov_regs(FC_OP1,reg_addr);
++#ifdef DRC_SHARED_MEMORY_HELPERS
++	gen_call_memory_helper(true, 1);
++#else
+ 	gen_call_function_raw(mem_writeb_checked_drc);
++#endif
+ 	dyn_check_exception(FC_RETOP);
+ }
+ 
+@@ -816,8 +839,12 @@
+ // from a given address and store it in reg_dst
+ static void dyn_read_word(HostReg reg_addr,HostReg reg_dst,bool dword) {
+ 	gen_mov_regs(FC_OP1,reg_addr);
++#ifdef DRC_SHARED_MEMORY_HELPERS
++	gen_call_memory_helper(false, dword ? 4 : 2);
++#else
+ 	if (dword) gen_call_function_raw(mem_readd_checked_drc);
+ 	else gen_call_function_raw(mem_readw_checked_drc);
++#endif
+ 	dyn_check_exception(FC_RETOP);
+ 	gen_mov_word_to_reg(reg_dst,&core_dynrec.readdata,dword);
+ }
+@@ -828,8 +855,12 @@
+ //	if (!dword) gen_extend_word(false,reg_val);
+ 	gen_mov_regs(FC_OP2,reg_val);
+ 	gen_mov_regs(FC_OP1,reg_addr);
++#ifdef DRC_SHARED_MEMORY_HELPERS
++	gen_call_memory_helper(true, dword ? 4 : 2);
++#else
+ 	if (dword) gen_call_function_raw(mem_writed_checked_drc);
+ 	else gen_call_function_raw(mem_writew_checked_drc);
++#endif
+ 	dyn_check_exception(FC_RETOP);
+ }
+ 
+--- a/src/cpu/core_dynrec/dyn_fpu.h
++++ b/src/cpu/core_dynrec/dyn_fpu.h
+@@ -61,6 +61,33 @@
+ #include "../../fpu/fpu_instructions.h"
+ #endif
+ 
++
++template <void (*load)(PhysPt, Bitu)>
++static void dynrec_fpu_load(PhysPt addr) {
++	FPU_PREP_PUSH();
++	load(addr, TOP);
++}
++
++template <void (*store)(PhysPt)>
++static void dynrec_fpu_store_pop(PhysPt addr) {
++	store(addr);
++	FPU_FPOP();
++}
++
++static void dynrec_fpu_fld_sti(Bitu rm) {
++	const Bitu from = (TOP + rm) & 7;
++	FPU_PREP_PUSH();
++	FPU_FST(from, TOP);
++}
++
++static void dynrec_fpu_fxch_sti(Bitu rm) {
++	FPU_FXCH(TOP, (TOP + rm) & 7);
++}
++
++static void dynrec_fpu_fstp_sti(Bitu rm) {
++	FPU_FST(TOP, (TOP + rm) & 7);
++	FPU_FPOP();
++}
+ 
+ static INLINE void dyn_fpu_top() {
+ 	gen_mov_word_to_reg(FC_OP2,(void*)(&FPUSW),true);
+@@ -167,29 +194,16 @@
+ 	if (decode.modrm.mod == 3) {
+ 		switch (decode.modrm.reg){
+ 		case 0x00: /* FLD STi */
+-			gen_mov_word_to_reg(FC_OP1,(void*)(&FPUSW),true);
+-			gen_shr_imm(FC_OP1,11); /* stack top is 3-bit value starting at bit 11 */
+-			gen_add_imm(FC_OP1,decode.modrm.rm);
+-			gen_and_imm(FC_OP1,7);
+-			gen_protect_reg(FC_OP1);
+-			gen_call_function_raw(FPU_PREP_PUSH); 
+-			gen_mov_word_to_reg(FC_OP2,(void*)(&FPUSW),true);
+-			gen_shr_imm(FC_OP2,11); /* stack top is 3-bit value starting at bit 11 */
+-			gen_and_imm(FC_OP2,7);
+-			gen_restore_reg(FC_OP1);
+-			gen_call_function_RR(FPU_FST,FC_OP1,FC_OP2);
++			gen_call_function_I(dynrec_fpu_fld_sti,decode.modrm.rm);
+ 			break;
+ 		case 0x01: /* FXCH STi */
+-			dyn_fpu_top();
+-			gen_call_function_RR(FPU_FXCH,FC_OP1,FC_OP2);
++			gen_call_function_I(dynrec_fpu_fxch_sti,decode.modrm.rm);
+ 			break;
+ 		case 0x02: /* FNOP */
+ 			gen_call_function_raw(FPU_FNOP);
+ 			break;
+ 		case 0x03: /* FSTP STi */
+-			dyn_fpu_top();
+-			gen_call_function_RR(FPU_FST,FC_OP1,FC_OP2);
+-			gen_call_function_raw(FPU_FPOP);
++			gen_call_function_I(dynrec_fpu_fstp_sti,decode.modrm.rm);
+ 			break;   
+ 		case 0x04:
+ 			switch(decode.modrm.rm){
+@@ -312,12 +326,8 @@
+ 	} else {
+ 		switch(decode.modrm.reg){
+ 		case 0x00: /* FLD float*/
+-			gen_call_function_raw(FPU_PREP_PUSH);
+ 			dyn_fill_ea(FC_OP1);
+-			gen_mov_word_to_reg(FC_OP2,(void*)(&FPUSW),true);
+-			gen_shr_imm(FC_OP2,11); /* stack top is 3-bit value starting at bit 11 */
+-			gen_and_imm(FC_OP2,7);
+-			gen_call_function_RR(FPU_FLD_F32,FC_OP1,FC_OP2);
++			gen_call_function_R(dynrec_fpu_load<FPU_FLD_F32>,FC_OP1);
+ 			break;
+ 		case 0x01: /* UNKNOWN */
+ 			LOG(LOG_FPU,LOG_WARN)("ESC EA 1:Unhandled group %d subfunction %d",(unsigned int)decode.modrm.reg,(unsigned int)decode.modrm.rm);
+@@ -328,8 +338,7 @@
+ 			break;
+ 		case 0x03: /* FSTP float*/
+ 			dyn_fill_ea(FC_ADDR);
+-			gen_call_function_R(FPU_FST_F32,FC_ADDR);
+-			gen_call_function_raw(FPU_FPOP);
++			gen_call_function_R(dynrec_fpu_store_pop<FPU_FST_F32>,FC_ADDR);
+ 			break;
+ 		case 0x04: /* FLDENV */
+ 			dyn_fill_ea(FC_ADDR);
+@@ -424,12 +433,8 @@
+ 	} else {
+ 		switch(decode.modrm.reg){
+ 		case 0x00:	/* FILD */
+-			gen_call_function_raw(FPU_PREP_PUSH);
+-			dyn_fill_ea(FC_OP1); 
+-			gen_mov_word_to_reg(FC_OP2,(void*)(&FPUSW),true);
+-			gen_shr_imm(FC_OP2,11); /* stack top is 3-bit value starting at bit 11 */
+-			gen_and_imm(FC_OP2,7);
+-			gen_call_function_RR(FPU_FLD_I32,FC_OP1,FC_OP2);
++			dyn_fill_ea(FC_OP1);
++			gen_call_function_R(dynrec_fpu_load<FPU_FLD_I32>,FC_OP1);
+ 			break;
+ 		case 0x01:	/* FISTTP */
+ 			LOG(LOG_FPU,LOG_WARN)("ESC 3 EA:Unhandled group %d subfunction %d",(unsigned int)decode.modrm.reg,(unsigned int)decode.modrm.rm);
+@@ -440,8 +445,7 @@
+ 			break;
+ 		case 0x03:	/* FISTP */
+ 			dyn_fill_ea(FC_ADDR); 
+-			gen_call_function_R(FPU_FST_I32,FC_ADDR);
+-			gen_call_function_raw(FPU_FPOP);
++			gen_call_function_R(dynrec_fpu_store_pop<FPU_FST_I32>,FC_ADDR);
+ 			break;
+ 		case 0x05:	/* FLD 80 Bits Real */
+ 			gen_call_function_raw(FPU_PREP_PUSH);
+@@ -450,8 +454,7 @@
+ 			break;
+ 		case 0x07:	/* FSTP 80 Bits Real */
+ 			dyn_fill_ea(FC_ADDR); 
+-			gen_call_function_R(FPU_FST_F80,FC_ADDR);
+-			gen_call_function_raw(FPU_FPOP);
++			gen_call_function_R(dynrec_fpu_store_pop<FPU_FST_F80>,FC_ADDR);
+ 			break;
+ 		default:
+ 			LOG(LOG_FPU,LOG_WARN)("ESC 3 EA:Unhandled group %d subfunction %d",(unsigned int)decode.modrm.reg,(unsigned int)decode.modrm.rm);
+@@ -543,12 +546,8 @@
+ 	} else {
+ 		switch(decode.modrm.reg){
+ 		case 0x00:  /* FLD double real*/
+-			gen_call_function_raw(FPU_PREP_PUSH);
+-			dyn_fill_ea(FC_OP1); 
+-			gen_mov_word_to_reg(FC_OP2,(void*)(&FPUSW),true);
+-			gen_shr_imm(FC_OP2,11); /* stack top is 3-bit value starting at bit 11 */
+-			gen_and_imm(FC_OP2,7);
+-			gen_call_function_RR(FPU_FLD_F64,FC_OP1,FC_OP2);
++			dyn_fill_ea(FC_OP1);
++			gen_call_function_R(dynrec_fpu_load<FPU_FLD_F64>,FC_OP1);
+ 			break;
+ 		case 0x01:  /* FISTTP longint*/
+ 			LOG(LOG_FPU,LOG_WARN)("ESC 5 EA:Unhandled group %d subfunction %d",(unsigned int)decode.modrm.reg,(unsigned int)decode.modrm.rm);
+@@ -559,8 +558,7 @@
+ 			break;
+ 		case 0x03:	/* FSTP double real*/
+ 			dyn_fill_ea(FC_ADDR); 
+-			gen_call_function_R(FPU_FST_F64,FC_ADDR);
+-			gen_call_function_raw(FPU_FPOP);
++			gen_call_function_R(dynrec_fpu_store_pop<FPU_FST_F64>,FC_ADDR);
+ 			break;
+ 		case 0x04:	/* FRSTOR */
+ 			dyn_fill_ea(FC_ADDR); 
+@@ -681,12 +679,8 @@
+ 	} else {
+ 		switch(decode.modrm.reg){
+ 		case 0x00:  /* FILD int16_t */
+-			gen_call_function_raw(FPU_PREP_PUSH);
+-			dyn_fill_ea(FC_OP1); 
+-			gen_mov_word_to_reg(FC_OP2,(void*)(&FPUSW),true);
+-			gen_shr_imm(FC_OP2,11); /* stack top is 3-bit value starting at bit 11 */
+-			gen_and_imm(FC_OP2,7);
+-			gen_call_function_RR(FPU_FLD_I16,FC_OP1,FC_OP2);
++			dyn_fill_ea(FC_OP1);
++			gen_call_function_R(dynrec_fpu_load<FPU_FLD_I16>,FC_OP1);
+ 			break;
+ 		case 0x01:
+ 			LOG(LOG_FPU,LOG_WARN)("ESC 7 EA:Unhandled group %d subfunction %d",(unsigned int)decode.modrm.reg,(unsigned int)decode.modrm.rm);
+@@ -697,34 +691,23 @@
+ 			break;
+ 		case 0x03:	/* FISTP int16_t */
+ 			dyn_fill_ea(FC_ADDR); 
+-			gen_call_function_R(FPU_FST_I16,FC_ADDR);
+-			gen_call_function_raw(FPU_FPOP);
++			gen_call_function_R(dynrec_fpu_store_pop<FPU_FST_I16>,FC_ADDR);
+ 			break;
+ 		case 0x04:   /* FBLD packed BCD */
+-			gen_call_function_raw(FPU_PREP_PUSH);
+ 			dyn_fill_ea(FC_OP1);
+-			gen_mov_word_to_reg(FC_OP2,(void*)(&FPUSW),true);
+-			gen_shr_imm(FC_OP2,11); /* stack top is 3-bit value starting at bit 11 */
+-			gen_and_imm(FC_OP2,7);
+-			gen_call_function_RR(FPU_FBLD,FC_OP1,FC_OP2);
++			gen_call_function_R(dynrec_fpu_load<FPU_FBLD>,FC_OP1);
+ 			break;
+ 		case 0x05:  /* FILD int64_t */
+-			gen_call_function_raw(FPU_PREP_PUSH);
+ 			dyn_fill_ea(FC_OP1);
+-			gen_mov_word_to_reg(FC_OP2,(void*)(&FPUSW),true);
+-			gen_shr_imm(FC_OP2,11); /* stack top is 3-bit value starting at bit 11 */
+-			gen_and_imm(FC_OP2,7);
+-			gen_call_function_RR(FPU_FLD_I64,FC_OP1,FC_OP2);
++			gen_call_function_R(dynrec_fpu_load<FPU_FLD_I64>,FC_OP1);
+ 			break;
+ 		case 0x06:	/* FBSTP packed BCD */
+ 			dyn_fill_ea(FC_ADDR); 
+-			gen_call_function_R(FPU_FBST,FC_ADDR);
+-			gen_call_function_raw(FPU_FPOP);
++			gen_call_function_R(dynrec_fpu_store_pop<FPU_FBST>,FC_ADDR);
+ 			break;
+ 		case 0x07:  /* FISTP int64_t */
+ 			dyn_fill_ea(FC_ADDR); 
+-			gen_call_function_R(FPU_FST_I64,FC_ADDR);
+-			gen_call_function_raw(FPU_FPOP);
++			gen_call_function_R(dynrec_fpu_store_pop<FPU_FST_I64>,FC_ADDR);
+ 			break;
+ 		default:
+ 			LOG(LOG_FPU,LOG_WARN)("ESC 7 EA:Unhandled group %d subfunction %d",(unsigned int)decode.modrm.reg,(unsigned int)decode.modrm.rm);
+--- a/src/cpu/core_dynrec/operators.h
++++ b/src/cpu/core_dynrec/operators.h
+@@ -1330,39 +1330,41 @@
+ 
+ 
+ 
++#include "branch_flags.h"
++
+ static uint32_t DRC_CALL_CONV dynrec_get_of(void)		DRC_FC;
+-static uint32_t DRC_CALL_CONV dynrec_get_of(void)		{ return TFLG_O; }
++static uint32_t DRC_CALL_CONV dynrec_get_of(void)		{ return dynrec_test_branch<BR_O>(); }
+ static uint32_t DRC_CALL_CONV dynrec_get_nof(void)	DRC_FC;
+-static uint32_t DRC_CALL_CONV dynrec_get_nof(void)	{ return TFLG_NO; }
++static uint32_t DRC_CALL_CONV dynrec_get_nof(void)	{ return dynrec_test_branch<BR_NO>(); }
+ static uint32_t DRC_CALL_CONV dynrec_get_cf(void)		DRC_FC;
+-static uint32_t DRC_CALL_CONV dynrec_get_cf(void)		{ return TFLG_B; }
++static uint32_t DRC_CALL_CONV dynrec_get_cf(void)		{ return dynrec_test_branch<BR_B>(); }
+ static uint32_t DRC_CALL_CONV dynrec_get_ncf(void)	DRC_FC;
+-static uint32_t DRC_CALL_CONV dynrec_get_ncf(void)	{ return TFLG_NB; }
++static uint32_t DRC_CALL_CONV dynrec_get_ncf(void)	{ return dynrec_test_branch<BR_NB>(); }
+ static uint32_t DRC_CALL_CONV dynrec_get_zf(void)		DRC_FC;
+-static uint32_t DRC_CALL_CONV dynrec_get_zf(void)		{ return TFLG_Z; }
++static uint32_t DRC_CALL_CONV dynrec_get_zf(void)		{ return dynrec_test_branch<BR_Z>(); }
+ static uint32_t DRC_CALL_CONV dynrec_get_nzf(void)	DRC_FC;
+-static uint32_t DRC_CALL_CONV dynrec_get_nzf(void)	{ return TFLG_NZ; }
++static uint32_t DRC_CALL_CONV dynrec_get_nzf(void)	{ return dynrec_test_branch<BR_NZ>(); }
+ static uint32_t DRC_CALL_CONV dynrec_get_sf(void)		DRC_FC;
+-static uint32_t DRC_CALL_CONV dynrec_get_sf(void)		{ return TFLG_S; }
++static uint32_t DRC_CALL_CONV dynrec_get_sf(void)		{ return dynrec_test_branch<BR_S>(); }
+ static uint32_t DRC_CALL_CONV dynrec_get_nsf(void)	DRC_FC;
+-static uint32_t DRC_CALL_CONV dynrec_get_nsf(void)	{ return TFLG_NS; }
++static uint32_t DRC_CALL_CONV dynrec_get_nsf(void)	{ return dynrec_test_branch<BR_NS>(); }
+ static uint32_t DRC_CALL_CONV dynrec_get_pf(void)		DRC_FC;
+-static uint32_t DRC_CALL_CONV dynrec_get_pf(void)		{ return TFLG_P; }
++static uint32_t DRC_CALL_CONV dynrec_get_pf(void)		{ return dynrec_test_branch<BR_P>(); }
+ static uint32_t DRC_CALL_CONV dynrec_get_npf(void)	DRC_FC;
+-static uint32_t DRC_CALL_CONV dynrec_get_npf(void)	{ return TFLG_NP; }
++static uint32_t DRC_CALL_CONV dynrec_get_npf(void)	{ return dynrec_test_branch<BR_NP>(); }
+ 
+ static uint32_t DRC_CALL_CONV dynrec_get_cf_or_zf(void)			DRC_FC;
+-static uint32_t DRC_CALL_CONV dynrec_get_cf_or_zf(void)			{ return TFLG_BE; }
++static uint32_t DRC_CALL_CONV dynrec_get_cf_or_zf(void)			{ return dynrec_test_branch<BR_BE>(); }
+ static uint32_t DRC_CALL_CONV dynrec_get_ncf_and_nzf(void)		DRC_FC;
+-static uint32_t DRC_CALL_CONV dynrec_get_ncf_and_nzf(void)		{ return TFLG_NBE; }
++static uint32_t DRC_CALL_CONV dynrec_get_ncf_and_nzf(void)		{ return dynrec_test_branch<BR_NBE>(); }
+ static uint32_t DRC_CALL_CONV dynrec_get_sf_neq_of(void)			DRC_FC;
+-static uint32_t DRC_CALL_CONV dynrec_get_sf_neq_of(void)			{ return TFLG_L; }
++static uint32_t DRC_CALL_CONV dynrec_get_sf_neq_of(void)			{ return dynrec_test_branch<BR_L>(); }
+ static uint32_t DRC_CALL_CONV dynrec_get_sf_eq_of(void)			DRC_FC;
+-static uint32_t DRC_CALL_CONV dynrec_get_sf_eq_of(void)			{ return TFLG_NL; }
++static uint32_t DRC_CALL_CONV dynrec_get_sf_eq_of(void)			{ return dynrec_test_branch<BR_NL>(); }
+ static uint32_t DRC_CALL_CONV dynrec_get_zf_or_sf_neq_of(void)	DRC_FC;
+-static uint32_t DRC_CALL_CONV dynrec_get_zf_or_sf_neq_of(void)	{ return TFLG_LE; }
++static uint32_t DRC_CALL_CONV dynrec_get_zf_or_sf_neq_of(void)	{ return dynrec_test_branch<BR_LE>(); }
+ static uint32_t DRC_CALL_CONV dynrec_get_nzf_and_sf_eq_of(void)	DRC_FC;
+-static uint32_t DRC_CALL_CONV dynrec_get_nzf_and_sf_eq_of(void)	{ return TFLG_NLE; }
++static uint32_t DRC_CALL_CONV dynrec_get_nzf_and_sf_eq_of(void)	{ return dynrec_test_branch<BR_NLE>(); }
+ 
+ 
+ static void dyn_branchflag_to_reg(BranchTypes btype) {
+--- a/src/cpu/core_dynrec/risc_armv4le-o3.h
++++ b/src/cpu/core_dynrec/risc_armv4le-o3.h
+@@ -150,6 +150,7 @@
+ // ldr reg, [addr1, addr2, lsl #imm]		@	0 <= imm < 31
+ #define LDR_REG_LSL_IMM(reg, addr1, addr2, imm) (0xe7900000 + ((reg) << 12) + ((addr1) << 16) + (addr2) + ((imm) << 7) )
+ 
++
+ // store
+ // str reg, [addr, #imm]		@	0 <= imm < 4096
+ #define STR_IMM(reg, addr, imm) (0xe5800000 + ((reg) << 12) + ((addr) << 16) + (imm) )
+@@ -877,6 +878,7 @@
+ 
+ // calculate relative offset and fill it into the location pointed to by data
+ static void INLINE gen_fill_branch(DRC_PTR_SIZE_IM data) {
++	cache_check_space((uint8_t*)data, 4);
+ #if C_DEBUG
+ 	Bits len=(uint32_t)cache.pos-(data+8);
+ 	if (len<0) len=-len;
+@@ -884,6 +886,48 @@
+ #endif
+ 	*(uint32_t*)data=( (*(uint32_t*)data) & 0xff000000 ) | ( ( ((uint32_t)cache.pos - (data+8)) >> 2 ) & 0x00ffffff );
+ }
++
++#if C_TARGETCPU == ARMV7LE && !defined(WORDS_BIGENDIAN)
++#define DRC_SHARED_MEMORY_HELPERS
++static uint8_t* memory_helpers[2][3];
++static void gen_memory_helpers();
++
++static void gen_call_memory_helper(bool write, unsigned width) {
++	const int64_t delta = (int64_t)(uintptr_t)cache_rwtox(memory_helpers[write][width >> 1]) - (int64_t)(uintptr_t)cache_rwtox(cache.pos + 8);
++	if ((delta & 3) || delta < -0x2000000 || delta >= 0x2000000)
++		E_Exit("Memory helper branch out of range");
++	cache_addd(0xeb000000 | ((delta >> 2) & 0x00ffffff));
++}
++
++template <typename T> static void gen_memory_helper(bool write, unsigned width, void* tlb, const T slow) {
++	memory_helpers[write][width >> 1] = cache.pos;
++	uint32_t unaligned = 0;
++	if (width != 1) {
++		cache_addd(TST_IMM(FC_OP1, width - 1, 0));
++		unaligned = (uint32_t)cache.pos;
++		cache_addd(BNE_FWD(0));
++	}
++	cache_addd(MOVW(temp1, ((uint32_t)tlb) & 0xffff));
++	cache_addd(MOVT(temp1, ((uint32_t)tlb) >> 16));
++	cache_addd(MOV_REG_LSR_IMM(HOST_r2, FC_OP1, 12));
++	cache_addd(LDR_REG_LSL_IMM(temp1, temp1, HOST_r2, 2));
++	const uint32_t indirect = gen_create_branch_on_zero(temp1, true);
++	cache_addd(ADD_REG_LSL_IMM(temp1, temp1, FC_OP1, 0));
++	if (write) {
++		cache_addd(width == 4 ? STR_IMM(FC_OP2, temp1, 0) : width == 2 ? STRH_IMM(FC_OP2, temp1, 0) : STRB_IMM(FC_OP2, temp1, 0));
++	} else {
++		cache_addd(width == 4 ? LDR_IMM(HOST_r2, temp1, 0) : width == 2 ? LDRH_IMM(HOST_r2, temp1, 0) : LDRB_IMM(HOST_r2, temp1, 0));
++		cache_addd(width == 4 ? STR_IMM(HOST_r2, readdata_addr, 0) : width == 2 ? STRH_IMM(HOST_r2, readdata_addr, 0) : STRB_IMM(HOST_r2, readdata_addr, 0));
++	}
++	cache_addd(MOV_IMM(FC_RETOP, 0, 0));
++	cache_addd(BX(HOST_lr));
++	if (width != 1) gen_fill_branch(unaligned);
++	gen_fill_branch(indirect);
++	cache_addd(MOVW(temp1, ((uint32_t)slow) & 0xffff));
++	cache_addd(MOVT(temp1, ((uint32_t)slow) >> 16));
++	cache_addd(BX(temp1));
++}
++#endif
+ 
+ // conditional jump if register is nonzero
+ // for isdword==true the 32bit of the register are tested
+@@ -907,6 +951,7 @@
+ 
+ // calculate long relative offset and fill it into the location pointed to by data
+ static void INLINE gen_fill_branch_long(uint32_t data) {
++	cache_check_space((uint8_t*)data, 4);
+ 	*(uint32_t*)data=( (*(uint32_t*)data) & 0xff000000 ) | ( ( ((uint32_t)cache.pos - (data+8)) >> 2 ) & 0x00ffffff );
+ }
+ 
+@@ -924,6 +969,9 @@
+ 	cache_addd( MOVT(readdata_addr, ((Bitu)&core_dynrec.readdata) >> 16) );      // movt readdata_addr, #(&core_dynrec.readdata >> 16)
+ 
+ 	cache_addd( BX(HOST_r0) );			// bx r0
++#ifdef DRC_SHARED_MEMORY_HELPERS
++	gen_memory_helpers();
++#endif
+ #else
+ 	uint8_t *pos1, *pos2, *pos3;
+ 
+@@ -969,6 +1017,7 @@
+ // called when a call to a function can be replaced by a
+ // call to a simpler function
+ static void gen_fill_function_ptr(uint8_t * pos,void* fct_ptr,Bitu flags_type) {
++	cache_check_space(pos, C_TARGETCPU == ARMV7LE ? 12 : 16);
+ #ifdef DRC_FLAGS_INVALIDATION_DCODE
+ 	// try to avoid function calls but rather directly fill in code
+ 	switch (flags_type) {
+--- a/src/gui/sdlmain.cpp
++++ b/src/gui/sdlmain.cpp
+@@ -5621,7 +5621,7 @@
+ 
+ bool gfx_in_mapper = false;
+ 
+-#if defined(MACOSX)
++#if defined(MACOSX) || (defined(LINUX) && defined(__arm__))
+ #define DB_POLLSKIP 3
+ #else
+ //Not used yet, see comment below
+@@ -5635,9 +5635,9 @@
+     //In idle mode 3000-4000 polls are done per second without this check.
+     //Macs, with this code,  max 250 polls per second. (non-macs unused default max 500)
+     //Currently not implemented for all platforms, given the ALT-TAB stuff for WIN32.
+-#if defined (MACOSX)
+-    static int last_check = 0;
+-    int current_check = GetTicks();
++#if defined(MACOSX) || (defined(LINUX) && defined(__arm__))
++    static uint32_t last_check = 0;
++    const uint32_t current_check = GetTicks();
+     if (current_check - last_check <=  DB_POLLSKIP) return;
+     last_check = current_check;
+ #endif
+--- a/src/hardware/glide.cpp
++++ b/src/hardware/glide.cpp
+@@ -156,7 +156,14 @@
+     }
+ 
+     // Process function parameters (80 bytes)
+-    MEM_BlockRead32(PhysMake(glsegment,0), param, 80);
++    const PhysPt address = PhysMake(glsegment,0);
++#if SDL_BYTEORDER == SDL_LIL_ENDIAN
++    const HostPt page = get_tlb_read(address);
++    if (page && (address & 4095) <= 4096 - sizeof(param))
++        SDL_memcpy(param, page + address, sizeof(param));
++    else
++#endif
++        MEM_BlockRead32(address, param, sizeof(param));
+     process_msg(val);
+ 
+ //  LOG_MSG("Glide:Function %s executed OK", grTable[val].name);

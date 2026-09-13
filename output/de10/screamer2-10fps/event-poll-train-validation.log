@@ -1,0 +1,6 @@
+warning: Git tree '/home/fal/voodoo/SpinalVoodoo_xls-rewrite' is dirty
+evaluation warning: linuxPackages.perf is now perf
+{"address": 25849304, "size": 1727544, "functions": 11664, "version": 72057594037927946}
+7d8fb6b524b111f972c4f625b04464ff5a096d3ce7b206c0814c77d30d8e58ad  output/de10/screamer2-10fps/emulator-pgo-train/dosbox-x
+9820b19d1218b8f82b2919bb6698c4c2d075e2f13ec25b29b017c966ab3ee671  output/de10/screamer2-10fps/emulator-pgo-train/dosbox.bc
+047a566c b _ZZ10GFX_EventsvE10last_check

@@ -1,0 +1,23 @@
+PASS 1440768 differential INC/DEC transitions; all widths, lazy types, carry values, boundary operands and mixed-width chains
+PASS 54150800 differential branch checks; exhaustive byte arithmetic, word/dword edges and random, all lazy types, fallback diagnostics and unchanged state
+PASS 1440768 differential INC/DEC transitions; all widths, lazy types, carry values, boundary operands and mixed-width chains
+PASS 54150800 differential branch checks; exhaustive byte arithmetic, word/dword edges and random, all lazy types, fallback diagnostics and unchanged state
+PASS 276480 FPU fusion checks, 35840 fault cases: all status words/TOPs, register aliases, tags/80-bit shadows, signed zero/NaNs, rounding, load/store order and partial memory faults
+PASS 39520 cache emission boundary checks: byte/word/dword/qword, append/patch, exact fit, lower/upper overflow, no write or pointer change on rejection
+PASS 27 shared-helper branch range/alignment/emission-bound checks
+PASS 393216 executed ARM register-forwarding checks: aliases, branch joins, zero/high/overflow operands and memory effects
+PASS 15 emitted runcode/return interworking checks with TLB hits, misses, cross-page accesses and faults
+PASS 1572864 emitted ARM write checks: byte/word/dword, all page offsets, TLB hits/misses, handler side effects, partial cross-page faults, register aliases and preservation
+PASS 3145728 emitted ARM memory checks: byte/word/dword, all page offsets, low/high/wrapping addresses, TLB hits/misses, handlers/faults, cross-page fallback, register aliases and preservation
+PASS 27 shared-helper branch range/alignment/emission-bound checks
+PASS 393216 executed ARM register-forwarding checks: aliases, branch joins, zero/high/overflow operands and memory effects
+PASS 15 emitted runcode/return interworking checks with TLB hits, misses, cross-page accesses and faults
+PASS 1572864 emitted ARM write checks: byte/word/dword, all page offsets, TLB hits/misses, handler side effects, partial cross-page faults, register aliases and preservation
+PASS 3145728 emitted ARM memory checks: byte/word/dword, all page offsets, low/high/wrapping addresses, TLB hits/misses, handlers/faults, cross-page fallback, register aliases and preservation
+PASS 327680 Glide argument copies, 129024 single-probe copies, 66560 partial faults; all segments, page edges, TLB misses/warming, handler order, endian=1234
+PASS 327680 Glide argument copies, 0 single-probe copies, 66560 partial faults; all segments, page edges, TLB misses/warming, handler order, endian=4321
+PASS 225 event times, 1058 calls, 59 polls, 225 ordered events; interval=4 ms, repeated ticks, signed boundary, two clock rollovers, full queue drain, layout checks unchanged
+PASS 225 event times, 1058 calls, 1058 polls, 225 ordered events; interval=0 ms, repeated ticks, signed boundary, two clock rollovers, full queue drain, layout checks unchanged
+PASS 225 event times, 1058 calls, 59 polls, 225 ordered events; interval=4 ms, repeated ticks, signed boundary, two clock rollovers, full queue drain, layout checks unchanged
+PASS 225 event times, 1058 calls, 1058 polls, 225 ordered events; interval=0 ms, repeated ticks, signed boundary, two clock rollovers, full queue drain, layout checks unchanged
+PASS 225 event times, 1058 calls, 1058 polls, 225 ordered events; interval=0 ms, repeated ticks, signed boundary, two clock rollovers, full queue drain, layout checks unchanged

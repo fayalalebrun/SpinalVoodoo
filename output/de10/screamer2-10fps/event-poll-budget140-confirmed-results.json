@@ -1,0 +1,112 @@
+{
+  "goal_met": true,
+  "retained": true,
+  "binary": "dosbox-x-event-poll-screening",
+  "binary_sha256": "fb9db5530b4cb499aacfb3463232e2dca96d5162290ea505d2601350d8b38fc0",
+  "raw_pgo_module_sha256": "9820b19d1218b8f82b2919bb6698c4c2d075e2f13ec25b29b017c966ab3ee671",
+  "profile": "event-poll-training.profdata",
+  "core_clock_hz": 50000000,
+  "bitstream": "output/de10/xls-50mhz-palette-six-stage-bitstream/SpinalVoodoo_de10_xls.rbf",
+  "bitstream_sha256": "2ee50a4bb68fa5c2e22b145c70ca4f0e213e3aabf073bb6a02914b2720772aeb",
+  "new_fpga_image_or_compile": false,
+  "boot_id": "32bbda2e-4586-4ff7-b759-bff08e8cd7d7",
+  "workload": {
+    "duration_s": 180,
+    "mode": "Arcade",
+    "track": "England",
+    "team": "Condor",
+    "car": "Horizon",
+    "transmission": "automatic",
+    "input": "Up held, no steering"
+  },
+  "cycle_percentage": 140,
+  "auto_adjust": true,
+  "skip_auto_adjust": false,
+  "pooled_fps": 10.261013539874366,
+  "runs": [
+    {
+      "boot_id": "32bbda2e-4586-4ff7-b759-bff08e8cd7d7",
+      "pid": 19613,
+      "frame_counter_address": "0xa6277f70",
+      "duration_s": 180.00185472100202,
+      "frames": 1846,
+      "fps": 10.255449883342868,
+      "cpu_s": 176.13,
+      "cpu_pct": 97.84899176344416,
+      "before": {
+        "time": 18027.39962777,
+        "frames": 499,
+        "ticks": 13390,
+        "starttime": 1753708,
+        "voluntary": 16454,
+        "involuntary": 1057
+      },
+      "after": {
+        "time": 18207.401482491,
+        "frames": 2345,
+        "ticks": 31003,
+        "starttime": 1753708,
+        "voluntary": 18866,
+        "involuntary": 2145
+      },
+      "measurement_file": "event-poll-budget140-race-180s.json",
+      "measurement_sha256": "e8dafb3c6571ec589f5d933e8129c9a6be46b94056a3e19a8f520264bdcb28df",
+      "postgame_replay_file": "event-poll-budget140-postgame-replay.raw",
+      "postgame_replay_sha256": "96d0cfd27ae4948d001625454722992c21407a61b4f0e7a9a658ce0f39192b45"
+    },
+    {
+      "boot_id": "32bbda2e-4586-4ff7-b759-bff08e8cd7d7",
+      "pid": 20699,
+      "frame_counter_address": "0xa6174f70",
+      "duration_s": 180.00156849300038,
+      "frames": 1848,
+      "fps": 10.266577205252865,
+      "cpu_s": 175.99,
+      "cpu_pct": 97.7713702571673,
+      "before": {
+        "time": 19085.013247801,
+        "frames": 497,
+        "ticks": 13358,
+        "starttime": 1841564,
+        "voluntary": 16545,
+        "involuntary": 851
+      },
+      "after": {
+        "time": 19265.014816294,
+        "frames": 2345,
+        "ticks": 30957,
+        "starttime": 1841564,
+        "voluntary": 19045,
+        "involuntary": 1404
+      },
+      "measurement_file": "event-poll-budget140-repeat-race-180s.json",
+      "measurement_sha256": "a39a0a24cfcc11fffb40b09303964ad4958a6431171cde139ef3cd44a51b40bd",
+      "postgame_replay_file": "event-poll-budget140-repeat-postgame-replay.raw",
+      "postgame_replay_sha256": "96d0cfd27ae4948d001625454722992c21407a61b4f0e7a9a658ce0f39192b45"
+    }
+  ],
+  "preserved_game_files": 158,
+  "input_preservation_evidence": "event-poll-preserved-game-files-verified.json",
+  "baseline_overlay_rename": {
+    "glide2x.ovl": "glide2x.ovl.gog-disabled"
+  },
+  "runtime_hashes": {
+    "dosbox-x-o3": "fb9db5530b4cb499aacfb3463232e2dca96d5162290ea505d2601350d8b38fc0",
+    "dosbox.conf": "603a9e606f59e51cf560a28b2c71c98af37c17345190db64cfa210a1110eab36",
+    "game/SCREAMER.CFG": "7be828f5380912fd5f818b978f0d6e3a06ed5dd4b9ebe0c774de387f66c475d4",
+    "lib/libglide2x.so.2": "a003437b5e7d02f78289b27591170de030cf399257c4663d7e8d63c0ba7e8b28"
+  },
+  "regressions": {
+    "host": "event-poll-final-host-tests.log",
+    "arm_thumb": "event-poll-full-arm-tests.log",
+    "smc_controls": "event-poll-use-smc-test.log"
+  },
+  "policy_helper": "apply-event-poll-budget140.sh",
+  "policy_helper_tests": "event-poll-budget-helper-tests.log",
+  "policy_helper_live_validation": "event-poll-budget140-repeat-pacing-applied.log",
+  "runtime_state": "owned game and Xvfb stopped after each postgame capture; exact replay completed",
+  "notes": [
+    "Combined retained variant includes prior shared-TLB/branch/FPU work, O3 matching PGO,32-byte function alignment,80-byte Glide argument-copy fast path, ARM/Linux SDL2 250Hz event polling, and process-local auto-cycle budget140. Individual compiler/source contributions were not isolated.",
+    "Original GOG overlay is byte-preserved at the pre-existing glide2x.ovl.gog-disabled runtime name, as established by restore.py:28. Initial extra all-file audit omitted this mapping; corrected audit verifies all158 files."
+  ]
+}

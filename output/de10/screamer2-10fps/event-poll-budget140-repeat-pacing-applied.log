@@ -1,0 +1,18 @@
+/dev/shm/screamer2-50mhz/dosbox-x-o3: OK
+/dev/shm/screamer2-50mhz/dosbox.conf: OK
+/dev/shm/screamer2-50mhz/game/SCREAMER.CFG: OK
+/dev/shm/screamer2-50mhz/lib/libglide2x.so.2: OK
+[New LWP 20710]
+[New LWP 20733]
+[New LWP 20734]
+[New LWP 20735]
+[New LWP 20736]
+[New LWP 20737]
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib/arm-linux-gnueabihf/libthread_db.so.1".
+0xb6607654 in ?? () from /lib/arm-linux-gnueabihf/libc.so.6
+$1 = 100
+$2 = 1 '\001'
+$3 = 0 '\000'
+$4 = 140
+[Inferior 1 (process 20699) detached]

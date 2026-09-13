@@ -1,0 +1,64 @@
+
+RUN test-flags.py
+PASS 1440768 differential INC/DEC transitions; all widths, lazy types, carry values, boundary operands and mixed-width chains
+PASS 54150800 differential branch checks; exhaustive byte arithmetic, word/dword edges and random, all lazy types, fallback diagnostics and unchanged state
+
+RUN test-fpu.py
+PASS 276480 FPU fusion checks, 35840 fault cases: all status words/TOPs, register aliases, tags/80-bit shadows, signed zero/NaNs, rounding, load/store order and partial memory faults
+
+RUN test-cache-bounds.py
+PASS 39520 cache emission boundary checks: byte/word/dword/qword, append/patch, exact fit, lower/upper overflow, no write or pointer change on rejection
+
+RUN test-export-pgo.py
+..........
+----------------------------------------------------------------------
+Ran 10 tests in 0.252s
+
+OK
+
+RUN test-pgo-flags.py
+.
+----------------------------------------------------------------------
+Ran 1 test in 0.598s
+
+OK
+
+RUN test-navigate.py
+..usage: navigate.py [-h] [--timeout TIMEOUT]
+                   label [{Return,Up,Down,Escape,Right,Left,space}]
+navigate.py: error: label must contain only letters, digits and hyphens
+usage: navigate.py [-h] [--timeout TIMEOUT]
+                   label [{Return,Up,Down,Escape,Right,Left,space}]
+navigate.py: error: argument key: invalid choice: 'invalid-key' (choose from Return, Up, Down, Escape, Right, Left, space)
+...usage: navigate.py [-h] [--timeout TIMEOUT]
+                   label [{Return,Up,Down,Escape,Right,Left,space}]
+navigate.py: error: timeout must be between 1 and 120 seconds
+usage: navigate.py [-h] [--timeout TIMEOUT]
+                   label [{Return,Up,Down,Escape,Right,Left,space}]
+navigate.py: error: timeout must be between 1 and 120 seconds
+usage: navigate.py [-h] [--timeout TIMEOUT]
+                   label [{Return,Up,Down,Escape,Right,Left,space}]
+navigate.py: error: argument --timeout: invalid int value: 'wrong'
+.
+----------------------------------------------------------------------
+Ran 6 tests in 0.222s
+
+OK
+
+RUN test-glide-param.py
+PASS 327680 Glide argument copies, 129024 single-probe copies, 66560 partial faults; all segments, page edges, TLB misses/warming, handler order, endian=1234
+PASS 327680 Glide argument copies, 0 single-probe copies, 66560 partial faults; all segments, page edges, TLB misses/warming, handler order, endian=4321
+
+RUN test-event-poll.py
+PASS 225 event times, 1058 calls, 59 polls, 225 ordered events; interval=4 ms, repeated ticks, signed boundary, two clock rollovers, full queue drain, layout checks unchanged
+PASS 225 event times, 1058 calls, 1058 polls, 225 ordered events; interval=0 ms, repeated ticks, signed boundary, two clock rollovers, full queue drain, layout checks unchanged
+PASS 225 event times, 1058 calls, 59 polls, 225 ordered events; interval=4 ms, repeated ticks, signed boundary, two clock rollovers, full queue drain, layout checks unchanged
+PASS 225 event times, 1058 calls, 1058 polls, 225 ordered events; interval=0 ms, repeated ticks, signed boundary, two clock rollovers, full queue drain, layout checks unchanged
+PASS 225 event times, 1058 calls, 1058 polls, 225 ordered events; interval=0 ms, repeated ticks, signed boundary, two clock rollovers, full queue drain, layout checks unchanged
+
+RUN test-event-poll-budget.py
+...
+----------------------------------------------------------------------
+Ran 3 tests in 1.800s
+
+OK

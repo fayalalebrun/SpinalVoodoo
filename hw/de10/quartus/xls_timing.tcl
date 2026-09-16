@@ -1,4 +1,4 @@
-create_timing_netlist
+create_timing_netlist -force_dat
 read_sdc
 update_timing_netlist
 report_clock_fmax_summary -panel_name "Clock Fmax Summary"

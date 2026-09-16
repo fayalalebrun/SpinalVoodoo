@@ -95,9 +95,29 @@ pub struct PaletteWrite { index: u8, data: u24 }
 
 pub struct PaletteResponse { entry0: u24, entry1: u24, entry2: u24, entry3: u24 }
 
-struct FloatShadowRequest { data: u32, fraction_bits: u6 }
+struct FloatShadowRequest { data: u32, fraction_bits: u6, shadow_shift: u6 }
+
+struct FloatShadowResponse { fixed: u32, shadow: s50 }
+
+fn convert_float_register(request: FloatShadowRequest) -> FloatShadowResponse {
+    FloatShadowResponse {
+        fixed: float_alias::float32_to_fixed32_fast(request.data, request.fraction_bits) as u32,
+        shadow: float_alias::float32_to_fixed(
+            request.data, request.fraction_bits + request.shadow_shift),
+    }
+}
+
+#[quickcheck(test_count=1024)]
+fn float_register_conversion_matches_reference
+    (data: u32, fraction_bits: u6, shadow_shift: u6) -> bool {
+    let converted =
+        convert_float_register(FloatShadowRequest { data, fraction_bits, shadow_shift });
+    converted.fixed == float_alias::float32_to_fixed(data, fraction_bits) as u32 &&
+    converted.shadow == float_alias::float32_to_fixed(data, fraction_bits + shadow_shift)
+}
 
 struct PixelContext {
+    base_lod: s16,
     registers: PixelRegisterFile,
     float_shadows: PixelFloatShadowFile,
     raster_uses_float_shadows: u1,
@@ -110,6 +130,9 @@ struct FramebufferSpanJob { raster: raster_state::RasterState, config: Framebuff
 
 struct HostedControllerState {
     core: CoreState,
+    float_pending: bool,
+    float_command: CoreCommand,
+    base_lod: s16,
     pixels_pending: u6,
     triangle_pending: u1,
     triangle_install: u1,
@@ -117,9 +140,18 @@ struct HostedControllerState {
 
 struct PixelJob { core: PixelContext, candidate: raster_state::PixelCandidate, last: u1 }
 
-struct TriangleSetupRequest { ax: s20, ay: s20, bx: s20, by: s20, cx: s20, cy: s20, reverse: u1 }
+struct TriangleSetupRequest {
+    ax: s20,
+    ay: s20,
+    bx: s20,
+    by: s20,
+    cx: s20,
+    cy: s20,
+    reverse: u1,
+    texture_derivatives: s32[4],
+}
 
-struct TriangleSetupResult { bounds: uN[80], edges: uN[360], starts: uN[120] }
+struct TriangleSetupResult { bounds: uN[80], edges: uN[360], starts: uN[120], base_lod: s16 }
 
 struct PixelInterpolationRequest {
     registers: PixelRegisterFile,
@@ -140,10 +172,7 @@ struct PixelInterpolatedValues {
 }
 
 struct ReadPixelContext {
-    d_s_dx: s32,
-    d_t_dx: s32,
-    d_s_dy: s32,
-    d_t_dy: s32,
+    base_lod: s16,
     path: u28,
     alpha_mode: u32,
     fbz_mode: u21,
@@ -183,16 +212,7 @@ struct TexturePixelContext {
     last: u1,
 }
 
-struct TexturePixelValues {
-    red: u8,
-    green: u8,
-    blue: u8,
-    alpha: u8,
-    z: u8,
-    z_depth: u16,
-    w: s32,
-}
-
+struct TexturePixelValues { red: u8, green: u8, blue: u8, alpha: u8, z: u8, z_depth: u16, w: s32 }
 
 struct TexturePixelJob {
     context: TexturePixelContext,
@@ -426,8 +446,9 @@ fn pixel_texture_mode(texture: PixelTextureRegisters) -> u32 {
     (texture.texture_mode as u32) | ((texture.texture_enabled as u32) << u32:31)
 }
 
-fn pixel_context(core: CoreState) -> PixelContext {
+fn pixel_context(core: CoreState, base_lod: s16) -> PixelContext {
     PixelContext {
+        base_lod,
         registers: pixel_registers(core.registers),
         float_shadows: pixel_float_shadows(core.float_shadows),
         raster_uses_float_shadows: core.raster_uses_float_shadows,
@@ -462,7 +483,69 @@ fn masked_write(current: u32, data: u32, mask: u4) -> u32 {
 
 fn write_register_file
     (registers: RegisterFile, compact_index: u8, data: u32, mask: u4) -> RegisterFile {
-    update(registers, compact_index, masked_write(registers[compact_index], data, mask))
+    for (i, result): (u32, RegisterFile) in u32:0..array_size(registers) {
+        let value = if compact_index as u32 == i {
+            masked_write(registers[i], data, mask)
+        } else {
+            registers[i]
+        };
+        update(result, i, value)
+    }(registers)
+}
+
+fn write_addressed_register_file
+    (registers: RegisterFile, index: u8, data: u32, mask: u4) -> RegisterFile {
+    let high_indexes = u8[12]:[
+        u8:65, u8:67, u8:68, u8:70, u8:71, u8:76, u8:77, u8:81, u8:82, u8:133, u8:134, u8:135,
+    ];
+    for (i, result): (u32, RegisterFile) in u32:0..array_size(registers) {
+        let selected = if i < u32:30 {
+            index == (i + u32:2) as u8
+        } else if i < u32:42 {
+            index == high_indexes[i - u32:30]
+        } else {
+            register_index(index) == u8:42
+        };
+        update(result, i, if selected { masked_write(registers[i], data, mask) } else { registers[i] })
+    }(registers)
+}
+
+#[quickcheck(test_count=1024)]
+fn addressed_register_write_matches_compact
+    (registers: RegisterFile, index: u8, data: u32, mask: u4) -> bool {
+    write_addressed_register_file(registers, index, data, mask) ==
+        write_register_file(registers, register_index(index), data, mask)
+}
+
+#[quickcheck(test_count=1024)]
+fn register_write_matches_indexed_update
+    (registers: RegisterFile, index: u8, data: u32, mask: u4) -> bool {
+    let expected = if index < u8:43 {
+        update(registers, index, masked_write(registers[index], data, mask))
+    } else {
+        registers
+    };
+    write_register_file(registers, index, data, mask) == expected
+}
+
+#[test]
+fn register_write_preserves_other_words_and_masked_bytes() {
+    let registers = for (i, registers): (u32, RegisterFile) in u32:0..u32:43 {
+        update(registers, i, u32:0x89abcdef ^ i)
+    }(RegisterFile:[u32:0, ...]);
+    for (index, _): (u8, ()) in u8:0..u8:44 {
+        for (mask, _): (u5, ()) in u5:0..u5:16 {
+            let actual = write_register_file(registers, index, u32:0x12345678, mask as u4);
+            let expected = if index < u8:43 {
+                update(
+                    registers, index, masked_write(registers[index], u32:0x12345678, mask as u4))
+            } else {
+                registers
+            };
+            assert_eq(actual, expected)
+        }(())
+    }(());
+    assert_eq(write_register_file(registers, u8:255, u32:0, u4:15), registers);
 }
 
 fn read_texture_register(texture: TextureRegisters, address: u10) -> CoreResponse {
@@ -581,7 +664,7 @@ fn round_float_shadow(index: u8, value: s50, shift: u6) -> s48 {
     (rounded >> shift) as s48
 }
 
-fn tick_events<SKIP_INVISIBLE: bool = {true}>
+fn tick_events<SKIP_INVISIBLE: bool = {true}, PREFETCHED_SPANS: bool = {false}>
     (commands: control::CommandState, raster: raster_state::RasterState,
      fastfill: fastfill_state::FastfillState, v_retrace: u1)
     -> (
@@ -591,6 +674,8 @@ fn tick_events<SKIP_INVISIBLE: bool = {true}>
     let (next_fastfill, fill_pixel) = fastfill_state::tick(fastfill);
     let (next_raster, candidate) = if fastfill.active == u1:1 {
         (raster, raster_state::PixelCandidate { valid: u1:0, x: s16:0, y: s16:0 })
+    } else if PREFETCHED_SPANS {
+        raster_state::tick_prefetched(raster)
     } else if SKIP_INVISIBLE {
         raster_state::tick_bounded(raster)
     } else {
@@ -666,21 +751,25 @@ fn triangle_setup_request(state: CoreState, command: CoreCommand) -> TriangleSet
         cx: vertex(state.registers, u8:6),
         cy: vertex(state.registers, u8:7),
         reverse: command.data[31+:u1],
+        texture_derivatives: s32[4]:[
+            register_read(state.registers, u8:21) as s32,
+            register_read(state.registers, u8:22) as s32,
+            register_read(state.registers, u8:29) as s32,
+            register_read(state.registers, u8:30) as s32,
+        ],
     }
 }
 
 fn step_with_raster_setup
-    (state: CoreState, command: CoreCommand, hosted_triangle: u1, converted_shadow: s50)
-    -> (CoreState, CoreResponse) {
+    (state: CoreState, command: CoreCommand, hosted_triangle: u1, converted_shadow: s50,
+     converted_fixed: u32) -> (CoreState, CoreResponse) {
 
-    let is_register = command.address < u24:0x400 && command.address[0+:u2] == u2:0;
+    let is_register = (command.address < u24:0x400 ||
+                      (command.address >= u24:0x800 && command.address < u24:0xc00)) &&
+                      command.address[0+:u2] == u2:0;
     let address = command.address[0+:u10];
-    let (write_address, fraction_bits, is_float) = float_alias::alias(address);
-    let write_data = if is_float == u1:1 {
-        float_alias::float32_to_fixed32_fast(command.data, fraction_bits) as u32
-    } else {
-        command.data
-    };
+    let (write_address, _, is_float) = float_alias::alias(address);
+    let write_data = if is_float == u1:1 { converted_fixed } else { command.data };
     let write_mask = if is_float == u1:1 { u4:0xf } else { command.mask };
     let index = write_address[2+:u8];
     if !is_register {
@@ -688,7 +777,7 @@ fn step_with_raster_setup
     } else if command.write == u1:1 {
         let compact_index = register_index(index);
         let value = masked_write(state.registers[compact_index], write_data, write_mask);
-        let registers = write_register_file(state.registers, compact_index, write_data, write_mask);
+        let registers = write_addressed_register_file(state.registers, index, write_data, write_mask);
         let (shadow_shift, has_float_shadow) = float_shadow_shift(index);
         let shadow_value = if is_float == u1:1 {
             converted_shadow
@@ -747,7 +836,9 @@ pub fn step(state: CoreState, command: CoreCommand) -> (CoreState, CoreResponse)
     } else {
         s50:0
     };
-    step_with_raster_setup(state, command, u1:0, converted_shadow)
+    step_with_raster_setup(
+        state, command, u1:0, converted_shadow,
+        float_alias::float32_to_fixed32_fast(command.data, fraction_bits) as u32)
 }
 
 fn color_channel(value: s48) -> u8 {
@@ -879,11 +970,11 @@ fn combined_color_fields
     (path: u32, color0: u32, color1: u32, texture_rgba: u32, red: u8, green: u8, blue: u8,
      alpha: u8, z: u8) -> u32 {
     pixel::color_combine(
-        red ++ green ++ blue, alpha, z, texture_rgba[8+:u24], texture_rgba[0+:u8],
-        color0[0+:u24], color0[24+:u8], color1[0+:u24], color1[24+:u8], path[0+:u2], path[4+:u1],
-        path[7+:u1], path[8+:u1], path[9+:u1], path[10+:u3], path[13+:u1], path[14+:u2],
-        path[16+:u1], path[2+:u2], path[5+:u2], path[17+:u1], path[18+:u1], path[19+:u3],
-        path[22+:u1], path[23+:u2], path[25+:u1])
+        red ++ green ++ blue, alpha, z, texture_rgba[8+:u24], texture_rgba[0+:u8], color0[0+:u24],
+        color0[24+:u8], color1[0+:u24], color1[24+:u8], path[0+:u2], path[4+:u1], path[7+:u1],
+        path[8+:u1], path[9+:u1], path[10+:u3], path[13+:u1], path[14+:u2], path[16+:u1],
+        path[2+:u2], path[5+:u2], path[17+:u1], path[18+:u1], path[19+:u3], path[22+:u1],
+        path[23+:u2], path[25+:u1])
 }
 
 fn combined_color_interpolated_fields
@@ -943,6 +1034,36 @@ fn framebuffer_y(state: CoreState, candidate: raster_state::PixelCandidate) -> u
     framebuffer_y_values(
         register_read(state.registers, u8:68), register_read(state.registers, u8:135)[22+:u10],
         candidate)
+}
+
+fn lfb_command(state: CoreState, command: CoreCommand) -> memory::MemoryCommand {
+    let init1 = register_read(state.registers, u8:133);
+    let init2 = register_read(state.registers, u8:134);
+    let lfb_mode = register_read(state.registers, u8:69);
+    let configured_tiles = init1[4+:u4];
+    let tiles = if configured_tiles == u4:0 { u4:10 } else { configured_tiles };
+    let stride = (tiles as u11) << u11:6;
+    let buffer_offset = (init2[11+:u9] as u26) << u26:12;
+    let drawing = state.commands.swap.draw_count[0+:u1];
+    let front = if drawing == u1:1 { buffer_offset } else { u26:0 };
+    let back = if drawing == u1:1 { u26:0 } else { buffer_offset };
+    let buffer_select = if command.write == u1:1 { lfb_mode[4+:u2] } else { lfb_mode[6+:u2] };
+    let base = match buffer_select {
+        u2:0 => front,
+        u2:1 => back,
+        u2:2 => buffer_offset << u26:1,
+        _ => u26:0,
+    };
+    let pci_address = command.address - u24:0x400000;
+    let x = pci_address[1+:u10] as u16;
+    let y = pci_address[11+:u10] as u16;
+    let address = pixel::framebuffer_address(base, x, y, stride);
+    memory::MemoryCommand {
+        write: command.write,
+        address: address[2+:u22],
+        data: command.data,
+        mask: command.mask,
+    }
 }
 
 fn clamp_depth(value: s48) -> u16 {
@@ -1042,7 +1163,7 @@ fn framebuffer_span_config(core: CoreState) -> FramebufferSpanConfig {
         read_enabled: fbz_mode[9+:u1] || fbz_mode[10+:u1],
         back_buffer: fbz_mode[14+:u1],
         y_invert: fbz_mode[17+:u1],
-        color_read: alpha_mode[4+:u1] || fbz_mode[19+:u1],
+        color_read: alpha_mode[4+:u1],
         clip_left: clip_x[16+:u10],
         clip_right: clip_x[0+:u10],
         clip_low_y: clip_y[16+:u10],
@@ -1097,10 +1218,10 @@ proc framebuffer_span_prefetch {
     job_r: chan<FramebufferSpanJob> in;
     aux_span_s: chan<FramebufferSpan> out;
     color_span_s: chan<FramebufferSpan> out;
-    row_ready_s: chan<u1> out;
+    row_ready_s: chan<raster_state::RowSpan> out;
 
     config(job_r: chan<FramebufferSpanJob> in, aux_span_s: chan<FramebufferSpan> out,
-           color_span_s: chan<FramebufferSpan> out, row_ready_s: chan<u1> out) {
+           color_span_s: chan<FramebufferSpan> out, row_ready_s: chan<raster_state::RowSpan> out) {
         (job_r, aux_span_s, color_span_s, row_ready_s)
     }
 
@@ -1118,7 +1239,7 @@ proc framebuffer_span_prefetch {
             let span_complete = row_span.complete == u1:1;
             let tok = send_if(join(), aux_span_s, span_complete && aux_valid == u1:1, aux_span);
             let tok = send_if(tok, color_span_s, span_complete && color_valid == u1:1, color_span);
-            let tok = send_if(tok, row_ready_s, span_complete, u1:1);
+            let tok = send_if(tok, row_ready_s, span_complete, row_span);
             (raster, config, phase)
         }
     }
@@ -1320,6 +1441,9 @@ proc hosted_triangle_setup {
                 bounds: setup[480+:uN[80]],
                 edges: setup[120+:uN[360]],
                 starts: setup[0+:uN[120]],
+                base_lod: texture_sampler::base_lod(
+                    request.texture_derivatives[0], request.texture_derivatives[1],
+                    request.texture_derivatives[2], request.texture_derivatives[3]),
             });
         state
     }
@@ -1368,10 +1492,7 @@ proc hosted_pixel_interpolation_stage<EXPORT_PROFILE: bool = {false}> {
                 u8:11, u8:19, u8:27),
         };
         let context = ReadPixelContext {
-            d_s_dx: pixel_register(core.registers, u8:21) as s32,
-            d_t_dx: pixel_register(core.registers, u8:22) as s32,
-            d_s_dy: pixel_register(core.registers, u8:29) as s32,
-            d_t_dy: pixel_register(core.registers, u8:30) as s32,
+            base_lod: core.base_lod,
             path: pixel_register(core.registers, u8:65)[0+:u28],
             alpha_mode: pixel_register(core.registers, u8:67),
             fbz_mode: pixel_register(core.registers, u8:68)[0+:u21],
@@ -1456,7 +1577,7 @@ proc hosted_pixel_pipeline<EXPORT_PROFILE: bool = {false}> {
         let cache_access = textured || job.last;
         let cache_request = if textured {
             if narrow {
-                texture_cache::invalidating_sample_request(sample, core.texture_layout)
+                texture_cache::narrow_sample_request(sample, core.texture_layout)
             } else {
                 texture_cache::sample_request(sample, core.texture_layout)
             }
@@ -1490,7 +1611,7 @@ proc hosted_pixel_pipeline<EXPORT_PROFILE: bool = {false}> {
             memory::MemoryCommand { write: u1:0, address: aux.address, data: u32:0, mask: u4:0 };
         let (color_address, color_high) =
             raster_write_location(init1, init2, fbz_mode, core.drawing, y_origin, candidate);
-        let blend_access = raster_valid && (alpha_mode[4+:u1] == u1:1 || fbz_mode[19+:u1] == u1:1);
+        let blend_access = raster_valid && alpha_mode[4+:u1] == u1:1;
         let blend_read =
             memory::MemoryCommand { write: u1:0, address: color_address, data: u32:0, mask: u4:0 };
         let read_valid = (blend_access as u2) << u2:1 | (depth_access as u2);
@@ -1584,16 +1705,18 @@ proc hosted_pixel_texture_requests<EXPORT_PROFILE: bool = {false}> {
         let raster_valid = candidate_visible_fields(
             context.fbz_mode, context.clip_x_min, context.clip_x_max, context.clip_y_min,
             context.clip_y_max, context.candidate);
-        let sample = texture_request_interpolated_fields(
-            context.d_s_dx, context.d_t_dx, context.d_s_dy, context.d_t_dy, context.texture,
-            context.texture_layout, work.values.s, work.values.t, work.values.w);
+        let sample = texture_sampler::sample_request_with_base_lod(
+            work.values.s, work.values.t, work.values.w, context.base_lod,
+            pixel_texture_mode(context.texture), context.texture.t_lod as u32,
+            context.texture_layout, context.texture.tex_base, context.texture.tex_base1,
+            context.texture.tex_base2, context.texture.tex_base38);
         let textured = raster_valid && context.path[27+:u1] == u1:1;
         let narrow = flush_narrow_texture_cache(
             u1:1, context.texture.t_lod as u32, context.texture.texture_mode as u32);
         let cache_access = textured || context.last;
         let request = if textured {
             if narrow {
-                texture_cache::invalidating_sample_request(sample, context.texture_layout)
+                texture_cache::narrow_sample_request(sample, context.texture_layout)
             } else {
                 texture_cache::sample_request(sample, context.texture_layout)
             }
@@ -1615,8 +1738,7 @@ proc hosted_pixel_texture_requests<EXPORT_PROFILE: bool = {false}> {
         let (color_address, _) = raster_write_location(
             init1, init2, context.fbz_mode as u32, context.drawing, context.y_origin,
             context.candidate);
-        let blend_access =
-            raster_valid && (context.alpha_mode[4+:u1] == u1:1 || context.fbz_mode[19+:u1] == u1:1);
+        let blend_access = raster_valid && context.alpha_mode[4+:u1] == u1:1;
         let blend_read =
             memory::MemoryCommand { write: u1:0, address: color_address, data: u32:0, mask: u4:0 };
         let read_valid = (blend_access as u2) << u2:1 | (depth_access as u2);
@@ -1718,7 +1840,7 @@ proc hosted_pixel_read_pipeline<EXPORT_PROFILE: bool = {false}> {
         let depth_access = raster_valid && fbz_mode[4+:u1] == u1:1;
         let (_, color_high) = raster_write_location(
             init1, init2, fbz_mode as u32, context.drawing, y_origin, candidate);
-        let blend_access = raster_valid && (alpha_mode[4+:u1] == u1:1 || fbz_mode[19+:u1] == u1:1);
+        let blend_access = raster_valid && alpha_mode[4+:u1] == u1:1;
         let read_valid = (blend_access as u2) << u2:1 | (depth_access as u2);
         let tests = pixel::pixel_tests(
             source_color[8+:u24], chroma_key[0+:u24], source_color[0+:u8], alpha_mode[24+:u8],
@@ -1978,12 +2100,7 @@ pub proc core_sim_impl<ENABLE_BURSTS: bool = {false}, HOSTED_DE10: bool = {false
         let is_register = command_valid && command.address[22+:u2] == u2:0;
         let is_framebuffer = command_valid && command.address[22+:u2] == u2:1;
         let is_texture = command_valid && command.address[23+:u1] == u1:1;
-        let framebuffer_command = memory::MemoryCommand {
-            write: command.write,
-            address: (command.address - u24:0x400000)[2+:u22],
-            data: command.data,
-            mask: command.mask,
-        };
+        let framebuffer_command = lfb_command(state, command);
         let texture_pci_address = (command.address - u24:0x800000) as u23;
         let texture_download = texture_download_address(state, texture_pci_address);
         let texture_write = command.write == u1:1;
@@ -2253,9 +2370,7 @@ pub proc core_sim_impl<ENABLE_BURSTS: bool = {false}, HOSTED_DE10: bool = {false
             register_read(next_state.registers, u8:134),
             register_read(next_state.registers, u8:68), next_state.commands.swap.draw_count[0+:u1],
             register_read(next_state.registers, u8:135)[22+:u10], candidate);
-        let blend_access = raster_valid &&
-                           (alpha_mode[4+:u1] == u1:1 ||
-                           register_read(next_state.registers, u8:68)[19+:u1] == u1:1);
+        let blend_access = raster_valid && alpha_mode[4+:u1] == u1:1;
         let blend_read =
             memory::MemoryCommand { write: u1:0, address: color_address, data: u32:0, mask: u4:0 };
         let read_valid = (blend_access as u2) << u2:1 | (depth_access as u2);
@@ -2509,9 +2624,9 @@ proc texture_cache_arbiter {
 
 proc float_shadow_converter {
     request_r: chan<FloatShadowRequest> in;
-    response_s: chan<s50> out;
+    response_s: chan<FloatShadowResponse> out;
 
-    config(request_r: chan<FloatShadowRequest> in, response_s: chan<s50> out) {
+    config(request_r: chan<FloatShadowRequest> in, response_s: chan<FloatShadowResponse> out) {
         (request_r, response_s)
     }
 
@@ -2519,15 +2634,14 @@ proc float_shadow_converter {
 
     next(state: ()) {
         let (tok, request) = recv(join(), request_r);
-        let tok = send(
-            tok, response_s, float_alias::float32_to_fixed(request.data, request.fraction_bits));
+        let tok = send(tok, response_s, convert_float_register(request));
         state
     }
 }
 
 proc core_sim_hosted_controller<EXPORT_SCANOUT: bool = {false}, EXTERNAL_PALETTE: bool = {false}, EXPORT_PERFORMANCE:
 bool = {
-    false}, SPAN_PREFETCH: bool = {false}>
+    false}, SPAN_PREFETCH: bool = {false}, DE10_ONLY: bool = {false}>
 {
     command_r: chan<CoreCommand> in;
     de10_request_r: chan<De10MmioRequest> in;
@@ -2537,7 +2651,7 @@ bool = {
     framebuffer_fastfill_s: chan<memory::MemoryRequestPair> out;
     framebuffer_fastfill_response_r: chan<memory::MemoryResponsePair> in;
     span_job_s: chan<FramebufferSpanJob> out;
-    span_row_ready_r: chan<u1> in;
+    span_row_ready_r: chan<raster_state::RowSpan> in;
     cache_request_s: chan<texture_cache::CacheRequest> out;
     cache_response_r: chan<texture_cache::CacheResponse> in;
     pixel_job_s: chan<PixelJob> out;
@@ -2547,7 +2661,7 @@ bool = {
     v_retrace_r: chan<u1> in;
     scanout_s: chan<ScanoutState> out;
     float_shadow_request_s: chan<FloatShadowRequest> out;
-    float_shadow_response_r: chan<s50> in;
+    float_shadow_response_r: chan<FloatShadowResponse> in;
     palette_write_s: chan<PaletteWrite> out;
     performance_s: chan<PerformanceEvent> out;
     profile_pending_s: chan<u6> out;
@@ -2555,18 +2669,20 @@ bool = {
     config(command_r: chan<CoreCommand> in, de10_request_r: chan<De10MmioRequest> in,
            response_s: chan<CoreResponse> out,
            framebuffer_command_s: chan<memory::MemoryCommand> out,
-            framebuffer_response_r: chan<memory::MemoryResponse> in,
-            framebuffer_fastfill_s: chan<memory::MemoryRequestPair> out,
-            framebuffer_fastfill_response_r: chan<memory::MemoryResponsePair> in,
-            span_job_s: chan<FramebufferSpanJob> out, span_row_ready_r: chan<u1> in,
+           framebuffer_response_r: chan<memory::MemoryResponse> in,
+           framebuffer_fastfill_s: chan<memory::MemoryRequestPair> out,
+           framebuffer_fastfill_response_r: chan<memory::MemoryResponsePair> in,
+           span_job_s: chan<FramebufferSpanJob> out,
+           span_row_ready_r: chan<raster_state::RowSpan> in,
            cache_request_s: chan<texture_cache::CacheRequest> out,
            cache_response_r: chan<texture_cache::CacheResponse> in, pixel_job_s: chan<PixelJob> out,
            pixel_result_r: chan<PixelResult> in,
            triangle_setup_request_s: chan<TriangleSetupRequest> out,
            triangle_setup_response_r: chan<TriangleSetupResult> in, v_retrace_r: chan<u1> in,
            scanout_s: chan<ScanoutState> out, float_shadow_request_s: chan<FloatShadowRequest> out,
-           float_shadow_response_r: chan<s50> in, palette_write_s: chan<PaletteWrite> out,
-           performance_s: chan<PerformanceEvent> out, profile_pending_s: chan<u6> out) {
+           float_shadow_response_r: chan<FloatShadowResponse> in,
+           palette_write_s: chan<PaletteWrite> out, performance_s: chan<PerformanceEvent> out,
+           profile_pending_s: chan<u6> out) {
         (
             command_r, de10_request_r, response_s, framebuffer_command_s, framebuffer_response_r,
             framebuffer_fastfill_s, framebuffer_fastfill_response_r, span_job_s, span_row_ready_r,
@@ -2580,6 +2696,9 @@ bool = {
     init {
         HostedControllerState {
             core: initial_state(),
+            float_pending: false,
+            float_command: CoreCommand { write: u1:0, address: u24:0, data: u32:0, mask: u4:0 },
+            base_lod: s16:0,
             pixels_pending: u6:0,
             triangle_pending: u1:0,
             triangle_install: u1:0,
@@ -2630,7 +2749,13 @@ bool = {
             pending_tok, performance_s,
             EXPORT_PERFORMANCE && (result_valid || degenerate_triangle), performance_event);
         if state.triangle_install {
-            HostedControllerState { core, pixels_pending, triangle_pending, triangle_install: u1:0 }
+            HostedControllerState {
+                core,
+                pixels_pending,
+                triangle_pending,
+                triangle_install: u1:0,
+                ..state
+            }
         } else if triangle_pending && pixels_pending == u6:0 {
             let (triangle_tok, triangle_setup_result) = recv(join(), triangle_setup_response_r);
             let triangle_setup = raster_state::from_triangle_parts(
@@ -2644,25 +2769,26 @@ bool = {
                 });
             HostedControllerState {
                 core: CoreState { raster: triangle_setup, ..core },
+                base_lod: triangle_setup_result.base_lod,
                 pixels_pending,
                 triangle_pending: u1:0,
                 triangle_install: !triangle_setup.active,
+                ..state
             }
         } else if SPAN_PREFETCH && core.raster.active == u1:1 && core.raster.row_prefetched == u1:0 &&
         core.fastfill.active == u1:0 {
-            let (span_tok, _) = recv(performance_tok, span_row_ready_r);
+            let (span_tok, span) = recv(join(), span_row_ready_r);
             HostedControllerState {
-                core: CoreState {
-                    raster: raster_state::RasterState { row_prefetched: u1:1, ..core.raster },
-                    ..core
-                },
+                core: CoreState { raster: raster_state::install_span(core.raster, span), ..core },
+                base_lod: state.base_lod,
                 pixels_pending,
                 triangle_pending,
                 triangle_install: u1:0,
+                ..state
             }
         } else if (core.raster.active == u1:1 && pixels_pending < u6:63) ||
         core.fastfill.active == u1:1 {
-            let (commands, raster, fastfill, candidate, fill) = tick_events<true>(
+            let (commands, raster, fastfill, candidate, fill) = tick_events<true, SPAN_PREFETCH>(
                 core.commands, core.raster, core.fastfill,
                 if v_retrace_valid { v_retrace } else { u1:0 });
             let ticked_core = CoreState { commands, raster, fastfill, ..core };
@@ -2671,7 +2797,7 @@ bool = {
             let scanout_tok =
                 send_if(join(), scanout_s, EXPORT_SCANOUT, scanout_state(ticked_core));
             let job = PixelJob {
-                core: pixel_context(ticked_core),
+                core: pixel_context(ticked_core, state.base_lod),
                 candidate,
                 last: raster_tick && raster.active == u1:0,
             };
@@ -2693,15 +2819,18 @@ bool = {
                 memory::empty_response_pair());
             HostedControllerState {
                 core: ticked_core,
+                base_lod: state.base_lod,
                 pixels_pending: pixels_pending + (issue_pixel as u6),
                 triangle_pending,
                 triangle_install: u1:0,
+                ..state
             }
         } else {
             let default_command =
                 CoreCommand { write: u1:0, address: u24:0, data: u32:0, mask: u4:0 };
-            let receive_command = triangle_pending == u1:0 && pixels_pending == u6:0;
-            let (command_tok, core_command, core_command_valid) = if receive_command {
+            let receive_command =
+                triangle_pending == u1:0 && pixels_pending == u6:0 && !state.float_pending;
+            let (command_tok, core_command, core_command_valid) = if receive_command && !DE10_ONLY {
                 recv_non_blocking(join(), command_r, default_command)
             } else {
                 (join(), default_command, false)
@@ -2719,18 +2848,25 @@ bool = {
                 (command_tok, default_request, false)
             };
             let request_legal = de10_request_valid(request);
-            let command = if request_valid { de10_core_command(request) } else { core_command };
-            let command_valid = core_command_valid || (request_valid && request_legal);
-            let response_valid = core_command_valid || request_valid;
+            let command = if state.float_pending {
+                state.float_command
+            } else if request_valid {
+                de10_core_command(request)
+            } else {
+                core_command
+            };
+            let received = core_command_valid || (request_valid && request_legal);
+            let (write_address, fraction_bits, is_float) =
+                float_alias::alias(command.address[0+:u10]);
+            let defer_float = received && command.address[22+:u2] == u2:0 && command.write == u1:1 &&
+                              is_float == u1:1;
+            let command_valid = state.float_pending || (received && !defer_float);
+            let response_valid =
+                state.float_pending || ((core_command_valid || request_valid) && !defer_float);
             let is_register = command_valid && command.address[22+:u2] == u2:0;
             let is_framebuffer = command_valid && command.address[22+:u2] == u2:1;
             let is_texture = command_valid && command.address[23+:u1] == u1:1;
-            let framebuffer_command = memory::MemoryCommand {
-                write: command.write,
-                address: (command.address - u24:0x400000)[2+:u22],
-                data: command.data,
-                mask: command.mask,
-            };
+            let framebuffer_command = lfb_command(core, command);
             let framebuffer_tok =
                 send_if(join(), framebuffer_command_s, is_framebuffer, framebuffer_command);
             let (framebuffer_tok, framebuffer_response) = recv_if(
@@ -2771,19 +2907,13 @@ bool = {
             let triangle_tok = send_if(
                 join(), triangle_setup_request_s, triangle_command,
                 triangle_setup_request(core, command));
-            let (write_address, fraction_bits, is_float) =
-                float_alias::alias(command.address[0+:u10]);
-            let (shadow_shift, has_float_shadow) = float_shadow_shift(write_address[2+:u8]);
-            let convert_shadow = is_register && command.write == u1:1 && is_float == u1:1 &&
-                                 has_float_shadow == u1:1;
+            let (shadow_shift, _) = float_shadow_shift(write_address[2+:u8]);
             let shadow_tok = send_if(
-                join(), float_shadow_request_s, convert_shadow,
-                FloatShadowRequest {
-                    data: command.data,
-                    fraction_bits: fraction_bits + shadow_shift,
-                });
-            let (shadow_tok, converted_shadow) =
-                recv_if(shadow_tok, float_shadow_response_r, convert_shadow, s50:0);
+                join(), float_shadow_request_s, defer_float,
+                FloatShadowRequest { data: command.data, fraction_bits, shadow_shift });
+            let (shadow_tok, converted_shadow) = recv_if(
+                join(), float_shadow_response_r, state.float_pending,
+                FloatShadowResponse { fixed: u32:0, shadow: s50:0 });
             let (palette_write, palette_request) =
                 palette_write_request(write_address, command.data);
             let palette_tok = send_if(
@@ -2791,7 +2921,8 @@ bool = {
                 EXTERNAL_PALETTE && is_register && command.write == u1:1 && palette_write,
                 palette_request);
             let (next_core, register_response) = if is_register {
-                step_with_raster_setup(core, command, u1:1, converted_shadow)
+                step_with_raster_setup(
+                    core, command, u1:1, converted_shadow.shadow, converted_shadow.fixed)
             } else {
                 (core, CoreResponse { data: u32:0, success: u1:0 })
             };
@@ -2852,7 +2983,7 @@ bool = {
                     },
                 )
             } else {
-                tick_events<true>(
+                tick_events<true, SPAN_PREFETCH>(
                     next_core.commands, next_core.raster, next_core.fastfill,
                     if v_retrace_valid { v_retrace } else { u1:0 })
             };
@@ -2861,7 +2992,7 @@ bool = {
             let scanout_tok =
                 send_if(join(), scanout_s, EXPORT_SCANOUT, scanout_state(ticked_core));
             let job = PixelJob {
-                core: pixel_context(ticked_core),
+                core: pixel_context(ticked_core, state.base_lod),
                 candidate,
                 last: raster_tick && raster.active == u1:0,
             };
@@ -2883,9 +3014,12 @@ bool = {
                 memory::empty_response_pair());
             HostedControllerState {
                 core: ticked_core,
+                base_lod: state.base_lod,
                 pixels_pending: pixels_pending + (issue_pixel as u6),
                 triangle_pending: triangle_pending || triangle_command,
                 triangle_install: u1:0,
+                float_pending: defer_float,
+                float_command: if defer_float { command } else { state.float_command },
             }
         }
     }
@@ -2954,7 +3088,7 @@ pub proc core_sim_hosted {
         let (scalar_cache_response_s, scalar_cache_response_r) =
             chan<texture_cache::CacheResponse>("scalar_cache_response");
         let (span_job_s, _) = chan<FramebufferSpanJob>("span_job_unused");
-        let (_, span_row_ready_r) = chan<u1>("span_row_ready_unused");
+        let (_, span_row_ready_r) = chan<raster_state::RowSpan>("span_row_ready_unused");
         let (pixel_job_s, pixel_job_r) = chan<PixelJob>("pixel_job");
         let (pixel_work_s, pixel_work_r) = chan<InterpolatedPixelJob>("pixel_work");
         let (pixel_texture_s, pixel_texture_r) = #[channel(depth=32, bypass=false, register_push_outputs=true, register_pop_outputs=false)]
@@ -2974,7 +3108,8 @@ pub proc core_sim_hosted {
             chan<TriangleSetupResult>("triangle_setup_response");
         let (float_shadow_request_s, float_shadow_request_r) =
             chan<FloatShadowRequest>("float_shadow_request");
-        let (float_shadow_response_s, float_shadow_response_r) = chan<s50>("float_shadow_response");
+        let (float_shadow_response_s, float_shadow_response_r) =
+            chan<FloatShadowResponse>("float_shadow_response");
         let (palette_read_request_s, palette_read_request_r) =
             chan<PaletteReadRequest>("palette_read_request");
         let (palette_response_s, palette_response_r) = chan<PaletteResponse>("palette_response");
@@ -3052,6 +3187,8 @@ pub proc core_sim_de10 {
            fast_bank_request_s: chan<texture_cache::FastBankRequest> out,
            slow_bank_response_r: chan<texture_cache::BankResponse> in,
            fast_bank_response_r: chan<texture_cache::BankResponse> in,
+           tag_read_s: chan<texture_cache::TagRead> out, tag_response_r: chan<u14[4]> in,
+           tag_write_s: chan<texture_cache::TagWrite> out,
            palette_read_request_s: chan<PaletteReadRequest> out,
            palette_response_r: chan<PaletteResponse> in, palette_write_s: chan<PaletteWrite> out,
            performance_s: chan<PerformanceEvent> out, profile_pending_s: chan<u6> out,
@@ -3059,6 +3196,7 @@ pub proc core_sim_de10 {
            profile_cache_done_s: chan<u1> out, profile_read_done_s: chan<u1> out,
            profile_write_done_s: chan<u1> out) {
         let (_, command_r) = chan<CoreCommand>("command");
+
         let (framebuffer_command_s, framebuffer_command_r) =
             chan<memory::MemoryCommand>("framebuffer_command");
         let (framebuffer_response_s, framebuffer_response_r) =
@@ -3090,11 +3228,11 @@ pub proc core_sim_de10 {
             chan<texture_cache::CacheResponse>("scalar_cache_response");
         let (span_job_s, span_job_r) = chan<FramebufferSpanJob>("span_job");
         let (span_row_ready_s, span_row_ready_r) = #[channel(depth=3, bypass=false, register_push_outputs=true, register_pop_outputs=false)]
-                                                   chan<u1>("span_row_ready");
+                                                   chan<raster_state::RowSpan>("span_row_ready");
         let (pixel_job_s, pixel_job_r) = chan<PixelJob>("pixel_job");
         let (pixel_work_s, pixel_work_r) = chan<InterpolatedPixelJob>("pixel_work");
-        let (pixel_texture_s, pixel_texture_r) = #[channel(depth=7, bypass=false, register_push_outputs=true, register_pop_outputs=false)]
-                                                    chan<TexturePixelJob>("pixel_texture");
+        let (pixel_texture_s, pixel_texture_r) = #[channel(depth=9, bypass=false, register_push_outputs=true, register_pop_outputs=true)]
+                                                 chan<TexturePixelJob>("pixel_texture");
         let (pixel_read_job_s, pixel_read_job_r) = chan<ReadPixelJob>("pixel_read_job");
         let (pixel_pending_s, pixel_pending_r) = chan<PendingPixelResult>("pixel_pending");
         let (pixel_result_s, pixel_result_r) = chan<PixelResult>("pixel_result");
@@ -3110,7 +3248,8 @@ pub proc core_sim_de10 {
             chan<TriangleSetupResult>("triangle_setup_response");
         let (float_shadow_request_s, float_shadow_request_r) =
             chan<FloatShadowRequest>("float_shadow_request");
-        let (float_shadow_response_s, float_shadow_response_r) = chan<s50>("float_shadow_response");
+        let (float_shadow_response_s, float_shadow_response_r) =
+            chan<FloatShadowResponse>("float_shadow_response");
 
         let (read_color_s, read_color_r) = chan<memory::MemoryCommand>("read_color");
         let (read_color_response_s, read_color_response_r) =
@@ -3153,14 +3292,15 @@ pub proc core_sim_de10 {
         spawn texture_cache_arbiter(
             scalar_cache_request_r, scalar_cache_response_s, pixel_cache_request_r,
             pixel_cache_lookup_s, texture_cache_request_s, texture_cache_response_r);
-        spawn texture_cache::texture_cache_vector<true>(
+        spawn texture_cache::texture_cache_vector<true, true, true>(
             texture_cache_request_r, texture_cache_response_s, texture_command_s,
             texture_response_r, texture_fill_s, texture_fill_response_r, slow_bank_request_s,
-            fast_bank_request_s, slow_bank_response_r, fast_bank_response_r);
+            fast_bank_request_s, slow_bank_response_r, fast_bank_response_r, tag_read_s,
+            tag_response_r, tag_write_s);
         spawn hosted_triangle_setup(triangle_setup_request_r, triangle_setup_response_s);
         spawn palette_lookup(
             pixel_cache_lookup_r, pixel_cache_response_s, palette_read_request_s, palette_response_r);
-        spawn core_sim_hosted_controller<true, true, true, true>(
+        spawn core_sim_hosted_controller<true, true, true, true, true>(
             command_r, de10_request_r, response_s, framebuffer_command_s, framebuffer_response_r,
             fastfill_s, fastfill_response_r, span_job_s, span_row_ready_r, scalar_cache_request_s,
             scalar_cache_response_r, pixel_job_s, pixel_result_r, triangle_setup_request_s,
@@ -3215,7 +3355,7 @@ pub proc core_sim_de10 {
         spawn de10_adapter::word_transfer_adapter(
             texture_command_r, texture_response_s, texture_word_transfer_s,
             texture_word_transfer_response_r);
-        spawn de10_adapter::block_read_transfer_adapter(
+        spawn de10_adapter::block_read_transfer_adapter<{texture_cache::SECTOR_WORDS}>(
             texture_fill_r, texture_fill_response_s, texture_fill_transfer_s,
             texture_fill_transfer_response_r);
         spawn de10_adapter::transfer_arbiter2(
@@ -3325,6 +3465,28 @@ pub proc core_sim<FB_WORDS: u32 = {u32:1048576}, TEX_WORDS: u32 = {u32:2097152}>
     init { () }
 
     next(state: ()) { state }
+}
+
+#[test]
+fn lfb_write_maps_pci_coordinates_to_selected_back_buffer() {
+    let state = initial_state();
+    let registers = update(
+        update(
+            update(state.registers, register_index(u8:133), u32:0x1251e0a8),
+            register_index(u8:134), u32:0x1874b0e2), register_index(u8:69), u32:0x10);
+    let state = CoreState { registers, ..state };
+    let command = CoreCommand { write: u1:1, address: u24:0x4a73fa, data: u32:0, mask: u4:0xc };
+    let mapped = lfb_command(state, command);
+    assert_eq(mapped.address, u22:0x3fa7e);
+    assert_eq(mapped.mask, u4:0xc);
+    let swapped = CoreState {
+        commands: control::CommandState {
+            swap: control::SwapState { draw_count: u2:1, ..state.commands.swap },
+            ..state.commands
+        },
+        ..state
+    };
+    assert_eq(lfb_command(swapped, command).address, u22:0x1a27e);
 }
 
 #[test]
@@ -3451,6 +3613,7 @@ fn narrow_paletted_textures_flush_banked_cache_while_rendering() {
     assert_eq(flush_narrow_texture_cache(u1:0, u32:0x00600000, u32:0x500), u1:0);
 }
 
+
 #[test]
 fn pixel_texture_state_preserves_sampler_inputs() {
     let texture = pixel_texture_registers(
@@ -3479,6 +3642,16 @@ fn step_updates_texture_state_and_layout() {
     assert_eq(response, CoreResponse { data: u32:0, success: u1:1 });
     assert_eq(state.texture.tex_base, u32:0x00012345);
     assert_eq(state.texture_layout[410+:u22], u22:0x91a28);
+}
+
+#[test]
+fn step_maps_tmu_register_aliases() {
+    let state = initial_state();
+    let command =
+        CoreCommand { write: u1:1, address: u24:0xb0c, data: u32:0x00012345, mask: u4:0xf };
+    let (state, response) = step(state, command);
+    assert_eq(response, CoreResponse { data: u32:0, success: u1:1 });
+    assert_eq(state.texture.tex_base, u32:0x00012345);
 }
 
 #[test]
@@ -3599,6 +3772,44 @@ fn ftriangle_interpolation_uses_float_shadow_precision() {
     assert_eq(interpolated_parameter(state, candidate, u8:13, u8:21, u8:29), s48:2634507);
 }
 
+#[test_proc]
+proc triangle_setup_captures_lod_and_handles_degenerate_triangles {
+    request_s: chan<TriangleSetupRequest> out;
+    response_r: chan<TriangleSetupResult> in;
+    terminator: chan<bool> out;
+
+    config(terminator: chan<bool> out) {
+        let (request_s, request_r) = chan<TriangleSetupRequest>("request");
+        let (response_s, response_r) = chan<TriangleSetupResult>("response");
+        spawn hosted_triangle_setup(request_r, response_s);
+        (request_s, response_r, terminator)
+    }
+
+    init { () }
+
+    next(state: ()) {
+        let registers = update(initial_state().registers, register_index(u8:21), u32:1048576);
+        let core = CoreState { registers, ..initial_state() };
+        let command = CoreCommand { write: u1:1, address: u24:0x100, data: u32:0, mask: u4:0xf };
+        let first = triangle_setup_request(core, command);
+        let next_core =
+            CoreState { registers: update(registers, register_index(u8:21), u32:0), ..core };
+        let second = triangle_setup_request(next_core, command);
+        assert_eq(first.texture_derivatives, s32[4]:[s32:1048576, s32:0, s32:0, s32:0]);
+        let tok = send(join(), request_s, first);
+        let (tok, first_result) = recv(tok, response_r);
+        assert_eq(first_result.base_lod, s16:256);
+        let raster = raster_state::from_triangle_parts(
+            first_result.bounds, first_result.edges, first_result.starts);
+        assert_eq(raster.active, u1:0);
+        let tok = send(tok, request_s, second);
+        let (tok, second_result) = recv(tok, response_r);
+        assert_eq(second_result.base_lod, s16:0);
+        let tok = send(tok, terminator, true);
+        state
+    }
+}
+
 #[test]
 fn vertex_preserves_twenty_bit_coordinates() {
     let registers = update(RegisterFile:[u32:0, ...], register_index(u8:2), u32:0x13880);
@@ -3655,8 +3866,8 @@ proc hosted_pixel_posted_retire_test {
             color_write: u1:1,
             aux_write: u1:0,
         };
-        let tok = send(
-            tok, pending_s, PendingPixelResult { event: final_event, write_access: u1:1 });
+        let tok =
+            send(tok, pending_s, PendingPixelResult { event: final_event, write_access: u1:1 });
         let (tok, result) = recv(tok, result_r);
         assert_eq(result, final_event);
         let tok = unroll_for! (_, tok): (u5, token) in u5:0..u5:20 {
@@ -3797,4 +4008,88 @@ proc core_sim_proc_test {
         assert_eq(textured_response.data[0+:u16], u16:0x001f);
         send(tok, terminator, true);
     }
+}
+
+#[test_proc]
+proc hosted_pixel_blend_read_access_test {
+    work_s: chan<InterpolatedPixelJob> out;
+    job_r: chan<ReadPixelJob> in;
+    reads_r: chan<memory::MemoryRequestPair> in;
+    terminator: chan<bool> out;
+
+    config(terminator: chan<bool> out) {
+        let (work_s, work_r) = chan<InterpolatedPixelJob>("work");
+        let (texture_s, texture_r) = chan<TexturePixelJob>("texture");
+        let (job_s, job_r) = chan<ReadPixelJob>("job");
+        let (reads_s, reads_r) = chan<memory::MemoryRequestPair>("reads");
+        let (cache_s, _) = chan<texture_cache::CacheRequest>("cache");
+        let (_, cache_r) = chan<PixelCacheResponse>("cache_response");
+        let (start_s, _) = chan<u1>("start");
+        let (done_s, _) = chan<u1>("done");
+        spawn hosted_pixel_texture_requests<false>(work_r, texture_s, cache_s, reads_s, start_s);
+        spawn hosted_pixel_read_pipeline<false>(texture_r, job_s, cache_r, done_s);
+        (work_s, job_r, reads_r, terminator)
+    }
+
+    init { () }
+
+    next(state: ()) {
+        let tok = unroll_for! (flags, tok): (u5, token) in u5:0..u5:16 {
+            let blend = flags[0+:u1];
+            let depth = flags[1+:u1];
+            let subtract = flags[2+:u1];
+            let visible = flags[3+:u1];
+            let context = ReadPixelContext {
+                alpha_mode: (blend as u32) << u32:4,
+                fbz_mode: u21:0x200 | ((depth as u21) << u21:4) | ((subtract as u21) << u21:19),
+                candidate: raster_state::PixelCandidate {
+                    valid: visible,
+                    ..zero!<raster_state::PixelCandidate>()
+                },
+                ..zero!<ReadPixelContext>()
+            };
+            let tok = send(
+                tok, work_s,
+                InterpolatedPixelJob { context, values: zero!<PixelInterpolatedValues>() });
+            let (tok, job) = recv(tok, job_r);
+            let (tok, reads, received) =
+                recv_non_blocking(tok, reads_r, zero!<memory::MemoryRequestPair>());
+            let expected = if visible { ((blend as u2) << u2:1) | (depth as u2) } else { u2:0 };
+            assert_eq(received, expected != u2:0);
+            assert_eq(if received { reads.valid } else { u2:0 }, expected);
+            assert_eq(job.read_access, expected != u2:0);
+            assert_eq(job.blend_access, visible && blend);
+            assert_eq(job.depth_access, visible && depth);
+            tok
+        }(join());
+        send(tok, terminator, true);
+    }
+}
+
+#[test]
+fn framebuffer_span_reads_only_for_enabled_blending() {
+    for (flags, _): (u4, ()) in u4:0..u4:8 {
+        let blend = flags[0+:u1];
+        let depth = flags[1+:u1];
+        let subtract = flags[2+:u1];
+        let core = initial_state();
+        let registers =
+            write_addressed_register_file(core.registers, u8:67, (blend as u32) << u32:4, u4:15);
+        let registers = write_addressed_register_file(
+            registers, u8:68,
+            u32:0x200 | ((depth as u32) << u32:4) | ((subtract as u32) << u32:19), u4:15);
+        let config = framebuffer_span_config(CoreState { registers, ..core });
+        assert_eq(config.color_read, blend);
+        assert_eq(config.depth_read, depth);
+        assert_eq(config.read_enabled, u1:1);
+    }(());
+}
+
+#[quickcheck(test_count=1024)]
+fn opaque_output_does_not_depend_on_framebuffer
+    (color: u32, dest0: u24, dest1: u24, fbz_mode: u32, alpha_mode: u32, x: s16, y: s16) -> bool {
+    let candidate = raster_state::PixelCandidate { valid: u1:1, x, y };
+    let alpha_mode = alpha_mode & !u32:0x10;
+    raster_write_color(u32:0, u32:0, fbz_mode, alpha_mode, u1:0, u10:0, candidate, color, dest0) ==
+    raster_write_color(u32:0, u32:0, fbz_mode, alpha_mode, u1:0, u10:0, candidate, color, dest1)
 }

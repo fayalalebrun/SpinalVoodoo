@@ -31,8 +31,8 @@ case class XlsDe10Scanout(c: Config) extends Component {
     addressMask = De10AddressMap.fbMemMask
   )
 
-  scanout.io.prefetchReq <> reader.io.prefetchReq
-  scanout.io.readReq <> reader.io.readReq
+  reader.io.prefetchReq << scanout.io.prefetchReq.m2sPipe().s2mPipe()
+  reader.io.readReq << scanout.io.readReq.m2sPipe().s2mPipe()
   scanout.io.readRsp <> reader.io.readRsp
   reader.io.mem <> sourceRemover.io.input
   sourceRemover.io.output <> bridge.io.bmb

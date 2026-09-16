@@ -26,7 +26,7 @@ module XlsFramebufferWriteIngress #(
   input  wire          flush,
   input  wire          block_line_valid,
   input  wire [15:0]   block_line_tag,
-  output wire          busy,
+  output reg           busy,
   output wire          update_valid,
   output wire [21:0]   update_address,
   output wire [31:0]   update_data,
@@ -90,7 +90,7 @@ module XlsFramebufferWriteIngress #(
       (!request_legal || (!request_blocked && ingress_space));
   assign response = response_memory[response_read_ptr];
   assign response_valid = response_count != 0;
-  assign busy = ingress_count != 0 || engine_busy;
+
   assign update_valid = ingress_push;
   assign update_address = request_address;
   assign update_data = request_data;
@@ -116,6 +116,7 @@ module XlsFramebufferWriteIngress #(
 
   always @(posedge clk) begin
     if (reset) begin
+      busy <= 0;
       ingress_write_ptr <= 0;
       ingress_read_ptr <= 0;
       ingress_count <= 0;
@@ -128,6 +129,7 @@ module XlsFramebufferWriteIngress #(
       response_read_ptr <= 0;
       response_count <= 0;
     end else begin
+      busy <= ingress_count != 0 || engine_busy || ingress_push;
       if (ingress_store) begin
         ingress_memory[ingress_write_ptr] <= request;
         ingress_write_ptr <= ingress_write_ptr + 1'b1;

@@ -21,6 +21,16 @@ module XlsFramebufferWriteIngressTb;
 
   always #5 clk = ~clk;
 
+  always @(negedge clk) begin
+    if (!reset && (dut.ingress_count != 0 || dut.engine_busy) && !busy)
+      $fatal(1, "busy dropped while writes were pending");
+  end
+
+  initial begin
+    #100000;
+    $fatal(1, "write ingress test timed out");
+  end
+
   XlsFramebufferWriteIngress #(
     .BASE_ADDRESS(32'h3f400000), .SPAN_WORDS(128), .RESPONSE_DEPTH(8),
     .INGRESS_DEPTH(8), .START_WATERMARK(4), .IDLE_TIMEOUT(8)
@@ -115,6 +125,7 @@ module XlsFramebufferWriteIngressTb;
     request_valid <= 0;
     pop_response(1'b0, 32'hcafebabe);
     if (mem_write) $fatal(1, "illegal request reached memory");
+    if (busy) $fatal(1, "illegal request made ingress busy");
 
     push_write(22'h30, 32'h01234567, 4'hf);
     flush <= 1;
@@ -127,6 +138,19 @@ module XlsFramebufferWriteIngressTb;
     while (busy) @(posedge clk);
     flush <= 0;
     pop_response(1'b1, 32'h01234567);
+
+    push_write(22'h40, 32'hdeadbeef, 4'hf);
+    repeat (2) @(posedge clk);
+    if (!busy) $fatal(1, "queued write did not assert busy");
+    reset <= 1;
+    repeat (3) @(posedge clk);
+    #1;
+    if (busy || response_valid || mem_write) $fatal(1, "warm reset retained pending writes");
+    reset <= 0;
+    push_write(22'h50, 32'h89abcdef, 4'hf);
+    expect_beat(11'd1, 32'h3f400140, 32'h89abcdef, 4'hf);
+    pop_response(1'b1, 32'h89abcdef);
+    while (busy) @(posedge clk);
 
     $display("XlsFramebufferWriteIngressTb PASS");
     $finish;

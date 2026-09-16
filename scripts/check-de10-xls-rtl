@@ -4,6 +4,17 @@ set -euo pipefail
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 "$root/scripts/test-quartus-compat-xls-rtl"
 "$root/scripts/gen-rtl-de10-xls"
+python3 "$root/scripts/test-xls-ram-fifos"
+iverilog -g2012 -s XlsPackedBankAddressTb \
+  -o "$root/xls/build/xls-packed-bank-address-tb" \
+  "$root/hw/de10/xls/XlsPackedBankMemory.sv" \
+  "$root/hw/de10/xls/XlsPackedBankAddress_tb.sv"
+vvp "$root/xls/build/xls-packed-bank-address-tb"
+iverilog -g2012 -s XlsTextureTagMemoryTb \
+  -o "$root/xls/build/xls-texture-tags-tb" \
+  "$root/hw/de10/xls/XlsTextureTagMemory.sv" \
+  "$root/hw/de10/xls/XlsTextureTagMemory_tb.sv"
+vvp "$root/xls/build/xls-texture-tags-tb"
 iverilog -g2012 -s XlsAvalonTransferMasterTb \
   -o "$root/xls/build/xls-avalon-transfer-tb" \
   "$root/hw/de10/xls/XlsAvalonTransferMaster.sv" \
@@ -54,9 +65,16 @@ iverilog -g2012 -s XlsH2fMemoryFifoTb \
   "$root/hw/de10/xls/XlsH2fMemoryFifo.sv" \
   "$root/hw/de10/xls/XlsH2fMemoryFifo_tb.sv"
 vvp "$root/xls/build/xls-h2f-memory-fifo-tb"
+iverilog -g2012 -s XlsH2fBatchExpanderTb \
+  -o "$root/xls/build/xls-h2f-batch-expander-tb" \
+  "$root/hw/de10/xls/XlsH2fBatchExpander.sv" \
+  "$root/hw/de10/xls/XlsH2fBatchExpander_tb.sv"
+vvp "$root/xls/build/xls-h2f-batch-expander-tb"
 iverilog -g2012 -s XlsH2fCommandFifoTb \
   -o "$root/xls/build/xls-h2f-command-fifo-tb" \
+  "$root/hw/de10/xls/XlsAvalonArbiter2.sv" \
   "$root/hw/de10/xls/XlsH2fMemoryFifo.sv" \
+  "$root/hw/de10/xls/XlsH2fBatchExpander.sv" \
   "$root/hw/de10/xls/XlsH2fCommandFifo.sv" \
   "$root/hw/de10/xls/XlsH2fCommandFifo_tb.sv"
 vvp "$root/xls/build/xls-h2f-command-fifo-tb"
@@ -64,8 +82,23 @@ vvp "$root/xls/build/xls-h2f-command-fifo-tb"
 iverilog -g2012 -s XlsPackedBankMemoryTb \
   -o "$root/xls/build/xls-packed-bank-tb" \
   "$root/hw/de10/xls/XlsPackedBankMemory.sv" \
+  "$root/hw/de10/xls/XlsPackedBankMemoryVector.sv" \
   "$root/hw/de10/xls/XlsPackedBankMemory_tb.sv"
 vvp "$root/xls/build/xls-packed-bank-tb"
+iverilog -g2012 -s XlsPackedBankMemorySmallTb \
+  -o "$root/xls/build/xls-packed-bank-small-tb" \
+  "$root/hw/de10/xls/XlsPackedBankMemory.sv" \
+  "$root/hw/de10/xls/XlsPackedBankMemoryVector.sv" \
+  "$root/hw/de10/xls/XlsPackedBankMemorySmall_tb.sv"
+vvp "$root/xls/build/xls-packed-bank-small-tb"
+iverilog -g2012 -s XlsPackedBankMemorySmallTb \
+  -PXlsPackedBankMemorySmallTb.PRIMARY_NUMWORDS=4096 \
+  -PXlsPackedBankMemorySmallTb.PRIMARY_ADDRESS_WIDTH=12 \
+  -o "$root/xls/build/xls-packed-bank-full-tb" \
+  "$root/hw/de10/xls/XlsPackedBankMemory.sv" \
+  "$root/hw/de10/xls/XlsPackedBankMemoryVector.sv" \
+  "$root/hw/de10/xls/XlsPackedBankMemorySmall_tb.sv"
+vvp "$root/xls/build/xls-packed-bank-full-tb"
 iverilog -g2012 -s XlsPaletteMemoryTb \
   -o "$root/xls/build/xls-palette-tb" \
   "$root/hw/de10/xls/XlsPaletteMemory.sv" \
@@ -87,6 +120,7 @@ iverilog -g2012 -s XlsPipelineProfilerTb \
   "$root/hw/de10/xls/XlsPipelineProfiler_tb.sv"
 vvp "$root/xls/build/xls-pipeline-profiler-tb"
 verilator --lint-only --top-module XlsDe10Top \
+  "$root/hw/de10/xls/XlsTextureTagMemory.sv" \
   -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -Wno-UNSIGNED -Wno-CMPCONST \
   -Wno-MULTITOP -Wno-TIMESCALEMOD -Wno-PINCONNECTEMPTY \
   -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM \
@@ -108,6 +142,7 @@ verilator --lint-only --top-module XlsDe10Top \
   "$root/hw/de10/rtl/XlsDe10Scanout.v" \
   "$root/xls/rtl/VoodooXlsFramebufferAddress.v"
 verilator --cc --exe --build -j 0 --top-module XlsDe10Top \
+  "$root/hw/de10/xls/XlsTextureTagMemory.sv" \
   --Mdir "$root/xls/build/xls-de10-top-mmio-verilator" \
   -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -Wno-UNSIGNED -Wno-CMPCONST \
   -Wno-MULTITOP -Wno-TIMESCALEMOD -Wno-PINCONNECTEMPTY \

@@ -8,6 +8,7 @@ set_global_assignment -name VERILOG_FILE ../rtl/XlsAvalonTransferMasterCore.v
 set_global_assignment -name SYSTEMVERILOG_FILE ../xls/XlsPackedBankMemory.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../xls/XlsPackedBankMemoryVector.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../xls/XlsPaletteMemory.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../xls/XlsTextureTagMemory.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../xls/XlsPerformanceCounters.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../xls/XlsPipelineProfiler.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../xls/XlsFramebufferReadCache.sv
@@ -17,6 +18,7 @@ set_global_assignment -name SYSTEMVERILOG_FILE ../xls/XlsFramebufferWriteBuffer.
 set_global_assignment -name SYSTEMVERILOG_FILE ../xls/XlsFramebufferWriteIngress.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../xls/XlsAvalonArbiter2.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../xls/XlsH2fMemoryFifo.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../xls/XlsH2fBatchExpander.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../xls/XlsH2fCommandFifo.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../xls/XlsDe10Top.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../../../xls/build/core_sim_de10_rtl/CoreSimDe10.sv
@@ -161,7 +163,7 @@ set_global_assignment -name UNIPHY_SEQUENCER_DQS_CONFIG_ENABLE ON
 set_global_assignment -name RESERVE_ALL_UNUSED_PINS_NO_OUTPUT_GND "AS INPUT TRI-STATED"
 set_global_assignment -name DEVICE 5CSEBA6U23I7
 set_global_assignment -name NUM_PARALLEL_PROCESSORS ALL
-set_global_assignment -name SEED 5
+set_global_assignment -name SEED 1
 set_global_assignment -name FAMILY "Cyclone V"
 set_global_assignment -name ROUTER_TIMING_OPTIMIZATION_LEVEL NORMAL
 set_global_assignment -name VERILOG_FILE De10PlatformTop.v

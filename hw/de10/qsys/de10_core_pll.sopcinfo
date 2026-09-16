@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <EnsembleReport name="de10_core_pll" kind="de10_core_pll" version="1.0" fabric="QSYS">
  <!-- Format version 24.1 1077 (Future versions may contain additional information.) -->
- <!-- 2026.08.26.18:17:55 -->
+ <!-- 2026.09.09.13:08:20 -->
  <!-- A collection of modules and connections -->
  <parameter name="AUTO_GENERATION_ID">
   <type>java.lang.Integer</type>
-  <value>1787768275</value>
+  <value>1788959300</value>
   <derived>false</derived>
   <enabled>true</enabled>
   <visible>false</visible>
@@ -310,7 +310,7 @@ the requested settings for a module instance. -->
   </parameter>
   <parameter name="gui_output_clock_frequency0">
    <type>double</type>
-   <value>27.0</value>
+   <value>50.0</value>
    <derived>false</derived>
    <enabled>true</enabled>
    <visible>true</visible>
@@ -326,7 +326,7 @@ the requested settings for a module instance. -->
   </parameter>
   <parameter name="gui_actual_multiply_factor0">
    <type>int</type>
-   <value>54</value>
+   <value>27</value>
    <derived>true</derived>
    <enabled>true</enabled>
    <visible>false</visible>
@@ -342,7 +342,7 @@ the requested settings for a module instance. -->
   </parameter>
   <parameter name="gui_actual_divide_factor0">
    <type>int</type>
-   <value>100</value>
+   <value>27</value>
    <derived>true</derived>
    <enabled>true</enabled>
    <visible>false</visible>
@@ -422,7 +422,7 @@ the requested settings for a module instance. -->
   </parameter>
   <parameter name="gui_actual_multiply_factor1">
    <type>int</type>
-   <value>54</value>
+   <value>27</value>
    <derived>true</derived>
    <enabled>true</enabled>
    <visible>false</visible>
@@ -438,7 +438,7 @@ the requested settings for a module instance. -->
   </parameter>
   <parameter name="gui_actual_divide_factor1">
    <type>int</type>
-   <value>50</value>
+   <value>25</value>
    <derived>true</derived>
    <enabled>true</enabled>
    <visible>false</visible>
@@ -2030,7 +2030,7 @@ the requested settings for a module instance. -->
   </parameter>
   <parameter name="output_clock_frequency0">
    <type>java.lang.String</type>
-   <value>27.000000 MHz</value>
+   <value>50.000000 MHz</value>
    <derived>true</derived>
    <enabled>true</enabled>
    <visible>false</visible>
@@ -2534,7 +2534,7 @@ the requested settings for a module instance. -->
   </parameter>
   <parameter name="m_cnt_hi_div">
    <type>int</type>
-   <value>27</value>
+   <value>14</value>
    <derived>true</derived>
    <enabled>false</enabled>
    <visible>false</visible>
@@ -2542,7 +2542,7 @@ the requested settings for a module instance. -->
   </parameter>
   <parameter name="m_cnt_lo_div">
    <type>int</type>
-   <value>27</value>
+   <value>13</value>
    <derived>true</derived>
    <enabled>false</enabled>
    <visible>false</visible>
@@ -2550,7 +2550,7 @@ the requested settings for a module instance. -->
   </parameter>
   <parameter name="n_cnt_hi_div">
    <type>int</type>
-   <value>3</value>
+   <value>256</value>
    <derived>true</derived>
    <enabled>false</enabled>
    <visible>false</visible>
@@ -2558,7 +2558,7 @@ the requested settings for a module instance. -->
   </parameter>
   <parameter name="n_cnt_lo_div">
    <type>int</type>
-   <value>2</value>
+   <value>256</value>
    <derived>true</derived>
    <enabled>false</enabled>
    <visible>false</visible>
@@ -2574,7 +2574,7 @@ the requested settings for a module instance. -->
   </parameter>
   <parameter name="n_cnt_bypass_en">
    <type>java.lang.String</type>
-   <value>false</value>
+   <value>true</value>
    <derived>true</derived>
    <enabled>false</enabled>
    <visible>false</visible>
@@ -2582,7 +2582,7 @@ the requested settings for a module instance. -->
   </parameter>
   <parameter name="m_cnt_odd_div_duty_en">
    <type>java.lang.String</type>
-   <value>false</value>
+   <value>true</value>
    <derived>true</derived>
    <enabled>false</enabled>
    <visible>false</visible>
@@ -2590,7 +2590,7 @@ the requested settings for a module instance. -->
   </parameter>
   <parameter name="n_cnt_odd_div_duty_en">
    <type>java.lang.String</type>
-   <value>true</value>
+   <value>false</value>
    <derived>true</derived>
    <enabled>false</enabled>
    <visible>false</visible>
@@ -2598,7 +2598,7 @@ the requested settings for a module instance. -->
   </parameter>
   <parameter name="c_cnt_hi_div0">
    <type>int</type>
-   <value>10</value>
+   <value>14</value>
    <derived>true</derived>
    <enabled>false</enabled>
    <visible>false</visible>
@@ -2606,7 +2606,7 @@ the requested settings for a module instance. -->
   </parameter>
   <parameter name="c_cnt_lo_div0">
    <type>int</type>
-   <value>10</value>
+   <value>13</value>
    <derived>true</derived>
    <enabled>false</enabled>
    <visible>false</visible>
@@ -2646,7 +2646,7 @@ the requested settings for a module instance. -->
   </parameter>
   <parameter name="c_cnt_odd_div_duty_en0">
    <type>java.lang.String</type>
-   <value>false</value>
+   <value>true</value>
    <derived>true</derived>
    <enabled>false</enabled>
    <visible>false</visible>
@@ -2654,7 +2654,7 @@ the requested settings for a module instance. -->
   </parameter>
   <parameter name="c_cnt_hi_div1">
    <type>int</type>
-   <value>5</value>
+   <value>13</value>
    <derived>true</derived>
    <enabled>false</enabled>
    <visible>false</visible>
@@ -2662,7 +2662,7 @@ the requested settings for a module instance. -->
   </parameter>
   <parameter name="c_cnt_lo_div1">
    <type>int</type>
-   <value>5</value>
+   <value>12</value>
    <derived>true</derived>
    <enabled>false</enabled>
    <visible>false</visible>
@@ -2702,7 +2702,7 @@ the requested settings for a module instance. -->
   </parameter>
   <parameter name="c_cnt_odd_div_duty_en1">
    <type>java.lang.String</type>
-   <value>false</value>
+   <value>true</value>
    <derived>true</derived>
    <enabled>false</enabled>
    <visible>false</visible>
@@ -3606,7 +3606,7 @@ the requested settings for a module instance. -->
   </parameter>
   <parameter name="pll_vco_div">
    <type>int</type>
-   <value>2</value>
+   <value>1</value>
    <derived>true</derived>
    <enabled>false</enabled>
    <visible>false</visible>
@@ -3622,7 +3622,7 @@ the requested settings for a module instance. -->
   </parameter>
   <parameter name="pll_bwctrl">
    <type>int</type>
-   <value>10000</value>
+   <value>4000</value>
    <derived>true</derived>
    <enabled>false</enabled>
    <visible>false</visible>
@@ -3630,7 +3630,7 @@ the requested settings for a module instance. -->
   </parameter>
   <parameter name="pll_output_clk_frequency">
    <type>java.lang.String</type>
-   <value>540.0 MHz</value>
+   <value>1350.0 MHz</value>
    <derived>true</derived>
    <enabled>false</enabled>
    <visible>false</visible>
@@ -3694,7 +3694,7 @@ the requested settings for a module instance. -->
   </parameter>
   <parameter name="gui_parameter_values">
    <type>[Ljava.lang.String;</type>
-   <value>27,27,3,2,false,false,false,true,10,10,1,0,ph_mux_clk,false,false,5,5,1,0,ph_mux_clk,false,false,2,20,10000,540.0 MHz,1,none,glb,m_cnt,ph_mux_clk,false</value>
+   <value>14,13,256,256,false,true,true,false,14,13,1,0,ph_mux_clk,false,true,13,12,1,0,ph_mux_clk,false,true,1,20,4000,1350.0 MHz,1,none,glb,m_cnt,ph_mux_clk,false</value>
    <derived>true</derived>
    <enabled>true</enabled>
    <visible>true</visible>
@@ -3996,7 +3996,7 @@ parameters are a RESULT of the module parameters. -->
    </parameter>
    <parameter name="clockRate">
     <type>long</type>
-    <value>27000000</value>
+    <value>50000000</value>
     <derived>false</derived>
     <enabled>true</enabled>
     <visible>true</visible>

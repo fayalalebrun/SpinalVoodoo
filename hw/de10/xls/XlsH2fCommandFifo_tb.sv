@@ -3,7 +3,7 @@
 module XlsH2fCommandFifoTb #(
   parameter integer FIFO_ADDRESS_WIDTH = 6
 );
-  localparam integer INITIAL_WRITES = (1 << FIFO_ADDRESS_WIDTH) + 16;
+  localparam integer INITIAL_WRITES = (1 << FIFO_ADDRESS_WIDTH) + 144;
   reg h2f_clk = 1'b0;
   reg core_clk = 1'b0;
   reg h2f_reset = 1'b1;
@@ -30,6 +30,9 @@ module XlsH2fCommandFifoTb #(
   integer responses = 0;
   integer errors = 0;
   reg saw_full = 1'b0;
+  reg stalled = 1'b0;
+  reg [59:0] stalled_request;
+  wire [59:0] core_request = {core_address, core_read, core_write, core_byteenable, core_writedata};
 
   always #5 h2f_clk = ~h2f_clk;
   always #7 core_clk = ~core_clk;
@@ -97,6 +100,10 @@ module XlsH2fCommandFifoTb #(
   end
 
   always @(posedge core_clk) begin
+    if (!core_reset && stalled && core_request !== stalled_request)
+      $fatal(1, "core request changed under backpressure");
+    stalled <= !core_reset && (core_read || core_write) && core_waitrequest;
+    stalled_request <= core_request;
     core_readdatavalid <= 1'b0;
     if (read_delay != 0) begin
       read_delay <= read_delay - 1'b1;
@@ -157,6 +164,22 @@ module XlsH2fCommandFifoTb #(
                accepted, responses, saw_full, errors);
       $fatal(1);
     end
+    @(negedge core_clk);
+    core_stall = 1'b1;
+    send_write(22'h3ff, 32'hdeadbeef);
+    wait (core_write);
+    repeat (4) @(negedge core_clk);
+    h2f_reset = 1'b1;
+    core_reset = 1'b1;
+    repeat (4) @(negedge core_clk);
+    if (core_read || core_write) $fatal(1, "queued command survived reset");
+    h2f_reset = 1'b0;
+    core_reset = 1'b0;
+    core_stall = 1'b0;
+    send_write(22'h205, 32'h20000005);
+    wait (accepted == INITIAL_WRITES + 7);
+    repeat (8) @(negedge core_clk);
+    if (errors != 0 || core_read || core_write) $fatal(1, "warm reset ordering");
     $display("PASS");
     $finish;
   end

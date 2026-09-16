@@ -28,9 +28,9 @@ pub fn word_transfer(command: memory::MemoryCommand) -> MemoryTransfer {
     MemoryTransfer { word_count: u7:1, command }
 }
 
-pub fn block_read_transfer(block: memory::MemoryBlockRead) -> MemoryTransfer {
+pub fn block_read_transfer<WORDS: u7 = {u7:64}>(block: memory::MemoryBlockRead) -> MemoryTransfer {
     MemoryTransfer {
-        word_count: u7:64,
+        word_count: WORDS,
         command: memory::MemoryCommand {
             write: u1:0,
             address: block.address,
@@ -40,6 +40,7 @@ pub fn block_read_transfer(block: memory::MemoryBlockRead) -> MemoryTransfer {
     }
 }
 
+
 pub fn word_response(response: MemoryTransferResponse) -> memory::MemoryResponse {
     memory::MemoryResponse { data: response.data as u32, success: response.success }
 }
@@ -47,6 +48,19 @@ pub fn word_response(response: MemoryTransferResponse) -> memory::MemoryResponse
 pub fn block_read_response(response: MemoryTransferResponse)
     -> memory::MemoryBlockReadWordResponse {
     memory::MemoryBlockReadWordResponse { data: response.data, success: response.success }
+}
+
+#[test]
+fn sector_transfer_uses_sixteen_words_without_changing_full_line_default() {
+    let command = memory::MemoryBlockRead { address: u22:0x350 };
+    let full = block_read_transfer(command);
+    let sector = block_read_transfer<u7:16>(command);
+    assert_eq(full.word_count, u7:64);
+    assert_eq(sector.word_count, u7:16);
+    assert_eq(sector.command, full.command);
+    assert_eq(sector.command.address, command.address);
+    assert_eq(block_read_response(MemoryTransferResponse { data: u32:123, success: u1:0 }),
+        memory::MemoryBlockReadWordResponse { data: u32:123, success: u1:0 });
 }
 
 proc pair_to_planes_requests {
@@ -333,7 +347,7 @@ pub proc word_transfer_adapter {
     next(state: ()) { state }
 }
 
-proc block_read_transfer_requests {
+proc block_read_transfer_requests<WORDS: u7 = {u7:64}> {
     command_r: chan<memory::MemoryBlockRead> in;
     transfer_s: chan<MemoryTransfer> out;
 
@@ -345,7 +359,7 @@ proc block_read_transfer_requests {
 
     next(state: ()) {
         let (tok, command) = recv(join(), command_r);
-        let tok = send(tok, transfer_s, block_read_transfer(command));
+        let tok = send(tok, transfer_s, block_read_transfer<WORDS>(command));
         state
     }
 }
@@ -368,12 +382,12 @@ proc block_read_transfer_responses {
     }
 }
 
-pub proc block_read_transfer_adapter {
+pub proc block_read_transfer_adapter<WORDS: u7 = {u7:64}> {
     config(command_r: chan<memory::MemoryBlockRead> in,
            response_s: chan<memory::MemoryBlockReadWordResponse> out,
            transfer_s: chan<MemoryTransfer> out,
            transfer_response_r: chan<MemoryTransferResponse> in) {
-        spawn block_read_transfer_requests(command_r, transfer_s);
+        spawn block_read_transfer_requests<WORDS>(command_r, transfer_s);
         spawn block_read_transfer_responses(transfer_response_r, response_s);
         ()
     }

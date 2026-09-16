@@ -32,4 +32,135 @@ while index < len(lines):
     ])
     loop_index += 1
     index += 3
-path.write_text("\n".join(output) + "\n")
+text = "\n".join(output) + "\n"
+if sys.argv[2:] == ["--ram-fifos"]:
+    for channel in ("pixel_work", "pixel_texture", "pixel_cache_request", "pixel_read_job", "palette_pending"):
+        instances = re.findall(r"^\s+(\w+) materialized_fifo_fifo__" + channel + r"_\s*\(", text, re.M)
+        if len(instances) != 1:
+            raise SystemExit(f"expected one {channel} FIFO")
+        name = instances[0]
+        match = re.fullmatch(r"fifo_for_depth_(\d+)_ty_.*_no_bypass_(register_pop_)?register_push", name)
+        if match is None or int(match[1]) < 2:
+            raise SystemExit(f"unsupported FIFO configuration: {name}")
+        depth = int(match[1])
+        pattern = r"module " + name + r"\(.*?endmodule"
+        original = re.search(pattern, text, re.S)
+        if original is None:
+            raise SystemExit(f"missing FIFO module: {name}")
+        width = int(re.search(r"input wire \[(\d+):0\] push_data", original[0])[1]) + 1
+        header = original[0].split(");", 1)[0] + ");"
+        bits = depth.bit_length()
+        body = f'''
+  reg [{bits - 1}:0] head, tail, slots;
+  reg valid;
+  (* ramstyle = "M10K" *) reg [{width - 1}:0] memory [0:{depth}];
+  reg [{width - 1}:0] data;
+  wire push = push_valid && push_ready;
+  wire pop = pop_ready && valid;
+  wire read_enable = pop_ready || !valid;
+  assign push_ready = slots != {bits}'d{depth};
+  assign pop_valid = valid;
+  assign pop_data = data;
+  always @(posedge clk) begin
+    if (!rst && push) memory[head] <= push_data;
+    if (!rst && read_enable) data <= memory[tail];
+    if (rst) begin
+      head <= 0;
+      tail <= 0;
+      slots <= 0;
+      valid <= 0;
+    end else begin
+      if (push) head <= head == {bits}'d{depth} ? {bits}'d0 : head + {bits}'d1;
+      if (read_enable && head != tail) tail <= tail == {bits}'d{depth} ? {bits}'d0 : tail + {bits}'d1;
+      if (push != pop) slots <= pop ? slots - {bits}'d1 : slots + {bits}'d1;
+      if (read_enable) valid <= head != tail;
+    end
+  end
+endmodule'''
+        if match[2] is None:
+            body = f'''
+  reg [{bits - 1}:0] head, tail, slots;
+  (* ramstyle = "M10K" *) reg [{width - 1}:0] memory [0:{depth}];
+  reg [{width - 1}:0] data, forwarded_data;
+  reg forward;
+  wire push = push_valid && push_ready;
+  wire pop = pop_ready && pop_valid;
+  wire [{bits - 1}:0] next_tail = !pop ? tail :
+    tail == {bits}'d{depth} ? {bits}'d0 : tail + {bits}'d1;
+  assign push_ready = slots != {bits}'d{depth};
+  assign pop_valid = head != tail;
+  assign pop_data = forward ? forwarded_data : data;
+  always @(posedge clk) begin
+    if (!rst) begin
+      data <= memory[next_tail];
+      forward <= push && head == next_tail;
+      if (push) begin
+        memory[head] <= push_data;
+        forwarded_data <= push_data;
+      end
+    end
+    if (rst) begin
+      head <= 0;
+      tail <= 0;
+      slots <= 0;
+    end else begin
+      if (push) head <= head == {bits}'d{depth} ? {bits}'d0 : head + {bits}'d1;
+      tail <= next_tail;
+      if (push != pop) slots <= pop ? slots - {bits}'d1 : slots + {bits}'d1;
+    end
+  end
+endmodule'''
+        text = text[:original.start()] + header + body + text[original.end():]
+    two_slots = re.findall(
+        r"^module fifo_for_depth_2_ty_\w+_no_bypass_register_push(?:___\d+)?\(.*?endmodule",
+        text, re.M | re.S)
+    for original in two_slots:
+        if 'ramstyle' in original:
+            continue
+        width = int(re.search(r"input wire \[(\d+):0\] push_data", original)[1]) + 1
+        header = original.split(");", 1)[0] + ");"
+        body = f'''
+  reg head, tail;
+  reg [1:0] slots;
+  reg [{width - 1}:0] memory [0:1];
+  wire push = push_valid && push_ready;
+  wire pop = pop_ready && pop_valid;
+  assign push_ready = slots != 2'd2;
+  assign pop_valid = slots != 2'd0;
+  assign pop_data = memory[tail];
+  always @(posedge clk) begin
+    if (!rst && push) memory[head] <= push_data;
+    if (rst) begin
+      head <= 0;
+      tail <= 0;
+      slots <= 0;
+    end else begin
+      if (push) head <= !head;
+      if (pop) tail <= !tail;
+      if (push != pop) slots <= pop ? slots - 2'd1 : slots + 2'd1;
+    end
+  end
+endmodule'''
+        text = text.replace(original, header + body, 1)
+    single_slots = re.findall(
+        r"^module fifo_for_depth_1_ty_\w+_no_bypass_register_push(?:___\d+)?\(.*?endmodule",
+        text, re.M | re.S)
+    for original in single_slots:
+        width = int(re.search(r"input wire \[(\d+):0\] push_data", original)[1]) + 1
+        header = original.split(");", 1)[0] + ");"
+        body = f'''
+  reg full;
+  reg [{width - 1}:0] data;
+  assign push_ready = !full;
+  assign pop_valid = full;
+  assign pop_data = data;
+  always @(posedge clk) begin
+    if (!rst && !full && push_valid) data <= push_data;
+    if (rst) full <= 0;
+    else full <= full ? !pop_ready : push_valid;
+  end
+endmodule'''
+        text = text.replace(original, header + body, 1)
+elif sys.argv[2:]:
+    raise SystemExit("usage: quartus-compat-xls-rtl FILE [--ram-fifos]")
+path.write_text(text)

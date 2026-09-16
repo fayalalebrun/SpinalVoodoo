@@ -37,6 +37,8 @@ module XlsH2fMemoryFifo #(
   reg [EGRESS_ADDRESS_WIDTH-1:0] egress_write_pointer;
   reg [EGRESS_ADDRESS_WIDTH-1:0] egress_read_pointer;
   reg [EGRESS_COUNT_WIDTH-1:0] egress_count;
+  reg [REQUEST_WIDTH-1:0] request_data_register;
+  reg request_valid;
   reg [RING_ADDRESS_WIDTH-1:0] ring_write_pointer;
   reg [RING_ADDRESS_WIDTH-1:0] ring_read_pointer;
   reg [RING_COUNT_WIDTH-1:0] ring_count;
@@ -83,7 +85,8 @@ module XlsH2fMemoryFifo #(
   wire read_request_fire = state == READ_REQUEST && mem_waitRequestn;
   wire egress_read_push = state == READ_DATA && mem_readDataValid && read_high_phase;
   wire egress_push = start_bypass || egress_read_push;
-  wire egress_pop = request_pop && egress_count != 0;
+  wire request_advance = !request_valid || request_pop;
+  wire egress_pop = request_advance && egress_count != 0;
   wire [REQUEST_WIDTH-1:0] egress_push_data = start_bypass ? ingress_data :
       {mem_readData[REQUEST_WIDTH-33:0], read_low};
 
@@ -98,8 +101,8 @@ module XlsH2fMemoryFifo #(
   );
 
   assign ingress_pop = start_bypass || stage_write;
-  assign request_data = egress_memory[egress_read_pointer];
-  assign request_empty = egress_count == 0;
+  assign request_data = request_data_register;
+  assign request_empty = !request_valid;
   assign mem_read = !reset && state == READ_REQUEST;
   assign mem_write = !reset && state == WRITE_DATA;
   assign mem_burstCount = state == READ_REQUEST ? {3'b0, active_read_entries, 1'b0} :
@@ -112,11 +115,16 @@ module XlsH2fMemoryFifo #(
       {{(64-REQUEST_WIDTH){1'b0}}, write_memory_data[REQUEST_WIDTH-1:32]} :
       write_memory_data[31:0];
 
+  always @(posedge clk) begin
+    if (egress_pop) request_data_register <= egress_memory[egress_read_pointer];
+  end
+
   always @(posedge clk or posedge reset) begin
     if (reset) begin
       egress_write_pointer <= 0;
       egress_read_pointer <= 0;
       egress_count <= 0;
+      request_valid <= 0;
       ring_write_pointer <= 0;
       ring_read_pointer <= 0;
       ring_count <= 0;
@@ -130,6 +138,7 @@ module XlsH2fMemoryFifo #(
       active_read_entries <= 0;
       state <= IDLE;
     end else begin
+      if (request_advance) request_valid <= egress_count != 0;
       if (egress_push) begin
         egress_memory[egress_write_pointer] <= egress_push_data;
         egress_write_pointer <= egress_write_pointer + 1'b1;

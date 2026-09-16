@@ -178,9 +178,39 @@ static bool readMmio(VXlsDe10Top &dut, uint32_t address, uint32_t *data) {
   return false;
 }
 
-int main(int argc, char **argv) {
-  Verilated::commandArgs(argc, argv);
-  VXlsDe10Top dut;
+static bool checkFloatRegisters(VXlsDe10Top &dut) {
+  uint32_t value = 0;
+  if (!readMmio(dut, 0x008, &value) || value != 0) return false;
+  const uint32_t cases[][3] = {
+      {0x088, 0x3fc00000, 24},
+      {0x08c, 0xbfc00000, 0xffffffe8},
+      {0x0a0, 0x3fc00000, 0x1800},
+      {0x0b4, 0x3fc00000, 0x60000},
+      {0x0bc, 0x3f000000, 0x20000000},
+      {0x0d4, 0xbf000000, 0xfffe0000},
+      {0x0dc, 0x80000000, 0},
+  };
+  dut.io_h2fLw_byteenable = 1;
+  for (const auto &test : cases) {
+    uint32_t value = 0;
+    if (!writeMmio(dut, test[0], test[1]) ||
+        !readMmio(dut, test[0] - 0x80, &value) || value != test[2]) {
+      std::fprintf(stderr, "float register %03x: got %08x expected %08x\n",
+                   test[0], value, test[2]);
+      return false;
+    }
+  }
+  const bool ok = writeMmio(dut, 0x00c, 0xa5) &&
+                  readMmio(dut, 0x00c, &value) && value == 0xffffffa5;
+  dut.io_h2fLw_byteenable = 0xf;
+  return ok;
+}
+
+static int runMmioTest(VXlsDe10Top &dut) {
+  colorWrites = {};
+  auxWrites = {};
+  colorReads = {};
+  auxReads = {};
   setInputs(dut);
   dut.io_h2fLw_read = 0;
   dut.io_h2fLw_write = 0;
@@ -196,13 +226,17 @@ int main(int argc, char **argv) {
   uint32_t pixelsOut = 0;
   uint32_t profileVersion = 0;
   uint32_t readStalls = 0;
-  bool ok = writeMmio(dut, 0x300, 0x00000a00) && readMmio(dut, 0x000, &status) &&
+  uint32_t batchCapability = 0;
+  bool ok = checkFloatRegisters(dut) && readMmio(dut, 0x3ff004, &batchCapability) &&
+             batchCapability == 0x42415431 &&
+            writeMmio(dut, 0x300, 0x00000a00) && readMmio(dut, 0x000, &status) &&
             readMmio(dut, 0x3d0, &cyclesLow) && cyclesLow == 0 &&
             writeMmio(dut, 0x120, 0) && writeMmio(dut, 0x3cc, 1) &&
             writeMmio(dut, 0x008, 8) && writeMmio(dut, 0x00c, 8) &&
             writeMmio(dut, 0x010, 56) && writeMmio(dut, 0x014, 8) &&
             writeMmio(dut, 0x018, 8) && writeMmio(dut, 0x01c, 56) &&
-            writeMmio(dut, 0x110, 0x806f0) && writeMmio(dut, 0x080, 0) &&
+            writeMmio(dut, 0x110, 0x806f0) && writeMmio(dut, 0x10c, 0x410) &&
+            writeMmio(dut, 0x080, 0) &&
             readMmio(dut, 0x3d0, &cyclesLow) && readMmio(dut, 0x3d8, &pixelsIn) &&
             readMmio(dut, 0x3e0, &pixelsOut) &&
              readMmio(dut, 0x100000, &profileVersion) &&
@@ -222,7 +256,6 @@ int main(int argc, char **argv) {
         auxWrites.bursts != 0 && colorReads.bursts != 0 && auxReads.bursts != 0 &&
        colorReads.bursts < pixelsOut &&
        auxReads.bursts < pixelsOut && colorReads.lineBursts != 0 && auxReads.lineBursts != 0;
-  dut.final();
   if (!ok) {
     std::fprintf(stderr, "status=%08x cycles=%u pixels=%u/%u profile=%08x read-stalls=%u color=%llu/%llu/%llu/%llu aux=%llu/%llu/%llu/%llu valid=%d/%d/%d/%d active=%d/%d\n",
                  status, cyclesLow, pixelsIn, pixelsOut, profileVersion, readStalls,
@@ -238,6 +271,16 @@ int main(int argc, char **argv) {
                  auxWrites.active);
     return 1;
   }
-  std::puts("XlsDe10TopMmio PASS");
   return 0;
+}
+
+int main(int argc, char **argv) {
+  Verilated::commandArgs(argc, argv);
+  VXlsDe10Top dut;
+  int result = runMmioTest(dut);
+  if (result == 0 && !writeMmio(dut, 0x088, 0x41200000)) result = 1;
+  if (result == 0) result = runMmioTest(dut);
+  dut.final();
+  if (result == 0) std::puts("XlsDe10TopMmio cold/warm reset PASS");
+  return result;
 }

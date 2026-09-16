@@ -14,9 +14,14 @@ fn abs_s48(value: s48) -> u48 {
 
 pub fn tmu_recip_meta(w: s48, clamp_w: u1) -> u25 {
     let magnitude = abs_s48(w);
-    let leading = clz(magnitude) as u7;
+    let (normalized, shifted) = for (stage, state): (u32, (u48, u6)) in u32:0..u32:6 {
+        let shift = u32:32 >> stage;
+        let empty = (state.0 >> (u32:48 - shift)) == u48:0;
+        (if empty { state.0 << shift } else { state.0 },
+         state.1 | if empty { shift as u6 } else { u6:0 })
+    }((magnitude, u6:0));
+    let leading = if magnitude == u48:0 { u7:48 } else { shifted as u7 };
     let msb = u7:47 - leading;
-    let normalized = magnitude << leading;
     let index = normalized[39+:u8];
     let fraction = normalized[31+:u8];
     let valid = (w >= s48:0) && magnitude != u48:0;
@@ -91,14 +96,46 @@ pub fn tmu_gradient(ds_dx: s32, dt_dx: s32, ds_dy: s32, dt_dy: s32) -> u64 {
 }
 
 pub fn tmu_lod_index(temp_lod: u64) -> u15 {
-    let high = temp_lod[32+:u32];
-    let low = temp_lod[0+:u32];
-    let use_high = high != u32:0;
-    let leading = clz(if use_high { high } else { low });
-    let msb = if use_high { u7:63 - (leading as u7) } else { u7:31 - (leading as u7) };
+    let shift32 = temp_lod[40+:u24] != u24:0;
+    let v40 = (if shift32 { temp_lod >> u6:32 } else { temp_lod }) as u40;
+    let shift16 = v40[24+:u16] != u16:0;
+    let v24 = (if shift16 { v40 >> u5:16 } else { v40 }) as u24;
+    let shift8 = v24[16+:u8] != u8:0;
+    let v16 = (if shift8 { v24 >> u4:8 } else { v24 }) as u16;
+    let shift4 = v16[12+:u4] != u4:0;
+    let v12 = (if shift4 { v16 >> u3:4 } else { v16 }) as u12;
+    let shift2 = v12[10+:u2] != u2:0;
+    let v10 = (if shift2 { v12 >> u2:2 } else { v12 }) as u10;
+    let shift1 = v10[9+:u1];
+    let v9 = (if shift1 { v10 >> u1:1 } else { v10 }) as u9;
+    let shifted = shift32 ++ shift16 ++ shift8 ++ shift4 ++ shift2 ++ shift1;
+    let msb = if v9[8+:u1] {
+        u7:8 + (shifted as u7)
+    } else {
+        u7:7 - (clz(v9 as u8) as u7)
+    };
+    msb ++ (v9 as u8)
+}
+
+#[quickcheck(test_count=10000)]
+fn lod_index_matches_reference(value: u64) -> bool {
+    let leading = clz(value) as u7;
+    let msb = u7:63 - leading;
     let shift = if msb >= u7:8 { (msb - u7:8) as u6 } else { u6:0 };
-    let index = (temp_lod >> shift)[0+:u8];
-    msb ++ index
+    tmu_lod_index(value) == msb ++ (value >> shift)[0+:u8]
+}
+
+#[test]
+fn lod_index_power_boundaries() {
+    for (bit, _): (u7, ()) in u7:0..u7:64 {
+        let value = u64:1 << bit;
+        assert_eq(lod_index_matches_reference(value), true);
+        assert_eq(lod_index_matches_reference(value - u64:1), true);
+        assert_eq(lod_index_matches_reference(value + u64:1), true);
+        assert_eq(lod_index_matches_reference(!value), true);
+    }(());
+    assert_eq(lod_index_matches_reference(u64:0), true);
+    assert_eq(lod_index_matches_reference(!u64:0), true);
 }
 
 pub fn tmu_base_lod(temp_lod: u64, msb: u7, log_fraction: u8) -> s16 {
@@ -170,12 +207,12 @@ pub fn tmu_coordinates(tex_s: s18, tex_t: s18, level: u4, clamp_zero: u1) -> u64
 }
 
 fn wrap_or_clamp(coord: s14, size_bits: u4, clamp_enable: u1) -> u10 {
-    let size = u10:1 << size_bits;
-    let maximum = size - u10:1;
+    let maximum = !(u10:1023 << size_bits);
     let wrapped = (coord as u10) & maximum;
+    let overflow = ((coord as u14) & !(maximum as u14)) != u14:0 || size_bits >= u4:10;
     let clamped = if coord < s14:0 {
         u10:0
-    } else if (coord as u14) >= (size as u14) {
+    } else if overflow {
         maximum
     } else {
         coord as u10
@@ -190,7 +227,9 @@ fn texel_address
         let column = if is_16_bit { (x as u22) << u8:1 } else { x as u22 };
         let row_shift = (lod_shift as u5) + (is_16_bit as u5);
         let row = (y as u22) << row_shift;
-        (lod_base + column + row) as u26
+        let sum = lod_base ^ column ^ row;
+        let carry = ((lod_base & column) | ((lod_base | column) & row)) << u1:1;
+        (sum + carry) as u26
     } else {
         let x8 = x as u8;
         let column = if is_16_bit {
@@ -257,8 +296,11 @@ pub fn texture_write_address
         ((pci_address >> u8:1) as u8) & u8:0xfc
     };
     let packed_column = if is_16_bit { (s as u22) << u8:1 } else { s as u22 };
-    let packed_row = (t as u22) << ((lod_shift as u5) + (is_16_bit as u5));
-    let packed_address = (lod_base + packed_column + packed_row) as u26;
+    let row_bytes = if is_16_bit { (t as u22) << u1:1 } else { t as u22 };
+    let packed_row = row_bytes << lod_shift;
+    let sum = lod_base ^ packed_column ^ packed_row;
+    let carry = ((lod_base & packed_column) | ((lod_base | packed_column) & packed_row)) << u1:1;
+    let packed_address = (sum + carry) as u26;
     let linear_address = (((linear_base[0+:u19] as u26) << u8:3) + (pci_address as u26)) as u26;
     let address = if packed_layout { packed_address } else { linear_address };
     let valid = pci_address[21+:u2] == u2:0 && (!packed_layout || lod <= u4:8);
@@ -337,6 +379,16 @@ pub fn tmu_packed_decode
     packed_location(addr3, is_16_bit, lod_base, lod_shift, bases, ends, shifts)
 }
 
+#[quickcheck(test_count=4096)]
+fn reciprocal_metadata_matches_reference(w: s48, clamp_w: u1) -> bool {
+    let magnitude = if w < s48:0 { -(w as u48) } else { w as u48 };
+    let leading = clz(magnitude) as u7;
+    let normalized = magnitude << leading;
+    let expected = normalized[39+:u8] ++ normalized[31+:u8] ++ (u7:47 - leading) ++
+        ((w >= s48:0 && magnitude != u48:0) as u1) ++ ((clamp_w && w < s48:0) as u1);
+    tmu_recip_meta(w, clamp_w) == expected
+}
+
 #[test]
 fn recip_meta_test() {
     assert_eq(negate_u48(u48:0), u48:0);
@@ -367,6 +419,47 @@ fn byte_adder_matches_u64_addition() {
 #[test]
 fn gradient_test() { assert_eq(tmu_gradient(s32:3, s32:4, s32:5, s32:12), u64:169); }
 
+#[quickcheck(test_count=4096)]
+fn wrap_or_clamp_matches_reference(coord: s14, size_bits: u4, clamp_enable: u1) -> bool {
+    let size = u10:1 << size_bits;
+    let maximum = size - u10:1;
+    let expected = if !clamp_enable {
+        (coord as u10) & maximum
+    } else if coord < s14:0 {
+        u10:0
+    } else if (coord as u14) >= (size as u14) {
+        maximum
+    } else {
+        coord as u10
+    };
+    wrap_or_clamp(coord, size_bits, clamp_enable) == expected
+}
+
+#[test]
+fn wrap_or_clamp_boundaries() {
+    for (size_bits, _): (u4, ()) in u4:0..u4:15 {
+        let size = u10:1 << size_bits;
+        let maximum = size - u10:1;
+        assert_eq(wrap_or_clamp(s14:-1, size_bits, u1:0), maximum);
+        assert_eq(wrap_or_clamp(s14:-1, size_bits, u1:1), u10:0);
+        assert_eq(wrap_or_clamp(s14:-8192, size_bits, u1:1), u10:0);
+        assert_eq(wrap_or_clamp(size as s14, size_bits, u1:1), maximum);
+        assert_eq(wrap_or_clamp(maximum as s14, size_bits, u1:1), maximum);
+        assert_eq(wrap_or_clamp(s14:8191, size_bits, u1:1), maximum);
+    }(());
+    assert_eq(wrap_or_clamp(s14:0, u4:15, u1:1), u10:1023);
+    assert_eq(wrap_or_clamp(s14:0, u4:15, u1:0), u10:0);
+}
+
+#[quickcheck(test_count=4096)]
+fn packed_texel_address_matches_reference
+    (x: u10, y: u10, is_16_bit: u1, base: u22, shift: u4) -> bool {
+    let column = (x as u22) << (is_16_bit as u5);
+    let row = (y as u22) << ((shift as u5) + (is_16_bit as u5));
+    texel_address(x, y, is_16_bit, u1:1, base, shift, u24:0, u4:0) ==
+        ((base + column + row) as u26)
+}
+
 #[test]
 fn wrap_address_test() {
     let result = tmu_addresses(
@@ -388,6 +481,27 @@ fn lod_and_coordinate_test() {
     assert_eq(
         tmu_perspective_coords(s48:100, s48:-100, u17:3, u7:2, u1:1),
         ((s18:75 as u18) ++ (s18:-75 as u18)));
+}
+
+#[quickcheck(test_count=4096)]
+fn texture_write_address_matches_reference
+    (pci_address: u23, is_16_bit: u1, sequential_8_bit: u1, packed_layout: u1, lod_base: u22,
+     lod_shift: u4, base0: u24, base1: u24, base2: u24, base38: u24, multibase: u1) -> bool {
+    let lod = pci_address[17+:u4];
+    let linear_base = if multibase && lod == u4:1 { base1 }
+        else if multibase && lod == u4:2 { base2 }
+        else if multibase && lod >= u4:3 { base38 } else { base0 };
+    let s = if is_16_bit { ((pci_address >> u8:1) as u8) & u8:0xfe }
+        else if sequential_8_bit { (pci_address as u8) & u8:0xfc }
+        else { ((pci_address >> u8:1) as u8) & u8:0xfc };
+    let column = if is_16_bit { (s as u22) << u8:1 } else { s as u22 };
+    let row = (pci_address[9+:u8] as u22) << ((lod_shift as u5) + (is_16_bit as u5));
+    let packed = (lod_base + column + row) as u26;
+    let linear = ((linear_base[0+:u19] as u26) << u8:3) + (pci_address as u26);
+    let address = if packed_layout { packed } else { linear };
+    let valid = pci_address[21+:u2] == u2:0 && (!packed_layout || lod <= u4:8);
+    texture_write_address(pci_address, is_16_bit, sequential_8_bit, packed_layout, lod_base,
+        lod_shift, base0, base1, base2, base38, multibase) == (valid ++ address)
 }
 
 #[test]

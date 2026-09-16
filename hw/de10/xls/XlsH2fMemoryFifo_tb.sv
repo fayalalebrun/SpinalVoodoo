@@ -9,7 +9,10 @@ module XlsH2fMemoryFifoTb;
   wire [59:0] request_data;
   wire request_empty;
   reg consume = 0;
-  wire request_pop = consume && !request_empty;
+  integer cycles = 0;
+  wire request_pop = consume && !request_empty && cycles[3:0] != 0;
+  reg stalled = 0;
+  reg [59:0] stalled_data;
   wire mem_read;
   wire mem_write;
   reg mem_waitRequestn = 1;
@@ -26,7 +29,6 @@ module XlsH2fMemoryFifoTb;
   reg [9:0] write_index = 0;
   reg [10:0] write_remaining = 0;
   reg write_active = 0;
-  integer cycles = 0;
   integer received = 0;
   integer read_bursts = 0;
   integer writes = 0;
@@ -99,6 +101,10 @@ module XlsH2fMemoryFifoTb;
       read_remaining <= read_remaining - 1'b1;
       if (read_remaining == 1) read_active <= 0;
     end
+    if (!reset && stalled && (request_empty || request_data !== stalled_data))
+      $fatal(1, "request changed under backpressure");
+    stalled <= !reset && !request_empty && !request_pop;
+    stalled_data <= request_data;
     if (request_pop) begin
       if (request_data !== received) begin
         $display("FAIL received=%0d data=%h", received, request_data);
@@ -120,6 +126,18 @@ module XlsH2fMemoryFifoTb;
     wait (received == 400);
     repeat (20) @(posedge clk);
     if (!request_empty || read_bursts == 0 || writes == 0) $fatal(1);
+    consume = 0;
+    push_batch(400, 20);
+    repeat (100) @(negedge clk);
+    reset = 1;
+    repeat (3) @(negedge clk);
+    if (!request_empty) $fatal(1, "reset retained a queued request");
+    reset = 0;
+    push_batch(400, 40);
+    consume = 1;
+    wait (received == 440);
+    repeat (20) @(posedge clk);
+    if (!request_empty) $fatal(1, "request duplicated after warm reset");
     $display("XlsH2fMemoryFifoTb PASS bursts=%0d writes=%0d", read_bursts, writes);
     $finish;
   end

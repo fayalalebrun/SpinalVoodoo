@@ -23,7 +23,7 @@ if [[ "${1:-}" == "--de10-proc" ]]; then
      -e '/^  chan _(texture_fill_response|texture_fill_transfer|texture_fill_transfer_response|triangle_setup_request)\(/b' \
     -e '/^  chan _triangle_setup_response\(/ s/\)$/\, fifo_depth=1, bypass=false, register_push_outputs=true, register_pop_outputs=false)/' \
     -e '/^  chan _triangle_setup_response\(/b' \
-    -e '/^  chan _(pixel_work|pixel_result)\(/ s/\)$/\, fifo_depth=2, bypass=false, register_push_outputs=true, register_pop_outputs=false)/' \
+    -e '/^  chan _(pixel_work|pixel_result)\(/ s/\)$/\, fifo_depth=2, bypass=false, register_push_outputs=true, register_pop_outputs=true)/' \
     -e '/^  chan _(pixel_work|pixel_result)\(/b' \
     -e '/^  chan _pixel_read_job\(/ s/\)$/\, fifo_depth=2, bypass=false, register_push_outputs=true, register_pop_outputs=false)/' \
     -e '/^  chan _pixel_pending\(/ s/\)$/\, fifo_depth=12, bypass=false, register_push_outputs=true, register_pop_outputs=false)/' \
@@ -42,10 +42,11 @@ if [[ "${1:-}" == "--de10-proc" ]]; then
   opt_main --output_path="$proc_build/hardware.ir" "$proc_build/fifo.ir"
   codegen_main \
     --generator=pipeline \
-    --pipeline_stages=3 \
+    --pipeline_stages=6 \
     --delay_model=asap7 \
     --worst_case_throughput=1 \
     --reset=rst \
+    --reset_data_path=false \
     --fifo_module='' \
     --materialize_internal_fifos \
     --flop_inputs=false \
@@ -57,7 +58,8 @@ if [[ "${1:-}" == "--de10-proc" ]]; then
     --output_signature_path="$proc_build/signature.textproto" \
     --output_schedule_path="$proc_build/schedule.textproto" \
     "$proc_build/hardware.ir"
-  "$root/scripts/quartus-compat-xls-rtl" "$proc_build/CoreSimDe10.sv"
+  cp "$proc_build/CoreSimDe10.sv" "$proc_build/CoreSimDe10.register-fifos.sv"
+  "$root/scripts/quartus-compat-xls-rtl" "$proc_build/CoreSimDe10.sv" --ram-fifos
   exit
 fi
 

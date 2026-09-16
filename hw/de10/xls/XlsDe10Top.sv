@@ -95,8 +95,7 @@ module XlsDe10Top (
   wire mmio_request = io_h2fLw_read || io_h2fLw_write;
   reg mmio_outstanding;
   reg mmio_read_pending;
-  reg mmio_register_read_pending;
-  reg mmio_response_delayed;
+
   reg perf_response_pending;
    wire [8:0] performance_event;
    wire performance_event_valid;
@@ -119,12 +118,14 @@ module XlsDe10Top (
    wire profile_counter_read = io_h2fLw_read &&
        io_h2fLw_address >= 22'h040000 && io_h2fLw_address < 22'h040040;
    wire [5:0] profile_read_index = io_h2fLw_address - 22'h040000;
+   wire batch_capability_read = io_h2fLw_read && io_h2fLw_address == 22'h0ffc01;
    wire perf_counter_read = io_h2fLw_read &&
        (io_h2fLw_address == 22'h000053 || io_h2fLw_address == 22'h000057 ||
         (io_h2fLw_address >= 22'h0000f4 && io_h2fLw_address <= 22'h0000f9) ||
-        profile_counter_read);
+        profile_counter_read || batch_capability_read);
   wire perf_counter_clear = io_h2fLw_write && io_h2fLw_address == 22'h0000f3;
-   wire [31:0] perf_counter_data = profile_counter_read ? profile_read_data :
+     wire [31:0] perf_counter_data = batch_capability_read ? 32'h42415431 :
+       profile_counter_read ? profile_read_data :
        io_h2fLw_address == 22'h000053 ? {8'b0, fbi_pixels_in} :
       io_h2fLw_address == 22'h000057 ? {8'b0, fbi_pixels_out} :
       io_h2fLw_address == 22'h0000f4 ? render_cycles[31:0] :
@@ -273,6 +274,18 @@ module XlsDe10Top (
    wire [280:0] fast_bank_response;
   wire fast_bank_response_valid;
   wire fast_bank_response_ready;
+  wire [24:0] tag_read;
+  wire tag_read_valid, tag_read_ready;
+  wire [55:0] tag_response;
+  wire tag_response_valid, tag_response_ready;
+  wire [26:0] tag_write;
+  wire tag_write_valid, tag_write_ready;
+  XlsTextureTagMemory tag_memory (
+    .clk(clk), .reset(reset),
+    .read_request(tag_read), .read_valid(tag_read_valid), .read_ready(tag_read_ready),
+    .response(tag_response), .response_valid(tag_response_valid), .response_ready(tag_response_ready),
+    .write_request(tag_write), .write_valid(tag_write_valid), .write_ready(tag_write_ready)
+  );
   wire [31:0] palette_read_request;
   wire palette_read_request_valid;
   wire palette_read_request_ready;
@@ -291,8 +304,7 @@ module XlsDe10Top (
     if (reset) begin
       mmio_outstanding <= 1'b0;
       mmio_read_pending <= 1'b0;
-      mmio_register_read_pending <= 1'b0;
-       mmio_response_delayed <= 1'b0;
+
        perf_response_pending <= 1'b0;
        io_h2fLw_readdata <= 32'b0;
       io_h2fLw_readdatavalid <= 1'b0;
@@ -314,33 +326,22 @@ module XlsDe10Top (
        if (core_request_accepted) begin
         mmio_outstanding <= 1'b1;
         mmio_read_pending <= io_h2fLw_read;
-        mmio_register_read_pending <= io_h2fLw_read && io_h2fLw_address < 22'h100000;
+
       end
-      if (core_response_valid && core_response_ready) begin
-        if (mmio_register_read_pending) begin
-          mmio_response_delayed <= 1'b1;
-        end else begin
-          mmio_outstanding <= 1'b0;
-          if (mmio_read_pending) begin
-            io_h2fLw_readdata <= core_response[0] ? core_response[32:1] : 32'b0;
-            io_h2fLw_readdatavalid <= 1'b1;
-          end
-          mmio_read_pending <= 1'b0;
+      if (core_response_valid && (mmio_outstanding || core_request_accepted)) begin
+        mmio_outstanding <= 1'b0;
+        if (mmio_read_pending || (core_request_accepted && io_h2fLw_read)) begin
+          io_h2fLw_readdata <= core_response[0] ? core_response[32:1] : 32'b0;
+          io_h2fLw_readdatavalid <= 1'b1;
         end
+        mmio_read_pending <= 1'b0;
       end
        if (perf_response_pending) begin
          mmio_outstanding <= 1'b0;
          perf_response_pending <= 1'b0;
          io_h2fLw_readdatavalid <= 1'b1;
        end
-       if (mmio_response_delayed) begin
-        mmio_outstanding <= 1'b0;
-        mmio_read_pending <= 1'b0;
-        mmio_register_read_pending <= 1'b0;
-        mmio_response_delayed <= 1'b0;
-        io_h2fLw_readdata <= core_response[0] ? core_response[32:1] : 32'b0;
-        io_h2fLw_readdatavalid <= 1'b1;
-      end
+
       if (core_scanout_valid) begin
         scanout_state <= core_scanout;
       end
@@ -419,6 +420,9 @@ module XlsDe10Top (
     ._fast_bank_response_r(fast_bank_response),
     ._fast_bank_response_r_vld(fast_bank_response_valid),
     ._fast_bank_response_r_rdy(fast_bank_response_ready),
+    ._tag_read_s(tag_read), ._tag_read_s_vld(tag_read_valid), ._tag_read_s_rdy(tag_read_ready),
+    ._tag_response_r(tag_response), ._tag_response_r_vld(tag_response_valid), ._tag_response_r_rdy(tag_response_ready),
+    ._tag_write_s(tag_write), ._tag_write_s_vld(tag_write_valid), ._tag_write_s_rdy(tag_write_ready),
     ._palette_read_request_s(palette_read_request),
     ._palette_read_request_s_vld(palette_read_request_valid),
     ._palette_read_request_s_rdy(palette_read_request_ready),
@@ -559,7 +563,10 @@ module XlsDe10Top (
     .mem_readData(io_memTex_readData)
   );
 
-  XlsPackedBankMemoryVector bank_memory (
+   XlsPackedBankMemoryVector #(
+     .PRIMARY_NUMWORDS(4096),
+     .PRIMARY_ADDRESS_WIDTH(12)
+   ) bank_memory (
     .clk(clk), .reset(reset),
     .slow_request(slow_bank_request), .slow_request_valid(slow_bank_request_valid),
     .slow_request_ready(slow_bank_request_ready),

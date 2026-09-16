@@ -114,6 +114,41 @@ pub fn begin_triangle
     from_triangle_setup(raster::triangle_setup(ax, ay, bx, by, cx, cy, reverse))
 }
 
+pub fn install_span(state: RasterState, span: RowSpan) -> RasterState {
+    RasterState {
+        row_prefetched: span.complete,
+        scan_found: span.valid,
+        scan_start: span.x_start,
+        scan_end: span.x_end,
+        x: (span.x_start as s20) << u8:4,
+        y: (span.y as s20) << u8:4,
+        ..state
+    }
+}
+
+pub fn tick_prefetched(state: RasterState) -> (RasterState, PixelCandidate) {
+    let ready = state.active == u1:1 && state.row_prefetched == u1:1;
+    let candidate = PixelCandidate {
+        valid: ready && state.scan_found == u1:1,
+        x: (state.x >> u8:4) as s16,
+        y: (state.y >> u8:4) as s16,
+    };
+    let end_row = state.scan_found == u1:0 || candidate.x == state.scan_end;
+    let next_state = if ready {
+        RasterState {
+            active: !(end_row && state.y + s20:16 >= state.y1),
+            row_prefetched: !end_row,
+            scan_found: state.scan_found && !end_row,
+            x: state.x + s20:16,
+            y: if end_row { state.y + s20:16 } else { state.y },
+            ..state
+        }
+    } else {
+        state
+    };
+    (next_state, candidate)
+}
+
 pub fn tick(state: RasterState) -> (RasterState, PixelCandidate) {
     let inside = state.edge0 >= s40:0 && state.edge1 >= s40:0 && state.edge2 >= s40:0;
     let candidate = PixelCandidate {
@@ -562,6 +597,100 @@ pub fn tick_visible(state: RasterState) -> (RasterState, PixelCandidate) {
         };
         (next_state, candidate)
     }
+}
+
+#[test]
+fn prefetched_tick_waits_for_completed_row() {
+    let state = RasterState { active: u1:1, x1: s20:64, y1: s20:32, ..initial_state() };
+    let (next, candidate) = tick_prefetched(state);
+    assert_eq(next, state);
+    assert_eq(candidate.valid, u1:0);
+    let span = RowSpan { complete: u1:0, valid: u1:1, x_start: s16:0, x_end: s16:3, y: s16:0 };
+    let state = install_span(state, span);
+    let (next, candidate) = tick_prefetched(state);
+    assert_eq(next, state);
+    assert_eq(candidate.valid, u1:0);
+    let state = install_span(initial_state(), RowSpan { complete: u1:1, ..span });
+    let (next, candidate) = tick_prefetched(state);
+    assert_eq(next, state);
+    assert_eq(candidate.valid, u1:0);
+}
+
+#[test]
+fn prefetched_tick_completes_empty_and_single_pixel_rows() {
+    let state = RasterState { active: u1:1, y1: s20:32, ..initial_state() };
+    let empty = RowSpan { complete: u1:1, valid: u1:0, x_start: s16:7, x_end: s16:-3, y: s16:0 };
+    let (state, candidate) = tick_prefetched(install_span(state, empty));
+    assert_eq(candidate.valid, u1:0);
+    assert_eq((state.active, state.row_prefetched, state.y), (u1:1, u1:0, s20:16));
+    let last = RowSpan { complete: u1:1, valid: u1:1, x_start: s16:-3, x_end: s16:-3, y: s16:1 };
+    let (state, candidate) = tick_prefetched(install_span(state, last));
+    assert_eq(candidate, PixelCandidate { valid: u1:1, x: s16:-3, y: s16:1 });
+    assert_eq((state.active, state.row_prefetched), (u1:0, u1:0));
+    let (next, candidate) = tick_prefetched(state);
+    assert_eq(next, state);
+    assert_eq(candidate.valid, u1:0);
+    let state = RasterState { active: u1:1, y1: s20:16, ..initial_state() };
+    let (state, candidate) = tick_prefetched(install_span(state, empty));
+    assert_eq((state.active, candidate.valid), (u1:0, u1:0));
+}
+
+#[quickcheck(test_count=128)]
+fn prefetched_pixels_match_triangle_walk(vertices: s8[6], reverse: u1) -> bool {
+    let initial = begin_triangle(
+        vertices[u32:0] as s20, vertices[u32:1] as s20, vertices[u32:2] as s20,
+        vertices[u32:3] as s20, vertices[u32:4] as s20, vertices[u32:5] as s20, reverse);
+    let (_, _, _, matches) =
+        for (_, accum): (u5, (RasterState, RasterState, u3, bool)) in u5:0..u5:18 {
+            let (reference, scanner, phase, matches) = accum;
+            if reference.active == u1:0 {
+                (reference, scanner, phase, matches && scanner.active == u1:0)
+            } else {
+                let empty = RowSpan {
+                    complete: u1:0,
+                    valid: u1:0,
+                    x_start: s16:0,
+                    x_end: s16:0,
+                    y: s16:0,
+                };
+                let (_, expected) = for (_, accum): (u5, (RasterState, RowSpan)) in u5:0..u5:18 {
+                    if accum.1.complete == u1:1 { accum } else { scan_row_block(accum.0) }
+                }((reference, empty));
+                let (scanner, phase, span) =
+                    for (_, accum): (u6, (RasterState, u3, RowSpan)) in u6:0..u6:48 {
+                        if accum.2.complete == u1:1 {
+                            accum
+                        } else {
+                            scan_row_coherent(accum.0, accum.1)
+                        }
+                    }((scanner, phase, empty));
+                let matches = matches && span.complete == u1:1 && expected.complete == u1:1 &&
+                              span.valid == expected.valid && span.y == expected.y &&
+                              (span.valid == u1:0 ||
+                              (span.x_start == expected.x_start && span.x_end == expected.x_end));
+                let count = if expected.valid == u1:1 {
+                    (expected.x_end as s17 - expected.x_start as s17 + s17:1) as u5
+                } else {
+                    u5:0
+                };
+                let (walk, matches) = for (i, accum): (u5, (RasterState, bool)) in u5:0..u5:18 {
+                    let (walk, matches) = accum;
+                    let (walk, candidate) = tick_prefetched(walk);
+                    let valid = i < count;
+                    let matches = matches && candidate.valid == valid &&
+                                  (!valid ||
+                                  (candidate.x == expected.x_start + (i as s16) &&
+                                  candidate.y == expected.y));
+                    (walk, matches)
+                }((install_span(reference, span), matches));
+                let next = advance_row(reference);
+                (
+                    next, scanner, phase,
+                    matches && walk.active == next.active && walk.row_prefetched == u1:0,
+                )
+            }
+        }((initial, initial, u3:0, true));
+    matches
 }
 
 #[test]

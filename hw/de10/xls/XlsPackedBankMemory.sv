@@ -19,7 +19,7 @@ module XlsPackedBankMemory (
   reg saved_write;
   reg saved_packed;
   reg saved_forward;
-  reg [10:0] saved_first_address;
+  reg [11:0] saved_first_address;
   reg [31:0] saved_data;
   reg [3:0] saved_mask;
   reg [31:0] forwarded_data;
@@ -30,8 +30,8 @@ module XlsPackedBankMemory (
   wire [3:0] mask = command[3:0];
   wire packed_mode = !write && mask[3];
   wire [21:0] second_address = data[21:0];
-  wire [10:0] first_memory_address = address[10:0];
-  wire [10:0] second_memory_address = second_address[10:0];
+  wire [11:0] first_memory_address = address[11:0];
+  wire [11:0] second_memory_address = second_address[11:0];
 
   function automatic [31:0] byte_mask(input [3:0] value);
     begin
@@ -65,7 +65,7 @@ module XlsPackedBankMemory (
   assign response = {response_data, 1'b1};
   assign response_valid = pending_valid;
 
-  XlsPackedBankMemoryArray #(.NUMWORDS(2048), .ADDRESS_WIDTH(11)) storage (
+  XlsPackedBankMemoryArray #(.NUMWORDS(4096), .ADDRESS_WIDTH(12)) storage (
     .clk(clk),
     .read0_enable(read0_enable),
     .read0_address(first_memory_address),
@@ -121,8 +121,9 @@ module XlsPackedBankMemoryArray #(
   output wire [31:0] read0_data,
   output wire [31:0] read1_data
 );
+  wire port_a_read = read1_enable && !write_enable;
+  wire [ADDRESS_WIDTH-1:0] port_a_address = port_a_read ? read1_address : write_address;
 `ifndef XLS_PACKED_BANK_BEHAVIORAL
-  wire [ADDRESS_WIDTH-1:0] port_a_address = write_enable ? write_address : read1_address;
   altsyncram #(
     .address_reg_b("CLOCK1"),
     .byte_size(8),
@@ -160,7 +161,7 @@ module XlsPackedBankMemoryArray #(
     .data_b(32'b0),
     .q_a(read1_data),
     .q_b(read0_data),
-    .rden_a(read1_enable && !write_enable),
+    .rden_a(port_a_read),
     .rden_b(read0_enable),
     .wren_a(write_enable),
     .wren_b(1'b0)
@@ -175,18 +176,21 @@ module XlsPackedBankMemoryArray #(
 
   always @(posedge clk) begin
     if (read0_enable) read0_register <= memory[read0_address];
-    if (read1_enable && !write_enable) read1_register <= memory[read1_address];
+    if (port_a_read) read1_register <= memory[port_a_address];
     if (write_enable) begin
-      if (write_mask[0]) memory[write_address][7:0] <= write_data[7:0];
-      if (write_mask[1]) memory[write_address][15:8] <= write_data[15:8];
-      if (write_mask[2]) memory[write_address][23:16] <= write_data[23:16];
-      if (write_mask[3]) memory[write_address][31:24] <= write_data[31:24];
+      if (write_mask[0]) memory[port_a_address][7:0] <= write_data[7:0];
+      if (write_mask[1]) memory[port_a_address][15:8] <= write_data[15:8];
+      if (write_mask[2]) memory[port_a_address][23:16] <= write_data[23:16];
+      if (write_mask[3]) memory[port_a_address][31:24] <= write_data[31:24];
     end
   end
 `endif
 endmodule
 
-module XlsConcurrentPackedBankMemory (
+module XlsConcurrentPackedBankMemory #(
+  parameter integer PRIMARY_NUMWORDS = 3072,
+  parameter integer PRIMARY_ADDRESS_WIDTH = 12
+) (
   input  wire          clk,
   input  wire          reset,
   input  wire [58:0]   slow_command,
@@ -205,93 +209,116 @@ module XlsConcurrentPackedBankMemory (
   reg slow_pending;
   reg fast_pending;
   reg fast_packed;
-  reg slow_victim;
-  reg fast_victim;
+  reg slow_shadow;
+  reg fast_shadow0;
+  reg fast_shadow1;
   wire slow_write = slow_command[58];
-  wire [10:0] slow_address = slow_command[46:36];
+  wire [PRIMARY_ADDRESS_WIDTH-1:0] slow_address =
+      slow_command[PRIMARY_ADDRESS_WIDTH+35:36];
+  wire slow_duplicate = slow_command[52];
+  wire [9:0] slow_shadow_address = slow_duplicate
+      ? {slow_command[51:48], slow_command[41:36]} : slow_address[9:0];
   wire [31:0] slow_data = slow_command[35:4];
   wire [3:0] slow_mask = slow_command[3:0];
-  wire [10:0] fast_address0 = fast_command[46:36];
-  wire [10:0] fast_address1 = fast_command[14:4];
+  wire [PRIMARY_ADDRESS_WIDTH-1:0] fast_address0 =
+      fast_command[PRIMARY_ADDRESS_WIDTH+35:36];
+  wire [PRIMARY_ADDRESS_WIDTH-1:0] fast_address1 =
+      fast_command[PRIMARY_ADDRESS_WIDTH+3:4];
   wire fast_second = fast_command[0];
   wire slow_accept = slow_command_valid && slow_command_ready;
   wire fast_accept = fast_command_valid && fast_command_ready;
+  wire shadow_write = slow_accept && slow_write &&
+      (slow_duplicate || !(|slow_address[PRIMARY_ADDRESS_WIDTH-1:10]));
   wire slow_read = slow_accept && !slow_write;
-  wire read0_victim = slow_read ? slow_address[10] : fast_address0[10];
   wire read0_enable = slow_read || fast_accept;
+  wire [PRIMARY_ADDRESS_WIDTH-1:0] read0_address =
+      slow_read ? slow_address : fast_address0;
+  wire read0_shadow = slow_read ? !slow_command[48] : !fast_command[48];
+  wire read1_shadow = !fast_command[16];
   wire [31:0] primary_read0_data;
-  wire [31:0] victim_read_data;
-  wire [31:0] slow_read_data = slow_victim ? victim_read_data : primary_read0_data;
-  wire [31:0] fast_read0_data = fast_victim ? victim_read_data : primary_read0_data;
-  wire [31:0] read1_data;
+  wire [31:0] primary_read1_data;
+  wire [31:0] shadow_read0_data;
+  wire [31:0] shadow_read1_data;
+  wire [31:0] slow_read_data = slow_shadow ? shadow_read0_data : primary_read0_data;
+  wire [31:0] fast_read0_data = fast_shadow0 ? shadow_read0_data : primary_read0_data;
+  wire [31:0] fast_read1_data = fast_shadow1 ? shadow_read1_data : primary_read1_data;
 
   assign slow_command_ready = !reset && (!slow_pending || slow_response_ready);
   assign fast_command_ready = !reset && (!fast_pending || fast_response_ready);
   assign slow_response = {32'b0, slow_read_data, 1'b1};
-  assign fast_response = {fast_packed ? read1_data : 32'b0, fast_read0_data, 1'b1};
+  assign fast_response = {
+    fast_packed ? fast_read1_data : 32'b0, fast_read0_data, 1'b1
+  };
   assign slow_response_valid = slow_pending;
   assign fast_response_valid = fast_pending;
 
-  XlsPackedBankMemoryArray mirror0 (
+  XlsPackedBankMemoryArray #(
+    .NUMWORDS(PRIMARY_NUMWORDS), .ADDRESS_WIDTH(PRIMARY_ADDRESS_WIDTH)
+  ) mirror0 (
     .clk(clk),
-    .read0_enable(read0_enable && !read0_victim),
-    .read0_address(slow_read ? slow_address[9:0] : fast_address0[9:0]),
+    .read0_enable(read0_enable),
+    .read0_address(read0_address),
     .read1_enable(1'b0),
-    .read1_address(10'b0),
-    .write_enable(slow_accept && slow_write && !slow_address[10]),
-    .write_address(slow_address[9:0]),
+    .read1_address({PRIMARY_ADDRESS_WIDTH{1'b0}}),
+    .write_enable(slow_accept && slow_write),
+    .write_address(slow_address),
     .write_data(slow_data),
     .write_mask(slow_mask),
     .read0_data(primary_read0_data),
     .read1_data()
   );
 
-  XlsPackedBankMemoryArray mirror1 (
+  XlsPackedBankMemoryArray #(
+    .NUMWORDS(PRIMARY_NUMWORDS), .ADDRESS_WIDTH(PRIMARY_ADDRESS_WIDTH)
+  ) mirror1 (
     .clk(clk),
     .read0_enable(fast_accept && fast_second),
-    .read0_address(fast_address1[9:0]),
+    .read0_address(fast_address1),
     .read1_enable(1'b0),
-    .read1_address(10'b0),
-    .write_enable(slow_accept && slow_write && !slow_address[10]),
-    .write_address(slow_address[9:0]),
+    .read1_address({PRIMARY_ADDRESS_WIDTH{1'b0}}),
+    .write_enable(slow_accept && slow_write),
+    .write_address(slow_address),
     .write_data(slow_data),
     .write_mask(slow_mask),
-    .read0_data(read1_data),
+    .read0_data(primary_read1_data),
     .read1_data()
   );
 
-  XlsPackedBankMemoryArray #(.NUMWORDS(320), .ADDRESS_WIDTH(9)) victim (
+  XlsPackedBankMemoryArray #(.NUMWORDS(1024), .ADDRESS_WIDTH(10)) shadow (
     .clk(clk),
-    .read0_enable(read0_enable && read0_victim),
-    .read0_address(slow_read ? slow_address[8:0] : fast_address0[8:0]),
-    .read1_enable(1'b0),
-    .read1_address(9'b0),
-    .write_enable(slow_accept && slow_write && slow_address[10]),
-    .write_address(slow_address[8:0]),
+    .read0_enable(read0_enable),
+    .read0_address(read0_address[9:0]),
+    .read1_enable(fast_accept && fast_second),
+    .read1_address(fast_address1[9:0]),
+    .write_enable(shadow_write),
+    .write_address(slow_shadow_address),
     .write_data(slow_data),
     .write_mask(slow_mask),
-    .read0_data(victim_read_data),
-    .read1_data()
+    .read0_data(shadow_read0_data),
+    .read1_data(shadow_read1_data)
   );
+
 
   always @(posedge clk) begin
     if (reset) begin
       slow_pending <= 0;
       fast_pending <= 0;
       fast_packed <= 0;
-      slow_victim <= 0;
-      fast_victim <= 0;
+      slow_shadow <= 0;
+      fast_shadow0 <= 0;
+      fast_shadow1 <= 0;
     end else begin
       if (slow_pending && slow_response_ready) slow_pending <= 0;
       if (fast_pending && fast_response_ready) fast_pending <= 0;
       if (slow_accept) begin
         slow_pending <= 1;
-        slow_victim <= slow_address[10];
+        slow_shadow <= read0_shadow;
       end
       if (fast_accept) begin
         fast_pending <= 1;
         fast_packed <= fast_second;
-        fast_victim <= fast_address0[10];
+        fast_shadow0 <= read0_shadow;
+        fast_shadow1 <= read1_shadow;
       end
     end
   end

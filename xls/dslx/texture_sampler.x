@@ -8,6 +8,7 @@ pub struct SampleRequest {
     bilinear: u1,
     is_16_bit: u1,
     format: u4,
+    large_cache_safe: u1,
     addresses: uN[104],
     locations: u4[4],
     ds: u4,
@@ -23,9 +24,22 @@ fn cache_location(segment: u48, is_16_bit: u1, address: u26) -> u4 {
     } else {
         offset[shift+:u1]
     };
-    let bank_lsb = if is_16_bit == u1:1 { offset[0+:u1] | offset[1+:u1] } else { offset[0+:u1] };
-    let pair = is_16_bit == u1:0 && offset[1+:u1] == u1:1;
+    let bank_lsb = if is_16_bit == u1:1 { address[1+:u1] } else { address[0+:u1] };
+    let pair = is_16_bit == u1:0 && address[1+:u1] == u1:1;
     u1:1 ++ bank_msb ++ bank_lsb ++ (pair as u1)
+}
+
+fn large_cache_safe(segment: u48, addresses: uN[104]) -> u1 {
+    let base = segment[26+:u22];
+    let end = segment[4+:u22];
+    let address0 = addresses[78+:u26][0+:u22];
+    let address1 = addresses[52+:u26][0+:u22];
+    let address2 = addresses[26+:u26][0+:u22];
+    let address3 = addresses[0+:u26][0+:u22];
+    address0 >= base && address0 < end &&
+    address1 >= base && address1 < end &&
+    address2 >= base && address2 < end &&
+    address3 >= base && address3 < end
 }
 
 fn cache_locations(segment: u48, is_16_bit: u1, addresses: uN[104]) -> u4[4] {
@@ -37,9 +51,16 @@ fn cache_locations(segment: u48, is_16_bit: u1, addresses: uN[104]) -> u4[4] {
     ]
 }
 
-pub fn sample_request
-    (s: s48, t: s48, w: s48, ds_dx: s32, dt_dx: s32, ds_dy: s32, dt_dy: s32, texture_mode: u32,
-     t_lod: u32, texture_layout: bits[432], base0: u24, base1: u24, base2: u24, base38: u24)
+pub fn base_lod(ds_dx: s32, dt_dx: s32, ds_dy: s32, dt_dy: s32) -> s16 {
+    let gradient = tmu::tmu_gradient(ds_dx, dt_dx, ds_dy, dt_dy);
+    let index = tmu::tmu_lod_index(gradient);
+    tmu::tmu_base_lod(gradient, index[8+:u7], tmu_lookup::log_fraction(index[0+:u8]))
+}
+
+
+pub fn sample_request_with_base_lod
+    (s: s48, t: s48, w: s48, base_lod: s16, texture_mode: u32, t_lod: u32,
+     texture_layout: bits[432], base0: u24, base1: u24, base2: u24, base38: u24)
     -> SampleRequest {
     let meta = tmu::tmu_recip_meta(w, texture_mode[3+:u1]);
     let index = meta[17+:u8];
@@ -49,10 +70,7 @@ pub fn sample_request
         base, base - next, meta[9+:u8], tmu_lookup::log_fraction(index), meta[2+:u7], meta[1+:u1]);
     let perspective =
         tmu::tmu_perspective_coords(s, t, reciprocal[16+:u17], meta[2+:u7], texture_mode[0+:u1]);
-    let gradient = tmu::tmu_gradient(ds_dx, dt_dx, ds_dy, dt_dy);
-    let lod_index = tmu::tmu_lod_index(gradient);
-    let base_lod =
-        tmu::tmu_base_lod(gradient, lod_index[8+:u7], tmu_lookup::log_fraction(lod_index[0+:u8]));
+
     let lod = tmu::tmu_lod_select(base_lod, reciprocal[0+:u16] as s16, t_lod[0+:u27]);
     let level = lod[8+:u4];
     let coordinates = tmu::tmu_coordinates(
@@ -75,11 +93,21 @@ pub fn sample_request
         bilinear,
         is_16_bit,
         format: texture_mode[8+:u4],
+        large_cache_safe: large_cache_safe(segment, selected),
         addresses: selected,
         locations: cache_locations(segment, is_16_bit, selected),
         ds: coordinates[4+:u4],
         dt: coordinates[0+:u4],
     }
+}
+
+pub fn sample_request
+    (s: s48, t: s48, w: s48, ds_dx: s32, dt_dx: s32, ds_dy: s32, dt_dy: s32, texture_mode: u32,
+     t_lod: u32, texture_layout: bits[432], base0: u24, base1: u24, base2: u24, base38: u24)
+    -> SampleRequest {
+    sample_request_with_base_lod(
+        s, t, w, base_lod(ds_dx, dt_dx, ds_dy, dt_dy), texture_mode, t_lod,
+        texture_layout, base0, base1, base2, base38)
 }
 
 pub fn read_mask(addresses: uN[104]) -> u4 {
@@ -150,6 +178,27 @@ pub fn decode_with_palette
         texel(word3, request.addresses[0+:u26], request.is_16_bit), palette)
 }
 
+#[quickcheck]
+fn base_lod_matches_full_width_gradient(ds_dx: s32, dt_dx: s32, ds_dy: s32, dt_dy: s32) -> bool {
+    let dx = ((ds_dx as s64) * (ds_dx as s64)) as u64 +
+             ((dt_dx as s64) * (dt_dx as s64)) as u64;
+    let dy = ((ds_dy as s64) * (ds_dy as s64)) as u64 +
+             ((dt_dy as s64) * (dt_dy as s64)) as u64;
+    let gradient = if dx > dy { dx } else { dy };
+    let index = tmu::tmu_lod_index(gradient);
+    base_lod(ds_dx, dt_dx, ds_dy, dt_dy) ==
+        tmu::tmu_base_lod(gradient, index[8+:u7], tmu_lookup::log_fraction(index[0+:u8]))
+}
+
+#[test]
+fn base_lod_preserves_zero_negative_and_extreme_derivatives() {
+    assert_eq(base_lod(s32:0, s32:0, s32:0, s32:0), s16:0);
+    assert_eq(base_lod(s32:1048576, s32:0, s32:0, s32:0), s16:256);
+    assert_eq(base_lod(s32:0, s32:0, s32:-1048576, s32:0), s16:256);
+    assert_eq(base_lod(s32:0x80000000, s32:0, s32:0, s32:0), s16:1664);
+    assert_eq(base_lod(s32:0x80000000, s32:0x80000000, s32:0, s32:0), s16:1728);
+}
+
 #[test]
 fn requests_console_texture_taps() {
     let texture_layout = layout::texture_layout(u19:0, u19:0, u19:0, u19:0, u4:2, u2:1, u1:1, u1:0);
@@ -176,6 +225,15 @@ fn either_filter_bit_enables_bilinear_sampling() {
 }
 
 #[test]
+fn rejects_large_cache_mapping_for_wrapped_addresses() {
+    let segment = (u48:0x100 << u8:26) | (u48:0x120 << u8:4);
+    let inside = u26:0x110 ++ u26:0x112 ++ u26:0x114 ++ u26:0x116;
+    let wrapped = u26:0x130 ++ u26:0x132 ++ u26:0x134 ++ u26:0x136;
+    assert_eq(large_cache_safe(segment, inside), u1:1);
+    assert_eq(large_cache_safe(segment, wrapped), u1:0);
+}
+
+#[test]
 fn deduplicates_texture_word_reads() {
     let addresses = u26:1 ++ u26:2 ++ u26:129 ++ u26:130;
     assert_eq(read_mask(addresses), u4:0x5);
@@ -190,6 +248,7 @@ fn decodes_paletted_texels() {
         bilinear: u1:0,
         is_16_bit: u1:0,
         format: u4:5,
+        large_cache_safe: u1:0,
         addresses: uN[104]:0,
         locations: u4[4]:[u4:0, ...],
         ds: u4:0,
@@ -212,6 +271,7 @@ fn extracts_and_decodes_eight_bit_texels() {
         bilinear: u1:0,
         is_16_bit: u1:0,
         format: u4:2,
+        large_cache_safe: u1:0,
         addresses: u26:1 ++ u26:1 ++ u26:1 ++ u26:1,
         locations: u4[4]:[u4:0, ...],
         ds: u4:0,

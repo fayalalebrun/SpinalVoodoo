@@ -16,8 +16,9 @@ fn layout_step
     } else {
         normal_base
     };
-    let shift_amount = (wide_bits as u5) + (narrow_bits as u5) + (is_16_bit as u5);
-    let lod_size = u22:1 << shift_amount;
+    let wide_size = u22:1 << (wide_bits as u8);
+    let area = wide_size << (narrow_bits as u8);
+    let lod_size = if is_16_bit { area << u8:1 } else { area };
     let lod_end = lod_base + lod_size;
     let row_shift = if s_wider { wide_bits } else { narrow_bits };
     let segment = lod_base ++ lod_end ++ row_shift;
@@ -60,6 +61,11 @@ fn texture_layout_test() {
     assert_eq(layout[410+:u22], u22:0);
     assert_eq(layout[388+:u22], u22:0x20000);
     assert_eq(layout[384+:u4], u4:8);
+    let narrow = texture_layout(
+        u19:0x12260, u19:0, u19:0, u19:0, u4:10, u2:2, u1:1, u1:0);
+    assert_eq(narrow[314+:u22], u22:0x9b300);
+    assert_eq(narrow[292+:u22], u22:0x9bb00);
+    assert_eq(narrow[288+:u4], u4:6);
 }
 
 #[test]

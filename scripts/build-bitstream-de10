@@ -104,7 +104,7 @@ if [[ "$PROJECT_NAME" == "SpinalVoodoo_de10_xls" ]]; then
     cd "$PROJECT_DIR"
     quartus_map "$PROJECT_NAME" -c "$PROJECT_NAME" \
       --read_settings_files=on --write_settings_files=off
-    quartus_fit "$PROJECT_NAME" -c "$PROJECT_NAME" --effort=fast --seed=5 \
+    quartus_fit "$PROJECT_NAME" -c "$PROJECT_NAME" --effort=fast --seed=1 \
       --one_fit_attempt=on --read_settings_files=on --write_settings_files=off
     quartus_sta "$PROJECT_NAME" -c "$PROJECT_NAME" &
     sta_pid=$!

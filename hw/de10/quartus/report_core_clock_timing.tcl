@@ -13,7 +13,7 @@ if {[llength $quartus(args)] >= 2} {
 set core_clock_name "core_pll_0|pll_0|altera_pll_i|general[0].gpll~PLL_OUTPUT_COUNTER|divclk"
 
 project_open -revision $revision_name $project_name
-create_timing_netlist
+create_timing_netlist -force_dat
 read_sdc
 update_timing_netlist
 

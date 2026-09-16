@@ -170,8 +170,33 @@ module XlsH2fCommandFifo #(
   wire request_empty;
   wire request_full;
   wire request_pop;
-  wire [REQUEST_WIDTH-1:0] queued_request;
-  wire queued_empty;
+  wire [REQUEST_WIDTH-1:0] buffered_request;
+  wire buffered_empty;
+  wire buffered_pop;
+  wire [REQUEST_WIDTH-1:0] expanded_request;
+  wire expanded_empty;
+  reg [REQUEST_WIDTH-1:0] queued_request;
+  reg queued_valid;
+  wire queued_empty = !queued_valid;
+
+  wire fifo_mem_read;
+  wire fifo_mem_write;
+  wire fifo_mem_waitRequestn;
+  wire [10:0] fifo_mem_burstCount;
+  wire [31:0] fifo_mem_address;
+  wire [3:0] fifo_mem_byteEnable;
+  wire [31:0] fifo_mem_writeData;
+  wire fifo_mem_readDataValid;
+  wire [31:0] fifo_mem_readData;
+  wire batch_mem_read;
+  wire batch_mem_write;
+  wire batch_mem_waitRequestn;
+  wire [10:0] batch_mem_burstCount;
+  wire [31:0] batch_mem_address;
+  wire [3:0] batch_mem_byteEnable;
+  wire [31:0] batch_mem_writeData;
+  wire batch_mem_readDataValid;
+  wire [31:0] batch_mem_readData;
   wire request_valid = h2f_read ^ h2f_write;
   wire response_empty;
   wire response_full;
@@ -180,6 +205,7 @@ module XlsH2fCommandFifo #(
   wire queued_write = queued_request[36];
   wire core_request_valid = !queued_empty && (!queued_read || !response_full);
   wire core_request_accepted = core_request_valid && !core_waitrequest;
+  wire expanded_pop = !expanded_empty && (!queued_valid || core_request_accepted);
 
   assign h2f_waitrequest = request_valid && request_full;
   assign h2f_readdata = response_q;
@@ -213,31 +239,81 @@ module XlsH2fCommandFifo #(
         .ingress_data(request_q),
         .ingress_empty(request_empty),
         .ingress_pop(request_pop),
-        .request_data(queued_request),
-        .request_empty(queued_empty),
-        .request_pop(core_request_accepted),
-        .mem_read(mem_read),
-        .mem_write(mem_write),
-        .mem_waitRequestn(mem_waitRequestn),
-        .mem_burstCount(mem_burstCount),
-        .mem_address(mem_address),
-        .mem_byteEnable(mem_byteEnable),
-        .mem_writeData(mem_writeData),
-        .mem_readDataValid(mem_readDataValid),
-        .mem_readData(mem_readData)
+        .request_data(buffered_request),
+        .request_empty(buffered_empty),
+        .request_pop(buffered_pop),
+        .mem_read(fifo_mem_read),
+        .mem_write(fifo_mem_write),
+        .mem_waitRequestn(fifo_mem_waitRequestn),
+        .mem_burstCount(fifo_mem_burstCount),
+        .mem_address(fifo_mem_address),
+        .mem_byteEnable(fifo_mem_byteEnable),
+        .mem_writeData(fifo_mem_writeData),
+        .mem_readDataValid(fifo_mem_readDataValid),
+        .mem_readData(fifo_mem_readData)
       );
     end else begin : memory_fifo_disabled
-      assign request_pop = core_request_accepted;
-      assign queued_request = request_q;
-      assign queued_empty = request_empty;
-      assign mem_read = 1'b0;
-      assign mem_write = 1'b0;
-      assign mem_burstCount = 11'd1;
-      assign mem_address = 32'b0;
-      assign mem_byteEnable = 4'hf;
-      assign mem_writeData = 32'b0;
+      assign request_pop = buffered_pop;
+      assign buffered_request = request_q;
+      assign buffered_empty = request_empty;
+      assign fifo_mem_read = 1'b0;
+      assign fifo_mem_write = 1'b0;
+      assign fifo_mem_burstCount = 11'd1;
+      assign fifo_mem_address = 32'b0;
+      assign fifo_mem_byteEnable = 4'hf;
+      assign fifo_mem_writeData = 32'b0;
     end
   endgenerate
+
+  always @(posedge core_clk or posedge core_reset) begin
+    if (core_reset) begin
+      queued_valid <= 1'b0;
+    end else if (!queued_valid || core_request_accepted) begin
+      queued_valid <= !expanded_empty;
+    end
+  end
+
+  always @(posedge core_clk) begin
+    if (expanded_pop) queued_request <= expanded_request;
+  end
+
+  XlsH2fBatchExpander batch_expander (
+    .clk(core_clk),
+    .reset(core_reset),
+    .ingress_data(buffered_request),
+    .ingress_empty(buffered_empty),
+    .ingress_pop(buffered_pop),
+    .request_data(expanded_request),
+    .request_empty(expanded_empty),
+    .request_pop(expanded_pop),
+    .mem_read(batch_mem_read),
+    .mem_write(batch_mem_write),
+    .mem_waitRequestn(batch_mem_waitRequestn),
+    .mem_burstCount(batch_mem_burstCount),
+    .mem_address(batch_mem_address),
+    .mem_byteEnable(batch_mem_byteEnable),
+    .mem_writeData(batch_mem_writeData),
+    .mem_readDataValid(batch_mem_readDataValid),
+    .mem_readData(batch_mem_readData)
+  );
+
+  XlsAvalonArbiter2 memory_arbiter (
+    .clk(core_clk), .reset(core_reset),
+    .m0_read(fifo_mem_read), .m0_write(fifo_mem_write),
+    .m0_waitRequestn(fifo_mem_waitRequestn), .m0_burstCount(fifo_mem_burstCount),
+    .m0_address(fifo_mem_address), .m0_byteEnable(fifo_mem_byteEnable),
+    .m0_writeData(fifo_mem_writeData), .m0_readDataValid(fifo_mem_readDataValid),
+    .m0_readData(fifo_mem_readData),
+    .m1_read(batch_mem_read), .m1_write(batch_mem_write),
+    .m1_waitRequestn(batch_mem_waitRequestn), .m1_burstCount(batch_mem_burstCount),
+    .m1_address(batch_mem_address), .m1_byteEnable(batch_mem_byteEnable),
+    .m1_writeData(batch_mem_writeData), .m1_readDataValid(batch_mem_readDataValid),
+    .m1_readData(batch_mem_readData),
+    .s_read(mem_read), .s_write(mem_write), .s_waitRequestn(mem_waitRequestn),
+    .s_burstCount(mem_burstCount), .s_address(mem_address),
+    .s_byteEnable(mem_byteEnable), .s_writeData(mem_writeData),
+    .s_readDataValid(mem_readDataValid), .s_readData(mem_readData)
+  );
 
   XlsH2fAsyncFifo #(
     .WIDTH(32),

@@ -227,6 +227,9 @@ static int runMmioTest(VXlsDe10Top &dut) {
   uint32_t profileVersion = 0;
   uint32_t readStalls = 0;
   uint32_t batchCapability = 0;
+  uint32_t paletteCapability = 0;
+  if (!readMmio(dut, 0x3ec, &paletteCapability) || paletteCapability != 0x50414c10 ||
+      !writeMmio(dut, 0x3ec, 15) || !writeMmio(dut, 0x3ec, 0)) return 1;
   bool ok = checkFloatRegisters(dut) && readMmio(dut, 0x3ff004, &batchCapability) &&
              batchCapability == 0x42415431 &&
             writeMmio(dut, 0x300, 0x00000a00) && readMmio(dut, 0x000, &status) &&

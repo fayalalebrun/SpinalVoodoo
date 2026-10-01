@@ -4,26 +4,27 @@ module XlsPaletteMemory (
   input  wire [31:0] read_request,
   input  wire        read_request_valid,
   output wire        read_request_ready,
-  input  wire [31:0] write,
+  input  wire [32:0] write,
   input  wire        write_valid,
   output wire        write_ready,
   output wire [95:0] response,
   output wire        response_valid,
   input  wire        response_ready
 );
-  wire [7:0] index0 = read_request[31:24];
-  wire [7:0] index1 = read_request[23:16];
-  wire [7:0] index2 = read_request[15:8];
-  wire [7:0] index3 = read_request[7:0];
-  wire [7:0] write_index = write[31:24];
+  reg [3:0] bank;
+  wire [11:0] index0 = {bank, read_request[31:24]};
+  wire [11:0] index1 = {bank, read_request[23:16]};
+  wire [11:0] index2 = {bank, read_request[15:8]};
+  wire [11:0] index3 = {bank, read_request[7:0]};
+  wire [11:0] write_index = {bank, write[31:24]};
   wire [23:0] write_data = write[23:0];
   wire read_accept = read_request_valid && read_request_ready;
   wire write_accept = write_valid && write_ready;
 
-  (* ramstyle = "M10K, no_rw_check" *) reg [23:0] memory0 [0:255];
-  (* ramstyle = "M10K, no_rw_check" *) reg [23:0] memory1 [0:255];
-  (* ramstyle = "M10K, no_rw_check" *) reg [23:0] memory2 [0:255];
-  (* ramstyle = "M10K, no_rw_check" *) reg [23:0] memory3 [0:255];
+  (* ramstyle = "M10K, no_rw_check" *) reg [23:0] memory0 [0:4095];
+  (* ramstyle = "M10K, no_rw_check" *) reg [23:0] memory1 [0:4095];
+  (* ramstyle = "M10K, no_rw_check" *) reg [23:0] memory2 [0:4095];
+  (* ramstyle = "M10K, no_rw_check" *) reg [23:0] memory3 [0:4095];
   reg [23:0] read0;
   reg [23:0] read1;
   reg [23:0] read2;
@@ -37,10 +38,12 @@ module XlsPaletteMemory (
 
   always @(posedge clk) begin
     if (reset) begin
+      bank <= 4'b0;
       response_pending <= 1'b0;
     end else begin
       if (response_pending && response_ready) response_pending <= 1'b0;
-      if (write_accept) begin
+      if (write_accept && write[32] && write[31:4] == 0) bank <= write[3:0];
+      if (write_accept && !write[32]) begin
         memory0[write_index] <= write_data;
         memory1[write_index] <= write_data;
         memory2[write_index] <= write_data;

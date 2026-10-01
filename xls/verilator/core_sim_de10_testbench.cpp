@@ -418,7 +418,8 @@ int main(int argc, char** argv) {
   std::array<uint16_t, 64> primary_tags = {};
   std::array<uint16_t, 16> shadow_tags = {};
   std::deque<uint64_t> tag_responses;
-  Palette palette = {};
+  std::array<Palette, 16> palettes = {};
+  uint32_t palette_bank = 0;
   std::deque<PaletteMemoryResponse> palette_responses;
   std::array<std::deque<uint64_t>, 6> transfer_responses;
   std::deque<uint64_t> texture_response_cycles;
@@ -691,7 +692,7 @@ int main(int argc, char** argv) {
         !palette_responses.empty() && dut._palette_response_r_rdy;
     const uint32_t palette_read_request =
         palette_read_handshake ? dut._palette_read_request_s : 0;
-    const uint32_t palette_write = palette_write_handshake ? dut._palette_write_s : 0;
+    const uint64_t palette_write = palette_write_handshake ? dut._palette_write_s : 0;
     dut.clk = 1;
     dut.eval();
     ++cycles;
@@ -729,8 +730,18 @@ int main(int argc, char** argv) {
     if (request_handshake) request_accepted = true;
     if (wait_response_clear && !response_valid) wait_response_clear = false;
     if (palette_response_handshake) palette_responses.pop_front();
-    if (palette_write_handshake) commit_palette(palette_write, &palette);
-    if (palette_read_handshake) palette_responses.push_back(read_palette(palette_read_request, palette));
+    if (palette_read_handshake)
+      palette_responses.push_back(read_palette(palette_read_request, palettes[palette_bank]));
+    if (palette_write_handshake) {
+      if (palette_write >> 32) {
+        if (static_cast<uint32_t>(palette_write) >= palettes.size()) {
+          std::fprintf(stderr, "invalid palette bank selector\n");
+          return 1;
+        }
+        palette_bank = static_cast<uint32_t>(palette_write);
+      }
+      else commit_palette(static_cast<uint32_t>(palette_write), &palettes[palette_bank]);
+    }
     for (uint32_t port = 0; port < 6; ++port) {
       if (transfer_response_handshake[port]) {
         transfer_responses[port].pop_front();

@@ -6,7 +6,7 @@ module XlsPaletteMemoryTb;
   reg [31:0] read_request = 0;
   reg read_request_valid = 0;
   wire read_request_ready;
-  reg [31:0] write = 0;
+  reg [32:0] write = 0;
   reg write_valid = 0;
   wire write_ready;
   wire [95:0] response;
@@ -42,7 +42,7 @@ module XlsPaletteMemoryTb;
     end
   endtask
 
-  task automatic send_write(input [31:0] value);
+  task automatic send_write(input [32:0] value);
     begin
       @(negedge clk);
       write = value;
@@ -88,6 +88,43 @@ module XlsPaletteMemoryTb;
     @(posedge clk);
     @(negedge clk);
     if (response_valid) $fatal(1, "response did not clear");
+
+    send_write({1'b1, 27'b0, 5'd15});
+    send_write({1'b0, 8'h01, 24'hfedcba});
+    send_read(32'h01010101);
+    expect_response({4{24'hfedcba}});
+    send_write({1'b1, 32'b0});
+    response_ready = 0;
+    send_read(32'h01020304);
+    send_write({1'b1, 27'b0, 5'd15});
+    if (!response_valid || response !== 96'h112233445566778899aabbcc)
+      $fatal(1, "bank selection changed held response");
+    response_ready = 1;
+    @(posedge clk);
+    @(negedge clk);
+    send_read(32'h01010101);
+    expect_response({4{24'hfedcba}});
+    response_ready = 0;
+    send_read(32'h01010101);
+    reset = 1;
+    @(posedge clk);
+    @(negedge clk);
+    if (response_valid || read_request_ready || write_ready)
+      $fatal(1, "reset handshake mismatch");
+    reset = 0;
+    response_ready = 1;
+    send_read(32'h01020304);
+    expect_response(96'h112233445566778899aabbcc);
+    send_write({1'b1, 27'b0, 5'd15});
+    send_read(32'h01010101);
+    expect_response({4{24'hfedcba}});
+
+    send_write({1'b1, 32'd16});
+    send_read(32'h01010101);
+    expect_response({4{24'hfedcba}});
+    send_write({1'b1, 32'd31});
+    send_read(32'h01010101);
+    expect_response({4{24'hfedcba}});
 
     $display("XlsPaletteMemoryTb PASS");
     $finish;

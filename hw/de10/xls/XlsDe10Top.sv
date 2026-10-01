@@ -289,7 +289,7 @@ module XlsDe10Top (
   wire [31:0] palette_read_request;
   wire palette_read_request_valid;
   wire palette_read_request_ready;
-  wire [31:0] palette_write;
+  wire [32:0] palette_write;
   wire palette_write_valid;
   wire palette_write_ready;
   wire [95:0] palette_response;

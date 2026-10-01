@@ -91,7 +91,7 @@ struct FramebufferSpanConfig {
 
 pub struct PaletteReadRequest { index0: u8, index1: u8, index2: u8, index3: u8 }
 
-pub struct PaletteWrite { index: u8, data: u24 }
+pub struct PaletteWrite { select: u1, index: u8, data: u24 }
 
 pub struct PaletteResponse { entry0: u24, entry1: u24, entry2: u24, entry3: u24 }
 
@@ -613,7 +613,26 @@ fn palette_write_request(address: u10, data: u32) -> (u1, PaletteWrite) {
     let odd = address == u10:0x338 || address == u10:0x340 || address == u10:0x348 ||
               address == u10:0x350;
     let index = (data[23+:u8] & u8:0xfe) | (odd as u8);
-    (hit && data[31+:u1] == u1:1, PaletteWrite { index, data: data[0+:u24] })
+    (hit && data[31+:u1] == u1:1, PaletteWrite { select: u1:0, index, data: data[0+:u24] })
+}
+
+fn palette_bank_select(command: CoreCommand) -> bool {
+    command.address == u24:0x3ec && command.write == u1:1 &&
+    command.mask == u4:15 && command.data < u32:16
+}
+
+#[test]
+fn palette_bank_select_requires_exact_address_full_mask_and_valid_bank() {
+    let command = CoreCommand { address: u24:0x3ec, write: u1:1, mask: u4:15, data: u32:15 };
+    assert_eq(palette_bank_select(command), true);
+    assert_eq(palette_bank_select(CoreCommand { data: u32:0, ..command }), true);
+    assert_eq(palette_bank_select(CoreCommand { data: u32:16, ..command }), false);
+    assert_eq(palette_bank_select(CoreCommand { data: u32:31, ..command }), false);
+    assert_eq(palette_bank_select(CoreCommand { data: u32:32, ..command }), false);
+    assert_eq(palette_bank_select(CoreCommand { data: u32:0xffffffff, ..command }), false);
+    assert_eq(palette_bank_select(CoreCommand { mask: u4:7, ..command }), false);
+    assert_eq(palette_bank_select(CoreCommand { write: u1:0, ..command }), false);
+    assert_eq(palette_bank_select(CoreCommand { address: u24:0x7ec, ..command }), false);
 }
 
 fn write_palette(palette: Palette, address: u10, data: u32) -> Palette {
@@ -856,25 +875,6 @@ pub fn step(state: CoreState, command: CoreCommand) -> (CoreState, CoreResponse)
         float_alias::float32_to_fixed32_fast(command.data, fraction_bits) as u32)
 }
 
-fn color_channel(value: s48) -> u8 {
-    let integer = value >> u8:12;
-    if integer < s48:0 {
-        u8:0
-    } else if integer > s48:255 {
-        u8:255
-    } else {
-        integer as u8
-    }
-}
-
-fn interpolated_value
-    (registers: PixelRegisterFile, float_shadows: PixelFloatShadowFile,
-     raster_uses_float_shadows: u1, candidate: raster_state::PixelCandidate, start_index: u8,
-     dx_index: u8, dy_index: u8) -> s48 {
-    let (shadow_shift, has_float_shadow) = float_shadow_shift(start_index);
-    let use_float_shadow = raster_uses_float_shadows == u1:1 && has_float_shadow == u1:1;
-    let start = if use_float_shadow {
-        pixel_float_shadow(float_shadows, start_index)
 #[test]
 fn float_parameters_are_idempotent_and_preserved_by_triangle_commands() {
     let state = for (i, state): (u32, CoreState) in u32:0..u32:30 {
@@ -899,6 +899,25 @@ fn float_parameters_are_idempotent_and_preserved_by_triangle_commands() {
     }(())
 }
 
+fn color_channel(value: s48) -> u8 {
+    let integer = value >> u8:12;
+    if integer < s48:0 {
+        u8:0
+    } else if integer > s48:255 {
+        u8:255
+    } else {
+        integer as u8
+    }
+}
+
+fn interpolated_value
+    (registers: PixelRegisterFile, float_shadows: PixelFloatShadowFile,
+     raster_uses_float_shadows: u1, candidate: raster_state::PixelCandidate, start_index: u8,
+     dx_index: u8, dy_index: u8) -> s48 {
+    let (shadow_shift, has_float_shadow) = float_shadow_shift(start_index);
+    let use_float_shadow = raster_uses_float_shadows == u1:1 && has_float_shadow == u1:1;
+    let start = if use_float_shadow {
+        pixel_float_shadow(float_shadows, start_index)
     } else {
         (pixel_register(registers, start_index) as s32) as s50
     };
@@ -1116,25 +1135,6 @@ fn lfb_command(state: CoreState, command: CoreCommand) -> memory::MemoryCommand 
     }
 }
 
-fn clamp_depth(value: s48) -> u16 {
-    if value < s48:0 {
-        u16:0
-    } else if value > s48:65535 {
-        u16:0xffff
-    } else {
-        value as u16
-    }
-}
-
-fn new_depth_fields(mode: u32, za_color: u32, z_depth: u16, w: s32) -> u16 {
-    let w_depth = pixel::fog_w_depth(w);
-    let base = if mode[3+:u1] == u1:1 { w_depth } else { z_depth };
-    let selected = if mode[20+:u1] == u1:1 { za_color[0+:u16] } else { base };
-    let biased = clamp_depth((selected as s48) + ((za_color[0+:u16] as s16) as s48));
-    if mode[16+:u1] == u1:1 { biased } else { selected }
-}
-
-fn new_depth_interpolated_fields(mode: u32, za_color: u32, z: s48, w: s48) -> u16 {
 #[test]
 fn lfb_aux_and_lower_origin_addressing() {
     let registers =
@@ -1160,6 +1160,25 @@ fn lfb_aux_and_lower_origin_addressing() {
     }(())
 }
 
+fn clamp_depth(value: s48) -> u16 {
+    if value < s48:0 {
+        u16:0
+    } else if value > s48:65535 {
+        u16:0xffff
+    } else {
+        value as u16
+    }
+}
+
+fn new_depth_fields(mode: u32, za_color: u32, z_depth: u16, w: s32) -> u16 {
+    let w_depth = pixel::fog_w_depth(w);
+    let base = if mode[3+:u1] == u1:1 { w_depth } else { z_depth };
+    let selected = if mode[20+:u1] == u1:1 { za_color[0+:u16] } else { base };
+    let biased = clamp_depth((selected as s48) + ((za_color[0+:u16] as s16) as s48));
+    if mode[16+:u1] == u1:1 { biased } else { selected }
+}
+
+fn new_depth_interpolated_fields(mode: u32, za_color: u32, z: s48, w: s48) -> u16 {
     new_depth_fields(mode, za_color, clamp_depth(z >> u8:12), w as s32)
 }
 
@@ -2615,7 +2634,7 @@ proc hosted_palette_memory {
             join(), read_r,
             PaletteReadRequest { index0: u8:0, index1: u8:0, index2: u8:0, index3: u8:0 });
         let (tok, write, write_valid) =
-            recv_non_blocking(tok, write_r, PaletteWrite { index: u8:0, data: u24:0 });
+            recv_non_blocking(tok, write_r, PaletteWrite { select: u1:0, index: u8:0, data: u24:0 });
         let tok = send_if(
             tok, response_s, read_valid,
             PaletteResponse {
@@ -2997,10 +3016,15 @@ bool = {
                 FloatShadowResponse { fixed: u32:0, shadow: s50:0 });
             let (palette_write, palette_request) =
                 palette_write_request(write_address, command.data);
+            let palette_control = EXTERNAL_PALETTE && is_register && command.address == u24:0x3ec;
+            let palette_select = palette_control && palette_bank_select(command);
+            let palette_request = if palette_select {
+                PaletteWrite { select: u1:1, index: u8:0, data: command.data as u24 }
+            } else { palette_request };
             let palette_tok = send_if(
                 shadow_tok, palette_write_s,
-                EXTERNAL_PALETTE && is_register && command.write == u1:1 && palette_write,
-                palette_request);
+                EXTERNAL_PALETTE && is_register && command.write == u1:1 &&
+                (palette_write || palette_select), palette_request);
             let (next_core, register_response) = if is_register {
                 step_with_raster_setup(
                     core, command, u1:1, converted_shadow.shadow, converted_shadow.fixed)
@@ -3021,7 +3045,12 @@ bool = {
                 ..next_core
             };
             let response =
-                if command_valid && command.write == u1:0 && command.address == u24:0x3f0 {
+                if palette_control {
+                    CoreResponse {
+                        data: if command.write == u1:0 { u32:0x50414c10 } else { u32:0 },
+                        success: command.write == u1:0 || palette_select,
+                    }
+                } else if command_valid && command.write == u1:0 && command.address == u24:0x3f0 {
                     CoreResponse { data: cache_response.total_hits as u32, success: u1:1 }
                 } else if command_valid && command.write == u1:0 && command.address == u24:0x3f4 {
                     CoreResponse { data: cache_response.total_misses as u32, success: u1:1 }
@@ -3698,7 +3727,6 @@ fn narrow_paletted_textures_flush_banked_cache_while_rendering() {
     assert_eq(flush_narrow_texture_cache(u1:0, u32:0x00600000, u32:0x500), u1:0);
 }
 
-
 #[test]
 fn pixel_texture_state_preserves_sampler_inputs() {
     let texture = pixel_texture_registers(
@@ -3728,6 +3756,7 @@ fn step_updates_texture_state_and_layout() {
     assert_eq(state.texture.tex_base, u32:0x00012345);
     assert_eq(state.texture_layout[410+:u22], u22:0x91a28);
 }
+
 #[test]
 fn step_maps_tmu_register_aliases() {
     let state = initial_state();
@@ -4095,38 +4124,6 @@ proc core_sim_proc_test {
 }
 
 #[test_proc]
-proc hosted_pixel_blend_read_access_test {
-    work_s: chan<PixelInterpolatedValues> out;
-    context_s: chan<ReadPixelContext> out;
-    job_r: chan<ReadPixelJob> in;
-    reads_r: chan<memory::MemoryRequestPair> in;
-    terminator: chan<bool> out;
-
-    config(terminator: chan<bool> out) {
-        let (work_s, work_r) = chan<PixelInterpolatedValues>("work");
-        let (context_s, context_r) = chan<ReadPixelContext>("context");
-        let (texture_s, texture_r) = chan<TexturePixelJob>("texture");
-        let (job_s, job_r) = chan<ReadPixelJob>("job");
-        let (reads_s, reads_r) = chan<memory::MemoryRequestPair>("reads");
-        let (cache_s, _) = chan<texture_cache::CacheRequest>("cache");
-        let (_, cache_r) = chan<PixelCacheResponse>("cache_response");
-        let (start_s, _) = chan<u1>("start");
-        let (done_s, _) = chan<u1>("done");
-        spawn hosted_pixel_texture_requests<false>(
-            work_r, context_r, texture_s, cache_s, reads_s, start_s);
-        spawn hosted_pixel_read_pipeline<false>(texture_r, job_s, cache_r, done_s);
-        (work_s, context_s, job_r, reads_r, terminator)
-    }
-
-    init { () }
-
-    next(state: ()) {
-        let tok = unroll_for! (flags, tok): (u5, token) in u5:0..u5:16 {
-            let blend = flags[0+:u1];
-            let depth = flags[1+:u1];
-            let subtract = flags[2+:u1];
-            let visible = flags[3+:u1];
-#[test_proc]
 proc hosted_pixel_interpolation_color_width_test {
     job_s: chan<PixelJob> out;
     work_r: chan<PixelInterpolatedValues> in;
@@ -4176,6 +4173,38 @@ proc hosted_pixel_interpolation_color_width_test {
     }
 }
 
+#[test_proc]
+proc hosted_pixel_blend_read_access_test {
+    work_s: chan<PixelInterpolatedValues> out;
+    context_s: chan<ReadPixelContext> out;
+    job_r: chan<ReadPixelJob> in;
+    reads_r: chan<memory::MemoryRequestPair> in;
+    terminator: chan<bool> out;
+
+    config(terminator: chan<bool> out) {
+        let (work_s, work_r) = chan<PixelInterpolatedValues>("work");
+        let (context_s, context_r) = chan<ReadPixelContext>("context");
+        let (texture_s, texture_r) = chan<TexturePixelJob>("texture");
+        let (job_s, job_r) = chan<ReadPixelJob>("job");
+        let (reads_s, reads_r) = chan<memory::MemoryRequestPair>("reads");
+        let (cache_s, _) = chan<texture_cache::CacheRequest>("cache");
+        let (_, cache_r) = chan<PixelCacheResponse>("cache_response");
+        let (start_s, _) = chan<u1>("start");
+        let (done_s, _) = chan<u1>("done");
+        spawn hosted_pixel_texture_requests<false>(
+            work_r, context_r, texture_s, cache_s, reads_s, start_s);
+        spawn hosted_pixel_read_pipeline<false>(texture_r, job_s, cache_r, done_s);
+        (work_s, context_s, job_r, reads_r, terminator)
+    }
+
+    init { () }
+
+    next(state: ()) {
+        let tok = unroll_for! (flags, tok): (u5, token) in u5:0..u5:16 {
+            let blend = flags[0+:u1];
+            let depth = flags[1+:u1];
+            let subtract = flags[2+:u1];
+            let visible = flags[3+:u1];
             let context = ReadPixelContext {
                 alpha_mode: (blend as u32) << u32:4,
                 fbz_mode: u21:0x200 | ((depth as u21) << u21:4) | ((subtract as u21) << u21:19),

@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+import argparse
+import importlib.machinery
+import importlib.util
+import json
+from pathlib import Path
+import shutil
+import subprocess
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def prepare(destination):
+    destination = destination.resolve()
+    if not destination.is_relative_to(ROOT / "output"):
+        raise ValueError("project destination must be inside the workspace output directory")
+    if destination.exists():
+        raise ValueError(f"project already exists, choose a fresh output directory: {destination}")
+    loader = importlib.machinery.SourceFileLoader("mister_sources", str(ROOT / "scripts/prepare-mister-sources"))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    sources = importlib.util.module_from_spec(spec)
+    loader.exec_module(sources)
+    pins = json.loads((ROOT / "hw/mister/sources.json").read_text())
+    template = ROOT / "output/mister/sources/template"
+    sources.verify(template, pins["template"])
+    names = (ROOT / "hw/mister/xls-files.f").read_text().splitlines()
+    names += ["output/mister/rtl/MisterCore.v", "hw/mister/SpinalVoodoo.sv",
+              "hw/de10/qsys/generated/hdmi_pll/synthesis/de10_hdmi_pll.qip"]
+    for name in names:
+        if not (ROOT / name).is_file():
+            raise ValueError(f"missing generated input: {name}")
+    destination.mkdir(parents=True)
+    (destination / "sys").mkdir()
+    for entry in (template / "sys").iterdir():
+        (destination / "sys" / entry.name).symlink_to(entry, target_is_directory=entry.is_dir())
+    (destination / "sys/pll_q24.qip").symlink_to(template / "sys/pll_q17.qip")
+    (destination / "rtl").symlink_to(template / "rtl", target_is_directory=True)
+    (destination / "generated").mkdir()
+    qip = []
+    for name in names:
+        source = ROOT / name
+        if source.suffix == ".qip":
+            path = source
+            kind = "QIP_FILE"
+        else:
+            path = destination / "generated" / source.name
+            shutil.copy2(source, path)
+            kind = "SYSTEMVERILOG_FILE" if path.suffix == ".sv" else "VERILOG_FILE"
+        qip.append(f"set_global_assignment -name {kind} {{{path}}}")
+    subprocess.run([str(ROOT / "scripts/quartus-compat-xls-rtl"),
+                    str(destination / "generated/CoreSimDe10.sv"), "--ram-fifos"], check=True)
+    (destination / "files.qip").write_text("\n".join(qip) + "\n")
+    qsf = (ROOT / "hw/mister/SpinalVoodoo.qsf").read_text()
+    (destination / "SpinalVoodoo.qsf").write_text(qsf)
+    (destination / "SpinalVoodoo.qpf").write_text('PROJECT_REVISION = "SpinalVoodoo"\n')
+    shutil.copy2(ROOT / "hw/mister/SpinalVoodoo.sdc", destination / "SpinalVoodoo.sdc")
+    shutil.copy2(ROOT / "hw/mister/report_timing.tcl", destination / "report_timing.tcl")
+    (destination / "sources.json").write_text(json.dumps(pins, indent=2) + "\n")
+    print(destination)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--output", type=Path, default=ROOT / "output/mister/quartus")
+    args = parser.parse_args()
+    try:
+        prepare(args.output)
+    except (ValueError, OSError, subprocess.SubprocessError) as error:
+        parser.exit(1, f"{error}\n")
+
+
+if __name__ == "__main__":
+    main()

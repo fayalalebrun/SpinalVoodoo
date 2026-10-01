@@ -470,6 +470,7 @@ module De10PlatformTop (
 
 `ifdef PURE_XLS_DE10
   XlsDe10Top core_0 (
+    .io_externalRetrace(1'b0),
 `else
   De10Top core_0 (
 `endif

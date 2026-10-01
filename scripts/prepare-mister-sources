@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+import argparse
+import json
+from pathlib import Path
+import re
+import subprocess
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def git(directory, *args):
+    return subprocess.check_output(
+        ["git", "-C", str(directory), *args], text=True, timeout=300
+    ).strip()
+
+
+def verify(directory, source):
+    if directory.is_symlink() or not (directory / ".git").is_dir():
+        raise ValueError(f"not a source checkout: {directory}")
+    if git(directory, "rev-parse", "--show-toplevel") != str(directory.resolve()):
+        raise ValueError(f"not a checkout root: {directory}")
+    if git(directory, "rev-parse", "HEAD") != source["revision"]:
+        raise ValueError(f"revision mismatch: {directory}")
+    if git(directory, "remote", "get-url", "origin") != source["url"]:
+        raise ValueError(f"origin mismatch: {directory}")
+    if git(directory, "status", "--porcelain", "--untracked-files=all"):
+        error = f"modified checkout, refusing to overwrite: {directory}"
+        if git(directory, "ls-files", "--others", "--exclude-standard", "-z"):
+            raise ValueError(error)
+        changed = git(directory, "diff", "--name-only", "-z", "HEAD").split("\0")
+        if not any(changed):
+            raise ValueError(error)
+        for name in filter(None, changed):
+            path = directory / name
+            if path.is_symlink() or not path.is_file():
+                raise ValueError(error)
+            entry = git(directory, "ls-tree", "HEAD", "--", name).split()
+            mode = "100755" if path.stat().st_mode & 0o111 else "100644"
+            if len(entry) < 3 or entry[0] != mode:
+                raise ValueError(error)
+            if git(directory, "hash-object", "--no-filters", "--", name) != entry[2]:
+                raise ValueError(error)
+    if not (directory / source["license"]).is_file():
+        raise ValueError(f"missing license: {directory}")
+
+
+def prepare(destination, sources, check=False):
+    destination = destination.resolve()
+    if not destination.is_relative_to(ROOT / "output"):
+        raise ValueError("source destination must be inside the workspace output directory")
+    for name, source in sources.items():
+        if not re.fullmatch(r"[a-z][a-z0-9-]*", name):
+            raise ValueError(f"invalid source name: {name}")
+        if not re.fullmatch(r"[0-9a-f]{40}", source["revision"]):
+            raise ValueError(f"unpinned source: {name}")
+        if not re.fullmatch(r"https://github\.com/[\w-]+/[\w.-]+\.git", source["url"]):
+            raise ValueError(f"invalid source URL: {name}")
+        if source["license"] not in ("LICENSE", "COPYING"):
+            raise ValueError(f"invalid license path: {name}")
+    for name, source in sources.items():
+        directory = destination / name
+        if not directory.exists() and not directory.is_symlink():
+            if check:
+                raise ValueError(f"missing source: {directory}")
+            directory.mkdir(parents=True)
+            git(directory, "init", "--quiet")
+            git(directory, "remote", "add", "origin", source["url"])
+            git(directory, "fetch", "--depth=1", "origin", source["revision"])
+            git(directory, "checkout", "--detach", "FETCH_HEAD")
+        verify(directory, source)
+        print(f"{name}: {source['revision']} verified ({source['license']})")
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--output", type=Path, default=ROOT / "output/mister/sources")
+    parser.add_argument("--check", action="store_true")
+    args = parser.parse_args()
+    try:
+        sources = json.loads((ROOT / "hw/mister/sources.json").read_text())
+        prepare(args.output, sources, args.check)
+    except (ValueError, OSError, subprocess.SubprocessError) as error:
+        parser.exit(1, f"{error}\n")
+
+
+if __name__ == "__main__":
+    main()

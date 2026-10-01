@@ -1,4 +1,5 @@
-module XlsDe10Top (
+module XlsDe10Top #(parameter EXTERNAL_SCANOUT = 0) (
+  input wire io_externalRetrace,
   input  wire [21:0] io_h2fLw_address,
   input  wire        io_h2fLw_read,
   input  wire        io_h2fLw_write,
@@ -597,6 +598,26 @@ module XlsDe10Top (
     .response_ready(palette_response_ready)
   );
 
+  generate if (EXTERNAL_SCANOUT) begin : external_scanout
+    assign io_memScanout_read = 0;
+    assign io_memScanout_write = 0;
+    assign io_memScanout_address = 0;
+    assign io_memScanout_burstCount = 0;
+    assign io_memScanout_byteEnable = 0;
+    assign io_memScanout_writeData = 0;
+    assign {io_hdmi_video_rgb_r, io_hdmi_video_rgb_g, io_hdmi_video_rgb_b} = 0;
+    assign {io_hdmi_video_de, io_hdmi_video_hSync, io_hdmi_video_vSync} = 0;
+    assign io_hdmi_status_displayedBuffer = 0;
+    assign io_hdmi_status_displayedBase = 0;
+    assign io_hdmi_status_swapPending = 0;
+    assign io_hdmi_status_swapCount = 0;
+    assign io_hdmi_status_newFrame = io_externalRetrace;
+    assign io_hdmi_status_active = 0;
+    assign io_hdmi_status_x = 0;
+    assign io_hdmi_status_y = 0;
+    assign io_hdmi_underflow = 0;
+    assign io_hdmi_fifoLevel = 0;
+  end else begin : internal_scanout
   XlsDe10Scanout scanout (
     .io_base(scanout_state[39:14]),
     .io_pixelStride(scanout_state[13:3]),
@@ -631,4 +652,5 @@ module XlsDe10Top (
     .clk(clk),
     .reset(reset)
   );
+  end endgenerate
 endmodule

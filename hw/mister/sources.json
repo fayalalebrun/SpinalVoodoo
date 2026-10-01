@@ -1,0 +1,17 @@
+{
+  "template": {
+    "url": "https://github.com/MiSTer-devel/Template_MiSTer.git",
+    "revision": "3ea1134cf05d62c2b1db30362277a823d739ced2",
+    "license": "LICENSE"
+  },
+  "main": {
+    "url": "https://github.com/MiSTer-devel/Main_MiSTer.git",
+    "revision": "f80abdc79e76bfc63799d028f2337c4d762b5e50",
+    "license": "LICENSE"
+  },
+  "dosbox-x": {
+    "url": "https://github.com/joncampbell123/dosbox-x.git",
+    "revision": "0cd7c0fecb41d10152e96a63beb7001a7fdbd8e4",
+    "license": "COPYING"
+  }
+}

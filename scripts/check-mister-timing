@@ -1,0 +1,82 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import math
+from pathlib import Path
+import re
+
+
+def report_slacks(text):
+    values, header = [], None
+    for line in text.splitlines():
+        if not line.strip().startswith(";"):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip(";").split(";")]
+        slack = next((i for i, cell in enumerate(cells) if cell.lower().endswith("slack")), None)
+        if slack == 0 and len(cells) == 2:
+            try:
+                values.append(float(cells[1].split()[0]))
+                continue
+            except (ValueError, IndexError):
+                pass
+        if slack is not None:
+            header = len(cells), slack
+        elif header and len(cells) == header[0]:
+            try:
+                values.append(float(cells[header[1]].split()[0]))
+            except (ValueError, IndexError):
+                header = None
+        elif cells:
+            header = None
+    if not values or any(not math.isfinite(value) or value < 0 for value in values):
+        raise ValueError("missing, invalid or violated timing report slacks")
+    return min(values)
+
+
+def check(project):
+    status = int((project.parent / (project.name + ".status")).read_text())
+    elapsed = int((project.parent / (project.name + ".elapsed")).read_text())
+    if status or not 0 < elapsed <= 900:
+        raise ValueError("Quartus did not complete successfully within 900 seconds")
+    output = project / "output_files"
+    if not (output / "SpinalVoodoo.rbf").stat().st_size:
+        raise ValueError("empty bitstream")
+    summary = (output / "SpinalVoodoo.sta.summary").read_text(encoding="latin1")
+    matches = re.findall(r"Type\s*:\s*([^\n]+)\nSlack\s*:\s*(\S+)\nTNS\s*:\s*(\S+)", summary)
+    records = {name: (float(slack), float(tns)) for name, slack, tns in matches}
+    if not records or len(records) != len(matches) or any(not math.isfinite(slack) or not math.isfinite(tns) or slack < 0 or tns != 0
+                          for slack, tns in records.values()):
+        raise ValueError("missing, invalid or violated all-corner timing summary")
+    for model in ("Slow", "Fast"):
+        for temperature in ("100", "-40"):
+            for kind in ("Setup", "Hold"):
+                name = f"{model} 1100mV {temperature}C Model {kind} 'FPGA_CLK2_50'"
+                if name not in records:
+                    raise ValueError(f"missing core timing corner: {name}")
+    net = (output / "mister_gray_net_delay.rpt").read_text(encoding="latin1")
+    skew = (output / "mister_gray_skew.rpt").read_text(encoding="latin1")
+    for source, destination in (("pushCC_pushPtrGray", "pushToPopGray_buffercc"),
+                                ("popCC_ptrToPush", "popToPushGray_buffercc")):
+        for pattern in (re.escape(source), re.escape(destination + "|buffers_0")):
+            bits = {int(bit) for bit in re.findall(pattern + r"\[(\d+)\]", net)}
+            if bits != set(range(11)):
+                raise ValueError(f"incomplete Gray-pointer net-delay coverage: {pattern}")
+        if source not in skew or destination not in skew:
+            raise ValueError("Gray-pointer skew paths were not analyzed")
+    return {"status": "PASS", "elapsed_seconds": elapsed, "timing_records": len(records),
+            "worst_slack_ns": min(slack for slack, _ in records.values()),
+            "net_delay_slack_ns": report_slacks(net), "skew_slack_ns": report_slacks(skew)}
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("project", type=Path)
+    args = parser.parse_args()
+    try:
+        print(json.dumps(check(args.project.resolve()), indent=2, sort_keys=True))
+    except (ValueError, OSError) as error:
+        parser.exit(1, f"{error}\n")
+
+
+if __name__ == "__main__":
+    main()

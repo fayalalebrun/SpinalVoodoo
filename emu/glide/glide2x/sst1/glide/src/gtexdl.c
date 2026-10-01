@@ -78,6 +78,9 @@
 #include <fxdll.h>
 #include <glide.h>
 #include "fxglide.h"
+#ifdef MISTER_BACKEND
+#include "sim_harness.h"
+#endif
 
 /* externals from gtex.c */
 extern FxU32 _gr_aspect_xlate_table[];
@@ -547,6 +550,12 @@ GR_DDFUNC(_grTexDownloadPalette, void, ( GrChipID_t tmu, GuTexPalette *pal, int 
   _GlideRoot.stats.palDownloads++;
   _GlideRoot.stats.palBytes += (end-start+1)<<2;
 
+#ifdef MISTER_BACKEND
+  if (tmu == GR_TMU0) {
+      sim_write_palette(pal->data, start, end);
+      GR_INC_SIZE(4*(end-start+1));
+  } else
+#endif
   while (start <= end) {
       GR_SET( hw->nccTable0[4+(start&0x7)],
               0x80000000 |  ((start & 0xFE) << 23) | (pal->data[start] & 0xffffff) );

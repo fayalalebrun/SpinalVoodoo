@@ -388,6 +388,10 @@ void simWriteReg(volatile void *addr, FxU32 value) {
         FxU32 lfbAddr = offset & 0x3FFFFF;
         sim_write(0x400000 + lfbAddr, value);
     } else {
+#ifdef MISTER_BACKEND
+        sim_write(offset, value);
+        return;
+#endif
         /* Texture space: 0x800000-0xFFFFFF
          * Buffer locally, flush before next rendering command.
          */

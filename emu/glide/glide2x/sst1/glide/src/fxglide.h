@@ -225,6 +225,9 @@
 #include <sst.h>
 #include <gdebug.h>
 #include <init.h>
+#ifdef DE10_BACKEND
+#include <fxde10.h>
+#endif
 
 #if GLIDE_MULTIPLATFORM
 #include "gcfuncs.h"
@@ -819,7 +822,7 @@ GWH_INC_WSH;\
 #define GLIDE_DRIVER_NAME "Unknown"
 #endif
 
-#if (GLIDE_PLATFORM & GLIDE_HW_SST1)
+#if (GLIDE_PLATFORM & GLIDE_HW_SST1) && !defined(MISTER_BACKEND)
   #define PACKER_WORKAROUND_SIZE 4
 
   #define PACKER_WORKAROUND \
@@ -1013,6 +1016,9 @@ _grSst96CheckFifoData(void);
 #endif
 
 #if (GLIDE_PLATFORM & GLIDE_HW_SST1)
+#ifdef DE10_BACKEND
+#define GR_CHECK_FOR_ROOM(n)
+#else
 /* NOTE: fifoFree is the number of entries, each is 8 bytes */
 #define GR_CHECK_FOR_ROOM(n) \
 { \
@@ -1021,6 +1027,7 @@ _grSst96CheckFifoData(void);
     fifoFree = _grSpinFifo(n); \
   gc->state.fifoFree = fifoFree;\
 }
+#endif
 #elif (GLIDE_PLATFORM & GLIDE_HW_SST96)
 /* NOTE: fifoSize is in bytes, and each fifo entry is 8 bytes.  Since
    the fifoSize element of the sst96Dep data structure must be
@@ -1318,9 +1325,9 @@ if (_GlideRoot.CPUType == 6) {\
 #ifndef SIM_BACKEND
 #ifdef DE10_BACKEND
   #define GET(s)          (*(volatile FxU32 *)&(s))
-  #define SET(d,s)        (*(volatile FxU32 *)&(d) = (FxU32)(s))
+  #define SET(d,s)        de10Store32(&(d), (FxU32)(s))
   #define SET16(d,s)      (*(volatile FxU16 *)&(d) = (FxU16)(s))
-  #define SETF(d,s)       (*(volatile float *)&(d) = (s))
+  #define SETF(d,s)       de10StoreFloat(&(d), (s))
 #else
 #define GET(s)          s
 #define SET(d,s)        d = s
@@ -1340,6 +1347,17 @@ if (_GlideRoot.CPUType == 6) {\
 
 #endif /* defined(SST96) */
 
+#if defined(DE10_BACKEND) && !defined(SST96)
+#undef GET
+#undef SET
+#undef SET16
+#undef SETF
+#define GET(s)          de10Load32(&(s))
+#define SET(d,s)        de10Store32(&(d), (FxU32)(s))
+#define SET16(d,s)      de10Store16(&(d), (FxU16)(s))
+#define SETF(d,s)       de10StoreFloat(&(d), (s))
+#endif
+
 #if defined(GLIDE_DEBUG) && !defined(SST96)
   extern FxU32 GR_CDECL _GR_GET(void *);
   extern void GR_CDECL _GR_SET16(void *, unsigned short);
@@ -1357,7 +1375,11 @@ if (_GlideRoot.CPUType == 6) {\
   #define GR_SET16(d,s) {SET16(d,s); GR_INC_SIZE(2);}
 #endif
 
-
+#ifdef DE10_BACKEND
+#define GR_SETF_PAIR(d0,d1,s0,s1) {de10StoreFloatPair(&(d0),(s0),(s1)); GR_INC_SIZE(8);}
+#else
+#define GR_SETF_PAIR(d0,d1,s0,s1) {GR_SETF(d0,s0); GR_SETF(d1,s1);}
+#endif
 
 #define VG96_REGISTER_OFFSET    0x400000
 #define VG96_TEXTURE_OFFSET     0x600000

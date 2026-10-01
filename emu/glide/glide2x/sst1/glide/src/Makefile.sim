@@ -1,13 +1,3 @@
-# Makefile for building sim-enabled Glide2x library
-#
-# Builds libglide2x with SIM_BACKEND support for SpinalVoodoo Verilator bridge.
-# Uses fxsim.c instead of fxlinux.c for platform backend.
-# Links with in-process Verilator CoreSim model (no TCP/JVM).
-#
-# Usage:
-#   make -f Makefile.sim
-#   make -f Makefile.sim clean
-
 .PHONY: all clean
 .SUFFIXES: .c .o
 
@@ -17,13 +7,10 @@ FX_GLIDE_SW = $(GLIDE_ROOT)/swlibs
 
 GLIDE_LIBDIR = ../../lib/$(FX_GLIDE_HW)
 
-# Path to Verilator sim build (from emu/sim/Makefile)
 SIM_DIR = ../../../../../../emu/sim
-SIM_INTERFACE ?= core
-SIM_MODEL = $(if $(filter de10,$(SIM_INTERFACE)),CoreDe10,CoreSim)
-SIM_TRACE_MODE_FILE = $(SIM_DIR)/obj_dir/.trace_mode
+PURE_XLS ?= $(if $(filter 1,$(TRACE_CAPTURE)),0,1)
 BACKEND_MODE_FILE = $(SIM_DIR)/obj_dir/.glide_backend_mode
-BACKEND_MODE = $(SIM_INTERFACE):$(if $(filter 1,$(PURE_XLS)),xls,$(if $(filter 1,$(TRACE_CAPTURE)),trace,sim)):$(TRACE)
+BACKEND_MODE = $(if $(filter 1,$(PURE_XLS)),xls,trace)
 $(shell mkdir -p $(dir $(BACKEND_MODE_FILE)))
 $(shell [ -f $(BACKEND_MODE_FILE) ] && [ "$$(cat $(BACKEND_MODE_FILE))" = "$(BACKEND_MODE)" ] || printf '%s\n' "$(BACKEND_MODE)" > $(BACKEND_MODE_FILE))
 
@@ -50,9 +37,6 @@ X11_LIBS ?= -lX11 -lXext
 
 CDEFS = -DINIT_LINUX
 CDEFS += -DSIM_BACKEND
-ifeq ($(SIM_INTERFACE),de10)
-CDEFS += -DSIM_DE10_INTERFACE
-endif
 ifeq ($(PURE_XLS),1)
 CDEFS += -DPURE_XLS_BACKEND
 endif
@@ -66,8 +50,6 @@ CDEFS += -DGLIDE_USE_C_TRISETUP
 ###############################################################################
 
 ARFLAGS = rus
-
-VERILATOR_ROOT ?= $(shell verilator --getenv VERILATOR_ROOT)
 
 CFLAGS = -Wall -g -Wno-incompatible-pointer-types -Wno-int-conversion -Wno-error=format-security
 CFLAGS += $(X11_CFLAGS)
@@ -139,26 +121,12 @@ ifeq ($(PURE_XLS),1)
 BACKEND_OBJ = $(SIM_DIR)/obj_dir/sim_harness_xls.o
 BACKEND_LIB =
 BACKEND_DEPS = $(BACKEND_OBJ)
-else ifeq ($(TRACE_CAPTURE),1)
+else
 BACKEND_OBJ = \
 	$(SIM_DIR)/obj_dir/sim_trace_harness.o \
 	$(SIM_DIR)/obj_dir/voodoo_trace_writer.o
 BACKEND_LIB =
 BACKEND_DEPS = $(BACKEND_OBJ)
-else
-BACKEND_OBJ = \
-	$(SIM_DIR)/obj_dir/sim_harness.o \
-	$(SIM_DIR)/obj_dir/voodoo_trace_writer.o \
-	$(SIM_DIR)/obj_dir/verilated.o \
-	$(SIM_DIR)/obj_dir/verilated_threads.o
-ifeq ($(TRACE),1)
-BACKEND_OBJ += $(SIM_DIR)/obj_dir/verilated_fst_c.o
-endif
-
-# Static archive needs --whole-archive to pull in trace objects
-# (trace registration uses virtual dispatch, no direct symbol dependency)
-BACKEND_LIB = -Wl,--whole-archive $(SIM_DIR)/obj_dir/V$(SIM_MODEL)__ALL.a -Wl,--no-whole-archive
-BACKEND_DEPS = $(BACKEND_OBJ) $(SIM_DIR)/obj_dir/V$(SIM_MODEL)__ALL.a $(SIM_TRACE_MODE_FILE)
 endif
 
 ###############################################################################
@@ -192,7 +160,6 @@ $(GLIDE_LIBDIR):
 $(GLIDE_LIBDIR)/$(GLIDE_LIB): $(GLIDE_OBJECTS)
 	$(AR) $(ARFLAGS) $@ $^
 
-# Link as shared library with Verilator model (C++ link for Verilator runtime)
 $(GLIDE_LIBDIR)/$(GLIDE_SO): $(GLIDE_OBJECTS) $(BACKEND_DEPS)
 	$(CXX) -o $(GLIDE_LIBDIR)/$(GLIDE_SHARED) -shared -Wl,-soname,$(GLIDE_SONAME) \
 		$(GLIDE_OBJECTS) $(BACKEND_OBJ) \

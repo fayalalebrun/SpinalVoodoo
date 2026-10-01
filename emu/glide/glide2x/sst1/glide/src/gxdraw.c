@@ -443,25 +443,28 @@ GR_DDFUNC(_trisetup, FxI32, ( const GrVertex *va, const GrVertex *vb, const GrVe
       return -1;
     }
   }
-  
+
+#ifdef DE10_BACKEND
+  de10BatchBegin();
+#endif
   GR_SET_EXPECTED_SIZE(_GlideRoot.curTriSize);
   
   ooa = _GlideRoot.pool.f1 / _GlideRoot.pool.ftemp1;
   /* GMT: note that we spread out our PCI writes */
   /* write out X & Y for vertex A */
-  GR_SETF( hw->FvA.x, fa[GR_VERTEX_X_OFFSET] );
-  GR_SETF( hw->FvA.y, fa[GR_VERTEX_Y_OFFSET] );
+  GR_SETF_PAIR( hw->FvA.x, hw->FvA.y,
+                fa[GR_VERTEX_X_OFFSET], fa[GR_VERTEX_Y_OFFSET] );
 
   dlp = gc->dataList;
   i = dlp->i;
   
   /* write out X & Y for vertex B */
-  GR_SETF( hw->FvB.x, fb[GR_VERTEX_X_OFFSET] );
-  GR_SETF( hw->FvB.y, fb[GR_VERTEX_Y_OFFSET] );
+  GR_SETF_PAIR( hw->FvB.x, hw->FvB.y,
+                fb[GR_VERTEX_X_OFFSET], fb[GR_VERTEX_Y_OFFSET] );
   
   /* write out X & Y for vertex C */
-  GR_SETF( hw->FvC.x, fc[GR_VERTEX_X_OFFSET] );
-  GR_SETF( hw->FvC.y, fc[GR_VERTEX_Y_OFFSET] );
+  GR_SETF_PAIR( hw->FvC.x, hw->FvC.y,
+                fc[GR_VERTEX_X_OFFSET], fc[GR_VERTEX_Y_OFFSET] );
 
   /*
   ** Divide the deltas by the area for gradient calculation.
@@ -488,24 +491,50 @@ GR_DDFUNC(_trisetup, FxI32, ( const GrVertex *va, const GrVertex *vb, const GrVe
       i = dlp->i;
     }
     else {
-      float dpAB, dpBC,dpdx, dpdy;
+      int nextIndex = dlp[1].i;
+      float *nextFp = dlp[1].addr;
 
-      dpBC = FARRAY(fb,i);
-      dpdx = FARRAY(fa,i);
-      GR_SETF( fp[0], dpdx );
+      if (nextIndex && !(nextIndex & 1) && nextFp == fp + 1) {
+        float p0, p1, dpAB0, dpAB1, dpBC0, dpBC1;
+        float dpdx0, dpdx1, dpdy0, dpdy1;
 
-      dpAB = dpdx - dpBC;
-      dpBC = dpBC - FARRAY(fc,i);
-      dpdx = dpAB * dyBC - dpBC * dyAB;
+        p0 = FARRAY(fa,i);
+        dpAB0 = p0 - FARRAY(fb,i);
+        dpBC0 = FARRAY(fb,i) - FARRAY(fc,i);
+        dpdx0 = dpAB0 * dyBC - dpBC0 * dyAB;
+        dpdy0 = dpBC0 * dxAB - dpAB0 * dxBC;
+
+        p1 = FARRAY(fa,nextIndex);
+        dpAB1 = p1 - FARRAY(fb,nextIndex);
+        dpBC1 = FARRAY(fb,nextIndex) - FARRAY(fc,nextIndex);
+        dpdx1 = dpAB1 * dyBC - dpBC1 * dyAB;
+        dpdy1 = dpBC1 * dxAB - dpAB1 * dxBC;
+
+        GR_SETF_PAIR( fp[0], nextFp[0], p0, p1 );
+        GR_SETF_PAIR( fp[DPDX_OFFSET>>2], nextFp[DPDX_OFFSET>>2], dpdx0, dpdx1 );
+        GR_SETF_PAIR( fp[DPDY_OFFSET>>2], nextFp[DPDY_OFFSET>>2], dpdy0, dpdy1 );
+        dlp += 2;
+        i = dlp->i;
+      } else {
+        float dpAB, dpBC,dpdx, dpdy;
+
+        dpBC = FARRAY(fb,i);
+        dpdx = FARRAY(fa,i);
+        GR_SETF( fp[0], dpdx );
+
+        dpAB = dpdx - dpBC;
+        dpBC = dpBC - FARRAY(fc,i);
+        dpdx = dpAB * dyBC - dpBC * dyAB;
 
 GDBG_INFO((285,"p0,1x: %g %g dpdx: %g\n",dpAB * dyBC,dpBC * dyAB,dpdx));
-      GR_SETF( fp[DPDX_OFFSET>>2] , dpdx );
-      dpdy = dpBC * dxAB - dpAB * dxBC;
+        GR_SETF( fp[DPDX_OFFSET>>2] , dpdx );
+        dpdy = dpBC * dxAB - dpAB * dxBC;
 
 GDBG_INFO((285,"p0,1y: %g %g dpdy: %g\n",dpBC * dxAB,dpAB * dxBC,dpdy));
-      dlp++;
-      i = dlp->i;
-      GR_SETF( fp[DPDY_OFFSET>>2] , dpdy );
+        dlp++;
+        i = dlp->i;
+        GR_SETF( fp[DPDY_OFFSET>>2] , dpdy );
+      }
     }
   }
 
@@ -784,12 +813,15 @@ GR_DDFUNC(_trisetup_nogradients, FxI32, ( const GrVertex *va, const GrVertex *vb
   hw = SST_WRAP(hw,128);                /* use alternate register mapping */
 #endif
 
+#ifdef DE10_BACKEND
+  de10BatchBegin();
+#endif
   GR_SET_EXPECTED_SIZE(_GlideRoot.curTriSizeNoGradient);
 
    /* GMT: note that we spread out our PCI writes */
    /* write out X & Y for vertex A */
-   GR_SETF( hw->FvA.x, fa[GR_VERTEX_X_OFFSET] );
-   GR_SETF( hw->FvA.y, fa[GR_VERTEX_Y_OFFSET] );
+   GR_SETF_PAIR( hw->FvA.x, hw->FvA.y,
+                 fa[GR_VERTEX_X_OFFSET], fa[GR_VERTEX_Y_OFFSET] );
 
   /* Compute Area */
   dxAB = fa[GR_VERTEX_X_OFFSET] - fb[GR_VERTEX_X_OFFSET];
@@ -799,8 +831,8 @@ GR_DDFUNC(_trisetup_nogradients, FxI32, ( const GrVertex *va, const GrVertex *vb
   dyBC = fb[GR_VERTEX_Y_OFFSET] - fc[GR_VERTEX_Y_OFFSET];
 
    /* write out X & Y for vertex B */
-   GR_SETF( hw->FvB.x, fb[GR_VERTEX_X_OFFSET] );
-   GR_SETF( hw->FvB.y, fb[GR_VERTEX_Y_OFFSET] );
+   GR_SETF_PAIR( hw->FvB.x, hw->FvB.y,
+                 fb[GR_VERTEX_X_OFFSET], fb[GR_VERTEX_Y_OFFSET] );
 
   /* this is where we store the area */
   _GlideRoot.pool.ftemp1 = dxAB * dyBC - dxBC * dyAB;
@@ -814,8 +846,8 @@ GR_DDFUNC(_trisetup_nogradients, FxI32, ( const GrVertex *va, const GrVertex *vb
   }
   
   /* write out X & Y for vertex C */
-  GR_SETF( hw->FvC.x, fc[GR_VERTEX_X_OFFSET] );
-  GR_SETF( hw->FvC.y, fc[GR_VERTEX_Y_OFFSET] );
+  GR_SETF_PAIR( hw->FvC.x, hw->FvC.y,
+                fc[GR_VERTEX_X_OFFSET], fc[GR_VERTEX_Y_OFFSET] );
 
    dlp = gc->dataList;
    i = dlp->i;
@@ -837,8 +869,16 @@ GR_DDFUNC(_trisetup_nogradients, FxI32, ( const GrVertex *va, const GrVertex *vb
       i = dlp->i;
     }
     else {
-      GR_SETF( fp[0], FARRAY(fa,i) );
-      dlp++;
+      int nextIndex = dlp[1].i;
+      float *nextFp = dlp[1].addr;
+
+      if (nextIndex && !(nextIndex & 1) && nextFp == fp + 1) {
+        GR_SETF_PAIR( fp[0], nextFp[0], FARRAY(fa,i), FARRAY(fa,nextIndex) );
+        dlp += 2;
+      } else {
+        GR_SETF( fp[0], FARRAY(fa,i) );
+        dlp++;
+      }
       i = dlp->i;
     }
   }

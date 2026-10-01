@@ -25,6 +25,15 @@
 
 #define DE10_DEFAULT_BASE 0xC0000000u
 #define DE10_DEFAULT_SPAN 0x01000000u
+#define DE10_BATCH_DOORBELL 0x003FF000u
+#define DE10_BATCH_CAPABILITY 0x003FF004u
+#define DE10_BATCH_MAGIC 0x42415431u
+#define DE10_BATCH_DDR_BASE 0x3F080000u
+#define DE10_BATCH_SLOT_WORDS 128u
+#define DE10_BATCH_SLOTS 4096u
+#define DE10_BATCH_DDR_SPAN (DE10_BATCH_SLOT_WORDS * DE10_BATCH_SLOTS * sizeof(FxU32))
+
+De10BatchState de10BatchState = {0, NULL, NULL};
 
 static int de10Fd = -1;
 static void *de10MappedRaw = MAP_FAILED;
@@ -33,6 +42,13 @@ static size_t de10MappedLength = 0;
 static FxU32 de10PhysBase = DE10_DEFAULT_BASE;
 static FxU32 de10PhysSpan = DE10_DEFAULT_SPAN;
 static FxU32 de10PciConfig[64];
+static void *de10BatchRaw = MAP_FAILED;
+static volatile FxU32 *de10BatchBase = NULL;
+static volatile FxU32 *de10BatchStart = NULL;
+static FxU32 de10BatchSlot = 0;
+static int de10BatchAvailable = -1;
+static int de10BatchSession = 0;
+static int de10PhysicalMemory = 0;
 
 static FxBool de10TraceEnabled(void) {
   const char *value = getenv("DE10_TRACE");
@@ -124,6 +140,112 @@ static FxBool de10EnsureMapped(void) {
   return FXTRUE;
 }
 
+static FxBool de10EnsureBatchMapped(void) {
+  const char *enabled = getenv("DE10_BATCH");
+  volatile FxU32 *capability;
+
+  if (de10BatchAvailable >= 0) return de10BatchAvailable ? FXTRUE : FXFALSE;
+  de10BatchAvailable = 0;
+  if (!de10PhysicalMemory || enabled == NULL || strcmp(enabled, "1") != 0 ||
+      de10MappedRaw == MAP_FAILED || de10PhysSpan <= DE10_BATCH_CAPABILITY)
+    return FXFALSE;
+
+  capability = (volatile FxU32 *)(de10MappedBase + DE10_BATCH_CAPABILITY);
+  if (*capability != DE10_BATCH_MAGIC) return FXFALSE;
+
+  de10BatchRaw = mmap(NULL, DE10_BATCH_DDR_SPAN, PROT_READ | PROT_WRITE,
+                      MAP_SHARED, de10Fd, (off_t)DE10_BATCH_DDR_BASE);
+  if (de10BatchRaw == MAP_FAILED) return FXFALSE;
+
+  de10BatchBase = (volatile FxU32 *)de10BatchRaw;
+  de10BatchState.registerBase = de10MappedBase;
+  de10BatchAvailable = 1;
+  de10Trace("batch transport ready slots=%u", DE10_BATCH_SLOTS);
+  return FXTRUE;
+}
+
+static void de10StartBatchSlot(void) {
+  de10BatchStart = de10BatchBase + de10BatchSlot * DE10_BATCH_SLOT_WORDS;
+  de10BatchState.write = de10BatchStart;
+  de10BatchState.end = de10BatchStart + DE10_BATCH_SLOT_WORDS;
+}
+
+static void de10SubmitBatch(void) {
+  volatile FxU32 *doorbell;
+  FxU32 count;
+
+  if (de10BatchStart == NULL || de10BatchState.write == de10BatchStart) return;
+  count = (FxU32)(de10BatchState.write - de10BatchStart) >> 1;
+  __sync_synchronize();
+  doorbell = (volatile FxU32 *)(de10MappedBase + DE10_BATCH_DOORBELL);
+  *doorbell = (de10BatchSlot << 20) | (count - 1u);
+  de10BatchSlot++;
+  if (de10BatchSlot == DE10_BATCH_SLOTS) {
+    volatile FxU32 *barrier = (volatile FxU32 *)(de10MappedBase + DE10_BATCH_CAPABILITY);
+    __sync_synchronize();
+    (void)*barrier;
+    de10BatchSlot = 0;
+  }
+}
+
+void de10BatchBegin(void) {
+  if (de10BatchSession || !de10EnsureBatchMapped()) return;
+  de10BatchSession = 1;
+  de10StartBatchSlot();
+}
+
+void de10BatchEnd(void) {
+}
+
+void de10BatchFlush(void) {
+  if (!de10BatchSession) return;
+  de10SubmitBatch();
+  de10BatchSession = 0;
+  de10BatchStart = NULL;
+  de10BatchState.write = NULL;
+  de10BatchState.end = NULL;
+}
+
+void de10BatchAbort(void) {
+  de10BatchFlush();
+}
+
+static void de10DisableBatch(void) {
+  de10BatchSession = 0;
+  de10BatchStart = NULL;
+  de10BatchState.write = NULL;
+  de10BatchState.end = NULL;
+}
+
+void de10BatchWriteSlow(volatile void *address, FxU32 data) {
+  uintptr_t offset = (uintptr_t)address - de10BatchState.registerBase;
+
+  if (!de10BatchSession) {
+    *(volatile FxU32 *)address = data;
+    return;
+  }
+  de10SubmitBatch();
+  if (offset >= 0x00400000u || (offset & 3u) != 0) {
+    de10DisableBatch();
+    *(volatile FxU32 *)address = data;
+    return;
+  }
+  de10StartBatchSlot();
+  *(volatile uint64_t *)de10BatchState.write = (uint64_t)data |
+      ((uint64_t)(((FxU32)(offset >> 2) << 6) | 0x1fu) << 32);
+  de10BatchState.write += 2;
+}
+
+FxU32 de10Load32(volatile void *address) {
+  de10BatchFlush();
+  return *(volatile FxU32 *)address;
+}
+
+void de10Store16(volatile void *address, FxU16 data) {
+  de10BatchFlush();
+  *(volatile FxU16 *)address = data;
+}
+
 static const char *pciIdentifyDe10(void) {
   return "fxPCI for SpinalVoodoo DE10-Nano";
 }
@@ -144,6 +266,8 @@ static FxBool pciInitializeDe10(void) {
   de10InitPciConfig();
   de10Trace("initializing devicePath=%s base=0x%08x span=0x%08x", devicePath, de10PhysBase, de10PhysSpan);
 
+  de10PhysicalMemory = strcmp(devicePath, "/dev/mem") == 0;
+  de10BatchAvailable = -1;
   de10Fd = open(devicePath, O_RDWR | O_SYNC);
   if (de10Fd < 0) {
     pciErrorCode = PCI_ERR_NO_MEM_PERM;
@@ -156,6 +280,13 @@ static FxBool pciInitializeDe10(void) {
 }
 
 static FxBool pciShutdownDe10(void) {
+  de10BatchAbort();
+  if (de10BatchRaw != MAP_FAILED) {
+    munmap(de10BatchRaw, DE10_BATCH_DDR_SPAN);
+    de10BatchRaw = MAP_FAILED;
+    de10BatchBase = NULL;
+  }
+  de10BatchAvailable = -1;
   if (de10MappedRaw != MAP_FAILED) {
     de10Trace("unmapping aperture virt=0x%08lx length=0x%08lx",
               (unsigned long)de10MappedBase,

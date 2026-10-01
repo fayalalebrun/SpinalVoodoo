@@ -198,7 +198,7 @@ static void de10InitStaticBoardInfo(FxU32 *sstbase)
     sst1CurrentBoard->tmuMemSpeed = 50;
     sst1CurrentBoard->tmuClkFixed = 0;
 
-    sst1CurrentBoard->tmuMemSize[0] = 8;
+    sst1CurrentBoard->tmuMemSize[0] = 4;
     sst1CurrentBoard->tmuMemSize[1] = 0;
     sst1CurrentBoard->tmuMemSize[2] = 0;
     sst1CurrentBoard->tmuInit0[0] = SST_TREX0INIT0_DEFAULT;

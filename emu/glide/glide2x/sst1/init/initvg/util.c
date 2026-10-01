@@ -251,10 +251,10 @@ void sst1InitIdleLoop(FxU32 *sstbase)
     }
 
     status = sst1InitReturnStatus(sstbase);
-    debugBusy = IGET(*debugBusyReg);
-    pixelsIn = IGET(*pixelsInReg);
-    pixelsOut = IGET(*pixelsOutReg);
     if(verbose) {
+        debugBusy = IGET(*debugBusyReg);
+        pixelsIn = IGET(*pixelsInReg);
+        pixelsOut = IGET(*pixelsOutReg);
         fprintf(stderr,
             "[de10] sst1InitIdleLoop: pre-nop status=0x%08x debugBusy=0x%08x pixelsIn=%u pixelsOut=%u\n",
             status, debugBusy, pixelsIn, pixelsOut);
@@ -265,10 +265,10 @@ void sst1InitIdleLoop(FxU32 *sstbase)
     ISET(sst->nopCMD, 0x0);
 #if defined(DE10_BACKEND) || defined(SIM_BACKEND)
     status = sst1InitReturnStatus(sstbase);
-    debugBusy = IGET(*debugBusyReg);
-    pixelsIn = IGET(*pixelsInReg);
-    pixelsOut = IGET(*pixelsOutReg);
     if(verbose) {
+        debugBusy = IGET(*debugBusyReg);
+        pixelsIn = IGET(*pixelsInReg);
+        pixelsOut = IGET(*pixelsOutReg);
         fprintf(stderr,
             "[de10] sst1InitIdleLoop: post-nop status=0x%08x debugBusy=0x%08x pixelsIn=%u pixelsOut=%u\n",
             status, debugBusy, pixelsIn, pixelsOut);
@@ -284,10 +284,10 @@ void sst1InitIdleLoop(FxU32 *sstbase)
         } else
             cntr = 0;
 #if defined(DE10_BACKEND) || defined(SIM_BACKEND)
-        debugBusy = IGET(*debugBusyReg);
-        pixelsIn = IGET(*pixelsInReg);
-        pixelsOut = IGET(*pixelsOutReg);
         if (verbose && ((spinCount < 8u) || ((spinCount % 200000u) == 0u))) {
+            debugBusy = IGET(*debugBusyReg);
+            pixelsIn = IGET(*pixelsInReg);
+            pixelsOut = IGET(*pixelsOutReg);
             fprintf(stderr,
                 "[de10] sst1InitIdleLoop: spin=%u status=0x%08x debugBusy=0x%08x pixelsIn=%u pixelsOut=%u cntr=%u\n",
                 spinCount, status, debugBusy, pixelsIn, pixelsOut, cntr);
@@ -301,10 +301,10 @@ void sst1InitIdleLoop(FxU32 *sstbase)
 #endif
     }
 #if defined(DE10_BACKEND) || defined(SIM_BACKEND)
-    debugBusy = IGET(*debugBusyReg);
-    pixelsIn = IGET(*pixelsInReg);
-    pixelsOut = IGET(*pixelsOutReg);
     if(verbose) {
+        debugBusy = IGET(*debugBusyReg);
+        pixelsIn = IGET(*pixelsInReg);
+        pixelsOut = IGET(*pixelsOutReg);
         fprintf(stderr,
             "[de10] sst1InitIdleLoop: exit spin=%u cntr=%u final=0x%08x debugBusy=0x%08x pixelsIn=%u pixelsOut=%u\n",
             spinCount, cntr, status, debugBusy, pixelsIn, pixelsOut);

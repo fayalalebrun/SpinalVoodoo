@@ -86,7 +86,18 @@ FX_EXPORT FxBool FX_CSTYLE sst1InitVideo(FxU32 *sstbase,
      * scanout path and does not need the legacy SST video read-modify-write
      * sequence here; that sequence can touch unsupported/reset-sensitive
      * legacy video bits before Glide has opened the board. */
-#ifndef DE10_BACKEND
+#if defined(DE10_BACKEND) || defined(MISTER_BACKEND)
+    {
+        FxU32 tiles = (sst1CurrentBoard->fbiVideoWidth + 63) >> 6;
+        FxU32 bufferOffset =
+            ((tiles << 6) * sst1CurrentBoard->fbiVideoHeight * 2 + 4095) >> 12;
+        ISET(sst->fbiInit1, SST_LFB_READ_EN | (tiles << SST_VIDEO_TILES_IN_X_SHIFT));
+        ISET(sst->fbiInit2, bufferOffset << SST_VIDEO_BUFFER_OFFSET_SHIFT);
+        ISET(sst->fbiInit3,
+            (sst1CurrentBoard->fbiVideoHeight - 1) << SST_YORIGIN_TOP_SHIFT);
+        sst1InitIdleFBINoNOP(sstbase);
+    }
+#else
     ISET(sst->fbiInit1, IGET(sst->fbiInit1) & ~SST_VIDEO_RESET);
     ISET(sst->fbiInit2, (IGET(sst->fbiInit2) & ~SST_SWAP_ALGORITHM) | SST_SWAP_VSYNC);
     sst1InitIdleFBINoNOP(sstbase);

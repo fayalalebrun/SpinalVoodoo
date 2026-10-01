@@ -466,11 +466,6 @@ GR_ENTRY(grBufferClear, void, ( GrColor_t color, GrAlpha_t alpha, FxU16 depth ))
   GR_BEGIN("grBufferClear",86,24);
 #endif
   GDBG_INFO_MORE((gc->myLevel,"(0x%x,0x%x,0x%x)\n",color,alpha,depth));
-#ifdef DE10_BACKEND
-  fprintf(stderr, "[de10] grBufferClear: start color=0x%x alpha=0x%x depth=0x%x\n",
-          color, alpha, depth);
-  fflush(stderr);
-#endif
 
   oldc1   = gc->state.fbi_config.color1;
   zacolor = oldzacolor = gc->state.fbi_config.zaColor;
@@ -530,10 +525,6 @@ GR_ENTRY(grBufferClear, void, ( GrColor_t color, GrAlpha_t alpha, FxU16 depth ))
   */
   GR_SET( hw->c1, oldc1 );
   GR_SET( hw->zaColor, oldzacolor );
-#ifdef DE10_BACKEND
-  fprintf(stderr, "[de10] grBufferClear: end\n");
-  fflush(stderr);
-#endif
   GR_END_SLOPPY();
 } /* grBufferClear */
 
@@ -562,12 +553,6 @@ GR_ENTRY(grBufferSwap, void, ( int swapInterval ))
 
   GR_BEGIN_NOFIFOCHECK(FN_NAME,80);
   GDBG_INFO_MORE((gc->myLevel,"(%d)\n",swapInterval));
-  fprintf(stderr, "[hostglide] grBufferSwap requested=%d\n", swapInterval);
-  fflush(stderr);
-#ifdef DE10_BACKEND
-  fprintf(stderr, "[de10] grBufferSwap: start requested=%d\n", swapInterval);
-  fflush(stderr);
-#endif
 
 #if ( GLIDE_PLATFORM & GLIDE_HW_SST96 ) 
   FXUNUSED( vSync );
@@ -648,10 +633,12 @@ GR_ENTRY(grBufferSwap, void, ( int swapInterval ))
               ( swapInterval > 255 ) || ( swapInterval < 0 ),
               "swap_interval out of range");
 
+#ifndef DE10_BACKEND
   /* wait until there's 6 or fewer buffer swaps pending */
   /* the hardware counter is only 3 bits so we don't want it to overflow */
   /* also the latency gets too long */
   while (grBufferNumPending() > 6);
+#endif
 
   /* if the interval is non-zero turn on VSYNC waiting */
 #if defined(DE10_BACKEND) || defined(PURE_XLS_BACKEND)
@@ -678,9 +665,7 @@ GR_ENTRY(grBufferSwap, void, ( int swapInterval ))
   GR_SET_EXPECTED_SIZE(4);
   P6FENCE_CMD( GR_SET(hw->swapbufferCMD, (swapInterval<<1) | vSync) );
 #ifdef DE10_BACKEND
-  fprintf(stderr, "[de10] grBufferSwap: command issued effective=%d vsync=%d\n",
-          swapInterval, vSync);
-  fflush(stderr);
+  de10BatchFlush();
 #endif
 
 #ifdef GLIDE_DEBUG
@@ -705,18 +690,14 @@ GR_ENTRY(grBufferSwap, void, ( int swapInterval ))
     }
   }
 #endif /* GLIDE_DEBUG */
+#ifndef DE10_BACKEND
   grSstStatus();        /* special bug workaround       */
+#endif
 #else
 #    error "Need to implement swap." 
 #endif /* GLIDE_PLATFORM & GLIDE_HW_SST1 */
 
   _GlideRoot.stats.bufferSwaps++;
-
-#ifdef DE10_BACKEND
-  fprintf(stderr, "[de10] grBufferSwap: end total=%u\n",
-          _GlideRoot.stats.bufferSwaps);
-  fflush(stderr);
-#endif
 
   GR_END();
   _grX11PresenterSwap();
@@ -2057,6 +2038,7 @@ GR_DDFUNC(_grRebuildDataList, void, ( void ))
   error WRITE THIS CODE;
 #endif
   
+#ifndef MISTER_BACKEND
   /* if last write was not to chip 0 */
   if ( SST_CHIP_MASK & (FxU32)gc->dataList[curTriSize-1].addr ) {
     /* flag write as a packer bug fix  */
@@ -2064,6 +2046,16 @@ GR_DDFUNC(_grRebuildDataList, void, ( void ))
     gc->dataList[curTriSize].addr = (float *)_GlideRoot.packerFixAddress;
     curTriSize++;
   }
+#else
+  {
+    int source, destination = 0;
+    for (source = 0; source < curTriSize; ++source) {
+      if (!(gc->dataList[source].i & 1))
+        gc->dataList[destination++] = gc->dataList[source];
+    }
+    curTriSize = destination;
+  }
+#endif
 
   
   gc->dataList[curTriSize++].i = 0; /* terminate the list with 0,*      */

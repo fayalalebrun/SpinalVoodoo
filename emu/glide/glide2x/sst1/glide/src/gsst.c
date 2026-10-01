@@ -937,21 +937,6 @@ GR_ENTRY(grSstWinOpen, FxBool, (
     SST_ENZBIAS    | 
     SST_DRAWBUFFER_BACK;
 
-#ifdef DE10_BACKEND
-  gc->state.fbi_config.fbzMode = SST_RGBWRMASK | SST_DRAWBUFFER_BACK;
-  de10BootStage("grSstWinOpen: 3D state basic config");
-  fprintf(stderr, "[de10] grSstWinOpen: 3D state basic config\n");
-  de10BootStage("grSstWinOpen: before minimal fbzMode");
-  GR_SET_EXPECTED_SIZE(sizeof(FxU32));
-  GR_SET(hw->fbzMode, gc->state.fbi_config.fbzMode);
-  GR_CHECK_SIZE();
-  de10BootStage("grSstWinOpen: after minimal fbzMode");
-  fprintf(stderr, "[de10] grSstWinOpen: minimal fbzMode=0x%x\n",
-          gc->state.fbi_config.fbzMode);
-  fflush(stderr);
-  de10BootStage("grSstWinOpen: skip legacy 3D hardware init");
-  fprintf(stderr, "[de10] grSstWinOpen: skip legacy 3D hardware init\n");
-#else
   de10BootStage("grSstWinOpen: before grHints");
   grHints(GR_HINT_ALLOW_MIPMAP_DITHER, 0);
 #ifdef DE10_BACKEND
@@ -1063,7 +1048,6 @@ GR_ENTRY(grSstWinOpen, FxBool, (
   }
   grLfbConstantAlpha( 0xFF );
   grLfbConstantDepth( 0 );
-#endif
 
   gc->open = FXTRUE;
   _GlideRoot.windowsInit = FXTRUE; /* to avoid race with grSstControl() */
@@ -1080,16 +1064,6 @@ GR_ENTRY(grSstWinOpen, FxBool, (
   } else
 #endif
 
-#ifdef DE10_BACKEND
-  /* The legacy splash/state-restore path calls grGlideSetState(), which
-   * replays the full register set. DE10 currently uses this open path to
-   * bring up board video safely; rendering register writes are handled
-   * separately once the H2F path is robust.
-   */
-  de10BootStage("grSstWinOpen: skip legacy state restore");
-  fprintf(stderr, "[de10] grSstWinOpen: skip legacy state restore\n");
-  fflush(stderr);
-#else
   {
     GrState
       state;
@@ -1128,7 +1102,6 @@ GR_ENTRY(grSstWinOpen, FxBool, (
 
     grGlideSetState(&state);
   }
-#endif
 
   if (rv) {
     _grX11PresenterInit(hWnd, gc->state.screen_width, gc->state.screen_height);

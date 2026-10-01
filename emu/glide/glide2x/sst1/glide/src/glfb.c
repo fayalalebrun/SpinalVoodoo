@@ -437,6 +437,9 @@ GR_ENTRY(grLfbLock, FxBool,( GrLock_t type, GrBuffer_t buffer,  GrLfbWriteMode_t
 #  error "No lfb implementation for this platform"
 #endif
   GR_CHECK_SIZE();
+#ifdef DE10_BACKEND
+  de10BatchFlush();
+#endif
   /* We HAVE to idle on Jr., as out-of-order LFBs are unacceptable */
   if (lockIdle || (_GlideRoot.hwConfig.SSTs[_GlideRoot.current_sst].type == GR_SSTTYPE_SST96))
     grSstIdle();

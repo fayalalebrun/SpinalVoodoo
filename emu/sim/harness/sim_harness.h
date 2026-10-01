@@ -27,6 +27,7 @@ void sim_shutdown(void);
  *   0x800000-0xFFFFFF = texture memory
  */
 void sim_write(uint32_t addr, uint32_t data);
+void sim_write_palette(const uint32_t *data, unsigned start, unsigned end);
 
 /* Write a 16-bit halfword to the unified CPU bus.
  * addr keeps its byte address so sub-word destinations can decode the lane.

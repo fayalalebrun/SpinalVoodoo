@@ -686,6 +686,19 @@ FxBool sst1InitFillDeviceInfo(FxU32 *sstbase, sst1DeviceInfoStruct *info)
     if(!sstbase)
         return(FXFALSE);
 
+#ifdef MISTER_BACKEND
+    info->fbiConfig = 0;
+    info->fbiBoardID = 0;
+    info->sstSliDetect = 0;
+    info->tmuConfig = 1;
+    info->numberTmus = 1;
+    info->tmuRevision = 1;
+    info->fbiMemSize = 4;
+    info->tmuMemSize[0] = 4;
+    info->tmuMemSize[1] = info->tmuMemSize[2] = 0;
+    return FXTRUE;
+#endif
+
     if(info->tmuRevision != 0xdead)
         return FXTRUE;  /* if already got it, return */
 

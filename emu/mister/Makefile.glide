@@ -1,0 +1,44 @@
+ROOT := $(abspath ../..)
+BUILD_DIR ?= $(ROOT)/output/mister/arm-glide
+GLIDE := $(ROOT)/emu/glide/glide2x/sst1/glide
+INIT := $(ROOT)/emu/glide/glide2x/sst1/init
+SW := $(ROOT)/emu/glide/swlibs
+SOURCES := $(addprefix $(GLIDE)/src/,gsplash.c g3df.c gu.c guclip.c gpci.c gump.c diglide.c disst.c \
+ ditex.c gbanner.c gerror.c gmovie.c digutex.c ddgump.c gaa.c gdraw.c gglide.c glfb.c gsst.c \
+ gtex.c gtexdl.c gutex.c gxdraw.c cpudetect_sim.c)
+SOURCES += $(addprefix $(INIT)/,init.c gdebug.c vgdrvr.c initvg/gamma.c initvg/dac.c initvg/video.c \
+ initvg/parse.c initvg/sli.c initvg/util.c initvg/info.c initvg/print.c initvg/sst1init.c)
+SOURCES += $(addprefix $(SW)/newpci/pcilib/,sst1_pci.c fxmsr.c fxpci.c fxsim.c)
+SOURCES += $(SW)/fxmisc/fxos.c $(SW)/fxmisc/fximg.c
+SOURCES += $(ROOT)/emu/mister/glide_harness.c $(ROOT)/emu/mister/glide_presenter.c $(ROOT)/emu/mister/glide_guest.c
+OBJECTS := $(patsubst $(ROOT)/%.c,$(BUILD_DIR)/%.o,$(SOURCES))
+CFLAGS ?= -O2 -g
+FLAGS := -std=gnu11 -fPIC -Wall -Wno-incompatible-pointer-types -Wno-int-conversion -Wno-error=format-security
+FLAGS += -DINIT_LINUX -DSIM_BACKEND -DPURE_XLS_BACKEND -DMISTER_BACKEND -DGLIDE_HARDWARE -DGLIDE_DEFAULT_GAMMA=1.3f
+FLAGS += -DGLIDE_LIB=1 -DSST1 -DGLIDE_USE_C_TRISETUP
+FLAGS += -I$(BUILD_DIR) -I$(GLIDE)/src -I$(GLIDE)/../incsrc -I$(INIT) -I$(INIT)/initvg
+FLAGS += -I$(SW)/fxmisc -I$(SW)/newpci/pcilib -I$(SW)/fxmemmap -I$(ROOT)/emu/sim/harness
+
+.PHONY: all
+all: $(BUILD_DIR)/libglide2x.so
+
+$(BUILD_DIR)/fxinline.h:
+	mkdir -p "$(BUILD_DIR)"
+	printf '%s\n' '#define kInternalFogTableEntryCount 0x40' > "$@"
+
+$(BUILD_DIR)/fxgasm.h:
+	mkdir -p "$(BUILD_DIR)"
+	touch "$@"
+
+$(BUILD_DIR)/%.o: $(ROOT)/%.c $(BUILD_DIR)/fxinline.h $(BUILD_DIR)/fxgasm.h $(ROOT)/emu/mister/Makefile.glide $(ROOT)/scripts/build-mister-dosbox
+	mkdir -p "$(@D)"
+	$(CC) $(CFLAGS) $(FLAGS) -MMD -MP -c "$<" -o "$@"
+
+$(BUILD_DIR)/libglide2x.a: $(OBJECTS)
+	$(AR) rcs "$@" $(OBJECTS)
+
+$(BUILD_DIR)/libglide2x.so: $(OBJECTS)
+	$(CC) -shared $(OBJECTS) $(LDFLAGS) -L$(ROOT)/output/mister/arm-runtime -lmister_runtime -lm -lz \
+		-Wl,-soname,libglide2x.so,-z,defs -o "$@"
+
+-include $(OBJECTS:.o=.d)

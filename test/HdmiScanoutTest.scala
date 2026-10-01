@@ -159,7 +159,7 @@ class HdmiScanoutTest extends AnyFunSuite {
   }
 
   test("framebuffer scanout issues front-buffer addresses and flips on vblank swap") {
-    val c = Config.voodoo1()
+    val c = Config()
     val timing = VideoTiming(
       activeWidth = 4,
       activeHeight = 2,
@@ -237,7 +237,7 @@ class HdmiScanoutTest extends AnyFunSuite {
   }
 
   test("framebuffer scanout converts RGB565 read responses to RGB888 output") {
-    val c = Config.voodoo1()
+    val c = Config()
     val timing =
       VideoTiming(activeWidth = 4, activeHeight = 2, hFrontPorch = 1, hSync = 1, hBackPorch = 1)
 
@@ -264,7 +264,7 @@ class HdmiScanoutTest extends AnyFunSuite {
   }
 
   test("framebuffer scanout applies Voodoo gamma CLUT interpolation") {
-    val c = Config.voodoo1()
+    val c = Config()
     val timing =
       VideoTiming(activeWidth = 4, activeHeight = 2, hFrontPorch = 1, hSync = 1, hBackPorch = 1)
 
@@ -293,7 +293,7 @@ class HdmiScanoutTest extends AnyFunSuite {
   }
 
   test("CDC framebuffer scanout prefetches pixels and outputs them in the HDMI clock domain") {
-    val c = Config.voodoo1()
+    val c = Config()
     val timing = VideoTiming(
       activeWidth = 4,
       activeHeight = 2,
@@ -415,7 +415,7 @@ class HdmiScanoutTest extends AnyFunSuite {
   }
 
   test("CDC scanout test-pattern mode drives pattern pixels without FIFO data") {
-    val c = Config.voodoo1()
+    val c = Config()
     val timing = VideoTiming(
       activeWidth = 8,
       activeHeight = 2,
@@ -497,7 +497,7 @@ class HdmiScanoutTest extends AnyFunSuite {
   }
 
   test("CDC framebuffer scanout starts FIFO pixels at HDMI frame origin") {
-    val c = Config.voodoo1()
+    val c = Config()
     val timing = VideoTiming(
       activeWidth = 8,
       activeHeight = 4,
@@ -618,7 +618,7 @@ class HdmiScanoutTest extends AnyFunSuite {
   }
 
   test("CDC scanout pads HDMI pixels outside logical framebuffer width") {
-    val c = Config.voodoo1()
+    val c = Config()
     val timing = VideoTiming(
       activeWidth = 4,
       activeHeight = 2,

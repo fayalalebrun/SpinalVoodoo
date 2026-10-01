@@ -4,6 +4,5 @@
 //> using plugin "com.github.spinalhdl::spinalhdl-idsl-plugin:1.13.0"
 //> using dep "org.scalatest::scalatest:3.2.18"
 //> using dep "com.github.spinalhdl::spinalhdl-tester:1.13.0"
-//> using dep "org.scodec::scodec-core:1.11.10"
-//> using dep "org.scodec::scodec-bits:1.1.38"
+
 //> using options "-deprecation" "-feature" "-unchecked"

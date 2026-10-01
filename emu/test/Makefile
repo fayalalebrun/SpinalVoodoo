@@ -1,118 +1,27 @@
-# Makefile for trace_test — 64-bit native build
-#
-# Builds:
-#   1. Verilator model of CoreSim (64-bit, separate from Glide's 32-bit build)
-#   2. 86Box reference model (vid_voodoo_render.c + vid_voodoo_texture.c)
-#   3. trace_test binary linking everything together
-#
-# Usage:
-#   make              # build trace_test
-#   make clean        # remove build artifacts
-
 .PHONY: all clean state-roundtrip
+.DEFAULT_GOAL := all
 
-PROJ_ROOT  = ../..
-SIM_DIR    = ../sim
-OBJ_DIR    = obj_dir
-STUBS_DIR  = 86box_stubs
-SIM_INTERFACE ?= core
-SIM_MODEL = $(if $(filter de10,$(SIM_INTERFACE)),CoreDe10,CoreSim)
-SIM_GEN_CLASS = $(if $(filter de10,$(SIM_INTERFACE)),voodoo.de10.CoreDe10SimGen,voodoo.CoreSimGen)
-SIM_HARNESS_SRC = $(if $(filter de10,$(SIM_INTERFACE)),$(SIM_DIR)/harness/sim_harness_de10.cpp,$(SIM_DIR)/harness/sim_harness.cpp)
+PROJ_ROOT = ../..
+SIM_DIR = ../sim
+OBJ_DIR = obj_dir
+STUBS_DIR = 86box_stubs
+EBOX_SRC = ../86Box/src/video
+EBOX_INC = ../86Box/src/include
+TRACE_DIR = ../trace
 
-# 86Box paths
-EBOX_SRC   = ../86Box/src/video
-EBOX_INC   = ../86Box/src/include
-TRACE_DIR  = ../trace
-
-# Verilator
-VERILATOR       = verilator
-VERILATOR_ROOT ?= $(shell $(VERILATOR) --getenv VERILATOR_ROOT)
-VERILATOR_FLAGS = --cc --output-split 20000 --output-split-cfuncs 5000 --decorations none --public-flat-rw --x-assign fast --x-initial fast --noassert -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -Wno-CMPCONST -Wno-UNSIGNED
-SCALA_CLI ?= scala-cli
-SCALA_CLI_FLAGS ?= --power
-CORE_SIM_GEN_ARGS ?=
-ifeq ($(TRACE),1)
-VERILATOR_FLAGS += --trace-fst --trace-structs --trace-underscore
-endif
-
-# Native 64-bit compiler — prefer clang if available
-CXX ?= $(shell command -v clang++ 2>/dev/null || echo g++)
-CC  ?= $(shell command -v clang 2>/dev/null || echo gcc)
-
-# Use ccache if available (speeds up incremental rebuilds)
-CCACHE := $(shell command -v ccache 2>/dev/null)
-ifdef CCACHE
-  OBJCACHE = ccache
-endif
-
-CFLAGS   = -O2 -fwrapv -w -I$(STUBS_DIR) -I$(EBOX_INC) -I$(TRACE_DIR)
-CXXFLAGS = -O2 -std=c++17 -I$(OBJ_DIR) -I$(VERILATOR_ROOT)/include -I$(VERILATOR_ROOT)/include/vltstd \
-           -I$(SIM_DIR)/harness -I$(TRACE_DIR) -I. -DVL_TIME_CONTEXT
-ifeq ($(SIM_INTERFACE),de10)
-CXXFLAGS += -DSIM_INTERFACE_DE10
-endif
+CXX ?= g++
+CC ?= gcc
+OBJCACHE := $(shell command -v ccache 2>/dev/null)
+CFLAGS = -O2 -fwrapv -w -I$(STUBS_DIR) -I$(EBOX_INC) -I$(TRACE_DIR)
+CXXFLAGS = -O2 -std=c++17 -I$(SIM_DIR)/harness -I$(TRACE_DIR) -I.
 DEPFLAGS = -MMD -MP
-ifeq ($(TRACE),1)
-CXXFLAGS += -DVM_TRACE_FST
-endif
-
-# SpinalHDL Verilog source
-VERILOG = $(SIM_DIR)/rtl/$(SIM_MODEL).v
-SCALA_SRCS := $(shell find $(PROJ_ROOT)/src -name '*.scala') $(PROJ_ROOT)/project.scala
-
-# Stamps
-VERILATE_STAMP = $(OBJ_DIR)/.verilate.stamp
-
--include $(OBJ_DIR)/V$(SIM_MODEL)_classes.mk
-
-# Trace mode sentinel: forces rebuild when TRACE= setting changes.
-TRACE_MODE_FILE = $(OBJ_DIR)/.trace_mode
-TRACE_MODE_VAL  = $(if $(filter 1,$(TRACE)),trace,notrace)
-SIM_INTERFACE_FILE = $(OBJ_DIR)/.sim_interface
-SIM_INTERFACE_VAL = $(SIM_INTERFACE)
-CORE_SIM_GEN_ARGS_FILE = $(OBJ_DIR)/.core_sim_gen_args
-$(shell mkdir -p $(OBJ_DIR))
-$(shell [ -f $(TRACE_MODE_FILE) ] && [ "$$(cat $(TRACE_MODE_FILE))" = "$(TRACE_MODE_VAL)" ] || echo "$(TRACE_MODE_VAL)" > $(TRACE_MODE_FILE))
-$(shell [ -f $(SIM_INTERFACE_FILE) ] && [ "$$(cat $(SIM_INTERFACE_FILE))" = "$(SIM_INTERFACE_VAL)" ] || echo "$(SIM_INTERFACE_VAL)" > $(SIM_INTERFACE_FILE))
-$(shell [ -f $(CORE_SIM_GEN_ARGS_FILE) ] && [ "$$(cat $(CORE_SIM_GEN_ARGS_FILE))" = "$(CORE_SIM_GEN_ARGS)" ] || printf '%s\n' "$(CORE_SIM_GEN_ARGS)" > $(CORE_SIM_GEN_ARGS_FILE))
-
-###############################################################################
-# Targets
-###############################################################################
 
 all: $(OBJ_DIR)/trace_test
 state-roundtrip: $(OBJ_DIR)/state_roundtrip_test
 
-# Step 1: Generate Verilog (reuse existing or rebuild)
-$(VERILOG): $(SCALA_SRCS) $(CORE_SIM_GEN_ARGS_FILE) $(SIM_INTERFACE_FILE)
-	@rm -f $(dir $(VERILOG))*.bin
-	cd $(PROJ_ROOT) && java -Xmx2g -cp "$$( $(SCALA_CLI) compile project.scala src --print-class-path $(SCALA_CLI_FLAGS) )" $(SIM_GEN_CLASS) $(if $(filter 1,$(TRACE)),--trace-pipeline) $(CORE_SIM_GEN_ARGS)
-	@sed -i 's|\$$readmemb("\([^/"]*\.bin\)"|\$$readmemb("$(abspath $(dir $(VERILOG)))/\1"|g' $@
+$(OBJ_DIR):
+	mkdir -p $@
 
-# Step 2: Verilate (64-bit obj_dir, separate from 32-bit Glide build)
-$(VERILATE_STAMP): $(VERILOG) $(TRACE_MODE_FILE) $(SIM_INTERFACE_FILE)
-	@mkdir -p $(OBJ_DIR)
-	$(VERILATOR) $(VERILATOR_FLAGS) $(VERILOG) --Mdir $(OBJ_DIR)
-	@touch $@
-
-# Step 3: Build Verilator model + runtime libraries (64-bit)
-# OPT_GLOBAL passes -DVL_USER_WARN to the verilated runtime compilation,
-# suppressing its default vl_warn so our override in sim_harness.cpp wins.
-# Use a stamp file so parallel make doesn't invoke the Verilator model twice.
-VERILATOR_LIBS_STAMP = $(OBJ_DIR)/.verilator_libs.stamp
-$(VERILATOR_LIBS_STAMP): $(VERILATE_STAMP)
-	$(MAKE) -j$(shell nproc) -C $(OBJ_DIR) -f V$(SIM_MODEL).mk \
-		CXX="$(CXX)" \
-		OBJCACHE="$(OBJCACHE)" \
-		OPT_FAST="-O3" \
-		OPT_SLOW="" \
-		OPT_GLOBAL="-DVL_USER_WARN"
-	@touch $@
-$(OBJ_DIR)/V$(SIM_MODEL)__ALL.a: $(VERILATOR_LIBS_STAMP)
-$(OBJ_DIR)/libverilated.a: $(VERILATOR_LIBS_STAMP)
-
-# Step 4: 86Box reference objects (compiled as C)
 $(OBJ_DIR)/vid_voodoo_render.o: $(EBOX_SRC)/vid_voodoo_render.c
 	$(OBJCACHE) $(CC) $(CFLAGS) $(DEPFLAGS) -Dvoodoo_queue_triangle=_voodoo_queue_triangle_86box -DREF_TRIANGLE_COVERAGE_HOOK -DREF_TRACE_EXPORT_HOOK \
 		-c -o $@ $<
@@ -135,38 +44,14 @@ $(OBJ_DIR)/voodoo_trace_writer.o: $(TRACE_DIR)/voodoo_trace_writer.c
 $(OBJ_DIR)/ref_model.o: ref_model.c
 	$(OBJCACHE) $(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ $<
 
-# Step 5: C++ objects
-$(OBJ_DIR)/sim_harness.o: $(SIM_HARNESS_SRC) Makefile $(TRACE_MODE_FILE) $(SIM_INTERFACE_FILE) | $(VERILATE_STAMP)
-	$(OBJCACHE) $(CXX) $(CXXFLAGS) $(DEPFLAGS) -DVL_USER_WARN -c -o $@ $<
+$(OBJ_DIR)/sim_harness_xls.o: $(SIM_DIR)/harness/sim_harness_xls.c $(SIM_DIR)/harness/sim_harness.h $(PROJ_ROOT)/nix/xls-bridge-protocol.h Makefile
+	$(OBJCACHE) $(CC) $(CFLAGS) $(DEPFLAGS) -I$(PROJ_ROOT)/nix -c -o $@ $<
 
-$(OBJ_DIR)/trace_test.o: trace_test.cpp Makefile $(TRACE_MODE_FILE) $(SIM_INTERFACE_FILE) | $(VERILATE_STAMP)
+$(OBJ_DIR)/trace_test.o: trace_test.cpp Makefile
 	$(OBJCACHE) $(CXX) $(CXXFLAGS) $(CFLAGS) $(DEPFLAGS) -c -o $@ $<
 
 $(OBJ_DIR)/state_roundtrip_test.o: state_roundtrip_test.cpp Makefile
 	$(OBJCACHE) $(CXX) $(CXXFLAGS) $(CFLAGS) $(DEPFLAGS) -c -o $@ $<
-
-# Step 6: Link
-# Verilator runtime (verilated.o, verilated_threads.o, verilated_dpi.o) is in
-# libverilated.a, built by VCoreSim.mk with OPT_GLOBAL="-DVL_USER_WARN" so
-# the default vl_warn is excluded and our override in sim_harness.cpp takes effect.
-OBJS = $(OBJ_DIR)/trace_test.o \
-       $(OBJ_DIR)/ref_model.o \
-       $(OBJ_DIR)/vid_voodoo_render.o \
-       $(OBJ_DIR)/vid_voodoo_texture.o \
-       $(OBJ_DIR)/vid_voodoo_reg.o \
-       $(OBJ_DIR)/vid_voodoo_fb.o \
-       $(OBJ_DIR)/vid_voodoo_blitter.o \
-       $(OBJ_DIR)/voodoo_trace_writer.o \
-       $(OBJ_DIR)/sim_harness.o
-
-VERILATED_RUNTIME_OBJS = $(OBJ_DIR)/verilated.o $(OBJ_DIR)/verilated_dpi.o $(OBJ_DIR)/verilated_threads.o
-ifeq ($(TRACE),1)
-VERILATED_RUNTIME_OBJS += $(OBJ_DIR)/verilated_fst_c.o
-endif
-VERILATED_MODEL_OBJS = $(addprefix $(OBJ_DIR)/,$(addsuffix .o,$(VM_CLASSES_FAST) $(VM_CLASSES_SLOW) $(VM_SUPPORT_FAST) $(VM_SUPPORT_SLOW)))
-
-$(OBJ_DIR)/trace_test: $(OBJS) $(OBJ_DIR)/V$(SIM_MODEL)__ALL.a $(VERILATED_RUNTIME_OBJS) $(SIM_INTERFACE_FILE)
-	$(CXX) -no-pie -o $@ $(OBJS) $(OBJ_DIR)/V$(SIM_MODEL)__ALL.a $(VERILATED_RUNTIME_OBJS) -lm -lz -lpthread
 
 ROUNDTRIP_OBJS = $(OBJ_DIR)/state_roundtrip_test.o \
                  $(OBJ_DIR)/ref_model.o \
@@ -180,8 +65,14 @@ ROUNDTRIP_OBJS = $(OBJ_DIR)/state_roundtrip_test.o \
 $(OBJ_DIR)/state_roundtrip_test: $(ROUNDTRIP_OBJS)
 	$(CXX) -no-pie -o $@ $(ROUNDTRIP_OBJS) -lm -lpthread
 
+OBJS = $(filter-out $(OBJ_DIR)/state_roundtrip_test.o,$(ROUNDTRIP_OBJS)) $(OBJ_DIR)/trace_test.o $(OBJ_DIR)/sim_harness_xls.o
+
+$(sort $(OBJS) $(ROUNDTRIP_OBJS)): | $(OBJ_DIR)
+
+$(OBJ_DIR)/trace_test: $(OBJS) Makefile
+	$(CXX) -no-pie -o $@ $(OBJS) -lm -lz -lpthread
+
 clean:
 	rm -rf $(OBJ_DIR)
 
-# Auto-generated header dependencies (created by -MMD -MP)
 -include $(wildcard $(OBJ_DIR)/*.d)

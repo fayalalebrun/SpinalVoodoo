@@ -4,19 +4,11 @@ package voodoo
 
 import spinal.core._
 import spinal.core.formal._
+import voodoo.framebuffer.FramebufferPlaneReader
 import spinal.lib.formal._
 
 class FramebufferPlaneReaderFormalDut extends Component {
-  val c = Config
-    .voodoo1(TraceConfig())
-    .copy(
-      addressWidth = 8 bits,
-      memBurstLengthWidth = 6,
-      fbWriteBufferLineWords = 4,
-      fbWriteBufferCount = 2,
-      useFbWriteBuffer = true,
-      useTexFillCache = false
-    )
+  val c = Config(addressWidth = 8 bits, memBurstLengthWidth = 6)
 
   val dut = FramebufferPlaneReader(c)
   val reset = ClockDomain.current.isResetActive

@@ -9,6 +9,8 @@
  * so we can provide our own synchronous voodoo_queue_triangle() here.
  */
 
+#include <errno.h>
+#include <unistd.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -925,28 +927,102 @@ void ref_dump_layout_debug(void)
             voodoo->disp_buffer, voodoo->draw_buffer);
 }
 
+static int ref_write_state_file(const char *dir, uint32_t frame_num,
+                                const voodoo_state_reg_t *regs, uint32_t count)
+{
+    char path[4096], temporary[4096];
+    if (snprintf(path, sizeof(path), "%s/state.bin", dir) >= (int)sizeof(path) ||
+        snprintf(temporary, sizeof(temporary), "%s/state.bin.XXXXXX", dir) >= (int)sizeof(temporary)) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    int fd = mkstemp(temporary);
+    if (fd < 0) return -1;
+    FILE *file = fdopen(fd, "wb");
+    if (!file) {
+        int error = errno;
+        close(fd);
+        unlink(temporary);
+        errno = error;
+        return -1;
+    }
+    voodoo_state_header_t header = {
+        .magic = VOODOO_STATE_MAGIC, .version = VOODOO_STATE_VERSION,
+        .frame_num = frame_num, .voodoo_type = voodoo->type,
+        .fb_size = voodoo->fb_size, .tex_size = voodoo->texture_size,
+        .num_tmus = 1, .reg_count = count, .row_width = voodoo->row_width,
+        .draw_offset = voodoo->params.draw_offset, .aux_offset = voodoo->params.aux_offset,
+        .h_disp = voodoo->h_disp, .v_disp = voodoo->v_disp
+    };
+    int ok = fwrite(&header, sizeof(header), 1, file) == 1 &&
+             fwrite(regs, sizeof(*regs), count, file) == count &&
+             fwrite(voodoo->fb_mem, 1, header.fb_size, file) == header.fb_size &&
+             fwrite(voodoo->tex_mem[0], 1, header.tex_size, file) == header.tex_size &&
+             fflush(file) == 0 && fsync(fd) == 0;
+    int error = ok ? 0 : (errno ? errno : EIO);
+    if (fclose(file) && !error) error = errno;
+    if (!error && rename(temporary, path)) error = errno;
+    if (error) {
+        unlink(temporary);
+        errno = error;
+        return -1;
+    }
+    return 0;
+}
+
 int ref_dump_state_to_dir(const char *dir, uint32_t frame_num)
 {
     if (!voodoo || !dir || !dir[0])
         return -1;
 
-    uint32_t saved_fb_size = voodoo->fb_size;
-    uint32_t saved_tex_size = voodoo->texture_size;
-
-    /* 86Box writer expects these fields in MB; ref model stores bytes. */
-    voodoo->fb_size = saved_fb_size / (1024 * 1024);
-    voodoo->texture_size = saved_tex_size / (1024 * 1024);
-
-    voodoo_trace_t trace;
-    memset(&trace, 0, sizeof(trace));
-    trace.voodoo = voodoo;
-    trace.dump_state = 1;
-    snprintf(trace.trace_dir, sizeof(trace.trace_dir), "%s", dir);
-    voodoo_trace_dump_state(&trace, frame_num);
-
-    voodoo->fb_size = saved_fb_size;
-    voodoo->texture_size = saved_tex_size;
-    return 0;
+    voodoo_state_reg_t initial[] = {
+        {SST_fbiInit0, voodoo->fbiInit0}, {SST_fbiInit1, voodoo->fbiInit1},
+        {SST_fbiInit2, voodoo->fbiInit2}, {SST_fbiInit3, voodoo->fbiInit3},
+        {SST_fbiInit4, voodoo->fbiInit4}, {SST_videoDimensions, voodoo->videoDimensions},
+        {SST_fbzColorPath, voodoo->params.fbzColorPath}, {SST_fbzMode, voodoo->params.fbzMode},
+        {SST_fogMode, voodoo->params.fogMode}, {SST_alphaMode, voodoo->params.alphaMode},
+        {SST_lfbMode, voodoo->lfbMode}, {SST_clipLeftRight, ref_get_clip_left_right()},
+        {SST_clipLowYHighY, ref_get_clip_lowy_highy()}, {SST_chromaKey, voodoo->params.chromaKey},
+        {SST_zaColor, voodoo->params.zaColor}, {SST_color0, voodoo->params.color0},
+        {SST_color1, voodoo->params.color1}, {SST_stipple, voodoo->params.stipple},
+        {SST_swapbufferCMD, voodoo->params.swapbufferCMD},
+        {SST_fogColor, ((uint32_t)voodoo->params.fogColor.r << 16) |
+                       ((uint32_t)voodoo->params.fogColor.g << 8) | voodoo->params.fogColor.b},
+        {SST_textureMode, voodoo->params.textureMode[0]}, {SST_tLOD, voodoo->params.tLOD[0]},
+        {SST_tDetail, (uint32_t)voodoo->params.detail_max[0] |
+                     ((uint32_t)voodoo->params.detail_bias[0] << 8) |
+                     ((uint32_t)voodoo->params.detail_scale[0] << 14)},
+        {SST_texBaseAddr, voodoo->params.texBaseAddr[0] >> 3},
+        {SST_texBaseAddr1, voodoo->params.texBaseAddr1[0] >> 3},
+        {SST_texBaseAddr2, voodoo->params.texBaseAddr2[0] >> 3},
+        {SST_texBaseAddr38, voodoo->params.texBaseAddr38[0] >> 3},
+        {SST_trexInit1, voodoo->trexInit1[0]}
+    };
+    voodoo_state_reg_t regs[sizeof(initial) / sizeof(initial[0]) + 33 + 32 + 24 + 256];
+    uint32_t count = sizeof(initial) / sizeof(initial[0]);
+    memcpy(regs, initial, sizeof(initial));
+    for (unsigned i = 0; i < 33; ++i)
+        regs[count++] = (voodoo_state_reg_t){SST_clutData, (i << 24) | ref_get_clut_rgb(i)};
+    for (unsigned i = 0; i < 32; ++i) {
+        uint32_t value = voodoo->params.fogTable[2 * i].dfog |
+                         ((uint32_t)voodoo->params.fogTable[2 * i].fog << 8) |
+                         ((uint32_t)voodoo->params.fogTable[2 * i + 1].dfog << 16) |
+                         ((uint32_t)voodoo->params.fogTable[2 * i + 1].fog << 24);
+        regs[count++] = (voodoo_state_reg_t){SST_fogTable00 + 4 * i, value};
+    }
+    for (unsigned table = 0; table < 2; ++table) {
+        unsigned base = table ? SST_nccTable1_Y0 : SST_nccTable0_Y0;
+        for (unsigned i = 0; i < 4; ++i)
+            regs[count++] = (voodoo_state_reg_t){base + 32 + 4 * i, voodoo->nccTable[0][table].q[i]};
+        for (unsigned i = 0; i < 4; ++i)
+            regs[count++] = (voodoo_state_reg_t){base + 16 + 4 * i, voodoo->nccTable[0][table].i[i]};
+        for (unsigned i = 0; i < 4; ++i)
+            regs[count++] = (voodoo_state_reg_t){base + 4 * i, voodoo->nccTable[0][table].y[i]};
+    }
+    for (unsigned i = 0; i < 256; ++i)
+        regs[count++] = (voodoo_state_reg_t){SST_nccTable0_I0 + 4 * (i & 1),
+            UINT32_C(0x80000000) | ((i >> 1) << 24) | (voodoo->palette[0][i].u & 0xffffff)};
+    return ref_write_state_file(dir, frame_num, regs, count);
 }
 
 /* -------------------------------------------------------------------
@@ -955,18 +1031,14 @@ int ref_dump_state_to_dir(const char *dir, uint32_t frame_num)
 
 int ref_load_state(const uint8_t *data, uint32_t size)
 {
-    if (size < sizeof(voodoo_state_header_t))
+    if (!voodoo || !data || size < sizeof(voodoo_state_header_t))
         return -1;
 
     const voodoo_state_header_t *hdr = (const voodoo_state_header_t *)data;
-    ref_total_pixels_in = 0;
-    ref_total_pixels_out = 0;
-    ref_total_zfunc_fail = 0;
-    ref_total_afunc_fail = 0;
-    ref_total_chroma_fail = 0;
-    ref_coverage_reset();
-
-    if (hdr->magic != VOODOO_STATE_MAGIC)
+    if (hdr->magic != VOODOO_STATE_MAGIC || hdr->num_tmus != 1 ||
+        hdr->voodoo_type != (uint32_t)voodoo->type || hdr->flags ||
+        hdr->reserved[0] || hdr->reserved[1] ||
+        hdr->fb_size > (uint32_t)voodoo->fb_size || hdr->tex_size > (uint32_t)voodoo->texture_size)
         return -1;
     if (hdr->version != REF_EXPECTED_STATE_VERSION) {
         fprintf(stderr, "[ref_model] ERROR: Unsupported state version %u (expected %u). v1 is not supported.\n",
@@ -974,11 +1046,17 @@ int ref_load_state(const uint8_t *data, uint32_t size)
         return -1;
     }
 
-    uint32_t reg_data_size = hdr->reg_count * sizeof(voodoo_state_reg_t);
-    uint32_t expected = sizeof(voodoo_state_header_t) + reg_data_size +
+    uint64_t reg_data_size = (uint64_t)hdr->reg_count * sizeof(voodoo_state_reg_t);
+    uint64_t expected = sizeof(voodoo_state_header_t) + reg_data_size +
                         hdr->fb_size + hdr->tex_size;
     if (size < expected)
         return -1;
+    ref_total_pixels_in = 0;
+    ref_total_pixels_out = 0;
+    ref_total_zfunc_fail = 0;
+    ref_total_afunc_fail = 0;
+    ref_total_chroma_fail = 0;
+    ref_coverage_reset();
 
     const uint8_t *ptr = data + sizeof(voodoo_state_header_t);
 
@@ -1027,20 +1105,16 @@ int ref_load_state(const uint8_t *data, uint32_t size)
     voodoo->params.aux_row_width  = hdr->row_width;
     voodoo->row_width             = hdr->row_width;
     voodoo->aux_row_width         = hdr->row_width;
+    voodoo->h_disp                = hdr->h_disp;
+    voodoo->v_disp                = hdr->v_disp;
 
-    /* Derive draw_buffer/disp_buffer from header's draw_offset so that
-     * subsequent voodoo_recalc calls produce consistent offsets. */
     uint32_t buffer_offset = ((voodoo->fbiInit2 >> 11) & 511) * 4096;
-    if (buffer_offset > 0) {
-        voodoo->draw_buffer = hdr->draw_offset / buffer_offset;
-        voodoo->disp_buffer = !voodoo->draw_buffer;
-        /* Also set front_offset/back_offset consistently */
-        voodoo->params.front_offset = voodoo->disp_buffer * buffer_offset;
-        voodoo->back_offset         = voodoo->draw_buffer * buffer_offset;
-        /* Recompute fb_write_offset, fb_read_offset, etc. from the
-         * corrected buffer assignments. */
-        voodoo_recalc(voodoo);
-    }
+    uint32_t buffer_count = TRIPLE_BUFFER ? 3 : 2;
+    uint32_t selected = buffer_offset ? hdr->draw_offset / buffer_offset : 0;
+    voodoo->disp_buffer = (voodoo->params.fbzMode & FBZ_DRAW_MASK) == FBZ_DRAW_BACK ?
+        (selected + buffer_count - 1) % buffer_count : selected;
+    voodoo->draw_buffer = (voodoo->disp_buffer + 1) % buffer_count;
+    voodoo_recalc(voodoo);
     fprintf(stderr, "[ref_model] State loaded: %u regs, fb=%u tex=%u draw=0x%x aux=0x%x row=%u\n",
             hdr->reg_count, hdr->fb_size, hdr->tex_size,
             hdr->draw_offset, hdr->aux_offset, hdr->row_width);

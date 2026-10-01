@@ -11,7 +11,7 @@ class XlsDe10ScanoutTest extends AnyFunSuite {
   test("scanout timing cuts preserve addresses and spans under memory stalls") {
     SimConfig.withIVerilog
       .compile {
-        val dut = XlsDe10Scanout(Config.voodoo1())
+        val dut = XlsDe10Scanout(Config())
         dut.scanout.io.readReq.simPublic()
         dut.reader.io.readReq.simPublic()
         dut.scanout.io.prefetchReq.simPublic()

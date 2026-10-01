@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 PROJECT_DIR="$ROOT_DIR/hw/de10/quartus"
 PROJECT_NAME="${DE10_PROJECT_NAME:-SpinalVoodoo_de10}"
-RTL_MAIN_CLASS="${DE10_RTL_MAIN_CLASS:-voodoo.de10.De10TopGen}"
+RTL_MAIN_CLASS="${DE10_RTL_MAIN_CLASS:-voodoo.de10.De10DdrBenchTopGen}"
 OUT_DIR="${DE10_OUT_DIR:-$ROOT_DIR/output/de10/bitstream}"
 SKIP_RTL_GEN="${DE10_SKIP_RTL_GEN:-0}"
 SKIP_QSYS_GEN="${DE10_SKIP_QSYS_GEN:-0}"
@@ -65,8 +65,12 @@ if [[ "$SKIP_RTL_GEN" != "1" ]]; then
   DE10_RTL_MAIN_CLASS="$RTL_MAIN_CLASS" "$ROOT_DIR/scripts/gen-rtl-de10"
 fi
 
-if [[ ! -f "$ROOT_DIR/hw/de10/rtl/De10Top.v" ]]; then
-  echo "Missing expected RTL file: hw/de10/rtl/De10Top.v" >&2
+RTL_TOP="hw/de10/rtl/De10Top.v"
+if [[ "$PROJECT_NAME" == "SpinalVoodoo_de10_xls" ]]; then
+  RTL_TOP="hw/de10/rtl/XlsDe10Scanout.v"
+fi
+if [[ ! -f "$ROOT_DIR/$RTL_TOP" ]]; then
+  echo "Missing expected RTL file: $RTL_TOP" >&2
   echo "Run without --skip-rtl-gen or verify ${RTL_MAIN_CLASS}." >&2
   exit 1
 fi

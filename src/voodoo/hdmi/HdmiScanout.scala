@@ -4,7 +4,7 @@ import spinal.core._
 import spinal.lib._
 import voodoo.Config
 import voodoo.GenSupport
-import voodoo.framebuffer.{FramebufferAddressMath, FramebufferPlaneBuffer, FramebufferPlaneReader}
+import voodoo.framebuffer.{FramebufferAddressMath, FramebufferPlaneReader}
 
 case class VideoTiming(
     activeWidth: Int = 640,
@@ -232,8 +232,8 @@ case class HdmiFramebufferScanout(c: Config, timing: VideoTiming = VideoTiming.c
   val io = new Bundle {
     val regs = in(HdmiScanoutRegs(c))
     val swap = slave Stream (NoData)
-    val readReq = master Stream (FramebufferPlaneBuffer.ReadReq(c))
-    val readRsp = slave Stream (FramebufferPlaneBuffer.ReadRsp())
+    val readReq = master Stream (FramebufferPlaneReader.ReadReq(c))
+    val readRsp = slave Stream (FramebufferPlaneReader.ReadRsp())
     val video = out(ParallelRgbVideo())
     val status = out(HdmiScanoutStatus(c))
   }
@@ -331,8 +331,8 @@ case class HdmiCdcFramebufferScanout(
     val hdmiReset = in Bool ()
     val regs = in(HdmiScanoutRegs(c))
     val prefetchReq = master Stream (FramebufferPlaneReader.PrefetchReq(c))
-    val readReq = master Stream (FramebufferPlaneBuffer.ReadReq(c))
-    val readRsp = slave Stream (FramebufferPlaneBuffer.ReadRsp())
+    val readReq = master Stream (FramebufferPlaneReader.ReadReq(c))
+    val readRsp = slave Stream (FramebufferPlaneReader.ReadRsp())
     val video = out(ParallelRgbVideo())
     val status = out(HdmiScanoutStatus(c))
     val fifoPushOccupancy = out UInt (log2Up(fifoDepth + 1) bits)
@@ -645,17 +645,17 @@ object TmdsSerializerGen extends App {
 }
 
 object HdmiFramebufferScanoutGen extends App {
-  GenSupport.de10Verilog().generate(HdmiFramebufferScanout(Config.voodoo1())).printPruned()
+  GenSupport.de10Verilog().generate(HdmiFramebufferScanout(Config())).printPruned()
 }
 
 object HdmiCdcFramebufferScanoutGen extends App {
-  GenSupport.de10Verilog().generate(HdmiCdcFramebufferScanout(Config.voodoo1())).printPruned()
+  GenSupport.de10Verilog().generate(HdmiCdcFramebufferScanout(Config())).printPruned()
 }
 
 object HdmiRtlGen extends App {
   val config = GenSupport.de10Verilog()
   config.generate(HdmiTestPatternScanout()).printPruned()
   config.generate(TmdsSerializer()).printPruned()
-  config.generate(HdmiFramebufferScanout(Config.voodoo1())).printPruned()
-  config.generate(HdmiCdcFramebufferScanout(Config.voodoo1())).printPruned()
+  config.generate(HdmiFramebufferScanout(Config())).printPruned()
+  config.generate(HdmiCdcFramebufferScanout(Config())).printPruned()
 }

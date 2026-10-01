@@ -1,9 +1,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
+#include <cstddef>
 #include <cstring>
 #include <string>
 #include <vector>
+#include <csignal>
+#include <sys/resource.h>
+#include <sys/wait.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -90,6 +94,16 @@ static bool has_clut_entry(const parsed_state_t &st, int index, uint32_t rgb)
     return false;
 }
 
+static bool has_palette_entry(const parsed_state_t &st, unsigned index, uint32_t rgb)
+{
+    const uint32_t address = 0x334 + 4 * (index & 1);
+    const uint32_t value = 0x80000000u | ((index >> 1) << 24) | (rgb & 0xffffff);
+    for (uint32_t i = 0; i < st.hdr->reg_count; ++i)
+        if (st.regs[i].addr == address && st.regs[i].value == value)
+            return true;
+    return false;
+}
+
 static int fail(const char *msg)
 {
     fprintf(stderr, "state_roundtrip_test: FAIL: %s\n", msg);
@@ -128,6 +142,11 @@ int main(void)
     ref_write_reg(0x310, tex_base1_raw);
     ref_write_reg(0x228, ((uint32_t)clut_index << 24) | (clut_rgb & 0x00ffffffu));
     ref_write_reg(0x128, swap_cmd);
+    ref_write_reg(0x160, 0x12345678u);
+    ref_write_reg(0x324, 0x01020304u);
+    ref_write_reg(0x33c, 0x00090807u);
+    ref_write_reg(0x334, 0x80112233u);
+    ref_write_reg(0x338, 0xffaabbccu);
 
     uint32_t *tex_mut = (uint32_t *)ref_get_tex();
     for (uint32_t i = 0; i < 64; i++)
@@ -226,7 +245,87 @@ int main(void)
         return fail("second dump texBaseAddr1 mismatch");
     if (!has_clut_entry(parsed2, clut_index, clut_rgb))
         return fail("second dump CLUT entry missing");
+    for (const uint32_t address : {0x160u, 0x324u, 0x33cu}) {
+        uint32_t before = 0, after = 0;
+        if (!find_last_reg(parsed1, address, &before) ||
+            !find_last_reg(parsed2, address, &after) || before != after)
+            return fail("fog/NCC register did not roundtrip");
+    }
+    if (!has_palette_entry(parsed2, 0, 0x112233u) ||
+        !has_palette_entry(parsed2, 255, 0xaabbccu))
+        return fail("even/odd texture palette entries did not roundtrip");
+    if (parsed1.hdr->h_disp != parsed2.hdr->h_disp || parsed1.hdr->v_disp != parsed2.hdr->v_disp)
+        return fail("display dimensions did not roundtrip");
+    if (ref_dump_state_to_dir(nullptr, 3) == 0 || ref_dump_state_to_dir("", 3) == 0 ||
+        ref_dump_state_to_dir(state1_path.c_str(), 3) == 0 ||
+        ref_dump_state_to_dir(std::string(4096, 'x').c_str(), 3) == 0)
+        return fail("invalid snapshot output path accepted");
+    if (read_file(state1_path) != state1)
+        return fail("failed snapshot write changed existing state");
+    const pid_t child = fork();
+    if (child < 0) return fail("fork failed");
+    if (child == 0) {
+        const rlimit limit = {1024, 1024};
+        if (signal(SIGXFSZ, SIG_IGN) == SIG_ERR || setrlimit(RLIMIT_FSIZE, &limit)) _exit(2);
+        _exit(ref_dump_state_to_dir(tmp1, 3) == -1 ? 0 : 1);
+    }
+    int child_status = 0;
+    if (waitpid(child, &child_status, 0) != child || !WIFEXITED(child_status) || WEXITSTATUS(child_status))
+        return fail("snapshot writer ignored a file-write failure");
+    if (read_file(state1_path) != state1)
+        return fail("short snapshot write damaged existing state");
+    auto malformed = state2;
+    auto *bad_header = (voodoo_state_header_t *)malformed.data();
+    bad_header->num_tmus = 2;
+    if (ref_load_state(malformed.data(), (uint32_t)malformed.size()) == 0)
+        return fail("single-TMU model accepted a two-TMU snapshot");
+    if (ref_load_state(state2.data(), (uint32_t)state2.size() - 1) == 0)
+        return fail("truncated snapshot accepted");
+    bad_header->num_tmus = 1;
+    bad_header->reg_count = UINT32_MAX;
+    if (ref_load_state(malformed.data(), (uint32_t)malformed.size()) == 0 ||
+        ref_load_state(nullptr, 64) == 0)
+        return fail("invalid snapshot span accepted");
 
+    for (size_t offset : {offsetof(voodoo_state_header_t, magic),
+                          offsetof(voodoo_state_header_t, voodoo_type),
+                          offsetof(voodoo_state_header_t, flags),
+                          offsetof(voodoo_state_header_t, reserved),
+                          offsetof(voodoo_state_header_t, reserved) + sizeof(uint32_t),
+                          offsetof(voodoo_state_header_t, fb_size),
+                          offsetof(voodoo_state_header_t, tex_size)}) {
+        malformed = state2;
+        const uint32_t invalid = UINT32_MAX;
+        memcpy(malformed.data() + offset, &invalid, sizeof(invalid));
+        if (ref_load_state(malformed.data(), (uint32_t)malformed.size()) == 0)
+            return fail("invalid snapshot header accepted");
+    }
+    if (ref_load_state(state2.data(), sizeof(voodoo_state_header_t) - 1) == 0 ||
+        ref_dump_state_to_dir(tmp2, 2) != 0 || read_file(state2_path) != state2)
+        return fail("invalid snapshot load changed model state");
+
+    ref_write_reg(0x334, 0x81234567u);
+    if (ref_load_state(state2.data(), (uint32_t)state2.size()) != 0 ||
+        ref_dump_state_to_dir(tmp2, 2) != 0)
+        return fail("reload into a modified model failed");
+    if (read_file(state2_path) != state2)
+        return fail("reload retained palette state absent from snapshot");
+
+    for (uint32_t init2 : {0u, 0x20000u, 0x20010u}) {
+        for (uint32_t mode : {0x05060708u, 0x05064708u}) {
+            ref_write_reg(0x218, init2);
+            ref_write_reg(0x110, mode);
+            for (unsigned swap = 0; swap < 3; ++swap) {
+                ref_write_reg(0x128, 0);
+                if (ref_dump_state_to_dir(tmp2, 2) != 0)
+                    return fail("buffer-selection snapshot failed");
+                const auto before = read_file(state2_path);
+                if (before.empty() || ref_load_state(before.data(), (uint32_t)before.size()) != 0 ||
+                    ref_dump_state_to_dir(tmp2, 2) != 0 || read_file(state2_path) != before)
+                    return fail("buffer-selection state did not roundtrip");
+            }
+        }
+    }
     ref_shutdown();
     fprintf(stderr, "state_roundtrip_test: PASS\n");
     return 0;

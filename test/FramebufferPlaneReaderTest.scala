@@ -5,21 +5,15 @@ package voodoo
 import org.scalatest.funsuite.AnyFunSuite
 import spinal.core._
 import spinal.core.sim._
+import voodoo.framebuffer.FramebufferPlaneReader
 
 class FramebufferPlaneReaderTest extends AnyFunSuite {
   private def mkConfig =
-    Config
-      .voodoo1()
-      .copy(
-        addressWidth = 12 bits,
-        memBurstLengthWidth = 6,
-        fbWriteBufferLineWords = 4,
-        fbWriteBufferCount = 2,
-        useFbWriteBuffer = true,
-        useTexFillCache = false,
-        maxFbDims = (16, 16),
-        trace = TraceConfig(enabled = true)
-      )
+    Config(
+      addressWidth = 12 bits,
+      memBurstLengthWidth = 6,
+      maxFbDims = (16, 16)
+    )
 
   private def mkLengthFixerConfig =
     mkConfig.copy(
@@ -54,6 +48,15 @@ class FramebufferPlaneReaderTest extends AnyFunSuite {
       dut.clockDomain.waitSampling()
     }
     dut.clockDomain.waitSampling()
+  }
+
+  test("unused same-line statistic generates a constant without storage") {
+    val directory = "output/mister/same-line-statistic-regression"
+    SpinalConfig(targetDirectory = directory).generateVerilog(FramebufferPlaneReader(mkConfig))
+    val path = java.nio.file.Paths.get(directory, "FramebufferPlaneReader.v")
+    val rtl =
+      new String(java.nio.file.Files.readAllBytes(path), java.nio.charset.StandardCharsets.UTF_8)
+    assert(rtl.matches("(?s).*assign io_reqSameLineCount = 32'h0+;.*"))
   }
 
   test("span prefetch issues exact-length burst") {

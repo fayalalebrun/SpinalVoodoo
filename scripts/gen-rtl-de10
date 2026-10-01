@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-MAIN_CLASS="${DE10_RTL_MAIN_CLASS:-voodoo.de10.De10TopGen}"
+MAIN_CLASS="${DE10_RTL_MAIN_CLASS:-voodoo.de10.XlsDe10RtlGen}"
 SCALA_SOURCES=(project.scala src)
 SCALA_CLI_BASE_ARGS=(--server=false)
 SCALA_CLI_TIMEOUT_SECONDS="${DE10_SCALA_CLI_TIMEOUT_SECONDS:-300}"

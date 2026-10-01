@@ -7,7 +7,7 @@ import spinal.lib._
 import spinal.lib.bus.bmb._
 
 case class FramebufferPlaneReader(c: Config) extends Component {
-  import FramebufferPlaneBuffer._
+  import FramebufferPlaneReader._
 
   val addrWidth = c.addressWidth.value
   val maxSpanPixels = c.maxFbDims._1
@@ -82,15 +82,13 @@ case class FramebufferPlaneReader(c: Config) extends Component {
   val reqForwardStepCount = Reg(UInt(32 bits)) init (0)
   val reqBackwardStepCount = Reg(UInt(32 bits)) init (0)
   val reqSameWordCount = Reg(UInt(32 bits)) init (0)
-  val reqSameLineCount = Reg(UInt(32 bits)) init (0)
+
   val reqOtherCount = Reg(UInt(32 bits)) init (0)
   val singleBeatBurstCount = Reg(UInt(32 bits)) init (0)
   val multiBeatBurstCount = Reg(UInt(32 bits)) init (0)
   val maxOccupancy = Reg(UInt(8 bits)) init (0)
   val prevReqValid = RegInit(False)
   val prevReqAddr = Reg(UInt(addrWidth bits)) init (0)
-
-  reqSameLineCount := reqSameLineCount
 
   val internalMem = Bmb(FramebufferPlaneReader.internalBmbParams(c))
   if (FramebufferPlaneReader.needBurstSplitter(c)) {
@@ -415,7 +413,7 @@ case class FramebufferPlaneReader(c: Config) extends Component {
   io.reqForwardStepCount := reqForwardStepCount
   io.reqBackwardStepCount := reqBackwardStepCount
   io.reqSameWordCount := reqSameWordCount
-  io.reqSameLineCount := reqSameLineCount
+  io.reqSameLineCount := 0
   io.reqOtherCount := reqOtherCount
   io.singleBeatBurstCount := singleBeatBurstCount
   io.multiBeatBurstCount := multiBeatBurstCount
@@ -423,6 +421,17 @@ case class FramebufferPlaneReader(c: Config) extends Component {
 }
 
 object FramebufferPlaneReader {
+  case class ReadReq(c: Config) extends Bundle {
+    val address = UInt(c.addressWidth)
+  }
+
+  case class ReadRsp() extends Bundle {
+    val data = Bits(16 bits)
+  }
+
+  def alignedWordAddress(address: UInt): UInt =
+    (address(address.getWidth - 1 downto 2) ## U"2'b00").asUInt
+
   case class PrefetchReq(c: Config) extends Bundle {
     val startAddress = UInt(c.addressWidth.value bits)
     val endAddress = UInt(c.addressWidth.value bits)

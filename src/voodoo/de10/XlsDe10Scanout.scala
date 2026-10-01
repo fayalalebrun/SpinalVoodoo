@@ -60,11 +60,11 @@ case class XlsDe10Scanout(c: Config) extends Component {
 }
 
 object XlsDe10ScanoutGen extends App {
-  GenSupport.de10Verilog().generate(XlsDe10Scanout(Config.voodoo1()))
+  GenSupport.de10Verilog().generate(XlsDe10Scanout(Config()))
 }
 
 object XlsDe10RtlGen extends App {
-  GenSupport.de10Verilog().generate(XlsDe10Scanout(Config.voodoo1()))
+  GenSupport.de10Verilog().generate(XlsDe10Scanout(Config()))
   SpinalConfig(
     mode = Verilog,
     targetDirectory = "hw/de10/rtl",

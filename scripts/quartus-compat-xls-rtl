@@ -34,7 +34,7 @@ while index < len(lines):
     index += 3
 text = "\n".join(output) + "\n"
 if sys.argv[2:] == ["--ram-fifos"]:
-    for channel in ("pixel_work", "pixel_texture", "pixel_cache_request", "pixel_read_job", "palette_pending"):
+    for channel in ("pixel_work", "pixel_context", "pixel_texture", "pixel_cache_request", "pixel_read_job", "pixel_pending", "palette_pending"):
         instances = re.findall(r"^\s+(\w+) materialized_fifo_fifo__" + channel + r"_\s*\(", text, re.M)
         if len(instances) != 1:
             raise SystemExit(f"expected one {channel} FIFO")

@@ -22,7 +22,7 @@ with tempfile.TemporaryDirectory(prefix="ram-fifo-test-", dir=root / "xls/build"
     tests = []
     modules = []
     fifo_names = [re.search(r"^\s+(\w+) materialized_fifo_fifo__" + channel + r"_\s*\(", raw, re.M)[1]
-                  for channel in ("pixel_work", "pixel_texture", "pixel_cache_request", "pixel_read_job", "palette_pending")]
+                  for channel in ("pixel_work", "pixel_context", "pixel_texture", "pixel_cache_request", "pixel_read_job", "pixel_pending", "palette_pending")]
     single_slots = re.findall(r"^module (fifo_for_depth_1_ty_\w+_no_bypass_register_push(?:___\d+)?)\(", raw, re.M)
     two_slots = [name for name in re.findall(
         r"^module (fifo_for_depth_2_ty_\w+_no_bypass_register_push(?:___\d+)?)\(", raw, re.M)
@@ -34,6 +34,8 @@ with tempfile.TemporaryDirectory(prefix="ram-fifo-test-", dir=root / "xls/build"
         original = re.search(pattern, raw, re.S)[0]
         replacement = re.search(pattern, lowered, re.S)[0]
         width = int(re.search(r"input wire \[(\d+):0\] push_data", original)[1]) + 1
+        if name in fifo_names:
+            assert 'ramstyle = "M10K"' in replacement, channel
         if name in single_slots:
             assert re.findall(r"reg (?:\[\d+:0\] )?(\w+);", replacement) == ["full", "data"], channel
         if name in two_slots:

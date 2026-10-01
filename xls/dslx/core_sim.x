@@ -45,7 +45,7 @@ struct PixelTextureRegisters {
     tex_base38: u24,
 }
 
-type RegisterFile = u32[43];
+type RegisterFile = u32[44];
 type FloatShadowFile = s50[12];
 type Palette = u24[256];
 type PixelRegisterFile = u32[38];
@@ -164,10 +164,10 @@ struct PixelInterpolatedValues {
     s: s48,
     t: s48,
     w: s48,
-    red: s48,
-    green: s48,
-    blue: s48,
-    alpha: s48,
+    red: u8,
+    green: u8,
+    blue: u8,
+    alpha: u8,
     z: s48,
 }
 
@@ -351,6 +351,7 @@ fn register_index(index: u8) -> u8 {
             u8:133 => u8:39,
             u8:134 => u8:40,
             u8:135 => u8:41,
+            u8:69 => u8:43,
             _ => u8:42,
         }
     }
@@ -503,24 +504,36 @@ fn write_addressed_register_file
             index == (i + u32:2) as u8
         } else if i < u32:42 {
             index == high_indexes[i - u32:30]
-        } else {
+        } else if i == u32:42 {
             register_index(index) == u8:42
+        } else {
+            index == u8:69
         };
-        update(result, i, if selected { masked_write(registers[i], data, mask) } else { registers[i] })
+        update(
+            result, i, if selected { masked_write(registers[i], data, mask) } else { registers[i] })
     }(registers)
+}
+
+#[test]
+fn lfb_mode_survives_other_register_writes() {
+    let registers =
+        write_addressed_register_file(RegisterFile:[u32:0, ...], u8:69, u32:0x10, u4:15);
+    let registers = write_addressed_register_file(registers, u8:72, u32:0, u4:15);
+    let registers = write_addressed_register_file(registers, u8:192, u32:0, u4:15);
+    assert_eq(register_read(registers, u8:69), u32:0x10);
 }
 
 #[quickcheck(test_count=1024)]
 fn addressed_register_write_matches_compact
     (registers: RegisterFile, index: u8, data: u32, mask: u4) -> bool {
     write_addressed_register_file(registers, index, data, mask) ==
-        write_register_file(registers, register_index(index), data, mask)
+    write_register_file(registers, register_index(index), data, mask)
 }
 
 #[quickcheck(test_count=1024)]
 fn register_write_matches_indexed_update
     (registers: RegisterFile, index: u8, data: u32, mask: u4) -> bool {
-    let expected = if index < u8:43 {
+    let expected = if (index as u32) < array_size(registers) {
         update(registers, index, masked_write(registers[index], data, mask))
     } else {
         registers
@@ -530,13 +543,14 @@ fn register_write_matches_indexed_update
 
 #[test]
 fn register_write_preserves_other_words_and_masked_bytes() {
-    let registers = for (i, registers): (u32, RegisterFile) in u32:0..u32:43 {
-        update(registers, i, u32:0x89abcdef ^ i)
-    }(RegisterFile:[u32:0, ...]);
-    for (index, _): (u8, ()) in u8:0..u8:44 {
+    let registers =
+        for (i, registers): (u32, RegisterFile) in u32:0..array_size(RegisterFile:[u32:0, ...]) {
+            update(registers, i, u32:0x89abcdef ^ i)
+        }(RegisterFile:[u32:0, ...]);
+    for (index, _): (u8, ()) in u8:0..(array_size(registers) + u32:1) as u8 {
         for (mask, _): (u5, ()) in u5:0..u5:16 {
             let actual = write_register_file(registers, index, u32:0x12345678, mask as u4);
-            let expected = if index < u8:43 {
+            let expected = if (index as u32) < array_size(registers) {
                 update(
                     registers, index, masked_write(registers[index], u32:0x12345678, mask as u4))
             } else {
@@ -777,7 +791,8 @@ fn step_with_raster_setup
     } else if command.write == u1:1 {
         let compact_index = register_index(index);
         let value = masked_write(state.registers[compact_index], write_data, write_mask);
-        let registers = write_addressed_register_file(state.registers, index, write_data, write_mask);
+        let registers =
+            write_addressed_register_file(state.registers, index, write_data, write_mask);
         let (shadow_shift, has_float_shadow) = float_shadow_shift(index);
         let shadow_value = if is_float == u1:1 {
             converted_shadow
@@ -860,6 +875,30 @@ fn interpolated_value
     let use_float_shadow = raster_uses_float_shadows == u1:1 && has_float_shadow == u1:1;
     let start = if use_float_shadow {
         pixel_float_shadow(float_shadows, start_index)
+#[test]
+fn float_parameters_are_idempotent_and_preserved_by_triangle_commands() {
+    let state = for (i, state): (u32, CoreState) in u32:0..u32:30 {
+        let command = CoreCommand {
+            write: u1:1, address: (u32:0x088 + i * u32:4) as u24,
+            data: u32:0x3f800000 + (i << u32:17), mask: u4:0xf,
+        };
+        let (written, _) = step(state, command);
+        let (repeated, _) = step(written, command);
+        assert_eq(repeated, written);
+        written
+    }(initial_state());
+    let (fixed, _) = step(
+        state, CoreCommand { write: u1:1, address: u24:0x080, data: u32:0x80000000, mask: u4:0xf });
+    let (floating, _) = step(
+        fixed, CoreCommand { write: u1:1, address: u24:0x100, data: u32:0x80000000, mask: u4:0xf });
+    assert_eq(state.float_shadows, fixed.float_shadows);
+    assert_eq(state.float_shadows, floating.float_shadows);
+    for (i, _): (u32, ()) in u32:0..u32:30 {
+        assert_eq(state.registers[i], fixed.registers[i]);
+        assert_eq(state.registers[i], floating.registers[i]);
+    }(())
+}
+
     } else {
         (pixel_register(registers, start_index) as s32) as s50
     };
@@ -1047,7 +1086,13 @@ fn lfb_command(state: CoreState, command: CoreCommand) -> memory::MemoryCommand 
     let drawing = state.commands.swap.draw_count[0+:u1];
     let front = if drawing == u1:1 { buffer_offset } else { u26:0 };
     let back = if drawing == u1:1 { u26:0 } else { buffer_offset };
-    let buffer_select = if command.write == u1:1 { lfb_mode[4+:u2] } else { lfb_mode[6+:u2] };
+    let buffer_select = if command.write == u1:0 {
+        lfb_mode[6+:u2]
+    } else if lfb_mode[0+:u4] == u4:15 {
+        u2:2
+    } else {
+        lfb_mode[4+:u2]
+    };
     let base = match buffer_select {
         u2:0 => front,
         u2:1 => back,
@@ -1056,8 +1101,13 @@ fn lfb_command(state: CoreState, command: CoreCommand) -> memory::MemoryCommand 
     };
     let pci_address = command.address - u24:0x400000;
     let x = pci_address[1+:u10] as u16;
-    let y = pci_address[11+:u10] as u16;
-    let address = pixel::framebuffer_address(base, x, y, stride);
+    let y = pci_address[11+:u10];
+    let y = if lfb_mode[13+:u1] == u1:1 {
+        register_read(state.registers, u8:135)[22+:u10] - y
+    } else {
+        y
+    };
+    let address = pixel::framebuffer_address(base, x, y as u16, stride);
     memory::MemoryCommand {
         write: command.write,
         address: address[2+:u22],
@@ -1085,6 +1135,31 @@ fn new_depth_fields(mode: u32, za_color: u32, z_depth: u16, w: s32) -> u16 {
 }
 
 fn new_depth_interpolated_fields(mode: u32, za_color: u32, z: s48, w: s48) -> u16 {
+#[test]
+fn lfb_aux_and_lower_origin_addressing() {
+    let registers =
+        write_addressed_register_file(RegisterFile:[u32:0, ...], u8:134, u32:150 << u32:11, u4:15);
+    let registers = write_addressed_register_file(registers, u8:135, u32:479 << u32:22, u4:15);
+    for (origin, _): (u2, ()) in u2:0..u2:2 {
+        let registers = write_addressed_register_file(
+            registers, u8:69, u32:0x8f | ((origin as u32) << u32:13), u4:15);
+        let state = CoreState { registers, ..initial_state() };
+        for (write, _): (u2, ()) in u2:0..u2:2 {
+            let command = CoreCommand {
+                write: write as u1,
+                address: u24:0x400828,
+                data: u32:0x12345678,
+                mask: u4:3,
+            };
+            let result = lfb_command(state, command);
+            let row = if origin == u2:0 { u32:1 } else { u32:478 };
+            assert_eq(result.address as u32, (u32:1228800 + row * u32:1280 + u32:40) >> u32:2);
+            assert_eq(result.data, command.data);
+            assert_eq(result.mask, command.mask);
+        }(())
+    }(())
+}
+
     new_depth_fields(mode, za_color, clamp_depth(z >> u8:12), w as s32)
 }
 
@@ -1451,12 +1526,13 @@ proc hosted_triangle_setup {
 
 proc hosted_pixel_interpolation_stage<EXPORT_PROFILE: bool = {false}> {
     job_r: chan<PixelJob> in;
-    work_s: chan<InterpolatedPixelJob> out;
+    work_s: chan<PixelInterpolatedValues> out;
+    context_s: chan<ReadPixelContext> out;
     profile_start_s: chan<u1> out;
 
-    config(job_r: chan<PixelJob> in, work_s: chan<InterpolatedPixelJob> out,
-           profile_start_s: chan<u1> out) {
-        (job_r, work_s, profile_start_s)
+    config(job_r: chan<PixelJob> in, work_s: chan<PixelInterpolatedValues> out,
+           context_s: chan<ReadPixelContext> out, profile_start_s: chan<u1> out) {
+        (job_r, work_s, context_s, profile_start_s)
     }
 
     init { () }
@@ -1475,16 +1551,16 @@ proc hosted_pixel_interpolation_stage<EXPORT_PROFILE: bool = {false}> {
             w: interpolated_value(
                 core.registers, core.float_shadows, core.raster_uses_float_shadows, job.candidate,
                 u8:15, u8:23, u8:31),
-            red: interpolated_value(
+            red: interpolated_color_values(
                 core.registers, core.float_shadows, core.raster_uses_float_shadows, job.candidate,
                 u8:8, u8:16, u8:24),
-            green: interpolated_value(
+            green: interpolated_color_values(
                 core.registers, core.float_shadows, core.raster_uses_float_shadows, job.candidate,
                 u8:9, u8:17, u8:25),
-            blue: interpolated_value(
+            blue: interpolated_color_values(
                 core.registers, core.float_shadows, core.raster_uses_float_shadows, job.candidate,
                 u8:10, u8:18, u8:26),
-            alpha: interpolated_value(
+            alpha: interpolated_color_values(
                 core.registers, core.float_shadows, core.raster_uses_float_shadows, job.candidate,
                 u8:12, u8:20, u8:28),
             z: interpolated_value(
@@ -1513,7 +1589,8 @@ proc hosted_pixel_interpolation_stage<EXPORT_PROFILE: bool = {false}> {
             candidate: job.candidate,
             last: job.last,
         };
-        let tok = send(tok, work_s, InterpolatedPixelJob { context, values });
+        let context_tok = send(tok, context_s, context);
+        let tok = send(tok, work_s, values);
         state
     }
 }
@@ -1600,9 +1677,11 @@ proc hosted_pixel_pipeline<EXPORT_PROFILE: bool = {false}> {
         } else {
             u32:0
         };
-        let source_color = combined_color_interpolated(
-            core.registers, texture_rgba, interpolated.red, interpolated.green, interpolated.blue,
-            interpolated.alpha, interpolated.z);
+        let source_color = combined_color_fields(
+            pixel_register(core.registers, u8:65), pixel_register(core.registers, u8:81),
+            pixel_register(core.registers, u8:82), texture_rgba, interpolated.red,
+            interpolated.green, interpolated.blue, interpolated.alpha,
+            color_channel(interpolated.z));
         let depth = new_depth_interpolated(core.registers, interpolated.z, interpolated.w);
         let aux = aux_write_values(
             init1, init2, fbz_mode, y_origin, candidate, depth, source_color[0+:u8]);
@@ -1683,25 +1762,27 @@ proc hosted_pixel_pipeline<EXPORT_PROFILE: bool = {false}> {
 }
 
 proc hosted_pixel_texture_requests<EXPORT_PROFILE: bool = {false}> {
-    job_r: chan<InterpolatedPixelJob> in;
+    job_r: chan<PixelInterpolatedValues> in;
+    context_r: chan<ReadPixelContext> in;
     job_s: chan<TexturePixelJob> out;
     cache_request_s: chan<texture_cache::CacheRequest> out;
     framebuffer_read_s: chan<memory::MemoryRequestPair> out;
     profile_pipeline_start_s: chan<u1> out;
 
-    config(job_r: chan<InterpolatedPixelJob> in, job_s: chan<TexturePixelJob> out,
-           cache_request_s: chan<texture_cache::CacheRequest> out,
+    config(job_r: chan<PixelInterpolatedValues> in, context_r: chan<ReadPixelContext> in,
+           job_s: chan<TexturePixelJob> out, cache_request_s: chan<texture_cache::CacheRequest> out,
            framebuffer_read_s: chan<memory::MemoryRequestPair> out,
            profile_pipeline_start_s: chan<u1> out) {
-        (job_r, job_s, cache_request_s, framebuffer_read_s, profile_pipeline_start_s)
+        (job_r, context_r, job_s, cache_request_s, framebuffer_read_s, profile_pipeline_start_s)
     }
 
     init { () }
 
     next(state: ()) {
-        let (tok, work) = recv(join(), job_r);
+        let (tok, values) = recv(join(), job_r);
+        let (tok, context) = recv(tok, context_r);
+        let work = InterpolatedPixelJob { context, values };
         let tok = send_if(tok, profile_pipeline_start_s, EXPORT_PROFILE, u1:1);
-        let context = work.context;
         let raster_valid = candidate_visible_fields(
             context.fbz_mode, context.clip_x_min, context.clip_x_max, context.clip_y_min,
             context.clip_y_max, context.candidate);
@@ -1763,10 +1844,10 @@ proc hosted_pixel_texture_requests<EXPORT_PROFILE: bool = {false}> {
             last: context.last,
         };
         let read_values = TexturePixelValues {
-            red: color_channel(work.values.red),
-            green: color_channel(work.values.green),
-            blue: color_channel(work.values.blue),
-            alpha: color_channel(work.values.alpha),
+            red: work.values.red,
+            green: work.values.green,
+            blue: work.values.blue,
+            alpha: work.values.alpha,
             z: color_channel(work.values.z),
             z_depth: clamp_depth(work.values.z >> u8:12),
             w: work.values.w as s32,
@@ -3090,7 +3171,9 @@ pub proc core_sim_hosted {
         let (span_job_s, _) = chan<FramebufferSpanJob>("span_job_unused");
         let (_, span_row_ready_r) = chan<raster_state::RowSpan>("span_row_ready_unused");
         let (pixel_job_s, pixel_job_r) = chan<PixelJob>("pixel_job");
-        let (pixel_work_s, pixel_work_r) = chan<InterpolatedPixelJob>("pixel_work");
+        let (pixel_work_s, pixel_work_r) = chan<PixelInterpolatedValues>("pixel_work");
+        let (pixel_context_s, pixel_context_r) = #[channel(depth=8, bypass=false, register_push_outputs=true, register_pop_outputs=false)]
+                                                 chan<ReadPixelContext>("pixel_context");
         let (pixel_texture_s, pixel_texture_r) = #[channel(depth=32, bypass=false, register_push_outputs=true, register_pop_outputs=false)]
                                                  chan<TexturePixelJob>("pixel_texture");
         let (pixel_read_job_s, pixel_read_job_r) = chan<ReadPixelJob>("pixel_read_job");
@@ -3137,10 +3220,10 @@ pub proc core_sim_hosted {
         spawn hosted_triangle_setup(triangle_setup_request_r, triangle_setup_response_s);
         spawn float_shadow_converter(float_shadow_request_r, float_shadow_response_s);
         spawn hosted_pixel_interpolation_stage<false>(
-            pixel_job_r, pixel_work_s, profile_interpolation_start_s);
+            pixel_job_r, pixel_work_s, pixel_context_s, profile_interpolation_start_s);
         spawn hosted_pixel_texture_requests<false>(
-            pixel_work_r, pixel_texture_s, pixel_cache_request_s, framebuffer_pixel_read_s,
-            profile_pipeline_start_s);
+            pixel_work_r, pixel_context_r, pixel_texture_s, pixel_cache_request_s,
+            framebuffer_pixel_read_s, profile_pipeline_start_s);
         spawn hosted_pixel_read_pipeline<false>(
             pixel_texture_r, pixel_read_job_s, pixel_cache_response_r, profile_cache_done_s);
         spawn hosted_pixel_write_pipeline<false>(
@@ -3230,7 +3313,9 @@ pub proc core_sim_de10 {
         let (span_row_ready_s, span_row_ready_r) = #[channel(depth=3, bypass=false, register_push_outputs=true, register_pop_outputs=false)]
                                                    chan<raster_state::RowSpan>("span_row_ready");
         let (pixel_job_s, pixel_job_r) = chan<PixelJob>("pixel_job");
-        let (pixel_work_s, pixel_work_r) = chan<InterpolatedPixelJob>("pixel_work");
+        let (pixel_work_s, pixel_work_r) = chan<PixelInterpolatedValues>("pixel_work");
+        let (pixel_context_s, pixel_context_r) = #[channel(depth=8, bypass=false, register_push_outputs=true, register_pop_outputs=false)]
+                                                 chan<ReadPixelContext>("pixel_context");
         let (pixel_texture_s, pixel_texture_r) = #[channel(depth=9, bypass=false, register_push_outputs=true, register_pop_outputs=true)]
                                                  chan<TexturePixelJob>("pixel_texture");
         let (pixel_read_job_s, pixel_read_job_r) = chan<ReadPixelJob>("pixel_read_job");
@@ -3310,9 +3395,9 @@ pub proc core_sim_de10 {
         spawn framebuffer_span_prefetch(span_job_r, aux_span_s, color_span_s, span_row_ready_s);
         spawn float_shadow_converter(float_shadow_request_r, float_shadow_response_s);
         spawn hosted_pixel_interpolation_stage<false>(
-            pixel_job_r, pixel_work_s, profile_interpolation_start_s);
+            pixel_job_r, pixel_work_s, pixel_context_s, profile_interpolation_start_s);
         spawn hosted_pixel_texture_requests<false>(
-            pixel_work_r, pixel_texture_s, pixel_cache_request_s, pixel_read_s,
+            pixel_work_r, pixel_context_r, pixel_texture_s, pixel_cache_request_s, pixel_read_s,
             profile_pipeline_start_s);
         spawn hosted_pixel_read_pipeline<false>(
             pixel_texture_r, pixel_read_job_s, pixel_cache_response_r, profile_cache_done_s);
@@ -3355,7 +3440,7 @@ pub proc core_sim_de10 {
         spawn de10_adapter::word_transfer_adapter(
             texture_command_r, texture_response_s, texture_word_transfer_s,
             texture_word_transfer_response_r);
-        spawn de10_adapter::block_read_transfer_adapter<{texture_cache::SECTOR_WORDS}>(
+        spawn de10_adapter::block_read_transfer_adapter<texture_cache::SECTOR_WORDS>(
             texture_fill_r, texture_fill_response_s, texture_fill_transfer_s,
             texture_fill_transfer_response_r);
         spawn de10_adapter::transfer_arbiter2(
@@ -3643,7 +3728,6 @@ fn step_updates_texture_state_and_layout() {
     assert_eq(state.texture.tex_base, u32:0x00012345);
     assert_eq(state.texture_layout[410+:u22], u22:0x91a28);
 }
-
 #[test]
 fn step_maps_tmu_register_aliases() {
     let state = initial_state();
@@ -4012,13 +4096,15 @@ proc core_sim_proc_test {
 
 #[test_proc]
 proc hosted_pixel_blend_read_access_test {
-    work_s: chan<InterpolatedPixelJob> out;
+    work_s: chan<PixelInterpolatedValues> out;
+    context_s: chan<ReadPixelContext> out;
     job_r: chan<ReadPixelJob> in;
     reads_r: chan<memory::MemoryRequestPair> in;
     terminator: chan<bool> out;
 
     config(terminator: chan<bool> out) {
-        let (work_s, work_r) = chan<InterpolatedPixelJob>("work");
+        let (work_s, work_r) = chan<PixelInterpolatedValues>("work");
+        let (context_s, context_r) = chan<ReadPixelContext>("context");
         let (texture_s, texture_r) = chan<TexturePixelJob>("texture");
         let (job_s, job_r) = chan<ReadPixelJob>("job");
         let (reads_s, reads_r) = chan<memory::MemoryRequestPair>("reads");
@@ -4026,9 +4112,10 @@ proc hosted_pixel_blend_read_access_test {
         let (_, cache_r) = chan<PixelCacheResponse>("cache_response");
         let (start_s, _) = chan<u1>("start");
         let (done_s, _) = chan<u1>("done");
-        spawn hosted_pixel_texture_requests<false>(work_r, texture_s, cache_s, reads_s, start_s);
+        spawn hosted_pixel_texture_requests<false>(
+            work_r, context_r, texture_s, cache_s, reads_s, start_s);
         spawn hosted_pixel_read_pipeline<false>(texture_r, job_s, cache_r, done_s);
-        (work_s, job_r, reads_r, terminator)
+        (work_s, context_s, job_r, reads_r, terminator)
     }
 
     init { () }
@@ -4039,6 +4126,56 @@ proc hosted_pixel_blend_read_access_test {
             let depth = flags[1+:u1];
             let subtract = flags[2+:u1];
             let visible = flags[3+:u1];
+#[test_proc]
+proc hosted_pixel_interpolation_color_width_test {
+    job_s: chan<PixelJob> out;
+    work_r: chan<PixelInterpolatedValues> in;
+    context_r: chan<ReadPixelContext> in;
+    terminator: chan<bool> out;
+
+    config(terminator: chan<bool> out) {
+        let (job_s, job_r) = chan<PixelJob>("job");
+        let (work_s, work_r) = chan<PixelInterpolatedValues>("work");
+        let (context_s, context_r) = chan<ReadPixelContext>("context");
+        let (profile_s, _) = chan<u1>("profile");
+        spawn hosted_pixel_interpolation_stage<false>(job_r, work_s, context_s, profile_s);
+        (job_s, work_r, context_r, terminator)
+    }
+
+    init { () }
+
+    next(state: ()) {
+        let cases = s32[8]:[-1, 0, 4095, 4096, 1048575, 1048576, -2147483648, 2147483647];
+        let tok = unroll_for! (i, tok): (u4, token) in u4:0..u4:8 {
+            let value = cases[i];
+            let registers = for (index, registers): (u8, RegisterFile) in u8:8..u8:16 {
+                write_addressed_register_file(registers, index, value as u32, u4:15)
+            }(initial_state().registers);
+            let core = pixel_context(CoreState { registers, ..initial_state() }, i as s16);
+            let candidate =
+                raster_state::PixelCandidate { valid: u1:1, x: i as s16, y: -(i as s16) };
+            let tok = send(tok, job_s, PixelJob { core, candidate, last: i as u1 });
+            let (tok, values) = recv(tok, work_r);
+            let (tok, context) = recv(tok, context_r);
+            let work = InterpolatedPixelJob { context, values };
+            let expected = color_channel(value as s48);
+            assert_eq(work.context.base_lod, i as s16);
+            assert_eq(work.context.candidate, candidate);
+            assert_eq(work.context.last, i as u1);
+            assert_eq(work.values.red, expected);
+            assert_eq(work.values.green, expected);
+            assert_eq(work.values.blue, expected);
+            assert_eq(work.values.alpha, expected);
+            assert_eq(work.values.z, value as s48);
+            assert_eq(work.values.s, value as s48);
+            assert_eq(work.values.t, value as s48);
+            assert_eq(work.values.w, value as s48);
+            tok
+        }(join());
+        send(tok, terminator, true);
+    }
+}
+
             let context = ReadPixelContext {
                 alpha_mode: (blend as u32) << u32:4,
                 fbz_mode: u21:0x200 | ((depth as u21) << u21:4) | ((subtract as u21) << u21:19),
@@ -4048,9 +4185,8 @@ proc hosted_pixel_blend_read_access_test {
                 },
                 ..zero!<ReadPixelContext>()
             };
-            let tok = send(
-                tok, work_s,
-                InterpolatedPixelJob { context, values: zero!<PixelInterpolatedValues>() });
+            let tok = send(tok, context_s, context);
+            let tok = send(tok, work_s, zero!<PixelInterpolatedValues>());
             let (tok, job) = recv(tok, job_r);
             let (tok, reads, received) =
                 recv_non_blocking(tok, reads_r, zero!<memory::MemoryRequestPair>());

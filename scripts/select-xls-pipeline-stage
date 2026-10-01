@@ -1,0 +1,33 @@
+#!/usr/bin/env python3
+import argparse
+from pathlib import Path
+import re
+import sys
+
+def select(base, replacement, prefix="__core_sim__hosted_pixel_texture_requests_"):
+    module = re.compile(r"^module (" + re.escape(prefix) + r"[^\s(]+)\s*\(.*?^endmodule\b", re.M | re.S)
+    original, alternate = list(module.finditer(base)), list(module.finditer(replacement))
+    if len(original) != 1 or len(alternate) != 1:
+        raise ValueError("expected exactly one selected pipeline in each RTL input")
+    old, new = original[0], alternate[0]
+    old_ports = re.sub(r"\s+", "", old.group().split(");", 1)[0])
+    new_ports = re.sub(r"\s+", "", new.group().split(");", 1)[0])
+    if old_ports != new_ports:
+        raise ValueError("selected pipeline interfaces differ")
+    return base[:old.start()] + new.group() + base[old.end():]
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("base", type=Path)
+    parser.add_argument("replacement", type=Path)
+    parser.add_argument("--prefix", default="__core_sim__hosted_pixel_texture_requests_")
+    args = parser.parse_args()
+    try:
+        sys.stdout.write(select(args.base.read_text(), args.replacement.read_text(), args.prefix))
+    except (ValueError, OSError) as error:
+        parser.exit(1, f"{error}\n")
+
+
+if __name__ == "__main__":
+    main()

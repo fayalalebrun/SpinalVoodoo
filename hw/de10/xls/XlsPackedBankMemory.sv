@@ -152,7 +152,7 @@ module XlsPackedBankMemoryArray #(
     .address_a(port_a_address),
     .address_b(read0_address),
     .byteena_a(write_mask),
-    .byteena_b(4'hf),
+    .byteena_b(1'b1),
     .clock0(clk),
     .clock1(clk),
     .clocken0(1'b1),

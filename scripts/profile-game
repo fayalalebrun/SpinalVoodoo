@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+import argparse
+import hashlib
+import html
+import json
+import math
+from pathlib import Path
+import runpy
+
+
+def wall_time_overview(report):
+    states = report['states']
+    elapsed = report['window']['end'] - report['window']['start']
+    if any(isinstance(v, bool) or not math.isfinite(v) or v < 0 for v in states.values()):
+        raise ValueError('invalid scheduler duration')
+    if elapsed <= 0 or not math.isclose(sum(states.values()), elapsed, rel_tol=0, abs_tol=1e-8):
+        raise ValueError('scheduler states do not conserve wall time')
+    blocked, runnable, samples = report['hierarchies']
+    for tree, value, unit in ((blocked, states['blocked'], 'seconds'),
+                              (runnable, states['runnable'], 'seconds'),
+                              (samples, report['sample_count'], 'samples')):
+        if tree['unit'] != unit or not math.isclose(tree['value'], value, rel_tol=0, abs_tol=1e-8):
+            raise ValueError('hierarchy does not match scheduler/sample totals')
+    def scaled(node):
+        return dict(label=node['label'], value=node['value'] * states['on_cpu'] / samples['value'],
+                    unit='seconds', estimated=True, children=[scaled(c) for c in node['children']])
+    cpu_children = [scaled(c) for c in samples['children']] if samples['value'] else [
+        dict(label='[No CPU samples: attribution unavailable]', value=states['on_cpu'],
+             unit='seconds', children=[])]
+    return dict(label='Overall wall time', value=elapsed, unit='seconds', overview=True, children=[
+        dict(label='Scheduled on CPU — measured total; estimated function shares', value=states['on_cpu'],
+             unit='seconds', children=cpu_children),
+        dict(blocked, label='Blocked / sleeping — measured'),
+        dict(runnable, label='Runnable / waiting for CPU — measured'),
+        dict(label='Unknown scheduler state', value=states['unknown'], unit='seconds', children=[])])
+
+
+def render(report):
+    if report.get('schema') != 'profile-stacks/1':
+        raise ValueError('requires profile-stacks/1 JSON; historical HTML remains preserved')
+    def validate(node):
+        value = node['value']
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+            raise ValueError('invalid stack weight')
+        for child in node['children']:
+            validate(child)
+        if node['children'] and not math.isclose(sum(c['value'] for c in node['children']), value, abs_tol=1e-8):
+            raise ValueError('stack weights do not conserve')
+    for tree in report['hierarchies']:
+        validate(tree)
+    overview = wall_time_overview(report)
+    validate(overview)
+    template = Path(__file__).with_name('profile-stacks.html').read_text()
+    template = template.replace('OVERVIEW_JSON', html.escape(json.dumps(overview, allow_nan=False)))
+    coverage = f'Target CPU samples: {report["sample_count"]}; missing sample stacks: {report["missing_sample_stacks"]}.'
+    if report.get('leaf_only_samples'):
+        coverage += f' Of these, {report["leaf_only_samples"]} have sampled instruction names but no caller stack.'
+    return template.replace('COVERAGE_TEXT', html.escape(coverage)).replace('REPORT_JSON', html.escape(json.dumps(report, allow_nan=False)))
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Stack-based perf import and JSON-only HTML')
+    sub = parser.add_subparsers(dest='command', required=True)
+    imp = sub.add_parser('import')
+    imp.add_argument('--perf-script', type=Path, required=True)
+    imp.add_argument('--tid', type=int, required=True)
+    imp.add_argument('--sample-leaves', type=Path)
+    imp.add_argument('--start', type=float)
+    imp.add_argument('--end', type=float)
+    imp.add_argument('--output', type=Path, required=True)
+    imp.add_argument('--label', default='Unlabeled capture')
+    imp.add_argument('--warning', action='append', default=[])
+    page = sub.add_parser('render')
+    page.add_argument('report', type=Path)
+    page.add_argument('--output', type=Path, required=True)
+    args = parser.parse_args()
+    try:
+        if args.command == 'import':
+            module = runpy.run_path(str(Path(__file__).with_name('profile_stacks.py')))
+            source = args.perf_script.read_bytes()
+            events = module['parse'](source.decode())
+            leaf_source = args.sample_leaves.read_bytes() if args.sample_leaves else None
+            if leaf_source is not None:
+                module['add_sample_leaves'](events, leaf_source.decode(), args.tid)
+            report = module['analyze'](events, args.tid,
+                                       args.start if args.start is not None else events[0]['time'],
+                                       args.end if args.end is not None else events[-1]['time'])
+            report['evidence'] = dict(path=str(args.perf_script), sha256=hashlib.sha256(source).hexdigest())
+            if leaf_source is not None:
+                report['evidence']['sample_leaves'] = dict(path=str(args.sample_leaves), sha256=hashlib.sha256(leaf_source).hexdigest())
+                report['warnings'].append('Instruction-only entries name sampled PCs; their caller stacks remain missing. Leaf export must come from the same perf.data and symbolization as the stack export.')
+            report['label'] = args.label
+            report['warnings'].extend(args.warning)
+            content = json.dumps(report, indent=2, allow_nan=False) + '\n'
+        else:
+            content = render(json.loads(args.report.read_text()))
+        with args.output.open('x') as target:
+            target.write(content)
+    except (OSError, ValueError, KeyError, TypeError, IndexError) as error:
+        parser.exit(1, str(error) + '\n')
+
+
+if __name__ == '__main__':
+    main()

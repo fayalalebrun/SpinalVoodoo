@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import time
+import shutil
+import stat
+import subprocess
+
+
+def observe(root, pid):
+    base = root / str(pid)
+    fields = (base / 'stat').read_text().rsplit(')', 1)[1].split()
+    if int(fields[17]) != 1:
+        raise ValueError('requires a single-thread target')
+    return dict(starttime=int(fields[19]), exe=os.readlink(base / 'exe'),
+                cmdline=(base / 'cmdline').read_bytes().decode(errors='replace').split('\0'),
+                maps_sha256=hashlib.sha256((base / 'maps').read_bytes()).hexdigest(),
+                monotonic=time.monotonic())
+
+
+def command(perf, pid, duration, output, call_graph='dwarf,8192'):
+    return [perf, 'record', '-o', str(output / 'perf.data'), '--clockid', 'mono',
+            '--no-buildid', '-m', '1024', '-a', '-e', 'cpu-clock/period=10000000/',
+            '-e', 'sched:sched_switch', '--filter', f'prev_pid == {pid} || next_pid == {pid}',
+            '-e', 'sched:sched_wakeup', '--filter', f'pid == {pid}',
+            '--call-graph', call_graph, '--', 'sleep', str(duration)]
+
+
+def mapped_files(maps):
+    paths = set()
+    for line in maps.splitlines():
+        fields = line.split(maxsplit=5)
+        if len(fields) != 6 or not fields[5].startswith('/'):
+            continue
+        source = Path(fields[5])
+        mode = source.stat().st_mode
+        if stat.S_ISCHR(mode) or stat.S_ISBLK(mode):
+            if 'x' in fields[1]:
+                raise ValueError('executable device mapping cannot be symbolized')
+            continue
+        if not stat.S_ISREG(mode):
+            raise ValueError('unsupported mapped file: ' + str(source))
+        paths.add(str(source))
+    return paths
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Unmodified target: perf callchains plus 100Hz software CPU sampling')
+    parser.add_argument('--pid', type=int, required=True)
+    parser.add_argument('--duration', type=int, default=5)
+    parser.add_argument('--perf', default='perf')
+    parser.add_argument('--call-graph', choices=('fp', 'dwarf,8192'), default='dwarf,8192')
+    parser.add_argument('--output', type=Path, required=True)
+    args = parser.parse_args()
+    if args.pid <= 0 or not 1 <= args.duration <= 60:
+        parser.error('positive pid and duration 1..60 required')
+    args.output.mkdir(parents=True, exist_ok=False)
+
+    snapshot = dict(status='FAILED', pid=args.pid)
+    try:
+        before = observe(Path('/proc'), args.pid)
+        maps = Path(f'/proc/{args.pid}/maps').read_text()
+        (args.output / 'maps').write_text(maps)
+        (args.output / 'kallsyms').write_text(Path('/proc/kallsyms').read_text())
+        paths = mapped_files(maps)
+        artifacts = {}
+        for name in sorted(paths):
+            source = Path(name)
+            if not source.is_file():
+                raise ValueError('mapped file missing: ' + name)
+            target = args.output / 'symbols' / name.lstrip('/')
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, target)
+            artifacts[name] = hashlib.sha256(target.read_bytes()).hexdigest()
+        argv = command(args.perf, args.pid, args.duration, args.output, args.call_graph)
+        with (args.output / 'record.log').open('x') as log:
+            subprocess.run(argv, stdout=log, stderr=subprocess.STDOUT, check=True)
+        after = observe(Path('/proc'), args.pid)
+        for key in ('starttime', 'exe', 'cmdline', 'maps_sha256'):
+            if before[key] != after[key]:
+                raise ValueError('target identity/maps changed during capture')
+        snapshot.update(status='RECORDED', before=before, after=after, command=argv, mapped_sha256=artifacts,
+                        warning='Recording is not validation: decode with --show-lost-events; check stack quality, loss and overhead before use.')
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        snapshot['error'] = str(error)
+    (args.output / 'snapshot.json').write_text(json.dumps(snapshot, indent=2) + '\n')
+    if snapshot['status'] != 'RECORDED':
+        parser.exit(1, snapshot['error'] + '\n')
+
+
+if __name__ == '__main__':
+    main()

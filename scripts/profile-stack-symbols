@@ -1,0 +1,60 @@
+#!/usr/bin/env python3
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import re
+import subprocess
+import tempfile
+
+
+def merge(binary, debug, output, readelf='readelf', objcopy='objcopy'):
+    def identity(path):
+        text = subprocess.check_output([readelf, '-n', str(path)], text=True)
+        ids = re.findall(r'Build ID: ([0-9a-f]+)', text)
+        if len(ids) != 1:
+            raise ValueError('requires exactly one ELF build ID: ' + str(path))
+        return ids[0]
+    build_id = identity(binary)
+    if identity(debug) != build_id:
+        raise ValueError('debug ELF build ID mismatch')
+    if output.exists():
+        raise ValueError('symbol output must be new')
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        expanded, frame, result = root / 'debug.elf', root / 'frame', root / 'result'
+        subprocess.run([objcopy, '--decompress-debug-sections', str(debug), str(expanded)], check=True)
+        subprocess.run([objcopy, '--dump-section', '.debug_frame=' + str(frame), str(expanded)], check=True)
+        if not frame.is_file() or not frame.stat().st_size:
+            raise ValueError('matching debug ELF lacks .debug_frame')
+        subprocess.run([objcopy, '--add-section', '.debug_frame=' + str(frame), str(binary), str(result)], check=True)
+        if identity(result) != build_id:
+            raise ValueError('symbol-copy build ID changed')
+        for name in ('.text', '.data'):
+            for source, target in ((binary, root / 'before'), (result, root / 'after')):
+                subprocess.run([objcopy, '--dump-section', name + '=' + str(target), str(source), str(root / 'discard')], check=True)
+            if (root / 'before').read_bytes() != (root / 'after').read_bytes():
+                raise ValueError('symbol merge altered loaded data')
+        with output.open('xb') as target:
+            target.write(result.read_bytes())
+    return dict(build_id=build_id, binary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest(),
+                debug_sha256=hashlib.sha256(debug.read_bytes()).hexdigest(),
+                output_sha256=hashlib.sha256(output.read_bytes()).hexdigest())
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Offline symbol copy only: attach matching split-debug CFI for perf ARM unwinding')
+    parser.add_argument('--binary', type=Path, required=True)
+    parser.add_argument('--debug', type=Path, required=True)
+    parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--readelf', default='readelf')
+    parser.add_argument('--objcopy', default='objcopy')
+    args = parser.parse_args()
+    try:
+        print(json.dumps(merge(args.binary, args.debug, args.output, args.readelf, args.objcopy), indent=2))
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        parser.exit(1, str(error) + '\n')
+
+
+if __name__ == '__main__':
+    main()

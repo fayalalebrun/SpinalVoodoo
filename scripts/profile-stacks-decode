@@ -1,0 +1,39 @@
+#!/usr/bin/env python3
+import argparse
+from pathlib import Path
+import re
+import subprocess
+
+
+def decode(perf, data, symbols, kallsyms, output):
+    base = [perf, 'script', '-i', str(data), '--symfs', str(symbols.resolve()), '--kallsyms', str(kallsyms)]
+    with output.with_suffix(output.suffix + '.decode.log').open('x') as log:
+        stats = subprocess.check_output([perf, 'report', '--stdio', '--stats', '--no-children',
+                                         '--percent-limit', '100', '-i', str(data)], stderr=log, text=True)
+        with output.with_suffix(output.suffix + '.stats').open('x') as target:
+            target.write(stats)
+        if 'Aggregated stats:' not in stats or not re.search(r'SAMPLE events:\s+[1-9]', stats):
+            raise ValueError('missing perf record statistics')
+        if re.search(r'(?:LOST(?:_SAMPLES)?|THROTTLE|UNTHROTTLE) events:\s+[1-9]', stats):
+            raise ValueError('lost or throttled perf records; capture rejected')
+        with output.open('x') as target:
+            subprocess.run(base + ['--ns', '--show-lost-events', '-F', 'comm,tid,time,event,trace,ip,sym,dso'],
+                           stdout=target, stderr=log, check=True)
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Audit perf loss/throttle records and export symbolized stacks')
+    parser.add_argument('--perf', default='perf')
+    parser.add_argument('--data', type=Path, required=True)
+    parser.add_argument('--symbols', type=Path, required=True)
+    parser.add_argument('--kallsyms', type=Path, required=True)
+    parser.add_argument('--output', type=Path, required=True)
+    args = parser.parse_args()
+    try:
+        decode(args.perf, args.data, args.symbols, args.kallsyms, args.output)
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        parser.exit(1, str(error) + '\n')
+
+
+if __name__ == '__main__':
+    main()

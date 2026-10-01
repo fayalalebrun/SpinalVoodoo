@@ -1,0 +1,50 @@
+#!/usr/bin/env python3
+import argparse
+from pathlib import Path
+import runpy
+
+ROOT = Path(__file__).resolve().parent.parent
+replace_once = runpy.run_path(str(ROOT / 'scripts/prepare-mister-dosbox'))['replace_once']
+
+
+def integrate(cache, decoder):
+    cache = '#include "dosbox_jitdump.h"\n' + cache
+    for number in (1, 2):
+        site = f'dyn_return(BR_Link{number},false);'
+        if cache.count(site) != 2:
+            raise ValueError('expected initialization and reset link stubs')
+        block = f'link_blocks[{number - 1}].cache'
+        cache = cache.replace(site, site + f'\n        mister_jit::load({block}.xstart, {block}.start, size_t(cache.pos - {block}.start), "dynrec-link-{number}");')
+    cache = replace_once(cache, '\t\tdyn_run_code();', '\t\tdyn_run_code();\n        mister_jit::load(cache_rwtox(&cache_code_link_blocks[64]), &cache_code_link_blocks[64], size_t(cache.pos - &cache_code_link_blocks[64]), "dynrec-dispatch");')
+    site = '\tcache_block_closing(decode.block->cache.start,decode.block->cache.size);'
+    decoder = replace_once(decoder, site, site + '''
+    char jit_name[96];
+    std::snprintf(jit_name, sizeof(jit_name), "dynrec-guest-linear-%08lx-%s",
+                  (unsigned long)decode.code_start, cpu.code.big ? "32bit" : "16bit");
+    mister_jit::load(decode.block->cache.xstart, decode.block->cache.start,
+                     size_t(cache.pos - decode.block->cache.start), jit_name);''')
+    return cache, decoder
+
+
+def enable(directory):
+    directory = directory.resolve()
+    if not directory.is_relative_to(ROOT / 'output') or directory.is_relative_to(ROOT / 'output/mister/sources'):
+        raise ValueError('use a private DOSBox build copy under output, not pinned sources')
+    target = directory / 'src/cpu/core_dynrec'
+    header = target / 'dosbox_jitdump.h'
+    if header.exists():
+        raise ValueError('jitdump integration already exists; use a fresh copy')
+    cache, decoder = integrate((target / 'cache.h').read_text(), (target / 'decoder_basic.h').read_text())
+    header.write_bytes((ROOT / 'emu/mister/dosbox_jitdump.h').read_bytes())
+    (target / 'cache.h').write_text(cache)
+    (target / 'decoder_basic.h').write_text(decoder)
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Opt-in jitdump integration for a private DOSBox build copy')
+    parser.add_argument('directory', type=Path)
+    args = parser.parse_args()
+    try:
+        enable(args.directory)
+    except (OSError, ValueError) as error:
+        parser.exit(1, str(error) + '\n')

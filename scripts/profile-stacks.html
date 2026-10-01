@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stack profile · CPU and waits</title>
+<style>
+:root{color-scheme:light;font:15px system-ui,sans-serif;color:#203044;background:#f3f5f8}*{box-sizing:border-box}body{margin:0}main{max-width:1500px;margin:auto;padding:32px}h1{font-size:30px;letter-spacing:-1px;margin:8px 0}h2{font-size:18px;margin:0}p{line-height:1.5}.eyebrow{font-size:12px;font-weight:750;letter-spacing:2px;color:#526783}.subtitle{color:#536278;margin:8px 0 24px}.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:20px 0}.card,section{background:white;border:1px solid #d9e0e9;border-radius:10px}.card{padding:16px;border-top:3px solid var(--tone)}.card strong{display:block;font-size:26px;margin:6px 0}.muted{color:#59677a;font-size:13px}.quality{padding:16px 20px;background:#fff7e7;border:1px solid #e7c57d;border-left:4px solid #bc770c;border-radius:8px}.quality ul{margin:8px 0;padding-left:22px}.quality li{margin:5px 0;line-height:1.45}section{padding:20px;margin:20px 0}.toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:16px 0}input,button{font:inherit;border:1px solid #b7c3d3;border-radius:5px;padding:8px 12px;background:white;color:inherit}input{min-width:220px}button{cursor:pointer}button:hover{background:#e9eef5}button:disabled{opacity:.5;cursor:default}:focus-visible{outline:3px solid #215bc4;outline-offset:2px}.graph{position:relative;width:100%;margin-top:14px;overflow:hidden;background:#f3f5f8;border-radius:5px}.frame{position:absolute;padding:0 7px;border:1px solid white;border-radius:3px;height:27px;text-align:left;font:12px ui-monospace,monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;color:#182333}.frame:hover{filter:brightness(.94);z-index:2}.frame.match{box-shadow:inset 0 0 0 2px #7d218f}.frame.dim{opacity:.3}.path{font:12px ui-monospace,monospace;overflow-wrap:anywhere;margin:10px 0;color:#59677a}.detail{padding:12px;background:#eef2f7;border-radius:5px;overflow-wrap:anywhere;font:13px/1.6 ui-monospace,monospace;min-height:46px}.results{max-height:160px;overflow:auto;margin:8px 0}.results button{font-size:12px;margin:3px;max-width:100%;overflow-wrap:anywhere;text-align:left}.hint{font-size:12px;color:#59677a}details{margin:20px 0}summary{cursor:pointer}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}#report{display:none}@media(max-width:650px){main{padding:16px}.cards{grid-template-columns:repeat(2,1fr)}section{padding:12px}h1{font-size:25px}input{width:100%;min-width:0}.toolbar{gap:8px}}
+</style>
+<main>
+<div class="eyebrow">PERFORMANCE EXPLORER</div>
+<h1>Where did the time go?</h1>
+<p id="label" class="subtitle"></p>
+<div id="cards" class="cards"></div>
+<aside class="quality" aria-label="Data quality"><strong>Capture quality &amp; limitations</strong><p id="coverage">COVERAGE_TEXT</p><ul id="warnings"></ul></aside>
+<p class="muted">Scheduler cards partition elapsed time. On-CPU stacks use sample counts, not seconds. Missing or truncated stacks do not establish a cause.</p>
+<div id="charts"></div>
+<details><summary>Raw JSON evidence</summary><pre id="evidence"></pre></details>
+<noscript>This interactive report requires JavaScript. Raw JSON remains embedded in the HTML source.</noscript>
+</main>
+<pre id="report">REPORT_JSON</pre>
+<pre id="overview" hidden>OVERVIEW_JSON</pre>
+<script type="module">
+const report=JSON.parse(document.querySelector('#report').textContent);
+const make=(tag,text,cls)=>{const e=document.createElement(tag);if(text!==undefined)e.textContent=text;if(cls)e.className=cls;return e};
+document.querySelector('#label').textContent=report.label||'Unlabeled capture';
+document.querySelector('#evidence').textContent=JSON.stringify(report,null,2);
+const elapsed=Object.values(report.states).reduce((a,b)=>a+b,0);
+for(const [key,name,color] of [['on_cpu','Scheduled on CPU','#558cc4'],['blocked','Blocked / sleeping','#d6a046'],['runnable','Runnable / waiting for CPU','#8b72bb'],['unknown','Unknown state','#8a97a8']]){
+ const value=report.states[key];const card=make('div',undefined,'card');card.style.setProperty('--tone',color);card.append(make('span',name,'muted'),make('strong',`${(value*1000).toFixed(2)} ms`),make('span',`${elapsed?(value/elapsed*100).toFixed(1):0}% of ${(elapsed).toFixed(3)} s window`,'muted'));document.querySelector('#cards').append(card);
+}
+document.querySelector('#coverage').textContent=`Target CPU samples: ${report.sample_count}; missing sample stacks: ${report.missing_sample_stacks}.`+(report.leaf_only_samples?` Of these, ${report.leaf_only_samples} have sampled instruction names but no caller stack.`:'');
+for(const warning of report.warnings)document.querySelector('#warnings').append(make('li',warning));
+const overview=JSON.parse(document.querySelector('#overview').textContent);
+for(const [index,tree] of [overview,...report.hierarchies].entries()){
+ const section=make('section');section.setAttribute('aria-label',tree.label);document.querySelector('#charts').append(section);
+ const format=v=>tree.unit==='samples'?`${v} samples`:`${(v*1000).toFixed(3)} ms`;
+ section.append(make('h2',tree.label),make('p',`${format(tree.value)} total · Width = inclusive ${tree.unit==='samples'?'sample count':'duration'}. Root at top, callees below.`,'muted'));
+ if(tree.overview)section.append(make('p','Start here: every branch uses the full capture as its denominator. CPU function widths are estimates: scheduled CPU time × sample share, including missing stacks. Hatched blue frames are estimates, not measured function durations. Parents include children; never add vertically.','hint'));
+ const toolbar=make('div',undefined,'toolbar'),label=make('label','Find symbol'),search=make('input'),reset=make('button','Reset zoom'),back=make('button','Back'),status=make('span','','muted');
+ search.id=`search-${index}`;search.type='search';search.placeholder='e.g. nanosleep';label.htmlFor=search.id;toolbar.append(label,search,back,reset,status);section.append(toolbar);
+ const path=make('div','','path'),graph=make('div',undefined,'graph'),detail=make('div','Hover or focus a frame to inspect its full symbol and weight.','detail'),results=make('div',undefined,'results');
+ status.setAttribute('aria-live','polite');section.append(path,graph,make('p','Click a frame (or Tab, then Enter) to zoom. Search results include frames too narrow to label.','hint'),detail,results);
+ const parents=new Map(),all=[];function visit(n,parent){parents.set(n,parent);all.push(n);n.children.forEach(c=>visit(c,n))}visit(tree,null);
+ let root=tree;
+ const color=n=>{let hash=0;for(const c of n.label)hash=(hash*31+c.charCodeAt(0))|0;return `hsl(${Math.abs(hash)%55+25} 72% ${76+Math.abs(hash)%10}%)`};
+ const describe=n=>`${n.label} — ${n.estimated?'ESTIMATED ':''}${format(n.value)} · ${tree.unit==='seconds'?`${elapsed?(100*n.value/elapsed).toFixed(2):0}% of wall time · `:''}${tree.value?(100*n.value/tree.value).toFixed(2):0}% of ${tree.overview?'wall time (root)':'category total'} · ${root.value?(100*n.value/root.value).toFixed(2):0}% of zoom`;
+ function draw(){
+  graph.replaceChildren();results.replaceChildren();const query=search.value.trim().toLowerCase();let depthMax=0;const ancestors=[];for(let n=root;n;n=parents.get(n))ancestors.unshift(n.label);path.textContent=ancestors.join(' → ');reset.disabled=root===tree;back.disabled=root===tree;
+  function row(n,x,width,depth){depthMax=Math.max(depthMax,depth);if(width>0){const button=make('button',`${n.estimated?'≈ ':''}${n.label}`,'frame');button.style.cssText=`left:${x}%;width:${width}%;top:${depth*28}px;background:${color(n)}`;if(n.estimated)button.style.background='repeating-linear-gradient(135deg,#c9dff4,#c9dff4 5px,#dceaf8 5px,#dceaf8 10px)';button.title=describe(n);button.setAttribute('aria-label',describe(n));if(query)button.classList.add(n.label.toLowerCase().includes(query)?'match':'dim');button.onmouseenter=button.onfocus=()=>{detail.textContent=describe(n)};button.onclick=()=>{root=n;draw();detail.textContent=describe(n);reset.focus()};graph.append(button)}let offset=x;for(const child of n.children){const w=n.value?width*child.value/n.value:0;row(child,offset,w,depth+1);offset+=w}}
+  row(root,0,root.value?100:0,0);graph.style.height=`${root.value?(depthMax+1)*28:50}px`;if(!root.value)graph.append(make('p','No observations in this category.','muted'));
+  const matches=query?all.filter(n=>n.label.toLowerCase().includes(query)):[];status.textContent=query?`${matches.length} matching frames`:'All frames';
+  for(const n of matches){const b=make('button',`${n.label} · ${format(n.value)}`);b.onclick=()=>{root=n;draw();detail.textContent=describe(n);reset.focus()};results.append(b)}
+ }
+ search.oninput=draw;reset.onclick=()=>{root=tree;draw()};back.onclick=()=>{root=parents.get(root)||tree;draw()};draw();
+}
+</script>
+</html>

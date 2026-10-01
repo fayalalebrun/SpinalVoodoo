@@ -7,7 +7,7 @@ The maintained profiler uses upstream Linux `perf`, not manual application scope
 Start an uninstrumented target, visually confirm the workload, and select its single-thread PID. On the authorized board:
 
 ```sh
-python3 scripts/profile-stacks-collect --pid PID --duration 3 \
+python3 diagnostics/profiling/profile-stacks-collect --pid PID --duration 3 \
   --perf /path/to/perf --call-graph dwarf,8192 --output new-capture
 ```
 
@@ -19,10 +19,10 @@ The recorder requests `cpu-clock/period=10000000/`, `sched:sched_switch` filtere
 
 The stripped ARM libc contains EHABI tables but essentially no DWARF unwind tables. Its matching split-debug ELF contains `.debug_frame`. Without that data, both frame-pointer and ordinary DWARF decoding stopped in libc on the test workload.
 
-Use exact matching debug artifacts, never similarly named libraries. `scripts/profile-stack-symbols` verifies matching ELF build IDs, attaches `.debug_frame` to an **offline symbol copy**, and checks `.text` and `.data` bytes remain unchanged. It never deploys or changes the running library:
+Use exact matching debug artifacts, never similarly named libraries. `diagnostics/profiling/profile-stack-symbols` verifies matching ELF build IDs, attaches `.debug_frame` to an **offline symbol copy**, and checks `.text` and `.data` bytes remain unchanged. It never deploys or changes the running library:
 
 ```sh
-python3 scripts/profile-stack-symbols --binary captured/libc.so.6 \
+python3 diagnostics/profiling/profile-stack-symbols --binary captured/libc.so.6 \
   --debug matching-build-id.debug --output new-symbol-libc.so.6 \
   --readelf armv7l-unknown-linux-gnueabihf-readelf \
   --objcopy armv7l-unknown-linux-gnueabihf-objcopy
@@ -35,12 +35,12 @@ Put the new copy in a separate symbol-root directory at the original absolute DS
 Copy capture artifacts to the host. Use the existing perf in `nix develop`:
 
 ```sh
-nix develop --command python3 scripts/profile-stacks-decode \
+nix develop --command python3 diagnostics/profiling/profile-stacks-decode \
   --data new-capture/perf.data --symbols /absolute/symbol-root \
   --kallsyms new-capture/kallsyms --output new-capture/perf.script
-python3 scripts/profile-game import --perf-script new-capture/perf.script \
+python3 diagnostics/profiling/profile-game import --perf-script new-capture/perf.script \
   --tid PID --output report.json
-python3 scripts/profile-game render report.json --output report.html
+python3 diagnostics/profiling/profile-game render report.json --output report.html
 ```
 
 Decode audits `perf report --stats` for lost/throttled records and requires sample records, then runs symbolized `perf script --ns --show-lost-events`. Decoder logs and statistics remain alongside the script. Import rejects malformed or unordered records and impossible target transitions. Optional `--start`/`--end` select an interior monotonic window; defaults cover the recorded event range, not recorder startup/shutdown overhead.
@@ -57,7 +57,7 @@ Wakeup callchains belong to the waker, not the sleeping thread; they are never s
 
 ## Verified evidence and limitations
 
-On the ARM board, the uninstrumented synthetic workload in `test/profile_stack_workload.c` produced 174 target CPU samples over about two seconds. With matching libc CFI, blocked stacks resolve through `main → sample_work → sample_sleep → __nanosleep → __clock_nanosleep_time64 → __internal_syscall_cancel`, with kernel frames through `do_nanosleep`; CPU samples resolve `sample_busy`. See `output/profiles/stack-dwarf-audited-v2.{json,html}`, its `.script.stats`, original data, and preserved failed decodes. This validates the capture/unwind path, not DOSBox guest/JIT stacks or game performance.
+On the ARM board, the uninstrumented synthetic workload in `diagnostics/profiling/tests/profile_stack_workload.c` produced 174 target CPU samples over about two seconds. With matching libc CFI, blocked stacks resolve through `main → sample_work → sample_sleep → __nanosleep → __clock_nanosleep_time64 → __internal_syscall_cancel`, with kernel frames through `do_nanosleep`; CPU samples resolve `sample_busy`. See `output/profiles/stack-dwarf-audited-v2.{json,html}`, its `.script.stats`, original data, and preserved failed decodes. This validates the capture/unwind path, not DOSBox guest/JIT stacks or game performance.
 
 Hardware PMU interrupts on this board remain unsuitable; software-clock sampling avoids that issue. No eBPF support is assumed. The private upstream ARM perf build omits optional BPF metadata and warns about it; scheduler/software sampling works. A host perf raw `script -D` audit crashed on ARM register dumps; the maintained decoder instead uses the successful record-statistics audit.
 
@@ -69,7 +69,7 @@ Next: obtain matching DOSBox/runtime unwind data or build a controlled debug-inf
 
 ## Naming DOSBox dynamic code
 
-`python3 scripts/enable-mister-jitdump PRIVATE_BUILD_COPY` adds opt-in metadata emission to an existing private DOSBox source/build copy under `output/`. It refuses pinned sources and duplicate integration; it is deliberately separate from normal `prepare-mister-dosbox --check`. Preserve the original build and rebuild the private copy using its original compiler/flags. The retained Clang PIE diagnostic build is `output/mister/dosbox-jitdump-build`; its build command/logs are under `output/profiles/build-dosbox-jitdump.sh` and `dosbox-jitdump-build-v2.log`.
+`python3 diagnostics/profiling/enable-mister-jitdump PRIVATE_BUILD_COPY` adds opt-in metadata emission to an existing private DOSBox source/build copy under `output/`. It refuses pinned sources and duplicate integration; it is deliberately separate from normal `prepare-mister-dosbox --check`. Preserve the original build and rebuild the private copy using its original compiler/flags. The retained Clang PIE diagnostic build is `output/mister/dosbox-jitdump-build`; its build command/logs are under `output/profiles/build-dosbox-jitdump.sh` and `dosbox-jitdump-build-v2.log`.
 
 Set `MISTER_JITDUMP_DIR` to an existing absolute directory on an executable filesystem **before starting DOSBox**. With the variable absent, no dump is opened. Record with upstream `perf record --clockid mono` from process launch. Keep the complete `jit-PID.dump` alongside `perf.data`, exact binary identities and logs. Each translated block records its executable address, actual generated length, monotonic timestamp, unique generation index, guest linear start address and 16/32-bit code mode. Link stubs and dispatch have distinct names. A timestamped load record is emitted on each reuse, so old samples are not assigned the final occupant of an address as a static perf map could do. This is single-threaded dynrec metadata, not a scope profiler.
 
@@ -91,9 +91,9 @@ Capture scheduler events and native stacks with `profile-stacks-collect` while J
 ```sh
 perf script --ns -G -i injected.perf --symfs /absolute/symbol-root \
   --kallsyms capture/kallsyms -F comm,tid,time,event,ip,sym,dso > leaves.script
-python3 scripts/profile-game import --perf-script stacks.script \
+python3 diagnostics/profiling/profile-game import --perf-script stacks.script \
   --sample-leaves leaves.script --tid PID --output unified.json
-python3 scripts/profile-game render unified.json --output unified.html
+python3 diagnostics/profiling/profile-game render unified.json --output unified.html
 ```
 
 The importer requires every target CPU sample's PID, timestamp and event type to match exactly, rejects duplicates, and fills only empty callchains. These remain counted as missing caller stacks and appear under **Sampled instruction only — callers unavailable**. Existing native stacks and scheduler accounting are unchanged. Never combine exports from different recordings.
@@ -104,4 +104,4 @@ The importer requires every target CPU sample's PID, timestamp and event type to
 
 Manual scope/wait probes, injected-build preparation, debugger control, instrumented launcher, custom ftrace collectors/parsers, and their tests were removed from maintained source at the user's request. Retired source and all historical JSON/HTML/raw evidence remain under `output/profiles/retired-manual-source` and the original evidence paths. Historical HTML remains viewable; the current importer intentionally does not support retired manual formats.
 
-Validation: `nix develop --command python3 -m unittest discover -s test -p 'test_*.py'`. Tests cover state/stack accounting, waker ownership, clipping, malformed/lost records, loss audit, identity/thread checks, matching-debug validation, conservation, and JSON-only escaped rendering.
+Validation: `nix develop --command python3 -m unittest discover -s diagnostics/profiling/tests -p 'test_*.py'`. Tests cover state/stack accounting, waker ownership, clipping, malformed/lost records, loss audit, identity/thread checks, matching-debug validation, conservation, and JSON-only escaped rendering.

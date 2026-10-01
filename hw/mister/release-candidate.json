@@ -1,0 +1,72 @@
+{
+  "status": "internal-baseline-not-for-release",
+  "core": {
+    "path": "output/mister/quartus-game-fixes/output_files/SpinalVoodoo.rbf",
+    "sha256": "d644e5202a5fc439f08bcb2d59435f6dfafcf634d937949ed46b0e84445c7928",
+    "timing": {
+      "elapsed_seconds": 820,
+      "net_delay_slack_ns": 8.647,
+      "skew_slack_ns": 2.989,
+      "status": "PASS",
+      "timing_records": 120,
+      "worst_slack_ns": 0.044
+    }
+  },
+  "runtime": {
+    "path": "output/mister/runtime-games-lfb-safe",
+    "files": {
+      "bin/dosbox-x": "9503055946ee08b67e9f0b43cd2865307b3e6d46204213b8ff35006e4c016cc9",
+      "dosbox-x.conf": "bfc094df170e1197e16900896d99c870cd0f32695530fed819a7336a812b76cb",
+      "install": "8736b935056ad6bc7a870baec9aa1b2c3dced93d7a2ca040d5088ac62777571a",
+      "launch": "30b15c9df97e6a3fb54ddf07804d55b49df5f9a4776b9c689805e4d92aec994f",
+      "lib/ld-linux-armhf.so.3": "f78d9ff0bf96f44db189127bae85dc04e3fc332f9e1878ad579c66889ce5ec54",
+      "lib/libSDL2-2.0.so.0": "7d52c2796d51378cc30432bb2a53ddf1fb7c942885d534b7b072d28b5fbd27d0",
+      "lib/libSDL3.so.0": "bba95664456edf435b4d396be57de2e88540a477d3b5d3124728a88a35686dca",
+      "lib/libatomic.so.1": "213758d117c2de0918207a662020bd0e9012d8c189ec980005fdf1c913c6e42d",
+      "lib/libc.so.6": "95bb360a71fd2b87800082eea3a65e3acf69483c23f577587fdf8aba9444aaa8",
+      "lib/libdl.so.2": "1c59ea90003aaeb84262481be6c4aa5d012d49db285f81d715e588a0035e4bba",
+      "lib/libgcc_s.so.1": "528b3ef4080813ef3024d0dce0a628e0bb2e8b3efae958df9a97adb2be1718db",
+      "lib/libglide2x.so": "1c34bcf0dee0476e595420f97b7e7c59001bbea74e24d22d4725036d15bc7123",
+      "lib/libm.so.6": "19ee46b91a9218540a067eee3a6c928ee452ae1a5d4fc9a41fe8a534b9ca8c11",
+      "lib/libmister_runtime.so": "e581525cd57208175aee494d0b0c28e8101f2a053d01eebdd4ee1fda0a7c03c7",
+      "lib/libpng16.so.16": "e02f5f55ea243c63bdc5082670c0a89fbd355e7ba450676d0f96d0a272b20b1d",
+      "lib/libpthread.so.0": "74df9359e496c1192f3763cdd0222af95a8759a297e9958754414557da7b60bf",
+      "lib/librt.so.1": "864ee10c4ca9b8bf27d08efa55a569b837d541c51d2d272912f21104dc061c7b",
+      "lib/libstdc++.so.6": "eb053002bf78813c05d9b4eeea12d92217ba40a866279660458cbcad50b711e1",
+      "lib/libz.so.1": "67c6af2ffd28f0ebd4ac54f5e47c97ddcaa55150dd8eea308ddb2e95220b263c",
+      "manifest.json": "91f50bf09b3c330a3c88dd1f73980186c1361c38f7823589939294e8ceaa015f",
+      "sources/3w61l7l0b26qld70zk211dqxm8ar4nsv-zlib-armv7l-unknown-linux-gnueabihf-1.3.2.drv.json": "4445a28751ce2f229ff25b7a2be51ae9ff5bada45ea4cc7c5f2ccfcf44c0dcfe",
+      "sources/3w61l7l0b26qld70zk211dqxm8ar4nsv-zlib-armv7l-unknown-linux-gnueabihf-1.3.2.tar.gz": "b70a7847dde02b8978a320fd6e8e4e2b00edf88cbad0751e938fd285bec932f3",
+      "sources/6db27nk9340jsxdnjqyv82w33gl1jrid-libpng-apng-armv7l-unknown-linux-gnueabihf-1.6.58.drv.json": "a4fbccf79c6c0326796de7c3b0828468092ba400910be43f91cc8efdc2fd82b3",
+      "sources/6db27nk9340jsxdnjqyv82w33gl1jrid-libpng-apng-armv7l-unknown-linux-gnueabihf-1.6.58.tar.gz": "d50891356c3500858a770a7fd45397dcee41559d441cea8306a7e04ddb72c4e0",
+      "sources/79mv4g8sqxgrmzz3xj2db4j8ykcjk30f-armv7l-unknown-linux-gnueabihf-gcc-15.2.0-lib.drv.json": "adca2038c96db7195c8cc3fffba73bdc4c26de925e527c608934c4b4688265ee",
+      "sources/79mv4g8sqxgrmzz3xj2db4j8ykcjk30f-armv7l-unknown-linux-gnueabihf-gcc-15.2.0-lib.tar.gz": "c180195b90fd07c9326e978fa3e01dd1a54388401062e4b4bff9375fd014472c",
+      "sources/7n89pajykysvgmv2f34m85q5dpgn1is7-sdl3-armv7l-unknown-linux-gnueabihf-3.4.10-lib.drv.json": "b659b1c7596ab153f6228e2ab0f8544525529da87fc0a7bc2cef1f7ae858a4e3",
+      "sources/7n89pajykysvgmv2f34m85q5dpgn1is7-sdl3-armv7l-unknown-linux-gnueabihf-3.4.10-lib.tar.gz": "e57223ff64b4c7793a6d14ec2c9cedb4c072c8c04004e19c3fb6c53152485f85",
+      "sources/dosbox-x.tar.gz": "a645581a5498c5add6136b7e78291042d0d146914ebcc9a848356baf39b02ee7",
+      "sources/inventory.json": "f8fdfdd704d292929cba6be895ac730efdde0998db003d7765f7e5e5ce0881d9",
+      "sources/krj1yvx96b4b47mlr3ydd7685w4vkjc6-sdl2-compat-armv7l-unknown-linux-gnueabihf-2.32.68.drv.json": "dcb8acc2d5fae7063756b0ff2634d4785960c3057d1f4efe196c1e0a12416ccd",
+      "sources/krj1yvx96b4b47mlr3ydd7685w4vkjc6-sdl2-compat-armv7l-unknown-linux-gnueabihf-2.32.68.tar.gz": "44220fc32794e922e3be66a187512a854c50980f923fe65721594817c06284db",
+      "sources/main.tar.gz": "d0e11e22c914b7d31d7868f4a54d3d22d337cb49dcbd4ac56ed6dbe33210133e",
+      "sources/p4jfxzs6h8khx761b0pih5gk6qbgk5h7-glibc-armv7l-unknown-linux-gnueabihf-2.42-67.drv.json": "2296b7470b60e4a296474a7aeb1df45752138f7feb3d5d3a68e6e2a748d4194b",
+      "sources/p4jfxzs6h8khx761b0pih5gk6qbgk5h7-glibc-armv7l-unknown-linux-gnueabihf-2.42-67.tar.gz": "e721d40981c2a7df3b534bf4aea1795ef75a7111a2a6aeec1ad7584e3892251a",
+      "sources/template.tar.gz": "e3e2a6ce69a8e4f0eeec091e9563ef6a5ef46b21e1ed4c504973a1fbb91c7e88",
+      "sources/worktree.tar.gz": "a62863ae6cf760ee399e6ef72b551fbe35d80e1b119e4ddd9db6da91249053a5"
+    },
+    "selection": "Only checksum-listed files; exclude unlisted benchmark probes, runners, and configurations."
+  },
+  "evidence": {
+    "path": "output/mister/game-fixes/evidence.json",
+    "sha256": "68d143aa10c35eaa800b513b17851125509e3b67eae89eda183f8812fb8e76c1"
+  },
+  "release_gates": {
+    "source_binary_correspondence": "pending audit; source archive integrity verified, not independently rebuilt",
+    "physical_video": "pending revalidation; recent diagnostic HDMI was black",
+    "physical_audio": "not implemented in baseline; core audio tied to zero and framework ALSA disabled",
+    "normal_input": "pending",
+    "game_motion_audio_correctness": "pending",
+    "lifecycle_and_recovery": "pending",
+    "independent_clean_install": "pending"
+  },
+  "performance": "Only historical game-fixes evidence applies to this baseline; later profiling runtimes differ."
+}

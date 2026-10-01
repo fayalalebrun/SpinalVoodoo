@@ -1,0 +1,19 @@
+#!/bin/sh
+set -eu
+if [ "$#" -ne 1 ]; then
+  printf '%s\n' 'usage: install NEW_DESTINATION' >&2
+  exit 1
+fi
+root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+destination=$(CDPATH= cd -- "$(dirname -- "$1")" && pwd -P)/$(basename -- "$1")
+case "$destination" in "$root"|"$root"/*) printf '%s\n' 'destination must be outside the bundle' >&2; exit 1;; esac
+cd "$root"
+sha256sum -c SHA256SUMS >/dev/null
+if [ -e "$destination" ] || [ -L "$destination" ]; then
+  printf '%s\n' 'destination must not exist' >&2
+  exit 1
+fi
+mkdir -- "$destination"
+cp -R -- . "$destination/"
+(cd "$destination" && sha256sum -c SHA256SUMS >/dev/null)
+printf '%s\n' 'Runtime copied; kernel reservation and MiSTer core validation are required before launch.'

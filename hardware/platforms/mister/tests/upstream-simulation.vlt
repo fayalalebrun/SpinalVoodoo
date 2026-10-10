@@ -1,0 +1,8 @@
+`verilator_config
+lint_off -rule IMPLICITSTATIC -file "build/deps/mister/template/sys/hps_io.sv"
+lint_off -rule IMPLICIT -file "build/deps/mister/template/sys/hps_io.sv" -lines 299-494
+lint_off -rule PROCASSWIRE -file "build/deps/mister/template/sys/hps_io.sv" -lines 299-494
+lint_off -rule PINMISSING -file "build/deps/mister/template/sys/hps_io.sv" -lines 567-590
+lint_off -rule CASEX -file "build/deps/mister/template/sys/hps_io.sv" -lines 328-349
+lint_off -rule CASEINCOMPLETE -file "build/deps/mister/template/sys/hps_io.sv" -lines 653
+lint_off -rule UNOPTFLAT -file "build/deps/mister/template/sys/emu_ports.vh" -lines 9

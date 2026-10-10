@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$root"
+build="$root/build/simulation/mister-glide"
+mkdir -p "$build"
+make -C software/integrations/glide -f Makefile.glide -j4 CC='gcc -m32' BUILD_DIR="$build/glide" "$build/glide/libglide2x.a"
+flags=(-m32 -std=c11 -O2 -Wall -Wextra -Werror -pedantic -pthread)
+gcc "${flags[@]}" -Dnanosleep=mister_sim_pause -Dclock_gettime=mister_sim_clock_gettime \
+  -c software/runtime/mister/mister_mailbox.c -o "$build/mailbox.o"
+gcc "${flags[@]}" -c software/runtime/mister/mister_runtime.c -o "$build/runtime.o"
+verilator --cc --exe --top-module MisterPlatform \
+  -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -Wno-UNSIGNED -Wno-CMPCONST -Wno-TIMESCALEMOD \
+  -f hardware/platforms/mister/quartus/xls-files.f build/generated/scala/mister/MisterPlatform.v \
+  --Mdir "$build/model" "$root/hardware/platforms/mister/tests/platform_test.cpp" \
+  "$build/glide/libglide2x.a" "$build/runtime.o" "$build/mailbox.o" \
+  -CFLAGS "-m32 -O2 -Wall -Wextra -Werror -DMISTER_GLIDE_TEST=1 -I$root/vendor/glide/glide2x/sst1/glide/src -I$root/vendor/glide/glide2x/sst1/init -I$root/vendor/glide/swlibs/fxmisc" \
+  -LDFLAGS '-m32 -lz -lm -Wl,--wrap=mister_memory_open,--wrap=mister_memory_close'
+make -C "$build/model" -f VMisterPlatform.mk -j4 -W "$root/hardware/platforms/mister/tests/platform_test.cpp"
+timeout 480 "$build/model/VMisterPlatform"

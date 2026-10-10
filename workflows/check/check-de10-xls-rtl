@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+"$root/workflows/check/test-quartus-compat-xls-rtl"
+"$root/workflows/build/gen-rtl-de10-xls"
+python3 "$root/workflows/check/test-xls-ram-fifos"
+iverilog -g2012 -s XlsPackedBankAddressTb \
+  -o "$root/build/generated/xls/work/xls-packed-bank-address-tb" \
+  "$root/hardware/shared/rtl/XlsPackedBankMemory.sv" \
+  "$root/hardware/shared/tests/XlsPackedBankAddress_tb.sv"
+vvp "$root/build/generated/xls/work/xls-packed-bank-address-tb"
+iverilog -g2012 -s XlsTextureTagMemoryTb \
+  -o "$root/build/generated/xls/work/xls-texture-tags-tb" \
+  "$root/hardware/shared/rtl/XlsTextureTagMemory.sv" \
+  "$root/hardware/shared/tests/XlsTextureTagMemory_tb.sv"
+vvp "$root/build/generated/xls/work/xls-texture-tags-tb"
+iverilog -g2012 -s XlsAvalonTransferMasterTb \
+  -o "$root/build/generated/xls/work/xls-avalon-transfer-tb" \
+  "$root/hardware/shared/rtl/XlsAvalonTransferMaster.sv" \
+  "$root/build/generated/scala/de10/XlsAvalonTransferMasterCore.v" \
+  "$root/hardware/shared/tests/XlsAvalonTransferMaster_tb.sv"
+vvp "$root/build/generated/xls/work/xls-avalon-transfer-tb"
+iverilog -g2012 -s XlsAvalonReadWriteMasterTb \
+  -o "$root/build/generated/xls/work/xls-avalon-read-write-tb" \
+  "$root/hardware/shared/rtl/XlsAvalonTransferMaster.sv" \
+  "$root/hardware/shared/rtl/XlsAvalonReadWriteMaster.sv" \
+  "$root/build/generated/scala/de10/XlsAvalonTransferMasterCore.v" \
+  "$root/hardware/shared/tests/XlsAvalonReadWriteMaster_tb.sv"
+vvp "$root/build/generated/xls/work/xls-avalon-read-write-tb"
+
+iverilog -g2012 -s XlsFramebufferReadCacheTb \
+  -o "$root/build/generated/xls/work/xls-framebuffer-read-cache-tb" \
+  "$root/hardware/shared/rtl/XlsFramebufferReadCache.sv" \
+  "$root/hardware/shared/tests/XlsFramebufferReadCache_tb.sv"
+vvp "$root/build/generated/xls/work/xls-framebuffer-read-cache-tb"
+iverilog -g2012 -s XlsFramebufferReadPrefetchTb \
+  -o "$root/build/generated/xls/work/xls-framebuffer-read-prefetch-tb" \
+  "$root/hardware/shared/rtl/XlsFramebufferReadPrefetch.sv" \
+  "$root/hardware/shared/tests/XlsFramebufferReadPrefetch_tb.sv"
+vvp "$root/build/generated/xls/work/xls-framebuffer-read-prefetch-tb"
+iverilog -g2012 -s XlsFramebufferSpanReaderTb \
+  -o "$root/build/generated/xls/work/xls-framebuffer-span-reader-tb" \
+  "$root/hardware/shared/rtl/XlsFramebufferSpanReader.sv" \
+  "$root/hardware/shared/tests/XlsFramebufferSpanReader_tb.sv"
+vvp "$root/build/generated/xls/work/xls-framebuffer-span-reader-tb"
+iverilog -g2012 -s XlsFramebufferWriteBufferTb \
+  -o "$root/build/generated/xls/work/xls-framebuffer-write-buffer-tb" \
+  "$root/hardware/shared/rtl/XlsFramebufferWriteBuffer.sv" \
+  "$root/hardware/shared/tests/XlsFramebufferWriteBuffer_tb.sv"
+vvp "$root/build/generated/xls/work/xls-framebuffer-write-buffer-tb"
+iverilog -g2012 -s XlsFramebufferWriteIngressTb \
+  -o "$root/build/generated/xls/work/xls-framebuffer-write-ingress-tb" \
+  "$root/hardware/shared/rtl/XlsFramebufferWriteBuffer.sv" \
+  "$root/hardware/shared/rtl/XlsFramebufferWriteIngress.sv" \
+  "$root/hardware/shared/tests/XlsFramebufferWriteIngress_tb.sv"
+vvp "$root/build/generated/xls/work/xls-framebuffer-write-ingress-tb"
+iverilog -g2012 -s XlsAvalonArbiter2Tb \
+  -o "$root/build/generated/xls/work/xls-avalon-arbiter2-tb" \
+  "$root/hardware/shared/rtl/XlsAvalonArbiter2.sv" \
+  "$root/hardware/shared/tests/XlsAvalonArbiter2_tb.sv"
+vvp "$root/build/generated/xls/work/xls-avalon-arbiter2-tb"
+iverilog -g2012 -s XlsH2fMemoryFifoTb \
+  -o "$root/build/generated/xls/work/xls-h2f-memory-fifo-tb" \
+  "$root/hardware/shared/rtl/XlsH2fMemoryFifo.sv" \
+  "$root/hardware/shared/tests/XlsH2fMemoryFifo_tb.sv"
+vvp "$root/build/generated/xls/work/xls-h2f-memory-fifo-tb"
+iverilog -g2012 -s XlsH2fBatchExpanderTb \
+  -o "$root/build/generated/xls/work/xls-h2f-batch-expander-tb" \
+  "$root/hardware/shared/rtl/XlsH2fBatchExpander.sv" \
+  "$root/hardware/shared/tests/XlsH2fBatchExpander_tb.sv"
+vvp "$root/build/generated/xls/work/xls-h2f-batch-expander-tb"
+iverilog -g2012 -s XlsH2fCommandFifoTb \
+  -o "$root/build/generated/xls/work/xls-h2f-command-fifo-tb" \
+  "$root/hardware/shared/rtl/XlsAvalonArbiter2.sv" \
+  "$root/hardware/shared/rtl/XlsH2fMemoryFifo.sv" \
+  "$root/hardware/shared/rtl/XlsH2fBatchExpander.sv" \
+  "$root/hardware/shared/rtl/XlsH2fCommandFifo.sv" \
+  "$root/hardware/shared/tests/XlsH2fCommandFifo_tb.sv"
+vvp "$root/build/generated/xls/work/xls-h2f-command-fifo-tb"
+
+iverilog -g2012 -s XlsPackedBankMemoryTb \
+  -o "$root/build/generated/xls/work/xls-packed-bank-tb" \
+  "$root/hardware/shared/rtl/XlsPackedBankMemory.sv" \
+  "$root/hardware/shared/rtl/XlsPackedBankMemoryVector.sv" \
+  "$root/hardware/shared/tests/XlsPackedBankMemory_tb.sv"
+vvp "$root/build/generated/xls/work/xls-packed-bank-tb"
+iverilog -g2012 -s XlsPackedBankMemorySmallTb \
+  -o "$root/build/generated/xls/work/xls-packed-bank-small-tb" \
+  "$root/hardware/shared/rtl/XlsPackedBankMemory.sv" \
+  "$root/hardware/shared/rtl/XlsPackedBankMemoryVector.sv" \
+  "$root/hardware/shared/tests/XlsPackedBankMemorySmall_tb.sv"
+vvp "$root/build/generated/xls/work/xls-packed-bank-small-tb"
+iverilog -g2012 -s XlsPackedBankMemorySmallTb \
+  -PXlsPackedBankMemorySmallTb.PRIMARY_NUMWORDS=4096 \
+  -PXlsPackedBankMemorySmallTb.PRIMARY_ADDRESS_WIDTH=12 \
+  -o "$root/build/generated/xls/work/xls-packed-bank-full-tb" \
+  "$root/hardware/shared/rtl/XlsPackedBankMemory.sv" \
+  "$root/hardware/shared/rtl/XlsPackedBankMemoryVector.sv" \
+  "$root/hardware/shared/tests/XlsPackedBankMemorySmall_tb.sv"
+vvp "$root/build/generated/xls/work/xls-packed-bank-full-tb"
+iverilog -g2012 -s XlsPaletteMemoryTb \
+  -o "$root/build/generated/xls/work/xls-palette-tb" \
+  "$root/hardware/shared/rtl/XlsPaletteMemory.sv" \
+  "$root/hardware/shared/tests/XlsPaletteMemory_tb.sv"
+vvp "$root/build/generated/xls/work/xls-palette-tb"
+iverilog -g2012 -s XlsPerformanceCountersTb \
+  -o "$root/build/generated/xls/work/xls-performance-counters-tb" \
+  "$root/hardware/shared/rtl/XlsPerformanceCounters.sv" \
+  "$root/hardware/shared/tests/XlsPerformanceCounters_tb.sv"
+vvp "$root/build/generated/xls/work/xls-performance-counters-tb"
+iverilog -g2012 -s XlsRenderCycleProfilerTb \
+  -o "$root/build/generated/xls/work/xls-render-cycle-profiler-tb" \
+  "$root/hardware/shared/rtl/XlsPerformanceCounters.sv" \
+  "$root/hardware/shared/tests/XlsRenderCycleProfiler_tb.sv"
+vvp "$root/build/generated/xls/work/xls-render-cycle-profiler-tb"
+iverilog -g2012 -s XlsPipelineProfilerTb \
+  -o "$root/build/generated/xls/work/xls-pipeline-profiler-tb" \
+  "$root/hardware/shared/rtl/XlsPipelineProfiler.sv" \
+  "$root/hardware/shared/tests/XlsPipelineProfiler_tb.sv"
+vvp "$root/build/generated/xls/work/xls-pipeline-profiler-tb"
+verilator --lint-only --top-module XlsDe10Top \
+  "$root/hardware/shared/rtl/XlsTextureTagMemory.sv" \
+  -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -Wno-UNSIGNED -Wno-CMPCONST \
+  -Wno-MULTITOP -Wno-TIMESCALEMOD -Wno-PINCONNECTEMPTY \
+  -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM \
+  "$root/hardware/shared/rtl/XlsDe10Top.sv" \
+  "$root/hardware/shared/rtl/XlsFramebufferReadCache.sv" \
+  "$root/hardware/shared/rtl/XlsFramebufferReadPrefetch.sv" \
+  "$root/hardware/shared/rtl/XlsFramebufferSpanReader.sv" \
+  "$root/hardware/shared/rtl/XlsFramebufferWriteBuffer.sv" \
+  "$root/hardware/shared/rtl/XlsFramebufferWriteIngress.sv" \
+  "$root/hardware/shared/rtl/XlsAvalonTransferMaster.sv" \
+  "$root/hardware/shared/rtl/XlsAvalonReadWriteMaster.sv" \
+  "$root/build/generated/scala/de10/XlsAvalonTransferMasterCore.v" \
+  "$root/hardware/shared/rtl/XlsPackedBankMemory.sv" \
+  "$root/hardware/shared/rtl/XlsPackedBankMemoryVector.sv" \
+  "$root/hardware/shared/rtl/XlsPaletteMemory.sv" \
+  "$root/hardware/shared/rtl/XlsPerformanceCounters.sv" \
+  "$root/hardware/shared/rtl/XlsPipelineProfiler.sv" \
+  "$root/build/generated/xls/work/core_sim_de10_rtl/CoreSimDe10.sv" \
+  "$root/build/generated/scala/de10/XlsDe10Scanout.v" \
+  "$root/build/generated/xls/rtl/VoodooXlsFramebufferAddress.v"
+verilator --cc --exe --build -j 0 --top-module XlsDe10Top \
+  "$root/hardware/shared/rtl/XlsTextureTagMemory.sv" \
+  --Mdir "$root/build/generated/xls/work/xls-de10-top-mmio-verilator" \
+  -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -Wno-UNSIGNED -Wno-CMPCONST \
+  -Wno-MULTITOP -Wno-TIMESCALEMOD -Wno-PINCONNECTEMPTY \
+  -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM \
+  "$root/hardware/shared/rtl/XlsDe10Top.sv" \
+  "$root/hardware/shared/rtl/XlsFramebufferReadCache.sv" \
+  "$root/hardware/shared/rtl/XlsFramebufferReadPrefetch.sv" \
+  "$root/hardware/shared/rtl/XlsFramebufferSpanReader.sv" \
+  "$root/hardware/shared/rtl/XlsFramebufferWriteBuffer.sv" \
+  "$root/hardware/shared/rtl/XlsFramebufferWriteIngress.sv" \
+  "$root/hardware/shared/rtl/XlsAvalonTransferMaster.sv" \
+  "$root/hardware/shared/rtl/XlsAvalonReadWriteMaster.sv" \
+  "$root/build/generated/scala/de10/XlsAvalonTransferMasterCore.v" \
+  "$root/hardware/shared/rtl/XlsPackedBankMemory.sv" \
+  "$root/hardware/shared/rtl/XlsPackedBankMemoryVector.sv" \
+  "$root/hardware/shared/rtl/XlsPaletteMemory.sv" \
+  "$root/hardware/shared/rtl/XlsPerformanceCounters.sv" \
+  "$root/hardware/shared/rtl/XlsPipelineProfiler.sv" \
+  "$root/build/generated/xls/work/core_sim_de10_rtl/CoreSimDe10.sv" \
+  "$root/build/generated/scala/de10/XlsDe10Scanout.v" \
+  "$root/build/generated/xls/rtl/VoodooXlsFramebufferAddress.v" \
+  "$root/verification/integration/xls/xls_de10_top_mmio_testbench.cpp" \
+  -CFLAGS -O2
+"$root/build/generated/xls/work/xls-de10-top-mmio-verilator/VXlsDe10Top"

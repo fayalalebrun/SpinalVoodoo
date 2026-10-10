@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+import argparse
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def replace_once(text, old, new):
+    if text.count(old) != 1:
+        raise ValueError(f"expected exactly one DOSBox integration site: {old!r}")
+    return text.replace(old, new)
+
+
+def integrate_lfb(text):
+    site = "class GLIDE_PageHandler : public PageHandler {"
+    text = replace_once(text, site, '#include "../gui/dosbox_glide.h"\n' + site)
+    site = "void GLIDE_DisableScreen(void)\n{"
+    text = replace_once(text, site, site + "\n    mister_guest_reset();")
+    site = "    ret = param[0];"
+    text = replace_once(text, site, site + "\n    mister_guest_flush();" + '''
+    if (value == _grLfbLock24 || value == _grLfbUnlock8) {
+        if (!ret) return;
+        uint32_t success = 0;
+        if (glide.enabled && param[2] < 3) {
+            if (value == _grLfbUnlock8) {
+                success = mister_guest_unlock(param[1], param[2]);
+            } else if (param[6] && (lfbacc & (1u << (param[1] & 1))) &&
+                       (param[2] < 2 || (lfbacc & 4))) {
+                mister_guest_lfb_info info;
+                MEM_BlockRead32(param[6], &info, sizeof(info));
+                success = mister_guest_lock(param[1], param[2], param[3], param[4], param[5], &info);
+                if (success) {
+                    info.pointer = glide.lfb_pagehandler->GetLinPt(param[2]);
+                    MEM_BlockWrite32(param[6], &info, sizeof(info));
+                }
+            }
+        }
+        mem_writed(ret, success);
+        ret_value = G_OK;
+        return;
+    }''')
+    text = replace_once(text, "flags=PFLAG_READABLE|PFLAG_WRITEABLE|PFLAG_NOCODE;", "flags=PFLAG_NOCODE;")
+    methods = {}
+    slot_bytes = "(1u << (GLIDE_PAGE_BITS + 12))"
+    address = f"(addr - base_addr[0]) / {slot_bytes}, (addr - base_addr[0]) % {slot_bytes}"
+    for suffix, ctype, size in (("b", "uint8_t", 1), ("w", "uint16_t", 2), ("d", "uint32_t", 4)):
+        methods[f"{ctype} read{suffix}(PhysPt addr) override"] = (
+            f'{ctype} read{suffix}(PhysPt addr) override {{ return mister_guest_read({address}, {size}); }}')
+        methods[f"void write{suffix}(PhysPt addr,{ctype} val) override"] = (
+            f'void write{suffix}(PhysPt addr, {ctype} val) override {{ mister_guest_write({address}, val, {size}); }}')
+    for access in ("Read", "Write"):
+        methods[f"HostPt GetHost{access}Pt(PageNum phys_page) override"] = (
+            f"HostPt GetHost{access}Pt(PageNum) override {{ return nullptr; }}")
+    for signature, replacement in methods.items():
+        matches = re.findall(r"^    " + re.escape(signature) + r" \{\n.*?^    \}\n", text, re.MULTILINE | re.DOTALL)
+        if len(matches) != 1:
+            raise ValueError(f"expected exactly one DOSBox LFB integration site: {signature}")
+        text = replace_once(text, matches[0], "    " + replacement + "\n")
+    return text
+
+
+def integrate_media(text):
+    text = replace_once(text, '#include "cpu.h"', '#include "cpu.h"\n#include "../gui/dosbox_media.h"')
+    text = replace_once(text, '    this->diskimg = diskimg;',
+                        '    this->diskimg = diskimg;\n    mister_media_track(diskimg);')
+    site = 'imageDisk::imageDisk(FILE* imgFile, const char* imgName, uint32_t imgSizeK, bool isHardDisk) : diskSizeK(imgSizeK), diskimg(imgFile), image_length((uint64_t)imgSizeK * 1024) {'
+    text = replace_once(text, site, site + '\n    mister_media_track(imgFile);')
+    # All raw-image writes/seeks/closes go through error-latching wrappers.
+    for old, new in [('fwrite', 'mister_media_write'), ('fclose', 'mister_media_close'),
+                     ('fseek', 'mister_media_seek'), ('fseeko64', 'mister_media_seek')]:
+        text, count = re.subn(r'\b' + old + r'\(', new + '(', text)
+        if not count:
+            raise ValueError('expected DOSBox media I/O site: ' + old)
+    return text
+
+
+def prepare(destination, check=False):
+    destination = destination.resolve()
+    if not any(destination.is_relative_to(ROOT / name) for name in ("build", "output")):
+        raise ValueError("destination must be inside the workspace output directory")
+    if destination.exists() and not check:
+        raise ValueError(f"destination already exists: {destination}")
+    subprocess.run([sys.executable, str(ROOT / "workflows/build/prepare-mister-sources"), "--check"], check=True)
+    source = ROOT / "build/deps/mister/dosbox-x"
+    gui = source / "src/gui"
+    text = (gui / "sdlmain.cpp").read_text()
+    text = replace_once(text, '#include "keyboard.h"', '#include "keyboard.h"\n#include <SDL.h>\nint mister_dosbox_start(void);\nint mister_dosbox_input(void);\nint mister_dosbox_present(SDL_Surface *, const SDL_Rect *);\n#include "dosbox_media.h"')
+    text = replace_once(text, "void GFX_Events() {", 'void GFX_Events() {\n    if (mister_dosbox_input()) E_Exit("MiSTer input exchange failed: %s", strerror(errno));')
+    init = "        if (SDL_Init(SDL_INIT_AUDIO|SDL_INIT_VIDEO|SDL_INIT_TIMER|SDL_INIT_NOPARACHUTE) >= 0)"
+    text = replace_once(text, init, '        if (mister_dosbox_start()) E_Exit("MiSTer initialization failed: %s", strerror(errno));\n' + init)
+    update = "            OUTPUT_SURFACE_EndUpdate(changedLines);"
+    text = replace_once(text, update, update + '\n            if (!glide.enabled && mister_dosbox_present(sdl.surface, &sdl.clip)) E_Exit("MiSTer presentation failed: %s", strerror(errno));')
+    text = replace_once(text, '        DOS_ShutdownDrives();',
+                        '        if (mister_media_enabled()) mister_dosbox_flush_media_files();\n        DOS_ShutdownDrives();')
+    makefile = (gui / "Makefile.am").read_text() + "\nlibgui_a_SOURCES += dosbox_input.cpp dosbox_output.cpp dosbox_media.cpp\n"
+    additions = {}
+    for name in ("dosbox_input.cpp", "dosbox_output.cpp", "dosbox_media.cpp", "dosbox_media.h", "mister_runtime.h", "mister_mailbox.h",
+                 "dosbox_glide.h", "glide_guest.h"):
+        directory = "software/runtime/mister" if name.startswith("mister_") else "software/integrations/glide" if name == "glide_guest.h" else "software/integrations/dosbox"
+        additions[name] = (ROOT / directory / name).read_bytes()
+    additions.update({"sdlmain.cpp": text.encode(), "Makefile.am": makefile.encode()})
+    additions = {"src/gui/" + name: content for name, content in additions.items()}
+    additions["src/hardware/glide.cpp"] = integrate_lfb((source / "src/hardware/glide.cpp").read_text()).encode()
+    additions["src/ints/bios_disk.cpp"] = integrate_media((source / "src/ints/bios_disk.cpp").read_text()).encode()
+    dos = (source / 'src/dos/dos.cpp').read_text()
+    dos = replace_once(dos, '#include "dosbox.h"', '#include "dosbox.h"\n#include "../gui/dosbox_media.h"')
+    dos = replace_once(dos, 'void DOS_ShutdownFiles() {', '''void mister_dosbox_flush_media_files() {
+    // Guest sector/metadata buffers must drain while their drives still exist.
+    if (Files != NULL) {
+        for (Bitu i = 0; i < DOS_FILES; ++i) {
+            if (Files[i] != NULL) Files[i]->Flush();
+        }
+    }
+}
+
+void DOS_ShutdownFiles() {''')
+    additions['src/dos/dos.cpp'] = dos.encode()
+    programs = (source / 'src/dos/dos_programs.cpp').read_text()
+    programs = replace_once(programs, '#include "dosbox.h"', '#include "dosbox.h"\n#include "../gui/dosbox_media.h"')
+    programs = replace_once(programs, 'FILE * fopen_lock(const char * fname, const char * mode, bool &readonly) {',
+                            'FILE * fopen_lock(const char * fname, const char * mode, bool &readonly) {\n    FILE *leased = nullptr;\n    if (mister_media_open(fname, mode, &leased)) return leased;')
+    additions['src/dos/dos_programs.cpp'] = programs.encode()
+    if check:
+        for name, content in additions.items():
+            path = destination / name
+            if not path.is_file() or path.read_bytes() != content:
+                raise ValueError(f"stale or modified DOSBox integration: {path}; choose a fresh build directory")
+    else:
+        shutil.copytree(source, destination, ignore=shutil.ignore_patterns(".git"))
+        for name, content in additions.items():
+            (destination / name).write_bytes(content)
+    print(destination)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--output", type=Path, default=ROOT / "build/host/dosbox")
+    parser.add_argument("--check", action="store_true")
+    args = parser.parse_args()
+    try:
+        prepare(args.output, args.check)
+    except (ValueError, OSError, subprocess.SubprocessError) as error:
+        parser.exit(1, f"{error}\n")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,685 @@
+#!/usr/bin/env python3
+import argparse
+import os
+import pathlib
+import struct
+import subprocess
+import sys
+import zlib
+
+
+CPU_OPT_PASSES = " ".join([
+    "pre-inlining one-leaf-inlining",
+    "pre-inlining one-leaf-inlining",
+    "pre-inlining one-leaf-inlining",
+    "pre-inlining one-leaf-inlining",
+    "pre-inlining one-leaf-inlining",
+    "pre-inlining fixedpoint_simp(3)",
+])
+
+
+def apply(memory, address, data, mask):
+    current = memory.get(address, 0)
+    expanded = sum(0xFF << (byte * 8) for byte in range(4) if mask & (1 << byte))
+    memory[address] = (current & ~expanded) | (data & expanded)
+
+def texture_layout(registers):
+    bases = [(registers[address] & 0x7FFFF) << 3 for address in (0x30C, 0x310, 0x314, 0x318)]
+    texture_mode = registers[0x300]
+    t_lod = registers[0x304]
+    aspect = (t_lod >> 21) & 3
+    multibase = (t_lod >> 24) & 1
+    offset = 0
+    tail = 0
+    result = []
+    for lod in range(9):
+        wide = max(8 - lod, 0)
+        narrow = max(8 - aspect - lod, 0)
+        base = bases[0] + offset
+        if multibase and lod == 1:
+            base = bases[1]
+        elif multibase and lod == 2:
+            base = bases[2]
+        elif multibase and lod >= 3:
+            base = bases[3] + tail
+        size = 1 << (wide + narrow + (texture_mode >> 8 & 15 >= 8))
+        result.append((base & 0x3FFFFF, wide if t_lod >> 20 & 1 else narrow))
+        offset = (offset + size) & 0x3FFFFF
+        if lod >= 3:
+            tail = (tail + size) & 0x3FFFFF
+    return result
+
+
+def texture_address(registers, pci_address):
+    lod = pci_address >> 17 & 15
+    if pci_address >> 21 & 3 or lod > 8:
+        return None
+    texture_mode = registers[0x300]
+    is_16_bit = (texture_mode >> 8 & 15) >= 8
+    sequential = texture_mode >> 31 & 1
+    base, shift = texture_layout(registers)[lod]
+    t = pci_address >> 9 & 0xFF
+    if is_16_bit:
+        s = pci_address >> 1 & 0xFE
+    elif sequential:
+        s = pci_address & 0xFC
+    else:
+        s = pci_address >> 1 & 0xFC
+    return (base + (s << is_16_bit) + (t << (shift + is_16_bit))) & 0x3FFFFFF
+
+
+def samples(memory, base):
+    addresses = sorted(memory)
+    selected = addresses[:32] + addresses[-32:]
+    return [(base + address * 4, memory[address]) for address in dict.fromkeys(selected)]
+
+
+def png_rgb565(path):
+    data = pathlib.Path(path).read_bytes()
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        raise ValueError(f"invalid PNG: {path}")
+    chunks = []
+    offset = 8
+    while offset < len(data):
+        size = struct.unpack_from(">I", data, offset)[0]
+        kind = data[offset + 4:offset + 8]
+        chunks.append((kind, data[offset + 8:offset + 8 + size]))
+        offset += size + 12
+    header = next(value for kind, value in chunks if kind == b"IHDR")
+    width, height, depth, color, _, _, interlace = struct.unpack(">IIBBBBB", header)
+    if depth != 8 or color not in (2, 6) or interlace != 0:
+        raise ValueError(f"unsupported PNG format: {path}")
+    pixel_bytes = 3 if color == 2 else 4
+    packed = zlib.decompress(b"".join(value for kind, value in chunks if kind == b"IDAT"))
+    stride = width * pixel_bytes
+    rows = []
+    previous = bytearray(stride)
+    cursor = 0
+    for _ in range(height):
+        mode = packed[cursor]
+        source = packed[cursor + 1:cursor + stride + 1]
+        cursor += stride + 1
+        row = bytearray(stride)
+        for index, value in enumerate(source):
+            left = row[index - pixel_bytes] if index >= pixel_bytes else 0
+            up = previous[index]
+            upper_left = previous[index - pixel_bytes] if index >= pixel_bytes else 0
+            if mode == 0:
+                predictor = 0
+            elif mode == 1:
+                predictor = left
+            elif mode == 2:
+                predictor = up
+            elif mode == 3:
+                predictor = (left + up) // 2
+            elif mode == 4:
+                estimate = left + up - upper_left
+                distances = (abs(estimate - left), abs(estimate - up), abs(estimate - upper_left))
+                predictor = (left, up, upper_left)[distances.index(min(distances))]
+            else:
+                raise ValueError(f"invalid PNG filter: {mode}")
+            row[index] = (value + predictor) & 0xff
+        rows.append(row)
+        previous = row
+    return width, height, pixel_bytes, rows
+
+
+def srgb_encode(value):
+    linear = value / 255.0
+    encoded = linear * 12.92 if linear <= 0.0031308 else 1.055 * linear ** (1.0 / 2.4) - 0.055
+    return int(encoded * 255.0 + 0.5)
+
+
+def srgb_inverse(bits):
+    expanded = [
+        (value << 3) | (value >> 2) if bits == 5 else (value << 2) | (value >> 4)
+        for value in range(1 << bits)
+    ]
+    encoded = [srgb_encode(value) for value in expanded]
+    return tuple(min(range(1 << bits), key=lambda level: abs(encoded[level] - value)) for value in range(256))
+
+
+RGB5_FROM_SRGB = srgb_inverse(5)
+RGB6_FROM_SRGB = srgb_inverse(6)
+
+
+def reference_hash(path):
+    width, height, pixel_bytes, rows = png_rgb565(path)
+    value = 0x811C9DC5
+    hashes = []
+    pixels = 0
+    for row in rows:
+        for offset in range(0, len(row), pixel_bytes):
+            red, green, blue = row[offset:offset + 3]
+            rgb565 = RGB5_FROM_SRGB[red] << 11 | RGB6_FROM_SRGB[green] << 5 | RGB5_FROM_SRGB[blue]
+            value = ((value ^ (rgb565 & 0xff)) * 0x01000193) & 0xffffffff
+            value = ((value ^ (rgb565 >> 8)) * 0x01000193) & 0xffffffff
+            pixels += 1
+            if pixels % 16 == 0:
+                hashes.append(value)
+    return width, height, value, hashes
+
+
+def framebuffer_config(commands):
+    registers = {address: 0 for address in range(0, 0x400, 4)}
+    displayed = 0
+    presented = None
+    for write, address, data, mask in commands:
+        if not write or address >= 0x400:
+            continue
+        if address == 0x128:
+            offset = ((registers[0x218] >> 11) & 0x1ff) << 12
+            front, back = (offset, 0) if displayed else (0, offset)
+            presented = back if registers[0x110] >> 14 & 1 else front
+            displayed ^= 1
+        expanded = sum(0xff << (byte * 8) for byte in range(4) if mask & (1 << byte))
+        registers[address] = (registers[address] & ~expanded) | (data & expanded)
+    offset = ((registers[0x218] >> 11) & 0x1ff) << 12
+    front, back = (offset, 0) if displayed else (0, offset)
+    base = back if registers[0x110] >> 14 & 1 else front
+    tiles = registers[0x214] >> 4 & 0xf
+    return (presented if presented is not None else base), (tiles or 10) << 6
+
+
+def load(path):
+    data = pathlib.Path(path).read_bytes()
+    if len(data) < 64 or struct.unpack_from("<I", data)[0] != 0x564F4F44:
+        raise ValueError(f"invalid Voodoo trace: {path}")
+    commands = []
+    framebuffer = {}
+    texture = {}
+    registers = {address: 0 for address in range(0, 0x400, 4)}
+    for offset in range(64, len(data), 24):
+        _, _, kind, address, value, count = struct.unpack_from("<IIB3xIII", data, offset)
+        for _ in range(count or 1):
+            if kind == 0:
+                register = address & 0x3FC
+                commands.append((1, register, value, 0xF))
+                registers[register] = value
+            elif kind == 1:
+                target = address & 0x3FC
+                high = (address & 2) != 0
+                commands.append((1, target, value << 16 if high else value, 0xC if high else 0x3))
+            elif kind == 2:
+                target = address & 0x3FFFFF
+                commands.append((1, 0x400000 | target, value, 0xF))
+                apply(framebuffer, target >> 2, value, 0xF)
+            elif kind == 3:
+                target = address & 0x3FFFFF
+                high = (target & 2) != 0
+                commands.append((1, 0x400000 | (target & ~3), value << 16 if high else value, 0xC if high else 0x3))
+                apply(framebuffer, target >> 2, value << 16 if high else value, 0xC if high else 0x3)
+            elif kind == 4:
+                target = address & 0x7FFFFF
+                commands.append((1, 0x800000 | target, value, 0xF))
+                mapped = texture_address(registers, target)
+                if mapped is not None:
+                    apply(texture, mapped >> 2, value, 0xF)
+    return commands, samples(framebuffer, 0x400000) + samples(texture, 0x800000)
+
+
+def command(value):
+    write, address, data, mask = value
+    return f"core_sim::CoreCommand {{ write: u1:{write}, address: u24:0x{address:06x}, data: u32:0x{data & 0xffffffff:08x}, mask: u4:0x{mask:x} }}"
+
+
+def replay_operations(commands):
+    registers = {address: 0 for address in range(0, 0x400, 4)}
+    operations = []
+    scalars = []
+    bursts = []
+    index = 0
+    while index < len(commands):
+        chunk = commands[index:index + 32]
+        mapped = [
+            texture_address(registers, value[1] & 0x7FFFFF)
+            for value in chunk
+            if value[0] and value[1] >= 0x800000
+        ]
+        is_burst = (
+            len(chunk) == 32 and len(mapped) == 32 and None not in mapped and
+            mapped[0] % 128 == 0 and
+            mapped == list(range(mapped[0], mapped[0] + 128, 4))
+        )
+        if is_burst:
+            operations.append((1, len(bursts)))
+            bursts.append(chunk)
+            index += 32
+            continue
+        value = commands[index]
+        operations.append((0, len(scalars)))
+        scalars.append(value)
+        if value[0] and value[1] < 0x400:
+            apply(registers, value[1] & 0x3FC, value[2], value[3])
+        index += 1
+    return operations, scalars, bursts
+
+
+def texture_word_count(expected):
+    words = [((address - 0x800000) >> 2) + 1 for address, _ in expected if address >= 0x800000]
+    required = max(words, default=16)
+    return 1 << (required - 1).bit_length()
+
+
+def module(commands, expected):
+    operations, scalars, bursts = replay_operations(commands)
+    count = len(operations)
+    scalar_values = scalars or [(0, 0, 0, 0)]
+    burst_values = bursts or [[(0, 0, 0, 0)] * 32]
+    texture_words = texture_word_count(expected)
+    expected_step = [
+        f"        }} else if state.expected_index < u32:{len(expected)} {{",
+        "            let expected = EXPECTED[state.expected_index];",
+        "            let command = core_sim::CoreCommand {",
+        "                write: u1:0, address: expected.address, data: u32:0, mask: u4:0,",
+        "            };",
+        "            let tok = send(join(), command_s, command);",
+        "            let (tok, response) = recv(tok, response_r);",
+        "            assert_eq(response.data, expected.data);",
+        "            ReplayProgress { expected_index: state.expected_index + u32:1, ..state }",
+    ] if expected else []
+    lines = [
+        "import core_sim;",
+        "import pixel;",
+        "",
+        "pub struct ReplayOperation { burst: u1, index: u32 }",
+        f"const OPERATIONS = ReplayOperation[{count}]:[",
+        *[
+            f"    ReplayOperation {{ burst: u1:{burst}, index: u32:{index} }},"
+            for burst, index in operations
+        ],
+        "];",
+        f"const COMMANDS = core_sim::CoreCommand[{len(scalar_values)}]:[",
+        *[f"    {command(value)}," for value in scalar_values],
+        "];",
+        f"const BURSTS = core_sim::TextureBurst[{len(burst_values)}]:[",
+        *[
+            "    core_sim::TextureBurst { commands: core_sim::CoreCommand[32]:[\n" +
+            "\n".join(f"        {command(value)}," for value in values) +
+            "\n    ] },"
+            for values in burst_values
+        ],
+        "];",
+        "",
+        "pub struct ExpectedRead { address: u24, data: u32 }",
+        "pub struct ReplayProgress { command_index: u32, expected_index: u32 }",
+        f"const EXPECTED = ExpectedRead[{len(expected)}]:[",
+        *[f"    ExpectedRead {{ address: u24:0x{address:06x}, data: u32:0x{data:08x} }}," for address, data in expected],
+        "];",
+        "",
+        "#[test_proc]",
+        "proc replay_trace {",
+        "    command_s: chan<core_sim::CoreCommand> out;",
+        "    burst_s: chan<core_sim::TextureBurst> out;",
+        "    response_r: chan<core_sim::CoreResponse> in;",
+        "    terminator: chan<bool> out;",
+        "",
+        "    init { ReplayProgress { command_index: u32:0, expected_index: u32:0 } }",
+        "",
+        "    config(terminator: chan<bool> out) {",
+        "        let (command_s, command_r) = chan<core_sim::CoreCommand>(\"command\");",
+        "        let (burst_s, burst_r) = chan<core_sim::TextureBurst>(\"burst\");",
+        "        let (response_s, response_r) = chan<core_sim::CoreResponse>(\"response\");",
+        f"        spawn core_sim::core_sim<u32:1048576, u32:{texture_words}>(command_r, burst_r, response_s);",
+        "        (command_s, burst_s, response_r, terminator)",
+        "    }",
+        "",
+        "    next(state: ReplayProgress) {",
+        f"        if state.command_index < u32:{count} {{",
+        "            let operation = OPERATIONS[state.command_index];",
+        "            let tok = if operation.burst == u1:1 {",
+        "                send(join(), burst_s, BURSTS[operation.index])",
+        "            } else {",
+        "                send(join(), command_s, COMMANDS[operation.index])",
+        "            };",
+        "            let (tok, response) = recv(tok, response_r);",
+        "            assert_eq(response.success, u1:1);",
+        "            ReplayProgress { command_index: state.command_index + u32:1, ..state }",
+        *expected_step,
+        "        } else {",
+        "            send(join(), terminator, true);",
+        "            state",
+        "        }",
+        "    }",
+        "}",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def framebuffer_module(commands, expected, framebuffer):
+    width, height, expected_hash, base, stride, report_only, block_diagnostics, hashes = framebuffer
+    operations, _, _ = replay_operations(commands)
+    if width % 16:
+        raise ValueError("framebuffer width must be divisible by 16")
+    blocks_per_row = width // 16
+    texture_words = texture_word_count(expected)
+    prefix = module(commands, expected).split("#[test_proc]")[0]
+    expected_step = [
+        f"            }} else if state.expected_index < u32:{len(expected)} {{",
+        "                let expected = EXPECTED[state.expected_index];",
+        "                let command = core_sim::CoreCommand {",
+        "                    write: u1:0, address: expected.address, data: u32:0, mask: u4:0,",
+        "                };",
+        "                let tok = send(join(), command_s, command);",
+        "                let (tok, response) = recv(tok, response_r);",
+        "                assert_eq(response.data, expected.data);",
+        "                ReplayState { expected_index: state.expected_index + u32:1, ..state }",
+    ] if expected else []
+    lines = [
+        prefix,
+        f"const REFERENCE_HASHES = u32[{len(hashes)}]:[",
+        *[f"    u32:0x{value:08x}," for value in hashes],
+        "];",
+        "",
+        "pub struct ReplayState {",
+        "    command_index: u32, expected_index: u32, pixel: u32, hash: u32,",
+        "    first_mismatch: u16, replayed: u1",
+        "}",
+        "",
+        "#[test_proc]",
+        "proc replay_trace {",
+        "    command_s: chan<core_sim::CoreCommand> out;",
+        "    burst_s: chan<core_sim::TextureBurst> out;",
+        "    response_r: chan<core_sim::CoreResponse> in;",
+        "    terminator: chan<bool> out;",
+        "",
+        "    init { ReplayState {",
+        "        command_index: u32:0, expected_index: u32:0, pixel: u32:0, hash: u32:0x811c9dc5,",
+        "        first_mismatch: u16:0xffff, replayed: u1:0",
+        "    } }",
+        "",
+        "    config(terminator: chan<bool> out) {",
+        "        let (command_s, command_r) = chan<core_sim::CoreCommand>(\"command\");",
+        "        let (burst_s, burst_r) = chan<core_sim::TextureBurst>(\"burst\");",
+        "        let (response_s, response_r) = chan<core_sim::CoreResponse>(\"response\");",
+        f"        spawn core_sim::core_sim<u32:1048576, u32:{texture_words}>(command_r, burst_r, response_s);",
+        "        (command_s, burst_s, response_r, terminator)",
+        "    }",
+        "",
+        "    next(state: ReplayState) {",
+        "        if state.replayed == u1:0 {",
+        f"            if state.command_index < u32:{len(operations)} {{",
+        "                let operation = OPERATIONS[state.command_index];",
+        "                let tok = if operation.burst == u1:1 {",
+        "                    send(join(), burst_s, BURSTS[operation.index])",
+        "                } else {",
+        "                    send(join(), command_s, COMMANDS[operation.index])",
+        "                };",
+        "                let (tok, response) = recv(tok, response_r);",
+        "                assert_eq(response.success, u1:1);",
+        "                ReplayState { command_index: state.command_index + u32:1, ..state }",
+        *expected_step,
+        "            } else {",
+        "                ReplayState { pixel: u32:0, replayed: u1:1, ..state }",
+        "            }",
+        "        } else {",
+        f"            let x = ((state.pixel % u32:{blocks_per_row}) << u8:4) as u16;",
+        f"            let y = (state.pixel / u32:{blocks_per_row}) as u16;",
+        f"            let plane = pixel::framebuffer_address(u26:0x{base:x}, x, y, u11:{stride});",
+        "            let command = core_sim::CoreCommand {",
+        "                write: u1:0, address: u24:0x400000 + ((plane & u26:0x3fffffc) as u24),",
+        "                data: state.hash, mask: u4:0xf,",
+        "            };",
+        "            let tok = send(join(), command_s, command);",
+        "            let (tok, response) = recv(tok, response_r);",
+        "            let hash = response.data;",
+        "            let mismatch = hash != REFERENCE_HASHES[state.pixel];",
+        f"            let mismatch_location = " + (
+            f"(state.pixel % u32:{blocks_per_row}) as u16;" if block_diagnostics else
+            f"(state.pixel / u32:{blocks_per_row}) as u16;"),
+        "            let first_mismatch = if mismatch && state.first_mismatch == u16:0xffff {",
+        "                mismatch_location",
+        "            } else {",
+        "                state.first_mismatch",
+        "            };",
+        f"            let last = state.pixel + u32:1 == u32:{width * height // 16};",
+        "            let tok = send_if(tok, terminator, last, true);",
+        "            let tok = if last { trace_fmt!(\"framebuffer hash: 0x{:x}\", hash) } else { tok };",
+        *([] if report_only else [
+            "            if last {",
+            "                match first_mismatch {",
+            *[
+                f"                    u16:{location} => fail!(\"framebuffer_{'block' if block_diagnostics else 'row'}_{location}\", ()),"
+                for location in range(blocks_per_row if block_diagnostics else height)
+            ],
+            "                    _ => (),",
+            "                }",
+            "            } else { () };",
+        ]),
+        "            ReplayState {",
+        "                pixel: state.pixel + u32:1, hash, first_mismatch, replayed: u1:1,",
+        "                ..state",
+        "            }",
+        "        }",
+        "    }",
+        "}",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def strip_disabled_burst_nodes(path):
+    markers = (
+        "to_apply=__core_sim__texture_block_write",
+        "to_apply=__core_sim__advance_burst_ticks",
+        "channel=_burst_r",
+        "channel=_texture_block_s",
+        "channel=_texture_block_response_r",
+    )
+    text = path.read_text()
+    kept = []
+    removed = 0
+    for line in text.splitlines(keepends=True):
+        burst_response = "channel=_response_s" in line and "predicate=block_access" in line
+        if burst_response or any(marker in line for marker in markers):
+            removed += 1
+        else:
+            kept.append(line)
+    if removed == 0:
+        return
+    if removed not in (3, 4):
+        raise ValueError("unexpected scalar hosted burst nodes")
+    temporary = path.with_name(f"{path.stem}.scalarized{path.suffix}")
+    temporary.write_text("".join(kept))
+    subprocess.run([
+        "opt_main", "--passes=dce dfe", f"--output_path={path}", str(temporary),
+    ], check=True)
+    temporary.unlink()
+
+
+def promote_hosted_impl(path):
+    lines = path.read_text().splitlines(keepends=True)
+    implementation = [
+        i for i, line in enumerate(lines)
+        if line.startswith("proc __core_sim__core_sim_hosted_impl_")
+    ]
+    promoted = [
+        i for i, line in enumerate(lines)
+        if line.startswith("top proc __core_sim__core_sim_hosted_impl_")
+    ]
+    wrapper = [
+        i for i, line in enumerate(lines)
+        if line.startswith("top proc __core_sim__core_sim_hosted_") and "_impl_" not in line
+    ]
+    if len(promoted) == 1 and not wrapper:
+        return
+    if len(implementation) != 1 or len(wrapper) != 1 or promoted:
+        raise ValueError("unexpected hosted proc hierarchy")
+    end = next(
+        (i for i in range(wrapper[0] + 1, len(lines)) if lines[i].strip() == "}"), None)
+    if end is None:
+        raise ValueError("unterminated hosted proc wrapper")
+    lines[implementation[0]] = lines[implementation[0]].replace("proc ", "top proc ", 1)
+    del lines[wrapper[0]:end + 1]
+    path.write_text("".join(lines))
+
+
+def native_replay(args, framebuffer):
+    requested_ir = pathlib.Path(args.native_ir or "build/generated/xls/work/core_sim_hosted.ir")
+    ir = (
+        requested_ir.with_name(f"{requested_ir.stem}.hardware{requested_ir.suffix}")
+        if args.hardware_opt
+        else requested_ir
+    )
+    unoptimized_ir = requested_ir.with_name(
+        f"{requested_ir.stem}.unoptimized{requested_ir.suffix}")
+    ir.parent.mkdir(parents=True, exist_ok=True)
+    sources = list(pathlib.Path("hardware/renderer/dslx").glob("*.x"))
+    source_mtime = max(path.stat().st_mtime for path in sources)
+    if (not unoptimized_ir.exists() or unoptimized_ir.stat().st_size == 0 or
+            unoptimized_ir.stat().st_mtime < source_mtime):
+        temporary_ir = unoptimized_ir.with_suffix(f"{unoptimized_ir.suffix}.tmp")
+        try:
+            with temporary_ir.open("w") as output:
+                subprocess.run([
+                    "ir_converter_main",
+                    "--dslx_path=hardware/renderer/dslx",
+                    "--top=core_sim_hosted",
+                    "--lower_to_proc_scoped_channels",
+                    "hardware/renderer/dslx/core_sim.x",
+                ], stdout=output, check=True)
+            temporary_ir.replace(unoptimized_ir)
+        finally:
+            temporary_ir.unlink(missing_ok=True)
+    optimizer_mtime = max(unoptimized_ir.stat().st_mtime, pathlib.Path(__file__).stat().st_mtime)
+    if not ir.exists() or ir.stat().st_mtime < optimizer_mtime:
+        command = ["opt_main", f"--output_path={ir}"]
+        if not args.hardware_opt:
+            command.append(f"--passes={CPU_OPT_PASSES}")
+        subprocess.run([*command, str(unoptimized_ir)], check=True)
+    strip_disabled_burst_nodes(ir)
+    obj = ir.with_suffix(".o")
+    proto = ir.with_suffix(".pb")
+    library = ir.with_suffix(".so")
+    if not args.jit:
+        aot_mtime = min(
+            (path.stat().st_mtime for path in (obj, proto, library) if path.exists()),
+            default=0,
+        )
+        if aot_mtime < ir.stat().st_mtime or not all(path.exists() for path in (obj, proto, library)):
+            subprocess.run([
+                "aot_compiler_main",
+                f"--input={ir}",
+                f"--output_object={obj}",
+                f"--output_proto={proto}",
+                "--llvm_opt_level=3",
+            ], check=True)
+            subprocess.run([
+                os.environ.get("CXX", "c++"), "-shared", str(obj), "-o", str(library),
+            ], check=True)
+    mode = "hardware" if args.hardware_opt else "CPU"
+    simulator = "DE10Sim" if args.de10 else "CoreSim"
+    print(f"generated XLS {mode}-optimized hosted {simulator} {'JIT' if args.jit else 'AOT'} runtime from {ir}")
+    if args.generate_only:
+        return
+    command = [
+        "voodoo_xls_runtime", str(ir), args.trace,
+        f"--max_ticks={args.max_ticks}",
+    ]
+    if args.de10:
+        command.append("--de10")
+    if args.state:
+        command.append(f"--state={args.state}")
+    if args.minimum_cache_hit_rate is not None:
+        command.append(f"--minimum_cache_hit_rate={args.minimum_cache_hit_rate}")
+    if args.framebuffer_output:
+        command.append(f"--framebuffer_output={args.framebuffer_output}")
+    if not args.jit:
+        command.extend([f"--aot_proto={proto}", f"--aot_library={library}"])
+    if framebuffer:
+        width, height, expected_hash, *_ = framebuffer
+        command.extend([
+            f"--width={width}", f"--height={height}",
+            f"--expected_hash=0x{expected_hash:08x}",
+        ])
+    if args.max_replay_seconds is None:
+        subprocess.run(command, check=True)
+    else:
+        completed = subprocess.run(command, check=True, text=True, capture_output=True)
+        sys.stdout.write(completed.stdout)
+        sys.stderr.write(completed.stderr)
+        replay_seconds = next(
+            float(line.split()[2])
+            for line in completed.stdout.splitlines()
+            if line.startswith("replay wall: ")
+        )
+        if replay_seconds > args.max_replay_seconds:
+            raise ValueError(
+                f"replay wall {replay_seconds:.6f}s exceeds {args.max_replay_seconds:.6f}s")
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("trace")
+    parser.add_argument("--limit", type=int)
+    parser.add_argument("--output", default="build/generated/xls/work/pure_xls_proc_trace_replay.x")
+    parser.add_argument("--generate-only", action="store_true")
+    parser.add_argument("--max-ticks", type=int, default=5_000_000)
+    parser.add_argument("--framebuffer-reference")
+    parser.add_argument("--framebuffer-output", help="write packed RGB565 framebuffer")
+    parser.add_argument("--framebuffer-report-only", action="store_true")
+    parser.add_argument("--framebuffer-block-diagnostics", action="store_true")
+    parser.add_argument("--interpreter", action="store_true")
+    parser.add_argument("--jit", action="store_true")
+    parser.add_argument("--hardware-opt", action="store_true")
+    parser.add_argument("--de10", action="store_true")
+    parser.add_argument("--state", help="Voodoo state snapshot; sibling state.bin is automatic")
+    parser.add_argument(
+        "--minimum-cache-hit-rate", type=float,
+        help="minimum required tap and all-hit request rates")
+    parser.add_argument("--max-replay-seconds", type=float, help="maximum replay wall time")
+    parser.add_argument("--native-ir")
+    args = parser.parse_args()
+    trace_path = pathlib.Path(args.trace)
+    if trace_path.is_dir():
+        args.trace = str(trace_path / "trace.bin")
+    if args.interpreter and (args.jit or args.hardware_opt):
+        raise ValueError("--interpreter cannot be combined with --jit or --hardware-opt")
+    if args.interpreter and args.state:
+        raise ValueError("--state requires the native runtime")
+    commands, expected = load(args.trace)
+    if args.limit is not None:
+        commands = commands[:args.limit]
+        expected = []
+    framebuffer = None
+    if args.framebuffer_reference:
+        if args.limit is not None:
+            raise ValueError("--framebuffer-reference cannot be combined with --limit")
+        width, height, expected_hash, hashes = reference_hash(args.framebuffer_reference)
+        base, stride = framebuffer_config(commands)
+        framebuffer = (
+            width, height, expected_hash, base, stride, args.framebuffer_report_only,
+            args.framebuffer_block_diagnostics, hashes
+        )
+        print(
+            f"checking {width}x{height} framebuffer at 0x{base:x}, stride {stride}, "
+            f"hash 0x{expected_hash:08x}"
+        )
+    if not args.interpreter:
+        if args.framebuffer_report_only or args.framebuffer_block_diagnostics:
+            raise ValueError("framebuffer diagnostics require --interpreter")
+        print(f"loaded {len(commands)} pure-XLS proc commands from {args.trace}")
+        native_replay(args, framebuffer)
+        return
+    output = pathlib.Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    source = framebuffer_module(commands, expected, framebuffer) if framebuffer else module(commands, expected)
+    output.write_text(source)
+    print(f"generated {len(commands)} pure-XLS proc commands from {args.trace}")
+    if not args.generate_only:
+        subprocess.run([
+            "interpreter_main",
+            "--dslx_path=hardware/renderer/dslx",
+            "--evaluator=ir-jit",
+            f"--max_ticks={args.max_ticks}",
+            str(output),
+        ], check=True)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        print(error, file=sys.stderr)
+        raise SystemExit(1)

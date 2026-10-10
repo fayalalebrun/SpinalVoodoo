@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+tmp="$(mktemp -d)"
+trap 'find "$tmp" -type f -delete; rmdir "$tmp"' EXIT
+cat >"$tmp/input.sv" <<'SV'
+module CompatTest;
+  wire [1:0] values [2];
+  for (genvar index = 0; index < 2; index = index + 1) begin : generated_values
+    assign values[index] = index;
+  end
+endmodule
+SV
+"$root/workflows/build/quartus-compat-xls-rtl" "$tmp/input.sv"
+iverilog -g2012 -s CompatTest -o "$tmp/output" "$tmp/input.sv"
+if grep -q 'for (genvar' "$tmp/input.sv"; then
+  exit 1
+fi
+cat >"$tmp/invalid.sv" <<'SV'
+module InvalidCompatTest;
+  for (genvar index = 0; index < 2; index = index + 1) begin : generated_values
+    wire value;
+    assign value = index;
+  end
+endmodule
+SV
+if "$root/workflows/build/quartus-compat-xls-rtl" "$tmp/invalid.sv" >/dev/null 2>&1; then
+  exit 1
+fi

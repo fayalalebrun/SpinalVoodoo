@@ -1,0 +1,6 @@
+{
+  "status": "Preserved historical timing-signed artifact; current checkout release reproduction unverified",
+  "artifact": "output/mister/quartus-release-audio-720p-01/output_files/SpinalVoodoo.rbf",
+  "sha256": "89a1aabc60404fa07f38e471df08cb07a36bc5d27f4b0f066952b9c354dec9f4",
+  "journal": "docs/SCREAMER2_EXPERIMENT_JOURNAL.md"
+}

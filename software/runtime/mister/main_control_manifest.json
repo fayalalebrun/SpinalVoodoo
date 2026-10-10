@@ -1,0 +1,12 @@
+{
+  "sha256": "9f6e5a237c36be6404ab4823d804821491db4bf125827f84aca2a1ca31f0a8a6",
+  "core_sha256": "d644e5202a5fc439f08bcb2d59435f6dfafcf634d937949ed46b0e84445c7928",
+  "menu_sha256": "25d5461b55e4d45e79c876a02d69f32b22f414b64e600a1adc930eefea6ea4a7",
+  "sites": [
+    {"candidate_function": "reboot", "address": "0x8bf40", "first_instruction_bytes": "38b5", "width": 2},
+    {"candidate_function": "app_restart", "address": "0x8bff8", "first_instruction_bytes": "f0b5", "width": 2},
+    {"candidate_function": "fpga_load_rbf", "address": "0x8c08c", "first_instruction_bytes": "2de9f04f", "width": 4},
+    {"candidate_function": "fpga_core_reset", "address": "0x8c5ec", "first_instruction_bytes": "43f6f051", "width": 4},
+    {"candidate_function": "fpga_wait_to_reset", "address": "0x8c698", "first_instruction_bytes": "70b5", "width": 2}
+  ]
+}

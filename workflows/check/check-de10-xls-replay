@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+build="$root/build/generated/xls/work/core_sim_de10_verilator"
+
+"$root/workflows/build/gen-rtl-de10-xls"
+verilator \
+  --cc \
+  --exe \
+  --build \
+  -j 0 \
+  --top-module CoreSimDe10 \
+  --Mdir "$build" \
+  -Wno-WIDTHTRUNC \
+  -Wno-WIDTHEXPAND \
+  -Wno-UNSIGNED \
+  -Wno-CMPCONST \
+  -Wno-MULTITOP \
+  -Wno-TIMESCALEMOD \
+  -Wno-PINCONNECTEMPTY \
+  -Wno-UNUSEDSIGNAL \
+  -Wno-UNUSEDPARAM \
+  "$root/build/generated/xls/work/core_sim_de10_rtl/CoreSimDe10.sv" \
+  "$root/verification/integration/xls/core_sim_de10_testbench.cpp" \
+  -CFLAGS -O2
+"$build/VCoreSimDe10" "$root/verification/fixtures/traces/test28.bin"

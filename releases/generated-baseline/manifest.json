@@ -1,0 +1,129 @@
+{
+  "status": "Historical tracked generated snapshot, not a signed release and not a build input",
+  "files": {
+    "releases/generated-baseline/VoodooXlsAlphaBlend.v": {
+      "original_path": "xls/rtl/VoodooXlsAlphaBlend.v",
+      "sha256": "4c5366c375247176fd4dc858a7afee12f80f7ece06d0c21cc4d2dfabb726ee58"
+    },
+    "releases/generated-baseline/VoodooXlsColorCombine.v": {
+      "original_path": "xls/rtl/VoodooXlsColorCombine.v",
+      "sha256": "b7b86e2f669362a64795eb08e1430964b7abbafc969be550c7a5a933e35c9864"
+    },
+    "releases/generated-baseline/VoodooXlsDataSwizzle.v": {
+      "original_path": "xls/rtl/VoodooXlsDataSwizzle.v",
+      "sha256": "c447cad0695bc09d6ca5d0889b29321948afbc995ca63fb407c7303c12882879"
+    },
+    "releases/generated-baseline/VoodooXlsDepthCompare.v": {
+      "original_path": "xls/rtl/VoodooXlsDepthCompare.v",
+      "sha256": "a3342493834247a36393194b7066483a037b366cf6aa5e531454e7507ffdcd0f"
+    },
+    "releases/generated-baseline/VoodooXlsFogBlend.v": {
+      "original_path": "xls/rtl/VoodooXlsFogBlend.v",
+      "sha256": "ee563a40a91616dc4fdbeeae34136177ff2a497ad70e8dfea254b371533fca84"
+    },
+    "releases/generated-baseline/VoodooXlsFogTableFactor.v": {
+      "original_path": "xls/rtl/VoodooXlsFogTableFactor.v",
+      "sha256": "fb10a55651941429b221377c1526f33292bfab71f87e1d782328a2d706c48882"
+    },
+    "releases/generated-baseline/VoodooXlsFogWDepth.v": {
+      "original_path": "xls/rtl/VoodooXlsFogWDepth.v",
+      "sha256": "c822c6a27fe1b481416ce412917d8610c02b58c7beb91932da1ec47f0056c1bc"
+    },
+    "releases/generated-baseline/VoodooXlsFramebufferAddress.v": {
+      "original_path": "xls/rtl/VoodooXlsFramebufferAddress.v",
+      "sha256": "1f7c1775076327dd9bf0983488aa012aa3d87657d3295ab264a487acf91a4aae"
+    },
+    "releases/generated-baseline/VoodooXlsLfbDecode.v": {
+      "original_path": "xls/rtl/VoodooXlsLfbDecode.v",
+      "sha256": "4855bd7388861f9dd27693d03299772a260ca95668e4894322060fe08c42480f"
+    },
+    "releases/generated-baseline/VoodooXlsPixelTests.v": {
+      "original_path": "xls/rtl/VoodooXlsPixelTests.v",
+      "sha256": "163ee24adbf7f02f8d0f8baf08127a91d2cf9e83b133b3c06cdbce2d95cfa480"
+    },
+    "releases/generated-baseline/VoodooXlsSignedMagnitude16.v": {
+      "original_path": "xls/rtl/VoodooXlsSignedMagnitude16.v",
+      "sha256": "cf401f1446f23ae893ae8ba119dfee3111e3d4f926b4581dd8839b76dd09a189"
+    },
+    "releases/generated-baseline/VoodooXlsSpanStep.v": {
+      "original_path": "xls/rtl/VoodooXlsSpanStep.v",
+      "sha256": "379547ba70c710656ec7a3cd818a6dc0852f40748d9d04eeadf3909b7aad42d6"
+    },
+    "releases/generated-baseline/VoodooXlsTexelDecode.v": {
+      "original_path": "xls/rtl/VoodooXlsTexelDecode.v",
+      "sha256": "d6c2e938b54f1b0c61337c36422ff2a238472e7def457f47a3df596e5bd9384e"
+    },
+    "releases/generated-baseline/VoodooXlsTextureFilter.v": {
+      "original_path": "xls/rtl/VoodooXlsTextureFilter.v",
+      "sha256": "9c4b03a7321e3d7f6b9241495352c9bd674700cdc8e0abff03ef0043a6a5c000"
+    },
+    "releases/generated-baseline/VoodooXlsTextureLayout.v": {
+      "original_path": "xls/rtl/VoodooXlsTextureLayout.v",
+      "sha256": "909d1e5b7435106b77b2fb82278b9d363443f64505fa4a4d59bb5aefddf77064"
+    },
+    "releases/generated-baseline/VoodooXlsTextureWriteAddress.v": {
+      "original_path": "xls/rtl/VoodooXlsTextureWriteAddress.v",
+      "sha256": "84dc8aa8cecb2370b3259ed85a8131d80cb6dbf18d3e81cacc4d89cd8e31409f"
+    },
+    "releases/generated-baseline/VoodooXlsTmuAddresses.v": {
+      "original_path": "xls/rtl/VoodooXlsTmuAddresses.v",
+      "sha256": "9be339dc7dd1e6a97bb36e16d354650d69247bac8ec0f06579e9ab36e01b23df"
+    },
+    "releases/generated-baseline/VoodooXlsTmuBaseLod.v": {
+      "original_path": "xls/rtl/VoodooXlsTmuBaseLod.v",
+      "sha256": "eae609384f08144e6a4bef1da97d988cf754b7579be5793c9b3679bc669e41fe"
+    },
+    "releases/generated-baseline/VoodooXlsTmuCoordinates.v": {
+      "original_path": "xls/rtl/VoodooXlsTmuCoordinates.v",
+      "sha256": "560d117f56a1460c20b63265084d9ed792582ca181b59f43a517959dc77bd490"
+    },
+    "releases/generated-baseline/VoodooXlsTmuGradient.v": {
+      "original_path": "xls/rtl/VoodooXlsTmuGradient.v",
+      "sha256": "237b40394b298a9806d20980fb242893b3666dfae2c75fb11ac213729075617f"
+    },
+    "releases/generated-baseline/VoodooXlsTmuLodIndex.v": {
+      "original_path": "xls/rtl/VoodooXlsTmuLodIndex.v",
+      "sha256": "630bcc37a7f4dbc6559b4e8a3dee702e510871de9c528a9df5f41796316a24cd"
+    },
+    "releases/generated-baseline/VoodooXlsTmuLodSelect.v": {
+      "original_path": "xls/rtl/VoodooXlsTmuLodSelect.v",
+      "sha256": "f71dd895df4ffcff7e214cee27fc9b3e95b5cbf0b874bf90dc3a54fc0f89fa25"
+    },
+    "releases/generated-baseline/VoodooXlsTmuPackedDecode.v": {
+      "original_path": "xls/rtl/VoodooXlsTmuPackedDecode.v",
+      "sha256": "2f0e021b216861de8cdbf1ef363a9f0a6111a009620ec83ec93fda62df768101"
+    },
+    "releases/generated-baseline/VoodooXlsTmuPerspectiveCoords.v": {
+      "original_path": "xls/rtl/VoodooXlsTmuPerspectiveCoords.v",
+      "sha256": "f4b833ca6054f6b9594b638b9de74155d48ae9d00eabceb091c5e757ba20e6c0"
+    },
+    "releases/generated-baseline/VoodooXlsTmuRecip.v": {
+      "original_path": "xls/rtl/VoodooXlsTmuRecip.v",
+      "sha256": "d88efc2c352d414b9644aeb4c637799046d0baef1adc6f019929d3eca581da6b"
+    },
+    "releases/generated-baseline/VoodooXlsTmuRecipMeta.v": {
+      "original_path": "xls/rtl/VoodooXlsTmuRecipMeta.v",
+      "sha256": "c303b9863cbc338d94a0d394f0aab5359618d3e208403947b8b82f36af2af68b"
+    },
+    "releases/generated-baseline/VoodooXlsTriangleIterLoad.v": {
+      "original_path": "xls/rtl/VoodooXlsTriangleIterLoad.v",
+      "sha256": "231dac339e3e8fb852abcb89a0555896b6c5bd48b3d0f1012ea4127b051e5e4f"
+    },
+    "releases/generated-baseline/VoodooXlsTriangleIterStep.v": {
+      "original_path": "xls/rtl/VoodooXlsTriangleIterStep.v",
+      "sha256": "cd5781448aead7ea88028c993a8edf737cdca3ac123b8ec7a5ebb4c36597b0a2"
+    },
+    "releases/generated-baseline/VoodooXlsTriangleSetup.v": {
+      "original_path": "xls/rtl/VoodooXlsTriangleSetup.v",
+      "sha256": "1a8cf695f1037d11463a181c0456584c94222b63f2b271d793a2060fa22d2cd6"
+    },
+    "releases/generated-baseline/VoodooXlsTriangleSetupS16.v": {
+      "original_path": "xls/rtl/VoodooXlsTriangleSetupS16.v",
+      "sha256": "92824b8a7f8e96bdfcdb73462eae08053d544bd2efc678b51b05d0534be0221f"
+    },
+    "releases/generated-baseline/VoodooXlsWritePack.v": {
+      "original_path": "xls/rtl/VoodooXlsWritePack.v",
+      "sha256": "44c7e2e1d12d470c9f6e8cb661e6ab2ee622595d8d6e69ae54b7d284abc11e6c"
+    }
+  }
+}

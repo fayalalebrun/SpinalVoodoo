@@ -110,7 +110,7 @@
   };
 
   scripts.sim-test = {
-    exec = ''exec bash ./emu/sim/run_tests.sh "$@"'';
+    exec = ''exec make check "$@"'';
     description = "Run Glide SDK tests against SpinalVoodoo Verilator sim";
   };
 
@@ -118,9 +118,9 @@
     exec = ''
       set -e
       echo "Building sim-enabled Glide library..."
-      make -C emu/glide/glide2x/sst1/glide/src -f Makefile.sim all
+      make -C vendor/glide/glide2x/sst1/glide/src -f Makefile.sim all
       echo "Building test programs..."
-      make -C emu/glide/glide2x/sst1/glide/tests -f Makefile.sim
+      make -C vendor/glide/glide2x/sst1/glide/tests -f Makefile.sim
       echo "Done."
     '';
     description = "Build sim-enabled Glide library and test programs";
@@ -128,25 +128,25 @@
 
   scripts.de10-plan = {
     exec = ''
-      echo "DE10 goals: docs/DE10_MILESTONES.md"
-      echo "Bring-up plan: docs/DE10_BRINGUP_PLAN.md"
-      echo "Deployment plan: docs/DE10_DEPLOYMENT.md"
+      echo "Architecture: ARCHITECTURE.md"
+      echo "Organization: docs/ORGANIZATION.md"
+      echo "MiSTer operation: docs/MISTER.md"
     '';
     description = "Print DE10 planning docs";
   };
 
   scripts.de10-build-bitstream = {
-    exec = ''exec bash ./scripts/build-bitstream-de10 "$@"'';
+    exec = ''exec bash ./workflows/build/build-bitstream-de10 "$@"'';
     description = "Build DE10 bitstream (Quartus required)";
   };
 
   scripts.de10-program = {
-    exec = ''exec bash ./scripts/program-de10 "$@"'';
+    exec = ''exec bash ./workflows/board/program-de10 "$@"'';
     description = "Program DE10 FPGA image remotely";
   };
 
   scripts.de10-deploy = {
-    exec = ''exec bash ./scripts/deploy-de10.sh "$@"'';
+    exec = ''exec bash ./workflows/board/deploy-de10.sh "$@"'';
     description = "Deploy runtime bundle to a DE10";
   };
 
@@ -163,17 +163,17 @@
   };
 
   scripts.tomb-run-headless = {
-    exec = ''exec bash ./scripts/run-tomb-glide-headless "$@"'';
+    exec = ''exec bash ./workflows/run/run-tomb-glide-headless "$@"'';
     description = "Run Tomb Raider through DOSBox-X Glide headlessly";
   };
 
   scripts.tomb-run-live = {
-    exec = ''exec bash ./scripts/run-tomb-glide-live "$@"'';
+    exec = ''exec bash ./workflows/run/run-tomb-glide-live "$@"'';
     description = "Run Tomb Raider through DOSBox-X Glide with a window";
   };
 
   scripts.tomb-screenshot = {
-    exec = ''exec bash ./scripts/capture-tomb-screenshot "$@"'';
+    exec = ''exec bash ./workflows/run/capture-tomb-screenshot "$@"'';
     description = "Run Tomb Raider and capture a live screenshot";
   };
 

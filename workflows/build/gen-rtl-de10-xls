@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+"$root/workflows/build/generate-xls-rtl" --de10-proc &
+xls_pid=$!
+DE10_RTL_MAIN_CLASS=voodoo.de10.XlsDe10RtlGen "$root/workflows/build/gen-rtl-de10" &
+scala_pid=$!
+status=0
+wait "$xls_pid" || status=$?
+wait "$scala_pid" || status=$?
+((status == 0)) || exit "$status"
+
+test -s "$root/build/generated/xls/work/core_sim_de10_rtl/CoreSimDe10.sv"
+test -s "$root/build/generated/scala/de10/XlsDe10Scanout.v"
+test -s "$root/build/generated/scala/de10/XlsAvalonTransferMasterCore.v"

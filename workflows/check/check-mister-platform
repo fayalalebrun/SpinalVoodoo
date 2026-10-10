@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$root"
+mkdir -p build/simulation
+workflows/build/gen-rtl-de10-xls
+scala-cli --power run --server=false project.scala hardware --main-class voodoo.mister.MisterRtlGen
+python3 workflows/build/prepare-mister-sources --check
+verilator --lint-only --timing --top-module emu -DMISTER_FB=1 -Ibuild/deps/mister/template \
+  -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -Wno-UNSIGNED -Wno-CMPCONST -Wno-TIMESCALEMOD \
+  hardware/platforms/mister/tests/upstream-simulation.vlt -f hardware/platforms/mister/quartus/xls-files.f build/generated/scala/mister/MisterCore.v \
+  hardware/platforms/mister/tests/pll_sim.sv hardware/platforms/mister/rtl/SpinalVoodoo.sv build/deps/mister/template/sys/hps_io.sv
+flags=(--top-module MisterPlatform -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -Wno-UNSIGNED -Wno-CMPCONST -Wno-TIMESCALEMOD)
+sources=(-f hardware/platforms/mister/quartus/xls-files.f build/generated/scala/mister/MisterPlatform.v)
+verilator --lint-only "${flags[@]}" "${sources[@]}"
+cc -std=c11 -O2 -Wall -Wextra -Werror -pedantic -pthread -Dnanosleep=mister_sim_pause -Dclock_gettime=mister_sim_clock_gettime \
+  -c software/runtime/mister/mister_mailbox.c -o build/simulation/mister-platform-host.o
+verilator --cc --exe --build -j "${MISTER_BUILD_JOBS:-4}" "${flags[@]}" "${sources[@]}" \
+  --Mdir "$root/build/simulation/mister-platform" "$root/hardware/platforms/mister/tests/platform_test.cpp" \
+  "$root/build/simulation/mister-platform-host.o" -CFLAGS '-O2 -Wall -Wextra -Werror'
+"$root/build/simulation/mister-platform/VMisterPlatform"

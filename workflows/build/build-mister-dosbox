@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$root"
+python3 -B workflows/build/prepare-mister-sources --check
+build_dir="${MISTER_DOSBOX_BUILD_DIR:-build/host/dosbox}"
+if [[ -d "$build_dir" ]]; then
+  python3 -B workflows/build/prepare-mister-dosbox --output "$build_dir" --check
+else
+  python3 -B workflows/build/prepare-mister-dosbox --output "$build_dir"
+fi
+build_dir="$(realpath "$build_dir")"
+epoch="$(git -C build/deps/mister/dosbox-x show -s --format=%ct HEAD)"
+nix develop --ignore-environment --keep HOME --keep USER --option substituters https://cache.nixos.org .#mister-arm --command bash -c '
+  set -euo pipefail
+  root="$PWD"
+  export SOURCE_DATE_EPOCH="$2"
+  maps="-ffile-prefix-map=$root=/build/spinalvoodoo"
+  make -C software/runtime/mister all CC="$CC" CFLAGS="-O2 -g $maps" BUILD_DIR="$root/build/host/mister-arm-runtime"
+  make -C software/integrations/glide -f Makefile.glide -j8 CC="$CC" CFLAGS="-O2 -g $maps"
+  cd "$1"
+  if [[ ! -x configure ]]; then ./autogen.sh; fi
+  maps="$maps -ffile-prefix-map=$1=/build/dosbox-x"
+  CFLAGS="-O2 -std=gnu11 $maps" CXXFLAGS="-O2 -std=gnu++17 $maps" \
+    LIBS="-L$root/build/host/mister-arm-runtime -lmister_runtime" \
+    ./configure --host="$($CC -dumpmachine)" --build=x86_64-pc-linux-gnu \
+      --prefix=/opt/spinalvoodoo --enable-sdl2 --disable-x11 --disable-opengl \
+      --disable-sdlnet --disable-libslirp --disable-gamelink --disable-alsa-midi \
+      --disable-avcodec --disable-screenshots --disable-freetype --disable-mt32 \
+      --disable-libfluidsynth
+  make -j8
+' bash "$build_dir" "$epoch"

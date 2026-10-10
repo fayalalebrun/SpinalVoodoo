@@ -1,3 +1,3 @@
 [submodule "emu/86Box"]
-	path = emu/86Box
+	path = vendor/86box
 	url = https://github.com/fayalalebrun/86Box.git

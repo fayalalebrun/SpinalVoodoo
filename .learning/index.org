@@ -1,0 +1,170 @@
+#+title: De-slop audit: keep, archive, remove, review
+
+* Verdict
+Keep the XLS renderer, its platform glue, the shared MiSTer runtime, and the correctness infrastructure. Remove obsolete native-renderer tooling and regeneratable caches. Move experiment history and unused vendor targets out of the everyday working set without destroying provenance.
+
+The main problem is not too many maintained renderer implementations: the old Scala renderer is already gone. It is an unclear boundary between source, upstream dependencies, generated inputs, experimental candidates, and measured release evidence. Documentation still describes the removed architecture, and important unreleased source changes live inside ignored output directories.
+
+This audit began as recommendations. The first cleanup removed six retired source files into a hash-verified archive, six cache trees and 724 loose cache paths; baseline and post-cleanup Python/native/XLS/Scala tests passed. Evidence and the deletion manifest are in output/deslop-cleanup. No board changes were made for cleanup. This does not assert that every line of every vendor source has been reviewed.
+
+* Interactive second-pass viewer
+Run =python3 -B scripts/deslop-viewer.py --refresh= from the repository root, then open =output/deslop-audit/viewer.html= directly. It is one self-contained static HTML page, with no server, database or network requests. No extra dependencies are needed.
+
+Expand/collapse nested directories, search paths/reasons and filter classifications/Git scope. Filters retain ancestors so matching entries stay in their tree context. Directory children render lazily in batches of 200. Every entry retains its classification, reason, size and consumer hints. Consumer hints are capped textual matches, not proof of dependency closure.
+
+The second pass refreshes filesystem enumeration and accounts for already removed, archived sources and repaired ignore/planning entries. It is not a new vendor dependency-closure audit. Tracked missing paths stay visible as REMOVED-ARCHIVED while their Git deletions are uncommitted. scripts/deslop_inventory.py now contains the reproducible rules; output/deslop-audit contains the generated snapshot and self-contained HTML tree. Re-run with --refresh after builds or cleanup; snapshots are not live filesystem views.
+
+* Coverage and how to use the inventory
+- Initial snapshot: 1,745 Git-tracked paths and 681,916 observed workspace entries, including directories and symlinks. Current totals are in summary.json and the viewer.
+- Every tracked path has an individual recommendation in [[file:../output/deslop-audit/tracked-files.csv][tracked-files.csv]].
+- Every enumerated workspace path has an individual category in [[file:../output/deslop-audit/all-paths.csv.gz][all-paths.csv.gz]].
+- Every enumerated directory has a row in [[file:../output/deslop-audit/directories.csv][directories.csv]]. A directory recommendation never overrides a more conservative child recommendation.
+- [[file:../output/deslop-audit/summary.json][summary.json]] records totals; [[file:../scripts/deslop_inventory.py][scripts/deslop_inventory.py]] records the current classification rules.
+- Git internals are opaque KEEP-METADATA subtrees, not traversed. Symlinks are inventoried without traversing their targets. Audit outputs themselves are excluded to avoid self-referential inventories. These are explicit boundaries, not unclassified application code.
+- Recommendations are grounded in inspected build/test/generator roots and file-family ownership. CSV direct_consumers is a literal-reference aid, not a dependency graph: matches can be documentation or false positives; missing matches do not establish dead code. The tracked-files CSV includes the 86Box gitlink directory, not each submodule file as a parent-repository tracked file.
+- Unknown local files, possible transitive vendor dependencies, and generated boot handoffs remain REVIEW. This is exhaustive categorization, not an exhaustive proof that every removal candidate is safe.
+
+* Category meanings
+| Category | Action |
+|----------+--------|
+| KEEP-SOURCE / KEEP-SUPPORT / KEEP-TOOL | Retain in the maintained development tree. Not a claim of release signoff. |
+| KEEP-TEST / KEEP-FIXTURE | Retain correctness checks, reference inputs and test scaffolding. |
+| KEEP-DEPENDENCY / KEEP-VENDOR | Retain pinned upstream sources, necessary libraries and legal provenance. |
+| KEEP-DIAGNOSTIC | Retain as development/board tools, not necessarily package in the runtime. |
+| KEEP-FIX / REWRITE-DOC | Keep the role; repair stale entrypoints or misleading content. |
+| GENERATED / REVIEW-GENERATED | Separate from hand-maintained source; prove clean regeneration and consumers before untracking. |
+| REMOVE-CACHE | Regeneratable transient output outside protected experiment archives; not a deletion command. |
+| REMOVE-DEAD | Retired implementation's orphan; remove from the active tree after confirmation. |
+| ARCHIVE-EVIDENCE / ARCHIVE-SESSION | Preserve outside the active working set; do not throw away unique evidence. |
+| ARCHIVE-RESEARCH | Move narrowly scoped investigations out of canonical scripts; preserve reproducibility. |
+| PRESERVE-SOURCE | Unique modified source in an output directory: explicitly protected. |
+| REVIEW-VENDOR / REVIEW-DIAGNOSTIC / REVIEW-LOCAL | Need consumer, ownership or recovery checks before removal. |
+| GENERATED-LINK / KEEP-METADATA | Tool-managed links or repository state; not source slop. |
+| MIXED-CONTAINER | Parent contains multiple categories; use individual child rows. |
+
+* Directory-by-directory decisions
+| Path | Recommendation | Why / boundary |
+|------+----------------+----------------|
+| src/voodoo/ | KEEP | Only 19 tracked Scala files remain; platform, scanout, memory interfaces and generators, not a second renderer. |
+| src/voodoo/de10/ | KEEP | XLS Avalon adapters, scanout and standalone DDR benchmark; board diagnostics remain useful. |
+| src/voodoo/framebuffer/ | KEEP | Shared scanout address math / reader; covered by simulation and formal tests. |
+| src/voodoo/hdmi/ | KEEP | Display timing and diagnostic infrastructure, used by XLS/platform code. |
+| src/voodoo/mister/ | KEEP, gate experiments | DDR arbitration, mailbox, reset draining, scanout and publication are correctness-critical. Some source variants are not physically signed. |
+| xls/dslx/ | KEEP | The actual rendering arithmetic, state and proc network. Do not replace it with hand-edited generated RTL. |
+| xls/verilator/ | KEEP | Hosted / board-wrapper correctness testbenches. |
+| xls/rtl/ | GENERATED, retain current inputs | 31 tracked generated arithmetic modules; QSF references all of them and MiSTer references framebuffer address RTL. Change consumers before reducing generation. |
+| xls/build/ | GENERATED | IR/schedules/generated proc RTL and local builds; preserve candidate identities before cleanup. |
+| hw/de10/xls/ | KEEP | Hand-maintained RTL memory/cache/MMIO/Avalon wrappers and testbenches; do not mistake these for compiler output. |
+| hw/de10/rtl/ | GENERATED | Spinal-generated platform adapters/scanout; regenerate rather than hand-maintain. |
+| hw/de10/qsys/ | KEEP project inputs; REVIEW generated metadata | TCL/QSYS descriptions are inputs. SOPCINFO and generated subtrees need reproducibility/boot checks. |
+| hw/de10/quartus/ | KEEP constraints/projects/timing scripts | The base project is sourced by the XLS project and supports DDR benchmark bring-up; it is not disposable just because its name is old. |
+| hw/de10/quartus/hps_isw_handoff/ | REVIEW-GENERATED | Boot/DDR handoff provenance matters; do not delete based on appearance. |
+| hw/de10/linux/ | KEEP | FPGA-region programming support. |
+| hw/mister/ | KEEP | Shell integration, source pins, timing/CDC checks, simulation fixtures and file lists. |
+| emu/mister/ | KEEP | Shared runtime, mailbox, memory ownership checks, DOSBox adapters, guest LFB/presenter, packaging entrypoints and tests. |
+| emu/sim/harness/ | KEEP | XLS socket bridge and trace-capture compatibility boundary, not obsolete renderer simulation. |
+| emu/test/ | KEEP sources, REMOVE build cache | 86Box reference comparison and state roundtrip remain the independent correctness oracle. |
+| emu/test/86box_stubs/ | KEEP | Required to compile the reference model independently of the whole emulator. |
+| emu/trace/ | KEEP | Shared trace format, writer and replay code used by CPU and board tooling. |
+| emu/86Box/ | KEEP pinned dependency | emu/test/Makefile compiles its Voodoo implementation. Not an accidental vendored duplicate. |
+| emu/glide/glide2x/sst1/ | KEEP active source; REVIEW historical platforms | Active native, ARM and DOS Glide build/test inputs. Preserve local modifications and licensing. |
+| emu/glide/swlibs/fxmisc/, newpci/, fxmemmap/ | KEEP | Explicitly used by active Glide build source/include lists. |
+| emu/glide/swlibs/include/, lib/ | KEEP pending vendor dependency review | Shared support/headers; no blanket deletion. |
+| emu/glide/glide3x/, glide2x/cvg/, glide2x/h3/ | REVIEW-VENDOR, likely archive | Other API/hardware generations absent from inspected SST1 build lists; verify transitive/legacy build requirements first. |
+| emu/glide/Device3Dfx/, swlibs/texus/, swlibs/texus2/ | REVIEW-VENDOR | Historical driver/texture utilities; remove from active tree only after consumer/licensing review. |
+| scripts/ | KEEP canonical workflows; ARCHIVE narrow investigations | File-level CSV distinguishes release/replay/profiling paths from one-off analysis. Lack of internal calls does not make a CLI dead. |
+| tools/ | KEEP canonical/recovery tools; REVIEW probes | 26 files; one proven obsolete Scala benchmark, 6 retained diagnostics, 19 review candidates. |
+| test/ | KEEP | Platform/formal/Python integration and profiling regression tests. |
+| traces/ | KEEP tracked fixtures | 40 tracked traces/state/images/indexes, approximately 76 MiB; compare pixels and state, not just performance. |
+| nix/ | KEEP | XLS acquisition/runtime patches and socket bridge protocol; required by the flake. |
+| docs/ | KEEP current docs/reference/legal history; REWRITE stale architecture | Keep journal evidence and manuals. Avoid multiplying contradictory architecture summaries. |
+| artifacts/quartus/ | ARCHIVE-EVIDENCE | Historical resource summaries; useful context, not proof of current timing signoff. |
+| output/ | ARCHIVE / separate source from results | Approximately 229 GiB allocated. Contains unique modifications, sources, signed candidates, videos, logs and caches; never blanket-delete. |
+| simWorkspace/, test-output/, .scala-build/, .bsp/ | REMOVE-CACHE after stopping jobs | Regeneratable simulation/compiler/test outputs. |
+| .devenv/, .direnv/ | REMOVE-CACHE only when inactive | Tool environment state, not code; removing forces recreation. |
+| **/__pycache__/ | REMOVE-CACHE | Bytecode; add ignore rules. |
+| .playwright-cli/ | ARCHIVE-SESSION | Preserve evidence used by experiments, then remove transient session outputs from the active tree. |
+| .git/ and nested .git entries | KEEP-METADATA | Repository history, pins and recovery state. |
+
+* Top-level files
+| Files | Decision |
+|-------+----------|
+| AGENTS.md, ARCHITECTURE.md | KEEP. Current ownership/safety constraints and architecture truth take precedence over stale README descriptions. |
+| README.md | REWRITE. Says production core/control remains native SpinalHDL; advertises retired simulation targets. Lead with XLS and distinguish board-signed release from experiments. |
+| Makefile | KEEP-FIX. Canonical command surface; remove stale planning links, audit help examples and keep board diagnostic targets explicit. |
+| flake.nix, flake.lock | KEEP. XLS, simulation and isolated ARM shells are active. |
+| devenv.nix, devenv.lock, devenv.yaml | KEEP. Quartus is supplied here, not by the default flake shell. Fix stale commands before trimming packages. |
+| .envrc | KEEP. Developer environment entrypoint. |
+| project.scala, .scalafmt.conf | KEEP. Scala version/dependencies/style and tests. |
+| .gitmodules | KEEP. Pinned reference-model submodule. |
+| .gitattributes | KEEP. Repository asset handling. |
+| .gitignore | KEEP-FIX. Missing bytecode/browser rules; broad output ignore hides source that must not be lost. |
+| result, .pre-commit-config.yaml | GENERATED-LINK. Nix result is transient; pre-commit link supplies active hooks, so preserve behavior. |
+
+* Proven cleanup targets and stale entrypoints
+1. REMOVE [[file:../tools/TmuTextureCacheBenchmark.scala][tools/TmuTextureCacheBenchmark.scala]] from the active tree. It instantiates deleted TmuTextureCache/Tmu and Config fields such as useTexFillCache. No corresponding definition remains in tracked src. The orphan also makes broad Scala compilation misleading. This was established by source inspection, not by running a failing compile.
+2. REWRITE [[file:../docs/xls-architecture.md][docs/xls-architecture.md]]: its Native SpinalHDL section and Separation Rule describe two independent complete renderers. That no longer matches the surviving sources or ARCHITECTURE.md. Preserve still-useful timing/cache discussion after checking current behavior.
+3. REWRITE [[file:../README.md][README.md]]: remove old native renderer claims and retired native/sim commands. Do not erase feature status until it is checked against XLS tests.
+4. REPLACE [[file:../emu/README.md][emu/README.md]]: a bare archived Windows image link is not a setup guide and does not explain dependencies or rights. Link a current acquisition/setup path instead.
+5. FIX [[file:../devenv.nix][devenv.nix]] sim-test: invokes absent emu/sim/run_tests.sh. The de10-plan command and Makefile de10/plan print absent DE10_MILESTONES.md, DE10_BRINGUP_PLAN.md and DE10_DEPLOYMENT.md. Retarget to surviving docs or remove those advertised commands.
+6. AUDIT devenv de10-build-bitstream / de10-program aliases: they bypass the top-level XLS-default selection and refer to the base build/default RBF. Diagnostic base flow may stay, but names/help must not imply it is the production renderer.
+7. CLEAN regeneratable local Glide .o/.obj/.lnk/.a/.so files and generated fxinline.h/fxgasm.h once no process uses them and identities needed by experiments are preserved. Their producers are visible in Makefile.sim.
+
+* Keep these despite looking complicated
+- [[file:../emu/mister/mister_memory.c][Reserved-memory ownership, exclusive locking and O_SYNC mappings]]. Removing these is not de-slopping; it risks corrupting Linux/FPGA memory.
+- [[file:../emu/mister/mister_mailbox.c][Mailbox ordering, deadlines, acknowledgment draining and latched failures]]. Async transport and deduplication require these invariants.
+- [[file:../emu/mister/glide_guest.c][Guest LFB bounds/origin/ownership checks]] and [[file:../emu/mister/glide_presenter.c][scanout retirement]]. They implement real compatibility/correctness behavior.
+- [[file:../src/voodoo/mister/MisterResetBoundary.scala][DDR-draining reset]] and [[file:../src/voodoo/mister/MisterScanout.scala][descriptor retirement]]. Accepted memory beats cannot be forgotten during reset or buffer reuse.
+- [[file:../scripts/quartus-compat-xls-rtl][Quartus lowering]] plus FIFO equivalence tests. Generated RTL may be verbose; the tested lowering boundary is valuable.
+- Trace state snapshots, independent 86Box oracle, Scala formal harnesses, real-Glide integration tests and clock-calibrated benchmark evidence. None is replaced by a screenshot or a passing compile.
+- [[file:../src/voodoo/mister/MisterHostControl.scala][MisterFramebufferControl]] is separately generated/tested, and the file also defines live memory-map/frame/keyboard types. It may overlap some scanout validation, but there is insufficient evidence to delete the file or merge correctness logic.
+
+* Experiments must not masquerade as the release
+- Current source includes banked palette, pipelined read routing and response-stage work. ARCHITECTURE.md explicitly describes failed HDMI/core timing candidates; passing unit tests is not complete physical signoff.
+- Preserve [[file:../hw/de10/xls/XlsPaletteMemory.sv][palette hardware]], capability fallback/cache tests, [[file:../src/voodoo/mister/MisterDdrBridge.scala][arbiter work]], and their evidence while deciding whether to promote or retire each experiment. Do not delete the entire bridge/scanout module: it also contains necessary platform behavior.
+- Establish one explicit reproducible signed release source identity. Do not assume the current checkout generates the preserved signed RBF.
+- [[file:../output/mister/sources/template/sys/ascal.vhd][output/mister/sources/template/sys/ascal.vhd]] is known assistant-owned modified source, not regeneratable trash. prepare-mister-project links framework sources from this template and verifies pins. Capture the diff/provenance before replacing source snapshots.
+- The source-preparation guard refusing a modified tree is useful protection, not an excuse to overwrite it.
+
+* What to archive out of the active tree
+** Research scripts
+These five scripts have now been removed from the active tree into output/deslop-cleanup/retired-source.tar.gz; their experiment inputs/results remain preserved in output. They are historical research, not a new generic framework:
+- scripts/export_dut_trace_sqlite.py
+- scripts/export_focused_fst_sqlite.py
+- scripts/query_shared_texture_edges.py
+- scripts/simulate_float_alias_precision.py
+- scripts/simulate_gradient_walk_mismatch.py
+
+Keep scripts/profile-game, profile-stacks-collect/decode, profile-stack-symbols, profile_stacks.py, profile-stacks.html and enable-mister-jitdump: they form the documented and tested profiling workflow. scripts/export-de10-xls-causal-probes is a narrow generated-RTL mutator: retain for diagnostics, but keep it out of release generation unless explicitly selected and tested.
+
+** Diagnostic probes
+Keep tools/de10_bridge_fix.c: scripts/program-de10 uploads/builds/runs it; it is a recovery dependency, not an orphan. Keep the canonical MMIO/DDR/replay tools and trace capture/dump.
+
+Review the other 19 C probes/stubs individually using the CSV: read/write latency, mapping/visibility, raw register/framebuffer/HDMI pokes, wedge/counter probes, lite replay and DOSBox stubs. Most lack a direct current-tree consumer, which suggests archival, not proven uselessness. In particular tools/de10-trace-replay-lite.c hardcodes the old framebuffer layout and duplicates register alias mapping; do not promote it to an XLS canonical path. Retire it after confirming no recovery/experiment recipe depends on it, rather than maintaining two replay engines.
+
+** Bulk evidence
+Observed allocated footprint: repository approximately 235 GiB; output approximately 229 GiB; output/mister approximately 215 GiB. output/mister/fps-parity alone approximately 142 GiB, accelerator-utilization approximately 28 GiB. The 15 largest individual workspace files are multi-GiB MKV gameplay/diagnostic recordings in fps-parity. This is predominantly experiment storage, not source-code bloat.
+
+The inventory reports apparent file lengths, not deduplicated allocated disk or guaranteed reclaimable space. REMOVE-CACHE paths outside protected output sum to approximately 4.27 GiB apparent length; generated hardware/XLS output adds approximately 1.16 GiB. Do not use these totals as an automatic deletion budget.
+
+Archive by experiment/candidate identity: sources/patches + tool versions + configuration + checksums + raw/derived metrics + correctness/timing results + representative/raw evidence + recovery path. Verify the archive can be read/restored before removing originals. Preserve failed runs and signed candidates. Do not silently transcode or discard raw video used to substantiate measurements.
+
+The 46 tracked output paths are older experiment scripts/tests/manifests/results under output/de10/screamer2-10fps; preserve as an explicitly historical bundle, not maintained product code. If a helper still matters, promote only that helper with tests rather than keeping an entire experiment tree in the main workflow.
+
+* Recommended order of work
+1. Repair README/architecture/help aliases so contributors see the real system. Remove the single proven orphan; add transient ignore rules.
+2. Establish signed release reproducibility and preserve output-only modifications. This takes priority over aggressive source/output cleanup.
+3. Delete only confirmed regeneratable caches after stopping consumers; no hardware recompilation needed just to tidy caches.
+4. Move immutable experiment bundles to verified archive storage. Keep a small evidence index with hashes and restoration instructions.
+5. Audit the vendor dependency closure with native/DOS/ARM Glide builds. Then remove other hardware/API generations from the active tree while retaining upstream archive/licenses.
+6. Archive retired probes/research tools once their consumers and recovery duties are checked. Keep canonical CLI entrypoints small; do not introduce a new abstraction layer solely to organize old experiments.
+7. Only then remove unused generated module declarations/outputs. Validate clean generation, lint, full tests, replay hashes and board boot; any release FPGA changes require complete timing signoff within the 900-second compile limit.
+
+* Validation and open questions
+- Inventory validation checks exact tracked-path coverage, unique path rows, directory coverage, explicit categories, protected scaler classification, and regression examples for generated vendor outputs/metadata.
+- Cleanup passed baseline and post-cleanup Python/native MiSTer/XLS/38 Scala tests. The static viewer has five tests for tree ancestry/metadata, dictionary interning, malformed inputs, duplicate paths/negative sizes and safely embedded HTML with output preservation. No FPGA compile was needed for inventory/viewer changes. Passing tests do not prove pending vendor/probe deletions safe.
+- Which legacy DOS/vendor utility targets remain a promised support surface? REVIEW-VENDOR stays conditional until this is decided and the dependency closure is exercised.
+- Which generated HPS handoff/SOPCINFO files are needed for supported boot recipes? Do a clean rebuild/boot proof before untracking.
+- Which diagnostic probes are part of the actual recovery kit? Preserve them until identified.
+- Which source snapshot reproduces the final timing-signed MiSTer release? Resolve before calling current source production-ready or deleting historical candidate sources.
+- Filesystem enumeration is a snapshot; active builds or newly generated files require refreshing the inventory. This report is not a permission to run broad clean commands.

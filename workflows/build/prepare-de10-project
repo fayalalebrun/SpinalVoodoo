@@ -1,0 +1,35 @@
+#!/usr/bin/env python3
+
+import argparse
+from pathlib import Path
+import re
+import shutil
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def prepare(destination):
+    destination = destination.resolve()
+    if not destination.is_relative_to(ROOT / 'build/quartus'):
+        raise ValueError('DE10 project must be inside build/quartus')
+    if destination.exists():
+        raise ValueError('Project already exists; choose a fresh directory')
+    source = ROOT / 'hardware/platforms/de10/quartus'
+    shutil.copytree(source, destination)
+    for path in destination.iterdir():
+        if path.suffix not in ('.qsf', '.tcl'):
+            continue
+        text = path.read_text()
+        text = re.sub(r'(?:\.\./)+[\w./-]+', lambda m: str((source / m.group()).resolve()), text)
+        path.write_text(text)
+    return destination
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Prepare a private DE10 Quartus working project')
+    parser.add_argument('--output', type=Path, default=ROOT / 'build/quartus/de10')
+    args = parser.parse_args()
+    try:
+        print(prepare(args.output))
+    except (ValueError, OSError) as error:
+        parser.exit(1, f'{error}\n')

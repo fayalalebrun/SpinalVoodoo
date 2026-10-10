@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Repository classification tree</title>
+<link rel="icon" href="data:,">
+<style>
+:root { color-scheme: dark; font: 15px system-ui; background: #111820; color: #e7edf4 }
+body { margin: 24px } p,small { color: #b4c4d3 } p { line-height: 1.5 }
+button,input,select { font: inherit; padding: 8px; border: 1px solid #657889; border-radius: 5px; background: #1c2935; color: inherit }
+button,summary { cursor: pointer } :focus-visible { outline: 3px solid #82caff; outline-offset: 2px }
+.filters { display: flex; gap: 12px; flex-wrap: wrap; align-items: end; margin: 20px 0 } label { display: flex; flex-direction: column; gap: 5px }
+#search { width: 320px } ul { list-style: none; margin: 0; padding-left: 22px; border-left: 1px solid #344453 } #tree { padding-left: 0; border: 0 }
+li { margin: 6px 0 } summary,.leaf { padding: 8px; border-bottom: 1px solid #344453; overflow-wrap: anywhere }
+.name { font: 13px ui-monospace,monospace } .badge { display: inline-block; margin: 0 12px; font: 12px ui-monospace,monospace; color: #e4bb72 }
+.keep { color: #7cd5a9 } .remove { color: #ffa19c } .archive { color: #a5bfff } .reason { display: block; margin: 5px 0 0 20px; font-size: 13px; color: #b4c4d3 }
+.context { opacity: .75 } #status { margin: 16px 0 } .more { margin: 10px }
+</style>
+<h1>Repository classification tree</h1>
+<p>Self-contained, read-only snapshot. Expand folders to inspect classifications and reasons. No server or network required.<br>Recommendations are rule-based, not dependency-closure proof. Directory decisions never override protected children. Sizes are apparent bytes.</p>
+<p id="snapshot"></p>
+<form id="filters" class="filters">
+<label>Search path or reason<input id="search" type="search" placeholder="palette, stale, recovery…"></label>
+<label>Classification<select id="category"><option value="">All classifications</option></select></label>
+<label>Git scope<select id="tracked"><option value="">Entire workspace</option><option value="1">Tracked</option><option value="0">Untracked / ignored</option></select></label>
+<button type="submit">Apply</button><button type="button" id="reset-view">Reset</button><button type="button" id="collapse">Collapse all</button>
+</form>
+<div id="status" role="status" aria-live="polite">Loading embedded inventory…</div>
+<ul id="tree" aria-label="Repository directories and files"></ul>
+<script id="inventory" type="application/json">__INVENTORY__</script>
+<script>
+const data = JSON.parse(document.getElementById('inventory').textContent);
+document.getElementById('inventory').remove();
+const $ = id => document.getElementById(id), nodes = data.nodes;
+const children = new Map(), paths = new Array(nodes.length);
+for (let i = 0; i < nodes.length; i++) {
+  const n = nodes[i]; paths[i] = n[1] < 0 ? n[0] : paths[n[1]] + '/' + n[0];
+  if (!children.has(n[1])) children.set(n[1], []); children.get(n[1]).push(i);
+}
+for (const ids of children.values()) ids.sort((a,b) => (nodes[b][2] === 'directory') - (nodes[a][2] === 'directory') || nodes[a][0].localeCompare(nodes[b][0]));
+for (const category of [...data.categories].sort()) { const option = document.createElement('option'); option.value = option.textContent = category; $('category').append(option); }
+$('snapshot').textContent = 'Snapshot: ' + data.snapshot + ' · ' + nodes.length.toLocaleString() + ' tree entries';
+let visible, matches, timer;
+function describe(element, id) {
+  const n = nodes[id], category = data.categories[n[5]];
+  const name = document.createElement('span'); name.className = 'name'; name.textContent = n[0] + (n[2] === 'directory' ? '/' : ''); element.append(name);
+  const badge = document.createElement('span'); badge.className = 'badge ' + (category.startsWith('KEEP') || category === 'PRESERVE-SOURCE' ? 'keep' : category.startsWith('REMOVE') ? 'remove' : category.startsWith('ARCHIVE') ? 'archive' : ''); badge.textContent = category; element.append(badge);
+  const meta = document.createElement('small'); meta.textContent = `${n[2]} · ${n[3] ? 'tracked' : 'untracked / ignored'} · ${n[4].toLocaleString()} bytes`; element.append(meta);
+  const reason = document.createElement('span'); reason.className = 'reason'; reason.textContent = data.reasons[n[6]] + (matches[id] ? '' : ' · Ancestor of matching entries'); element.append(reason);
+  if (n[7]) { const hints = document.createElement('span'); hints.className = 'reason'; hints.textContent = 'Consumer hints (text matches): ' + n[7].split(';').join(', '); element.append(hints); }
+  element.title = paths[id]; if (!matches[id]) element.classList.add('context');
+}
+function branch(parent, container) {
+  const ids = (children.get(parent) || []).filter(id => visible[id]);
+  let offset = 0;
+  function batch() {
+    const end = Math.min(offset + 200, ids.length);
+    for (; offset < end; offset++) {
+      const id = ids[offset], n = nodes[id], li = document.createElement('li');
+      if (n[2] === 'directory') {
+        const details = document.createElement('details'), summary = document.createElement('summary'); describe(summary,id); details.append(summary);
+        let loaded = false;
+        details.addEventListener('toggle', () => { if (details.open && !loaded) { loaded = true; const list = document.createElement('ul'); details.append(list); branch(id,list); } }); li.append(details);
+      } else { const leaf = document.createElement('div'); leaf.className = 'leaf'; describe(leaf,id); li.append(leaf); }
+      container.append(li);
+    }
+    if (offset < ids.length) { const more = document.createElement('button'); more.className = 'more'; more.textContent = `Show next children (${ids.length - offset} remaining)`; more.onclick = () => { more.remove(); batch(); }; container.append(more); }
+  }
+  batch();
+}
+function apply() {
+  const q = $('search').value.toLowerCase(), category = $('category').value, tracked = $('tracked').value;
+  matches = new Uint8Array(nodes.length); visible = new Uint8Array(nodes.length);
+  let count = 0, bytes = 0;
+  for (let i = 0; i < nodes.length; i++) {
+    const n = nodes[i];
+    if ((!category || data.categories[n[5]] === category) && (!tracked || String(n[3]) === tracked) && (!q || paths[i].toLowerCase().includes(q) || data.reasons[n[6]].toLowerCase().includes(q))) { matches[i] = visible[i] = 1; count++; bytes += n[4]; }
+  }
+  for (let i = nodes.length - 1; i >= 0; i--) if (visible[i] && nodes[i][1] >= 0) visible[nodes[i][1]] = 1;
+  $('tree').replaceChildren(); branch(-1,$('tree'));
+  $('status').textContent = `${count.toLocaleString()} matching entries · ${bytes.toLocaleString()} apparent bytes · Expand folders to browse`;
+}
+$('filters').onsubmit = event => { event.preventDefault(); clearTimeout(timer); apply(); };
+$('search').oninput = () => { clearTimeout(timer); timer = setTimeout(apply, 300); };
+for (const id of ['category','tracked']) $(id).onchange = apply;
+$('reset-view').onclick = () => { clearTimeout(timer); $('filters').reset(); apply(); };
+$('collapse').onclick = () => { for (const details of $('tree').querySelectorAll('details')) details.open = false; };
+apply();
+</script>
+</html>

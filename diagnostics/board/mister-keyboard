@@ -1,0 +1,195 @@
+#!/usr/bin/env python3
+
+import argparse
+import ctypes
+import ctypes.util
+import os
+import select
+import shlex
+import shutil
+import struct
+import subprocess
+import time
+
+LETTERS = (30, 48, 46, 32, 18, 33, 34, 35, 23, 36, 37, 38, 50, 49, 24, 25, 16, 19, 31, 20, 22, 47, 17, 45, 21, 44)
+KEYS = dict(enumerate(LETTERS, 4))
+KEYS.update(dict(enumerate((2, 3, 4, 5, 6, 7, 8, 9, 10, 11), 30)))
+KEYS.update(dict(enumerate((28, 1, 14, 15, 57, 12, 13, 26, 27, 43, 43, 39, 40, 41, 51, 52, 53, 58), 40)))
+KEYS.update(dict(enumerate((59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 87, 88), 58)))
+KEYS.update(dict(enumerate((99, 70, 119, 110, 102, 104, 111, 107, 109, 106, 105, 108, 103, 69, 98, 55, 74, 78, 96, 79, 80, 81, 75, 76, 77, 71, 72, 73, 82, 83), 70)))
+KEYS.update({101: 127, 224: 29, 225: 42, 226: 56, 227: 125, 228: 97, 229: 54, 230: 100, 231: 126})
+
+
+class VideoFrames:
+    def __init__(self, size):
+        self.size = size
+        self.pending = bytearray()
+
+    def feed(self, data):
+        self.pending.extend(data)
+        frame = None
+        while len(self.pending) >= self.size:
+            frame = bytes(self.pending[:self.size])
+            del self.pending[:self.size]
+        return frame
+
+
+class Keyboard:
+    def __init__(self, stream):
+        self.stream = stream
+        self.held = set()
+
+    def send(self, key, pressed):
+        self.stream.write(struct.pack('<HB', key, int(pressed)))
+        self.stream.flush()
+
+    def key(self, scancode, pressed):
+        key = KEYS.get(scancode)
+        if key is None or pressed == (key in self.held):
+            return
+        self.send(key, pressed)
+        if pressed:
+            self.held.add(key)
+        else:
+            self.held.discard(key)
+
+    def release(self):
+        for key in sorted(self.held):
+            self.send(key, False)
+        self.held.clear()
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Mirror keys only while the dedicated SDL window is focused; close it to stop. Main must remain running.')
+    parser.add_argument('target', help='SSH user@host')
+    parser.add_argument('--remote-command', required=True, help='Remote receiver command, including private loader if needed')
+    parser.add_argument('--identity')
+    parser.add_argument('--video-device', default=os.environ.get('MISTER_VIDEO_DEVICE', '/dev/video0'))
+    args = parser.parse_args()
+    if args.target.startswith('-'):
+        parser.error('Invalid SSH target')
+    library = os.environ.get('SDL2_LIBRARY') or ctypes.util.find_library('SDL2')
+    if not library:
+        parser.error('SDL2 unavailable; enter nix develop or set SDL2_LIBRARY')
+    sdl = ctypes.CDLL(library)
+    sdl.SDL_CreateWindow.restype = ctypes.c_void_p
+    sdl.SDL_CreateWindow.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint32]
+    sdl.SDL_DestroyWindow.argtypes = [ctypes.c_void_p]
+    sdl.SDL_CreateRenderer.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_uint32]
+    sdl.SDL_CreateRenderer.restype = ctypes.c_void_p
+    sdl.SDL_CreateTexture.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_int, ctypes.c_int, ctypes.c_int]
+    sdl.SDL_CreateTexture.restype = ctypes.c_void_p
+    sdl.SDL_UpdateTexture.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
+    sdl.SDL_RenderClear.argtypes = [ctypes.c_void_p]
+    sdl.SDL_RenderCopy.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+    sdl.SDL_RenderPresent.argtypes = [ctypes.c_void_p]
+    sdl.SDL_DestroyTexture.argtypes = [ctypes.c_void_p]
+    sdl.SDL_DestroyRenderer.argtypes = [ctypes.c_void_p]
+    if not shutil.which('ffmpeg'):
+        parser.error('ffmpeg unavailable; use nix run .#mister-keyboard')
+    if sdl.SDL_Init(0x20):
+        raise RuntimeError('SDL video initialization failed')
+    window = None
+    process = None
+    keyboard = None
+    capture = None
+    renderer = None
+    texture = None
+    try:
+        command = ['ssh', '-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '-o', 'ServerAliveInterval=2', '-o', 'ServerAliveCountMax=2']
+        command += shlex.split(os.environ.get('MISTER_SSH_OPTIONS', ''))
+        if args.identity:
+            command += ['-i', args.identity]
+        process = subprocess.Popen(command + [args.target, args.remote_command], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        if not select.select([process.stdout], [], [], 15)[0] or process.stdout.readline() != b'READY\n':
+            raise RuntimeError('Remote keyboard did not become ready')
+        keyboard = Keyboard(process.stdin)
+        window = sdl.SDL_CreateWindow(b'MiSTer live video: focus to play, close to stop', 0x2fff0000, 0x2fff0000, 960, 540, 4 | 32)
+        if not window:
+            raise RuntimeError('Cannot create keyboard window')
+        renderer = sdl.SDL_CreateRenderer(window, -1, 0)
+        if not renderer:
+            raise RuntimeError('Cannot create video renderer')
+        texture = sdl.SDL_CreateTexture(renderer, 0x17101803, 1, 640, 480)
+        if not texture:
+            raise RuntimeError('Cannot create video texture')
+        capture = subprocess.Popen(['ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error',
+            '-f', 'v4l2', '-input_format', 'mjpeg', '-video_size', '1280x720', '-framerate', '30',
+            '-i', args.video_device, '-an', '-vf', 'scale=640:480', '-pix_fmt', 'rgb24',
+            '-f', 'rawvideo', 'pipe:1'], stdout=subprocess.PIPE)
+        os.set_blocking(capture.stdout.fileno(), False)
+        frames = VideoFrames(640 * 480 * 3)
+        focused = False
+        event = ctypes.create_string_buffer(64)
+        running = True
+        while running:
+            if process.poll() is not None:
+                raise RuntimeError('Remote keyboard disconnected')
+            while sdl.SDL_PollEvent(event):
+                kind = struct.unpack_from('<I', event.raw)[0]
+                if kind == 0x100:
+                    running = False
+                elif kind == 0x200:
+                    action = event.raw[12]
+                    if action == 12:
+                        focused = True
+                    elif action in (13, 14):
+                        focused = False
+                        keyboard.release()
+                        if action == 14:
+                            running = False
+                elif kind in (0x300, 0x301) and focused:
+                    keyboard.key(struct.unpack_from('<i', event.raw, 16)[0], kind == 0x300)
+            if capture.poll() is not None:
+                raise RuntimeError('USB video capture stopped; check device access and supported capture format')
+            frame = None
+            for _ in range(128):
+                if not select.select([capture.stdout], [], [], 0)[0]:
+                    break
+                data = os.read(capture.stdout.fileno(), 640 * 480 * 3)
+                if not data:
+                    raise RuntimeError('USB video capture stream closed')
+                complete = frames.feed(data)
+                if complete is not None:
+                    frame = complete
+            if frame is not None:
+                pixels = ctypes.create_string_buffer(frame)
+                if sdl.SDL_UpdateTexture(texture, None, pixels, 640 * 3):
+                    raise RuntimeError('Video texture update failed')
+                sdl.SDL_RenderClear(renderer)
+                sdl.SDL_RenderCopy(renderer, texture, None, None)
+                sdl.SDL_RenderPresent(renderer)
+            keyboard.send(0, False)
+            time.sleep(0.01)
+    finally:
+        if process:
+            try:
+                if keyboard:
+                    keyboard.release()
+                process.stdin.close()
+            except (BrokenPipeError, OSError):
+                pass
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.terminate()
+                process.wait(timeout=5)
+        if capture:
+            capture.terminate()
+            try:
+                capture.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                capture.kill()
+                capture.wait()
+            capture.stdout.close()
+        if texture:
+            sdl.SDL_DestroyTexture(texture)
+        if renderer:
+            sdl.SDL_DestroyRenderer(renderer)
+        if window:
+            sdl.SDL_DestroyWindow(window)
+        sdl.SDL_Quit()
+
+
+if __name__ == '__main__':
+    main()

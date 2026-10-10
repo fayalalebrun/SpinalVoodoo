@@ -42,7 +42,41 @@
             buildPhase = "$CC -D_GNU_SOURCE -O2 -Wall -Wextra -Werror $src $(pkg-config --cflags --libs --static fuse3) -o core-gate";
             installPhase = "mkdir -p $out/bin; cp core-gate $out/bin/mister-core-gate";
           };
-
+          mister-keyboard = let
+            receiver = pkgs.pkgsCross.armv7l-hf-multiplatform.pkgsStatic.stdenv.mkDerivation {
+              pname = "mister-keyboard-receiver";
+              version = "1";
+              src = ./diagnostics/board/mister-keyboard-receiver.c;
+              dontUnpack = true;
+              buildPhase = "$CC -O2 -Wall -Wextra -Werror -std=gnu11 $src -o receiver";
+              installPhase = "mkdir -p $out/bin; cp receiver $out/bin/mister-keyboard-receiver";
+            };
+          in pkgs.writeShellApplication {
+            name = "mister-keyboard";
+            excludeShellChecks = [ "SC2029" ];
+            runtimeInputs = [ pkgs.openssh pkgs.python3 pkgs.ffmpeg-headless ];
+            text = ''
+              target="''${MISTER_HOST:-root@192.168.2.86}"
+              ssh_options=(-o BatchMode=yes -o ConnectTimeout=10)
+              identity="''${MISTER_SSH_KEY:-$HOME/.ssh/monumental}"
+              if [[ -f "$identity" ]]; then ssh_options+=(-i "$identity"); fi
+              if [[ -f "$PWD/output/mister/sd-image/known_hosts" ]]; then
+                ssh_options+=(-o "UserKnownHostsFile=$PWD/output/mister/sd-image/known_hosts")
+              fi
+              remote=$(ssh "''${ssh_options[@]}" "$target" 'mktemp -d /tmp/spinal-keyboard.XXXXXXXX')
+              if [[ ! "$remote" =~ ^/tmp/spinal-keyboard\.[a-zA-Z0-9]+$ ]]; then exit 1; fi
+              cleanup() {
+                ssh "''${ssh_options[@]}" "$target" "rm -f '$remote/receiver'; rmdir '$remote'" || true
+              }
+              trap cleanup EXIT
+              scp "''${ssh_options[@]}" ${receiver}/bin/mister-keyboard-receiver "$target:$remote/receiver"
+              ssh "''${ssh_options[@]}" "$target" "chmod 700 '$remote/receiver'"
+              export SDL2_LIBRARY=${pkgs.SDL2}/lib/libSDL2.so
+              export MISTER_SSH_OPTIONS="''${ssh_options[*]}"
+              ${pkgs.python3}/bin/python3 ${./diagnostics/board/mister-keyboard} "$target" \
+                --remote-command "$remote/receiver" "$@"
+            '';
+          };
         });
 
       devShells = forAllSystems (system:
